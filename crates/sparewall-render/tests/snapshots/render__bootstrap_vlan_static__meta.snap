@@ -1,0 +1,12 @@
+---
+source: crates/sparewall-render/tests/render.rs
+expression: r.meta
+---
+preserved_sets: []
+set_links: {}
+required_links:
+  - mgmt
+  - mgmt0
+vip_links: []
+services: {}
+bootstrap: true

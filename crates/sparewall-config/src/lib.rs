@@ -2,6 +2,7 @@
 //! validation, canonical form and hash, and the merge, patch and path
 //! operations the CLI and coordinator share.
 
+pub mod identity;
 pub mod model;
 pub mod path;
 pub mod schema;

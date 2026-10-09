@@ -763,6 +763,12 @@ impl Validator<'_> {
             if from == SELF_ZONE && to == SELF_ZONE {
                 self.err(&p, "self->self is not filtered");
             }
+            if pol.nat.is_some() && from == SELF_ZONE {
+                self.err(
+                    format!("{p}.nat"),
+                    "the firewall's own traffic already leaves from its own address",
+                );
+            }
             if pol.nat.is_some() && to == SELF_ZONE {
                 self.err(
                     format!("{p}.nat"),

@@ -1,0 +1,17 @@
+---
+source: crates/sparewall-render/tests/render.rs
+expression: r.meta
+---
+preserved_sets: []
+set_links: {}
+required_links:
+  - mgmt
+  - sync
+  - uplink
+  - users
+  - wan
+vip_links:
+  - users
+  - wan
+services: {}
+bootstrap: false
