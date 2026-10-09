@@ -98,6 +98,8 @@ pub struct StatusReply {
     pub vrrp: Value,
     pub conntrack: Value,
     pub services: Value,
+    /// The certificate served on the management network.
+    pub tls: Value,
     pub health: Value,
 }
 

@@ -346,6 +346,7 @@ pub fn status(c: &mut Coordinator<Box<dyn System>>) -> Result<StatusReply, Error
         vrrp: json!({}),
         conntrack: json!({"count": ct("nf_conntrack_count"), "max": ct("nf_conntrack_max")}),
         services: json!({}),
+        tls: json!({"fingerprint": crate::http::FINGERPRINT.get()}),
         health: serde_json::to_value(&health).unwrap_or_default(),
     })
 }

@@ -284,8 +284,12 @@ impl System for Linux {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let mask = dir.join(&name);
-                if name.ends_with(".network") && !new.contains_key(&name) && fs::symlink_metadata(&mask).is_err() {
-                    std::os::unix::fs::symlink("/dev/null", &mask).map_err(|err| Error::io(&mask, err))?;
+                if name.ends_with(".network")
+                    && !new.contains_key(&name)
+                    && fs::symlink_metadata(&mask).is_err()
+                {
+                    std::os::unix::fs::symlink("/dev/null", &mask)
+                        .map_err(|err| Error::io(&mask, err))?;
                 }
             }
         }

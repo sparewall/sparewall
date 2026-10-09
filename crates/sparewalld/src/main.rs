@@ -1,6 +1,7 @@
 //! sparewalld: the Sparewall coordinator.
 
 mod author;
+mod http;
 mod service;
 
 use std::os::unix::fs::PermissionsExt;
@@ -42,6 +43,9 @@ struct Args {
     /// Import a node identity (JSON or YAML) if none is recorded yet.
     #[arg(long)]
     identity: Option<PathBuf>,
+    /// Address for the HTTPS health endpoints, or `off`.
+    #[arg(long, env = "SPAREWALL_HTTPS", default_value = "[::]:443")]
+    https: String,
     /// Use an in-memory fake system instead of the real one (testing only).
     #[arg(long, hide = true, env = "SPAREWALL_FAKE_SYSTEM")]
     fake_system: bool,
@@ -190,6 +194,7 @@ fn run(args: Args) -> Result<(), String> {
     if !args.fake_system {
         install_ssh_keys(&args.state, &identity);
     }
+    let node = identity.node.clone();
     let mut coordinator = Coordinator::new(store, sys, identity);
     let active = coordinator.boot(args.early).map_err(|e| e.to_string())?;
     tracing::info!(
@@ -216,11 +221,34 @@ fn run(args: Args) -> Result<(), String> {
             sd_notify::NotifyState::Ready,
             sd_notify::NotifyState::Status("running"),
         ]);
+        let https = async {
+            if args.https == "off" {
+                return std::future::pending::<()>().await;
+            }
+            let setup = async {
+                let cert = http::self_signed(&args.state.join("tls"), &node)?;
+                let _ = http::FINGERPRINT.set(cert.fingerprint());
+                let acceptor = http::acceptor(&cert)?;
+                let l = tokio::net::TcpListener::bind(&args.https)
+                    .await
+                    .map_err(|e| format!("{}: {e}", args.https))?;
+                tracing::info!(addr = %args.https, "serving health endpoints");
+                Ok::<_, String>((l, acceptor))
+            };
+            match setup.await {
+                Ok((l, acceptor)) => http::serve(l, acceptor, core.clone(), tx.clone()).await,
+                Err(e) => {
+                    tracing::error!(error = %e, "health endpoints unavailable");
+                    std::future::pending::<()>().await
+                }
+            }
+        };
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .map_err(|e| e.to_string())?;
         tokio::select! {
             r = server.run() => r.map_err(|e| format!("varlink server: {e}")),
             () = ticker(core.clone(), tx.clone()) => Ok(()),
+            () = https => Ok(()),
             _ = term.recv() => {
                 tracing::info!("terminating");
                 Ok(())
