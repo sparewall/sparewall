@@ -43,6 +43,10 @@ fi
 sudo chown -R "$(id -u):$(id -g)" output
 cp output/qcow2/disk.qcow2 vm.qcow2
 
+# shellcheck source=conformance.sh
+. "$HERE/conformance.sh"
+setup_trunk
+
 log "booting"
 rm -f id_ed25519 id_ed25519.pub
 ssh-keygen -q -t ed25519 -N '' -f id_ed25519
@@ -55,6 +59,8 @@ sudo qemu-system-x86_64 \
     -drive file=vm.qcow2,if=virtio,format=qcow2 \
     -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
     -device "virtio-net-pci,netdev=n0,mac=$MAC" \
+    -netdev tap,id=n1,ifname=swtap0,script=no,downscript=no \
+    -device virtio-net-pci,netdev=n1,mac=52:54:00:12:34:57 \
     -smbios "type=11,value=io.systemd.credential.binary:sparewall.identity=$CRED" \
     -display none -serial file:serial.log \
     -pidfile qemu.pid -daemonize
@@ -132,5 +138,7 @@ vm 'sudo sparewall status -o json' > status.json
 [ "$(jq -r .sync.active status.json)" = 1 ] || fail "generation 1 not active after reboot"
 vm 'ip -br link' | grep -q '^uplink ' || fail "port not named uplink after reboot"
 [ "$(jq -r .health.level status.json)" = ok ] || fail "health not ok after reboot: $(jq -c .health status.json)"
+
+run_conformance
 
 log "PASS"

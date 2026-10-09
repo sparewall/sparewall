@@ -1,0 +1,46 @@
+# Conformance test (tests/vm/conformance.sh): management on QEMU user
+# networking, two service VLANs on a trunk NIC with client namespaces.
+schema: 1
+cluster: { nodes: [fw1] }
+management: { network: mgmt }
+ports:
+  fw1:
+    uplink: { nic: "52:54:00:12:34:56" }
+    trunk: { nic: "52:54:00:12:34:57" }
+networks:
+  mgmt: { port: uplink, role: management, dhcp_client: true }
+  users:
+    port: trunk
+    vlan: 20
+    addresses: { fw1: 192.0.2.2/24 }
+    vip: 192.0.2.1/24
+  guests:
+    port: trunk
+    vlan: 30
+    addresses: { fw1: 198.51.100.2/24 }
+    vip: 198.51.100.1/24
+zones:
+  mgmt: { networks: [mgmt] }
+  users: { networks: [users] }
+  guests: { networks: [guests] }
+policy:
+  mgmt->self: { action: drop }
+  users->guests: { action: accept }
+  guests->users: { action: drop }
+  users->self:
+    action: drop
+    rules:
+      ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }
+  guests->self: { action: drop }
+dhcp:
+  users:
+    pool: 192.0.2.100-192.0.2.199
+    reservations:
+      client20: { mac: "02:00:00:00:00:20", address: 192.0.2.20 }
+  guests:
+    pool: 198.51.100.100-198.51.100.150
+dns:
+  enabled: true
+  domain: home.arpa
+  records:
+    printer: 192.0.2.9
