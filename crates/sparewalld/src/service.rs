@@ -19,6 +19,24 @@ use crate::author;
 
 pub type Core = Arc<Mutex<Coordinator<Box<dyn System>>>>;
 
+/// Kea's lease file in its named volume.
+const KEA_LEASES: &str =
+    "/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv";
+
+/// The digest of the booted image, from `bootc status`.
+pub fn booted_image_digest() -> Option<String> {
+    let out = std::process::Command::new("bootc")
+        .args(["status", "--format=json"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let img = &v["status"]["booted"]["image"];
+    let digest = img["imageDigest"].as_str()?;
+    let name = img["image"]["image"].as_str().unwrap_or_default();
+    Some(format!("{name}@{digest}"))
+}
+
 /// The Varlink service. Coordinator calls run on the blocking pool, since
 /// they shell out to nft and networkctl.
 pub struct Firewall {
@@ -275,8 +293,26 @@ where
     }
 
     async fn backup(&mut self) -> Result<BackupReply, FirewallError> {
-        Err(FirewallError::NotSupported {
-            message: "backup bundles arrive in milestone 2".into(),
+        let (path, digest) = with_core(&self.core, &self.events, |c| {
+            let src = sparewall_core::backup::Sources {
+                leases: KEA_LEASES.into(),
+                out_dir: c.store().root().join("backups"),
+                image_digest: booted_image_digest(),
+            };
+            let keep = c
+                .active()
+                .ok()
+                .filter(|id| *id != 0)
+                .and_then(|id| c.store().document(id).ok())
+                .and_then(|d| d.backup)
+                .and_then(|b| b.generations)
+                .map_or(sparewall_core::backup::DEFAULT_GENERATIONS, |g| g as usize);
+            c.backup(&src, keep)
+        })
+        .await?;
+        Ok(BackupReply {
+            path: path.display().to_string(),
+            digest,
         })
     }
 

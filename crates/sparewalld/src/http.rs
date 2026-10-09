@@ -119,6 +119,46 @@ async fn handle(
     if path == "/livez" {
         return Ok(reply(200, json!({"level": "ok"})));
     }
+    if path == "/metrics" {
+        // Exposed to the management network only when the document asks
+        // for an external scrape; tokens arrive in milestone 4.
+        let r = with_core(&core, &events, move |c| {
+            let mode = c
+                .active()
+                .and_then(|id| {
+                    if id == 0 {
+                        Ok(None)
+                    } else {
+                        c.store().document(id).map(|d| d.metrics)
+                    }
+                })?
+                .map(|m| m.mode);
+            let allowed = match mode {
+                Some(sparewall_config::model::MetricsMode::Off) => false,
+                Some(sparewall_config::model::MetricsMode::External) => true,
+                _ => trusted,
+            };
+            if allowed {
+                c.metrics().map(Some)
+            } else {
+                Ok(None)
+            }
+        })
+        .await;
+        return Ok(match r {
+            Ok(Some(text)) => Response::builder()
+                .status(200)
+                .header("content-type", "text/plain; version=0.0.4")
+                .header("cache-control", "no-store")
+                .body(Full::new(Bytes::from(text)))
+                .expect("valid response"),
+            Ok(None) => reply(
+                403,
+                json!({"error": "metrics are not exposed here (see metrics.mode)"}),
+            ),
+            Err(e) => reply(500, json!({"error": e.to_string()})),
+        });
+    }
     let check = path
         .strip_prefix("/readyz/")
         .or_else(|| path.strip_prefix("/healthz/"))

@@ -330,3 +330,57 @@ fn services_follow_generations() {
     t.c.rollback(Some(0)).unwrap();
     assert_eq!(t.c.system().running, ["chronyd.service"]);
 }
+
+#[test]
+fn backup_and_restore_drill() {
+    let mut t = setup();
+    t.c.apply(example(), &opts(0, None)).unwrap();
+    t.c.merge(
+        &json!({"networks": {"users": {"mtu": 1400}}}),
+        &opts(1, None),
+    )
+    .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let leases = out.path().join("leases.csv");
+    std::fs::write(&leases, "address,hwaddr\n192.0.2.100,52:54:00:00:00:01\n").unwrap();
+    let src = sparewall_core::backup::Sources {
+        leases: leases.clone(),
+        out_dir: out.path().join("backups"),
+        image_digest: Some("ghcr.io/sparewall/sparewall@sha256:abc".into()),
+    };
+    let (bundle, digest) = t.c.backup(&src, 20).unwrap();
+    assert_eq!(digest.len(), 64);
+    let m = sparewall_core::backup::manifest(&bundle).unwrap();
+    assert_eq!(
+        (m.active, m.generations.clone(), m.leases),
+        (2, vec![1, 2], true)
+    );
+
+    // Both nodes lost: restore onto a fresh state directory.
+    let fresh = tempfile::tempdir().unwrap();
+    let restored_leases = fresh.path().join("kea-leases4.csv");
+    sparewall_core::backup::restore(&bundle, fresh.path(), Some(&restored_leases)).unwrap();
+    assert!(
+        std::fs::read_to_string(&restored_leases)
+            .unwrap()
+            .contains("192.0.2.100")
+    );
+    let mut c = Coordinator::new(
+        Store::open(fresh.path()).unwrap(),
+        Fake::default(),
+        identity(),
+    );
+    assert_eq!(c.boot(false).unwrap(), 2);
+    assert_eq!(
+        c.document_value(2).unwrap()["networks"]["users"]["mtu"],
+        1400
+    );
+    assert_eq!(
+        c.health().unwrap().check("applied").unwrap().level,
+        Level::Ok
+    );
+    // Older generations come back too, and re-render on demand.
+    let g = c.rollback(None).unwrap();
+    assert_eq!(g.id, 1);
+    assert_eq!(c.history(None).unwrap().len(), 2);
+}

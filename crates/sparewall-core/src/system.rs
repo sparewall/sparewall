@@ -50,6 +50,12 @@ pub trait System: Send {
 
     /// `systemctl is-active` state of each unit.
     fn unit_states(&mut self, units: &[String]) -> BTreeMap<String, String>;
+
+    /// The live `inet sparewall` table as `nft -j` JSON, for counters.
+    fn nft_json(&mut self) -> Result<Option<serde_json::Value>, Error>;
+
+    /// A kernel value under /proc/sys, e.g. `net/netfilter/nf_conntrack_count`.
+    fn proc_sys(&mut self, key: &str) -> Option<String>;
 }
 
 /// A recording fake for tests.
@@ -71,6 +77,10 @@ pub struct Fake {
     pub fail_service_check: Option<String>,
     /// Units started by `services_apply`.
     pub running: Vec<String>,
+    /// What `nft_json` returns.
+    pub nft_json: Option<serde_json::Value>,
+    /// What `proc_sys` returns, by key.
+    pub proc: BTreeMap<String, String>,
 }
 
 impl System for Fake {
@@ -174,6 +184,14 @@ impl System for Fake {
             })
             .collect()
     }
+
+    fn nft_json(&mut self) -> Result<Option<serde_json::Value>, Error> {
+        Ok(self.nft_json.clone())
+    }
+
+    fn proc_sys(&mut self, key: &str) -> Option<String> {
+        self.proc.get(key).cloned()
+    }
 }
 
 impl System for Box<dyn System> {
@@ -209,5 +227,11 @@ impl System for Box<dyn System> {
     }
     fn unit_states(&mut self, units: &[String]) -> BTreeMap<String, String> {
         (**self).unit_states(units)
+    }
+    fn nft_json(&mut self) -> Result<Option<serde_json::Value>, Error> {
+        (**self).nft_json()
+    }
+    fn proc_sys(&mut self, key: &str) -> Option<String> {
+        (**self).proc_sys(key)
     }
 }

@@ -496,6 +496,16 @@ impl System for Linux {
         Ok(())
     }
 
+    fn nft_json(&mut self) -> Result<Option<Value>, Error> {
+        Linux::nft_json_table()
+    }
+
+    fn proc_sys(&mut self, key: &str) -> Option<String> {
+        fs::read_to_string(self.proc_sys.join(key))
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+
     fn unit_states(&mut self, units: &[String]) -> BTreeMap<String, String> {
         units
             .iter()
@@ -512,6 +522,18 @@ impl System for Linux {
 }
 
 impl Linux {
+    pub fn nft_json_table() -> Result<Option<Value>, Error> {
+        match run("nft", &["-j", "list", "table", "inet", TABLE], None) {
+            Ok(out) => serde_json::from_str(&out)
+                .map(Some)
+                .map_err(|e| Error::Apply(format!("nft -j: {e}"))),
+            Err(Error::Apply(m)) if m.contains("No such file") || m.contains("does not exist") => {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     fn wait_links(&self, links: &[String], timeout: std::time::Duration) {
         let t0 = std::time::Instant::now();
         loop {

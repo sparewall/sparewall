@@ -248,6 +248,20 @@ enum Cmd {
         #[arg(long, default_value = "/etc/sparewall/identity.json")]
         out: PathBuf,
     },
+    /// Restore a backup bundle into the state directory (on the node, as
+    /// root, with sparewalld stopped).
+    Restore {
+        #[arg(short, long)]
+        file: PathBuf,
+        #[arg(long, default_value = "/var/lib/sparewall")]
+        state: PathBuf,
+        /// Where Kea's lease file goes.
+        #[arg(
+            long,
+            default_value = "/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv"
+        )]
+        leases: PathBuf,
+    },
     /// Generate shell completions.
     Completion { shell: clap_complete::Shell },
     /// Connect stdin/stdout to the local socket (used over SSH).
@@ -686,7 +700,11 @@ impl App {
                     "rolling OS upgrades arrive in milestone 5; use `bootc upgrade` on each node for now",
                 ));
             }
-            Cmd::Context(_) | Cmd::Init { .. } | Cmd::Completion { .. } | Cmd::Bridge => {
+            Cmd::Context(_)
+            | Cmd::Init { .. }
+            | Cmd::Restore { .. }
+            | Cmd::Completion { .. }
+            | Cmd::Bridge => {
                 unreachable!("handled before connecting")
             }
         }
@@ -828,6 +846,31 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
             eprintln!(
                 "Wrote {}. sparewalld records it on its next start (systemctl restart sparewalld).",
                 out.display()
+            );
+            Ok(true)
+        }
+        Cmd::Restore {
+            file,
+            state,
+            leases,
+        } => {
+            let active = std::process::Command::new("systemctl")
+                .args(["is-active", "--quiet", "sparewalld.service"])
+                .status()
+                .is_ok_and(|s| s.success());
+            if active {
+                return Err(Fail::usage(
+                    "stop sparewalld first: systemctl stop sparewalld.service sparewalld.socket",
+                ));
+            }
+            let m = sparewall_core::backup::restore(file, state, Some(leases))
+                .map_err(|e| Fail::other(e.to_string()))?;
+            eprintln!(
+                "Restored node {} at generation {} ({} generations{}). Start sparewalld to apply it.",
+                m.node,
+                m.active,
+                m.generations.len(),
+                if m.leases { ", leases" } else { "" }
             );
             Ok(true)
         }

@@ -1,9 +1,11 @@
 //! Coordinator logic: the generation store, the apply/confirm/rollback
 //! state machine, health, and the adapters that touch the system.
 
+pub mod backup;
 pub mod coordinator;
 pub mod health;
 pub mod linux;
+pub mod metrics;
 pub mod store;
 pub mod system;
 

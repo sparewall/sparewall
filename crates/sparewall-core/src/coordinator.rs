@@ -158,9 +158,19 @@ impl<S: System> Coordinator<S> {
 
     fn rendered_for(&self, id: u64) -> Result<Rendered, Error> {
         if id == 0 {
-            Ok(sparewall_render::render_bootstrap(&self.identity))
-        } else {
-            self.store.rendered(id)
+            return Ok(sparewall_render::render_bootstrap(&self.identity));
+        }
+        match self.store.rendered(id) {
+            Ok(r) => Ok(r),
+            // Restored from a bundle, which carries documents only.
+            Err(Error::Io { .. }) if self.store.exists(id) => {
+                let doc = self.store.document(id)?;
+                let r = sparewall_render::render(&doc, self.node())
+                    .map_err(|e| Error::Internal(format!("re-rendering generation {id}: {e}")))?;
+                self.store.set_rendered(id, &r)?;
+                Ok(r)
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -208,7 +218,7 @@ impl<S: System> Coordinator<S> {
             let doc = self.store.document(state.active)?;
             match sparewall_render::render(&doc, self.node()) {
                 Ok(r) => {
-                    if r != self.store.rendered(state.active)? {
+                    if self.store.rendered(state.active).ok().as_ref() != Some(&r) {
                         tracing::info!(id = state.active, "renderers changed; re-rendering");
                         self.store.set_rendered(state.active, &r)?;
                     }
