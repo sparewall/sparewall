@@ -14,7 +14,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sparewall_api::{
     FetchReply, HelloReply, LineageEntry, PEER_PORT, PEER_PROTOCOL, PeerError, PeerGeneration,
-    PeerProxy, PeerSecret, PeerSecretsProxy, PushReply, PutSecretsReply,
+    PeerProxy, PeerSecret, PeerSecretsProxy, PushReply, PutSecretsReply, UpgradeReply,
 };
 use sparewall_core::pair::{NodeView, SyncState, push_plan, sync_state};
 use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
@@ -99,17 +99,34 @@ pub struct PeerService {
     core: Core,
     events: broadcast::Sender<Value>,
     sync: Arc<Notify>,
+    pair: Pair,
 }
 
 impl PeerService {
-    pub fn new(core: Core, events: broadcast::Sender<Value>, sync: Arc<Notify>) -> Self {
-        PeerService { core, events, sync }
+    pub fn new(
+        core: Core,
+        events: broadcast::Sender<Value>,
+        sync: Arc<Notify>,
+        pair: Pair,
+    ) -> Self {
+        PeerService {
+            core,
+            events,
+            sync,
+            pair,
+        }
     }
 }
 
 #[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, PeerSecret])]
 impl PeerService {
     async fn hello(&mut self, node: String, protocol: i64) -> Result<HelloReply, PeerError> {
+        let role = self
+            .pair
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .role
+            .clone();
         with_core_raw(&self.core, &self.events, move |c| {
             if let Some(doc) = c.active_document()?
                 && let Some(expected) = doc.peer_of(c.node())
@@ -121,6 +138,7 @@ impl PeerService {
             }
             let v = c.view()?;
             let pending = c.state()?.pending.is_some();
+            let health = c.health()?.level.as_str().to_string();
             Ok(Ok(HelloReply {
                 node: v.node,
                 protocol: PEER_PROTOCOL.min(protocol),
@@ -138,6 +156,8 @@ impl PeerService {
                     .collect(),
                 pending,
                 image: crate::service::booted_image_digest(),
+                health: Some(health),
+                role,
             }))
         })
         .await
@@ -199,6 +219,22 @@ impl PeerService {
         Ok(PutSecretsReply {
             stored: stored as i64,
         })
+    }
+
+    async fn upgrade(&mut self, image: String) -> Result<UpgradeReply, PeerError> {
+        let staged = tokio::task::spawn_blocking(move || crate::upgrade::stage(&image))
+            .await
+            .map_err(|e| PeerError::Rejected {
+                message: e.to_string(),
+            })?
+            .map_err(|message| PeerError::Rejected { message })?;
+        let Some(staged) = staged else {
+            return Err(PeerError::Rejected {
+                message: "already running the newest image".into(),
+            });
+        };
+        crate::upgrade::reboot_soon().map_err(|message| PeerError::Rejected { message })?;
+        Ok(UpgradeReply { staged })
     }
 
     async fn fetch(&mut self, id: Option<i64>) -> Result<FetchReply, PeerError> {

@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, BackupReply, ConfigReply, Empty, EventReply, ExportReply, FirewallError,
     GenerationReply, HealthCheck, HealthReply, HistoryReply, SecretInfo, SecretListReply,
-    SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply, ValidateReply,
-    VpnConfigReply,
+    SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply, UpgradeCheckReply,
+    UpgradeStartReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::SecretClass;
@@ -486,6 +486,55 @@ where
         Ok(SecretListReply {
             secrets: list.iter().map(api_secret).collect(),
         })
+    }
+
+    #[zlink(interface = "org.sparewall.Upgrade", rename = "Check")]
+    async fn upgrade_check(
+        &mut self,
+        channel: Option<String>,
+    ) -> Result<UpgradeCheckReply, FirewallError> {
+        let doc_channel = with_core(&self.core, &self.events, |c| {
+            Ok(c.active_document()?
+                .and_then(|d| d.updates)
+                .and_then(|u| u.channel))
+        })
+        .await?;
+        let target = crate::upgrade::target_ref(channel.as_deref(), doc_channel.as_deref());
+        let t = target.clone();
+        let out = tokio::task::spawn_blocking(move || {
+            crate::upgrade::host_run("bootc", &["upgrade", "--check"]).map(|o| (o, t))
+        })
+        .await
+        .map_err(|e| FirewallError::ApplyFailed {
+            message: e.to_string(),
+        })?;
+        let available = match &out {
+            Ok((o, _)) => !o.contains("No changes") && !o.contains("No update available"),
+            Err(_) => false,
+        };
+        Ok(UpgradeCheckReply {
+            booted: booted_image_digest(),
+            target,
+            available,
+        })
+    }
+
+    #[zlink(rename = "Start")]
+    async fn upgrade_start(
+        &mut self,
+        channel: Option<String>,
+    ) -> Result<UpgradeStartReply, FirewallError> {
+        let (target, peer, plan) =
+            crate::upgrade::plan(&self.core, &self.events, &self.pair, channel)
+                .await
+                .map_err(|message| FirewallError::ApplyFailed { message })?;
+        tokio::spawn(crate::upgrade::run(
+            self.core.clone(),
+            self.events.clone(),
+            target,
+            peer,
+        ));
+        Ok(UpgradeStartReply { plan })
     }
 
     #[zlink(interface = "org.sparewall.Auth", types = [TokenInfo])]

@@ -10,7 +10,8 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
 use sparewall_api::{
-    ApplyReply, AuthProxy, FirewallError, FirewallProxy, Generation, SecretsProxy, VpnProxy,
+    ApplyReply, AuthProxy, FirewallError, FirewallProxy, Generation, SecretsProxy, UpgradeProxy,
+    VpnProxy,
 };
 use sparewall_config::{Format, path};
 
@@ -282,10 +283,14 @@ enum Cmd {
     /// Connect stdin/stdout to the local socket (used over SSH).
     #[command(hide = true)]
     Bridge,
-    /// OS image upgrades (milestone 5).
+    /// Rolling, health-gated OS upgrade (run on the master of a pair).
     Upgrade {
+        /// stable or testing; default the document's updates.channel.
         #[arg(long)]
         channel: Option<String>,
+        /// Only report whether a newer image is available.
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -905,10 +910,36 @@ impl App {
                     sparewall_config::SCHEMA_VERSION
                 )));
             }
-            Cmd::Upgrade { .. } => {
-                return Err(Fail::other(
-                    "rolling OS upgrades arrive in milestone 5; use `bootc upgrade` on each node for now",
-                ));
+            Cmd::Upgrade { channel, check } => {
+                let r = self.conn().await?.check(channel.as_deref()).await??;
+                println!("booted:    {}", r.booted.as_deref().unwrap_or("unknown"));
+                println!("target:    {}", r.target);
+                println!("available: {}", if r.available { "yes" } else { "no" });
+                if check {
+                    return Ok(());
+                }
+                let mut events = self.conn().await?;
+                let stream = events.subscribe().await?;
+                let plan = self.conn().await?.start(channel.as_deref()).await??;
+                for (i, step) in plan.plan.iter().enumerate() {
+                    println!("{}. {step}", i + 1);
+                }
+                pin_mut!(stream);
+                while let Some(item) = stream.next().await {
+                    let Ok(Ok(ev)) = item else { break };
+                    if ev.event["type"] == "upgrade" {
+                        println!(
+                            "[{}] {}",
+                            ev.event["step"].as_str().unwrap_or(""),
+                            ev.event["detail"].as_str().unwrap_or("")
+                        );
+                        match ev.event["step"].as_str() {
+                            Some("failed") => return Err(Fail::other("upgrade stopped")),
+                            Some("reboot" | "done") => break,
+                            _ => {}
+                        }
+                    }
+                }
             }
             Cmd::Context(_)
             | Cmd::Init { .. }

@@ -275,6 +275,10 @@ pub struct HelloReply {
     /// A change is waiting for confirmation on that node.
     pub pending: bool,
     pub image: Option<String>,
+    /// The callee's health level (`ok`, `degraded`, `failed`).
+    pub health: Option<String>,
+    /// The callee's VRRP role, if known.
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -443,4 +447,46 @@ pub trait AuthProxy {
     ) -> zlink::Result<Result<TokenCreateReply, FirewallError>>;
     async fn list_tokens(&mut self) -> zlink::Result<Result<TokenListReply, FirewallError>>;
     async fn revoke_token(&mut self, name: &str) -> zlink::Result<Result<Empty, FirewallError>>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct UpgradeReply {
+    /// The image the node will boot next.
+    pub staged: String,
+}
+
+#[zlink::proxy("org.sparewall.Peer")]
+pub trait PeerUpgradeProxy {
+    /// Stage `image` with bootc (signature enforced) and reboot into it.
+    async fn upgrade(&mut self, image: &str) -> zlink::Result<Result<UpgradeReply, PeerError>>;
+}
+
+pub const UPGRADE_INTERFACE: &str = "org.sparewall.Upgrade";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct UpgradeCheckReply {
+    pub booted: Option<String>,
+    pub target: String,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct UpgradeStartReply {
+    /// What happens next, in words.
+    pub plan: Vec<String>,
+}
+
+#[zlink::proxy("org.sparewall.Upgrade")]
+pub trait UpgradeProxy {
+    /// Whether a newer image is available on the channel.
+    async fn check(
+        &mut self,
+        channel: Option<&str>,
+    ) -> zlink::Result<Result<UpgradeCheckReply, FirewallError>>;
+    /// Start a rolling, health-gated upgrade (one reboot for a standalone
+    /// node). Progress arrives as events.
+    async fn start(
+        &mut self,
+        channel: Option<&str>,
+    ) -> zlink::Result<Result<UpgradeStartReply, FirewallError>>;
 }

@@ -4,6 +4,7 @@ mod author;
 mod http;
 mod peer;
 mod service;
+mod upgrade;
 mod vrrp;
 
 use std::os::unix::fs::PermissionsExt;
@@ -262,7 +263,7 @@ fn run(args: Args) -> Result<(), String> {
             zlink::tokio::unix::Listener::from(
                 tokio::net::UnixListener::from_std(peer_listener).map_err(|e| e.to_string())?,
             ),
-            peer::PeerService::new(core.clone(), tx.clone(), wake.clone()),
+            peer::PeerService::new(core.clone(), tx.clone(), wake.clone(), pair.clone()),
         );
         let fifo = args.socket.with_file_name("keepalived.fifo");
         let _ = sd_notify::notify(&[
