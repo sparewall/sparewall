@@ -2,7 +2,7 @@
 Description=Sparewall coordinator
 Documentation=https://github.com/sparewall/sparewall
 Requires=sparewalld.socket
-After=sparewalld.socket sparewall-early.service systemd-networkd.service systemd-udevd.service
+After=sparewalld.socket sparewall-early.service systemd-networkd.service systemd-udevd.service systemd-tmpfiles-setup.service systemd-sysusers.service
 Wants=systemd-networkd.service
 
 [Service]

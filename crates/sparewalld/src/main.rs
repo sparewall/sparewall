@@ -107,22 +107,33 @@ fn install_ssh_keys(home: &Path, id: &Identity) {
     let p = home.join(".ssh/authorized_keys");
     let mut keys = id.ssh_keys.join("\n");
     keys.push('\n');
-    if std::fs::read_to_string(&p).ok().as_deref() == Some(keys.as_str()) {
-        return;
-    }
-    let r = sparewall_core::store::write_atomic(&p, keys.as_bytes())
-        .and_then(|()| std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)));
-    match r {
-        Ok(()) => {
-            let owner = std::process::Command::new("chown")
-                .args(["admin:admin", &p.display().to_string()])
-                .status();
-            if !owner.is_ok_and(|s| s.success()) {
-                tracing::error!(path = %p.display(), "cannot give authorized_keys to admin");
-            }
-            tracing::info!(keys = id.ssh_keys.len(), "installed admin SSH keys");
+    if std::fs::read_to_string(&p).ok().as_deref() != Some(keys.as_str()) {
+        let r = sparewall_core::store::write_atomic(&p, keys.as_bytes());
+        if let Err(e) = r {
+            tracing::error!(error = %e, path = %p.display(), "cannot install admin SSH keys");
+            return;
         }
-        Err(e) => tracing::error!(error = %e, path = %p.display(), "cannot install admin SSH keys"),
+        tracing::info!(keys = id.ssh_keys.len(), "installed admin SSH keys");
+    }
+    // Always enforce what sshd's StrictModes and SELinux expect, even if an
+    // earlier boot left the file with the wrong owner or label.
+    let ssh = home.join(".ssh");
+    let steps: [(&str, Vec<String>); 3] = [
+        (
+            "chown",
+            vec!["-R".into(), "admin:admin".into(), ssh.display().to_string()],
+        ),
+        ("chmod", vec!["0600".into(), p.display().to_string()]),
+        ("restorecon", vec!["-R".into(), ssh.display().to_string()]),
+    ];
+    for (cmd, args) in steps {
+        let ok = std::process::Command::new(cmd)
+            .args(&args)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok && cmd != "restorecon" {
+            tracing::error!(cmd, path = %p.display(), "cannot fix authorized_keys");
+        }
     }
 }
 
@@ -204,7 +215,9 @@ fn run(args: Args) -> Result<(), String> {
     } else {
         Box::new(sparewall_core::linux::Linux::default())
     };
-    if !args.fake_system {
+    // Not in early boot: the admin account and its home are created by
+    // systemd-sysusers and systemd-tmpfiles, which may not have run yet.
+    if !args.fake_system && !args.early {
         install_ssh_keys(Path::new(ADMIN_HOME), &identity);
     }
     let node = identity.node.clone();
