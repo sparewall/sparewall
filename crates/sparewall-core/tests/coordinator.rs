@@ -290,3 +290,43 @@ fn dry_run_saves_nothing() {
     assert_eq!(t.c.active().unwrap(), 0);
     assert!(t.c.history(None).unwrap().is_empty());
 }
+
+#[test]
+fn provider_check_failure_blocks_apply() {
+    let mut t = setup();
+    t.c.system().fail_service_check = Some("kea says no".into());
+    match t.c.apply(example(), &opts(0, None)) {
+        Err(Error::Check(m)) => assert!(m.contains("kea") && m.contains("kea says no"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(t.c.active().unwrap(), 0);
+}
+
+#[test]
+fn services_follow_generations() {
+    let mut t = setup();
+    // Bootstrap runs only chrony.
+    assert_eq!(t.c.system().running, ["chronyd.service"]);
+    t.c.apply(example(), &opts(0, Some(30))).unwrap();
+    assert_eq!(
+        t.c.system().running,
+        [
+            "chronyd.service",
+            "sparewall-kea.service",
+            "sparewall-unbound.service"
+        ]
+    );
+    let dhcp = &t.c.system().installed[&sparewall_render::Subsystem::Dhcp];
+    assert!(dhcp["kea-dhcp4.conf"].contains("192.0.2.100 - 192.0.2.199"));
+    let h = t.c.health().unwrap();
+    assert_eq!(h.check("services").unwrap().level, Level::Ok);
+    // A DHCP-only change reloads with "dhcp" changed.
+    t.c.confirm(1).unwrap();
+    t.c.merge(&json!({"dhcp": {"lease_time": 7200}}), &opts(1, None))
+        .unwrap();
+    let last = t.c.system().log.last().unwrap().clone();
+    assert!(last.ends_with("changed dhcp"), "{last}");
+    // Back to bootstrap: the providers stop.
+    t.c.rollback(Some(0)).unwrap();
+    assert_eq!(t.c.system().running, ["chronyd.service"]);
+}

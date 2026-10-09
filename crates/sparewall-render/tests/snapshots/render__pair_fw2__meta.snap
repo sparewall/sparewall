@@ -13,5 +13,43 @@ required_links:
 vip_links:
   - users
   - wan
-services: {}
+services:
+  dhcp:
+    provider: kea
+    unit: sparewall-kea.service
+    subsystem: dhcp
+    reload: true
+    check:
+      container: sparewall-kea
+      mount: /etc/kea
+      command:
+        - kea-dhcp4
+        - "-t"
+        - /etc/kea/kea-dhcp4.conf
+      overrides:
+        kea-dhcp4.conf: "{\n  \"Dhcp4\": {\n    \"authoritative\": true,\n    \"control-sockets\": [\n      {\n        \"socket-name\": \"kea4-ctrl-socket\",\n        \"socket-type\": \"unix\"\n      }\n    ],\n    \"hooks-libraries\": [\n      {\n        \"library\": \"/usr/lib64/kea/hooks/libdhcp_lease_cmds.so\"\n      },\n      {\n        \"library\": \"/usr/lib64/kea/hooks/libdhcp_ha.so\",\n        \"parameters\": {\n          \"high-availability\": [\n            {\n              \"heartbeat-delay\": 10000,\n              \"max-ack-delay\": 5000,\n              \"max-response-delay\": 60000,\n              \"max-unacked-clients\": 5,\n              \"mode\": \"hot-standby\",\n              \"peers\": [\n                {\n                  \"auto-failover\": true,\n                  \"name\": \"fw1\",\n                  \"role\": \"primary\",\n                  \"url\": \"http://169.254.77.1:8647/\"\n                },\n                {\n                  \"auto-failover\": true,\n                  \"name\": \"fw2\",\n                  \"role\": \"standby\",\n                  \"url\": \"http://169.254.77.2:8647/\"\n                }\n              ],\n              \"this-server-name\": \"fw2\"\n            }\n          ]\n        }\n      }\n    ],\n    \"interfaces-config\": {\n      \"dhcp-socket-type\": \"raw\",\n      \"interfaces\": [\n        \"*\"\n      ],\n      \"service-sockets-max-retries\": 60,\n      \"service-sockets-require-all\": false,\n      \"service-sockets-retry-wait-time\": 5000\n    },\n    \"lease-database\": {\n      \"lfc-interval\": 3600,\n      \"name\": \"/var/lib/kea/kea-leases4.csv\",\n      \"persist\": true,\n      \"type\": \"memfile\"\n    },\n    \"loggers\": [\n      {\n        \"name\": \"kea-dhcp4\",\n        \"output-options\": [\n          {\n            \"output\": \"stdout\",\n            \"pattern\": \"%-5p %m\\n\"\n          }\n        ],\n        \"severity\": \"INFO\"\n      }\n    ],\n    \"subnet4\": [\n      {\n        \"id\": 20,\n        \"option-data\": [\n          {\n            \"data\": \"192.0.2.1\",\n            \"name\": \"routers\"\n          },\n          {\n            \"data\": \"192.0.2.1\",\n            \"name\": \"domain-name-servers\"\n          }\n        ],\n        \"pools\": [\n          {\n            \"pool\": \"192.0.2.100 - 192.0.2.199\"\n          }\n        ],\n        \"reservations\": [],\n        \"subnet\": \"192.0.2.0/24\"\n      }\n    ],\n    \"valid-lifetime\": 86400\n  }\n}\n"
+  dns:
+    provider: unbound
+    unit: sparewall-unbound.service
+    subsystem: dns
+    reload: true
+    check:
+      container: sparewall-unbound
+      mount: /etc/unbound
+      command:
+        - unbound-checkconf
+        - /etc/unbound/unbound.conf
+  ntp:
+    provider: chrony
+    unit: chronyd.service
+    subsystem: ntp
+    reload: false
+    check:
+      container: ~
+      mount: /run/sparewall/ntp
+      command:
+        - chronyd
+        - "-p"
+        - "-f"
+        - /run/sparewall/ntp/chrony.conf
 bootstrap: false

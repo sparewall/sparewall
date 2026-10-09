@@ -5,12 +5,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
-use sparewall_render::Meta;
 use sparewall_render::nft::TABLE;
+use sparewall_render::{CheckSpec, Meta, Subsystem};
 
 use crate::Error;
 use crate::store::write_atomic;
@@ -24,7 +25,15 @@ pub struct Linux {
     pub vendor_network_dir: PathBuf,
     pub proc_sys: PathBuf,
     pub sys_class_net: PathBuf,
+    /// Where provider files are installed, one directory per subsystem.
+    pub runtime_dir: PathBuf,
+    /// Where Quadlet files naming provider images live.
+    pub quadlet_dir: PathBuf,
 }
+
+/// Provider units the coordinator may start; any not wanted by the live
+/// generation are stopped.
+pub const PROVIDER_UNITS: &[&str] = &["sparewall-kea.service", "sparewall-unbound.service"];
 
 impl Default for Linux {
     fn default() -> Self {
@@ -33,6 +42,8 @@ impl Default for Linux {
             vendor_network_dir: "/usr/lib/systemd/network".into(),
             proc_sys: "/proc/sys".into(),
             sys_class_net: "/sys/class/net".into(),
+            runtime_dir: "/run/sparewall".into(),
+            quadlet_dir: "/usr/share/containers/systemd".into(),
         }
     }
 }
@@ -381,11 +392,158 @@ impl System for Linux {
             .collect()
     }
 
-    fn services_apply(&mut self, meta: &Meta) -> Result<(), Error> {
-        for (role, unit) in &meta.services {
-            tracing::debug!(role, unit, "service wanted");
+    fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
+        let dir = self.runtime_dir.join(sub.dir());
+        fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        for (name, content) in files {
+            let p = dir.join(name);
+            write_atomic(&p, content.as_bytes()).map_err(|e| Error::io(&p, e))?;
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o644))
+                .map_err(|e| Error::io(&p, e))?;
+        }
+        for e in fs::read_dir(&dir)
+            .map_err(|e| Error::io(&dir, e))?
+            .flatten()
+        {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !files.contains_key(&name) && !name.starts_with('.') {
+                let _ = fs::remove_file(e.path());
+            }
         }
         Ok(())
+    }
+
+    fn service_check(&mut self, spec: &CheckSpec, files: &Files) -> Result<(), Error> {
+        let dir =
+            self.runtime_dir
+                .join("check")
+                .join(format!("{}-{}", std::process::id(), files.len()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        for (name, content) in files {
+            let content = spec.overrides.get(name).unwrap_or(content);
+            let p = dir.join(name);
+            fs::write(&p, content).map_err(|e| Error::io(&p, e))?;
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o644))
+                .map_err(|e| Error::io(&p, e))?;
+        }
+        let d = dir.display().to_string();
+        let result = match &spec.container {
+            Some(container) => match self.quadlet_image(container) {
+                Some(image) => {
+                    let vol = format!("{d}:{}:ro", spec.mount);
+                    let mut args = vec![
+                        "run",
+                        "--rm",
+                        "--network=none",
+                        "--read-only",
+                        "--pull=never",
+                        "--security-opt",
+                        "label=disable",
+                        "-v",
+                        &vol,
+                        &image,
+                    ];
+                    args.extend(spec.command.iter().map(String::as_str));
+                    run("podman", &args, None).map(|_| ())
+                }
+                None => {
+                    tracing::warn!(container, "no image for the config check; skipping it");
+                    Ok(())
+                }
+            },
+            None => {
+                // Host checker: point its paths at the scratch copy.
+                let args: Vec<String> = spec
+                    .command
+                    .iter()
+                    .skip(1)
+                    .map(|a| a.replace(&spec.mount, &d))
+                    .collect();
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                run(&spec.command[0], &args, None).map(|_| ())
+            }
+        };
+        let _ = fs::remove_dir_all(&dir);
+        result.map_err(|e| Error::Check(e.to_string()))
+    }
+
+    fn services_apply(&mut self, meta: &Meta, changed: &[Subsystem]) -> Result<(), Error> {
+        // Providers bind to links networkd may still be creating.
+        self.wait_links(&meta.required_links, std::time::Duration::from_secs(30));
+        let wanted: BTreeSet<&str> = meta.services.values().map(|s| s.unit.as_str()).collect();
+        for unit in PROVIDER_UNITS.iter().filter(|u| !wanted.contains(*u)) {
+            if self.unit_active(unit) {
+                tracing::info!(unit, "stopping service");
+                run("systemctl", &["stop", unit], None)?;
+            }
+        }
+        for svc in meta.services.values() {
+            let unit = svc.unit.as_str();
+            if !self.unit_active(unit) {
+                tracing::info!(unit, "starting service");
+                run("systemctl", &["start", unit], None)?;
+            } else if changed.contains(&svc.subsystem) {
+                let verb = if svc.reload {
+                    "reload-or-restart"
+                } else {
+                    "restart"
+                };
+                tracing::info!(unit, verb, "configuration changed");
+                run("systemctl", &[verb, unit], None)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn unit_states(&mut self, units: &[String]) -> BTreeMap<String, String> {
+        units
+            .iter()
+            .map(|u| {
+                let state = Command::new("systemctl")
+                    .args(["is-active", u])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|_| "unknown".into());
+                (u.clone(), state)
+            })
+            .collect()
+    }
+}
+
+impl Linux {
+    fn wait_links(&self, links: &[String], timeout: std::time::Duration) {
+        let t0 = std::time::Instant::now();
+        loop {
+            let missing: Vec<&String> = links
+                .iter()
+                .filter(|l| !self.sys_class_net.join(l).exists())
+                .collect();
+            if missing.is_empty() {
+                return;
+            }
+            if t0.elapsed() > timeout {
+                tracing::warn!(?missing, "links still missing; starting services anyway");
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+
+    fn unit_active(&self, unit: &str) -> bool {
+        Command::new("systemctl")
+            .args(["is-active", "--quiet", unit])
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// The image a Quadlet `.container` file runs.
+    fn quadlet_image(&self, container: &str) -> Option<String> {
+        let text =
+            fs::read_to_string(self.quadlet_dir.join(format!("{container}.container"))).ok()?;
+        ini_values(&text, "Container", "Image")
+            .first()
+            .map(|s| s.to_string())
     }
 }
 

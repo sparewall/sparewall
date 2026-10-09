@@ -11,6 +11,7 @@ on:
   pull_request:
     paths:
       - "image/**"
+      - "image/providers/**"
       - "crates/**"
       - "Cargo.*"
       - "tests/vm/**"
@@ -29,8 +30,55 @@ env:
   LOCAL: localhost/sparewall:ci
 
 jobs:
+  providers:
+    name: provider images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      kea: ${{ steps.refs.outputs.kea }}
+      unbound: ${{ steps.refs.outputs.unbound }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: github.event_name != 'pull_request'
+
+      - name: Build, and on main push and sign
+        id: refs
+        env:
+          PUSH: ${{ github.event_name != 'pull_request' }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          if [ "$PUSH" = true ]; then
+            echo "$TOKEN" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+            echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
+          fi
+          for p in kea unbound; do
+            repo=ghcr.io/sparewall/$p
+            podman build --label org.opencontainers.image.revision=${{ github.sha }} \
+              -t "$repo:ci" "image/providers/$p"
+            podman run --rm "$repo:ci" true
+            if [ "$PUSH" = true ]; then
+              podman push --digestfile "$p.digest" "$repo:ci" "docker://$repo:testing"
+              ref="$repo@$(cat "$p.digest")"
+              cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$ref"
+            else
+              # Pull requests boot with the published provider images.
+              ref="$repo@$(skopeo inspect --format '{{.Digest}}' "docker://$repo:testing" 2>/dev/null)" \
+                || ref="$repo:testing"
+            fi
+            echo "$p=$ref" >> "$GITHUB_OUTPUT"
+            echo "$p: $ref" >> "$GITHUB_STEP_SUMMARY"
+          done
+
   image:
     name: build, boot, publish
+    needs: providers
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -57,13 +105,20 @@ jobs:
         run: |
           sudo podman build \
             --file image/Containerfile \
+            --build-arg KEA_IMAGE=${{ needs.providers.outputs.kea }} \
+            --build-arg UNBOUND_IMAGE=${{ needs.providers.outputs.unbound }} \
             --label org.opencontainers.image.revision=${{ github.sha }} \
             --label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
             --tag "$LOCAL" .
           sudo podman image inspect "$LOCAL" --format '{{.Size}}' | numfmt --to=iec
 
       - name: Boot test
-        run: tests/vm/boot-test.sh "$LOCAL" "$RUNNER_TEMP/vm"
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # bootc pulls the bound provider images at install time.
+          echo "$TOKEN" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          tests/vm/boot-test.sh "$LOCAL" "$RUNNER_TEMP/vm"
 
       - name: Collect VM logs
         if: failure()

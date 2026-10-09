@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use sparewall_render::Meta;
+use sparewall_render::{CheckSpec, Meta, Subsystem};
 
 use crate::Error;
 
@@ -38,8 +38,18 @@ pub trait System: Send {
     /// Operational state of each existing link (`up`, `down`, `unknown`...).
     fn link_states(&mut self) -> BTreeMap<String, String>;
 
-    /// Start, stop or reload the services a generation needs.
-    fn services_apply(&mut self, meta: &Meta) -> Result<(), Error>;
+    /// Install a provider subsystem's files (under `/run/sparewall/<dir>`).
+    fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error>;
+
+    /// Dry-run rendered files with the daemon's own checker.
+    fn service_check(&mut self, spec: &CheckSpec, files: &Files) -> Result<(), Error>;
+
+    /// Start the services a generation needs, reload or restart those whose
+    /// files changed, and stop the provider services it does not need.
+    fn services_apply(&mut self, meta: &Meta, changed: &[Subsystem]) -> Result<(), Error>;
+
+    /// `systemctl is-active` state of each unit.
+    fn unit_states(&mut self, units: &[String]) -> BTreeMap<String, String>;
 }
 
 /// A recording fake for tests.
@@ -55,6 +65,12 @@ pub struct Fake {
     /// Make `nft_load` fail with this message.
     pub fail_nft_load: Option<String>,
     pub existing_sets: Vec<String>,
+    /// Provider files installed, by subsystem.
+    pub installed: BTreeMap<Subsystem, Files>,
+    /// Make `service_check` fail with this message.
+    pub fail_service_check: Option<String>,
+    /// Units started by `services_apply`.
+    pub running: Vec<String>,
 }
 
 impl System for Fake {
@@ -118,9 +134,45 @@ impl System for Fake {
         self.links.clone()
     }
 
-    fn services_apply(&mut self, _meta: &Meta) -> Result<(), Error> {
-        self.log.push("services".into());
+    fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
+        self.log.push(format!("install {}", sub.dir()));
+        self.installed.insert(sub, files.clone());
         Ok(())
+    }
+
+    fn service_check(&mut self, spec: &CheckSpec, _files: &Files) -> Result<(), Error> {
+        self.log.push(format!("check {}", spec.command.join(" ")));
+        match &self.fail_service_check {
+            Some(m) => Err(Error::Check(m.clone())),
+            None => Ok(()),
+        }
+    }
+
+    fn services_apply(&mut self, meta: &Meta, changed: &[Subsystem]) -> Result<(), Error> {
+        let mut units: Vec<String> = meta.services.values().map(|s| s.unit.clone()).collect();
+        units.sort();
+        let changed: Vec<&str> = changed.iter().map(|c| c.dir()).collect();
+        self.log.push(format!(
+            "services {} changed {}",
+            units.join(","),
+            changed.join(",")
+        ));
+        self.running = units;
+        Ok(())
+    }
+
+    fn unit_states(&mut self, units: &[String]) -> BTreeMap<String, String> {
+        units
+            .iter()
+            .map(|u| {
+                let s = if self.running.contains(u) {
+                    "active"
+                } else {
+                    "inactive"
+                };
+                (u.clone(), s.to_string())
+            })
+            .collect()
     }
 }
 
@@ -146,7 +198,16 @@ impl System for Box<dyn System> {
     fn link_states(&mut self) -> BTreeMap<String, String> {
         (**self).link_states()
     }
-    fn services_apply(&mut self, meta: &Meta) -> Result<(), Error> {
-        (**self).services_apply(meta)
+    fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
+        (**self).install_files(sub, files)
+    }
+    fn service_check(&mut self, spec: &CheckSpec, files: &Files) -> Result<(), Error> {
+        (**self).service_check(spec, files)
+    }
+    fn services_apply(&mut self, meta: &Meta, changed: &[Subsystem]) -> Result<(), Error> {
+        (**self).services_apply(meta, changed)
+    }
+    fn unit_states(&mut self, units: &[String]) -> BTreeMap<String, String> {
+        (**self).unit_states(units)
     }
 }

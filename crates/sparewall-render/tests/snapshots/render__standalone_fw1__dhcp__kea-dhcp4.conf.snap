@@ -1,0 +1,114 @@
+---
+source: crates/sparewall-render/tests/render.rs
+expression: content
+---
+{
+  "Dhcp4": {
+    "authoritative": true,
+    "control-sockets": [
+      {
+        "socket-name": "kea4-ctrl-socket",
+        "socket-type": "unix"
+      }
+    ],
+    "hooks-libraries": [
+      {
+        "library": "/usr/lib64/kea/hooks/libdhcp_lease_cmds.so"
+      }
+    ],
+    "interfaces-config": {
+      "dhcp-socket-type": "raw",
+      "interfaces": [
+        "guests",
+        "users"
+      ],
+      "service-sockets-max-retries": 60,
+      "service-sockets-require-all": false,
+      "service-sockets-retry-wait-time": 5000
+    },
+    "lease-database": {
+      "lfc-interval": 3600,
+      "name": "/var/lib/kea/kea-leases4.csv",
+      "persist": true,
+      "type": "memfile"
+    },
+    "loggers": [
+      {
+        "name": "kea-dhcp4",
+        "output-options": [
+          {
+            "output": "stdout",
+            "pattern": "%-5p %m\n"
+          }
+        ],
+        "severity": "INFO"
+      }
+    ],
+    "subnet4": [
+      {
+        "id": 20,
+        "option-data": [
+          {
+            "data": "192.0.2.1",
+            "name": "routers"
+          },
+          {
+            "data": "192.0.2.1",
+            "name": "domain-name-servers"
+          },
+          {
+            "data": "192.0.2.1",
+            "name": "ntp-servers"
+          },
+          {
+            "data": "home.arpa",
+            "name": "domain-name"
+          }
+        ],
+        "pools": [
+          {
+            "pool": "192.0.2.100 - 192.0.2.199"
+          }
+        ],
+        "reservations": [
+          {
+            "hostname": "printer",
+            "hw-address": "52:54:00:12:34:56",
+            "ip-address": "192.0.2.20"
+          }
+        ],
+        "subnet": "192.0.2.0/24"
+      },
+      {
+        "id": 30,
+        "option-data": [
+          {
+            "data": "198.51.100.1",
+            "name": "routers"
+          },
+          {
+            "data": "198.51.100.1",
+            "name": "domain-name-servers"
+          },
+          {
+            "data": "198.51.100.1",
+            "name": "ntp-servers"
+          },
+          {
+            "data": "home.arpa",
+            "name": "domain-name"
+          }
+        ],
+        "pools": [
+          {
+            "pool": "198.51.100.100 - 198.51.100.250"
+          }
+        ],
+        "reservations": [],
+        "subnet": "198.51.100.0/24",
+        "valid-lifetime": 3600
+      }
+    ],
+    "valid-lifetime": 86400
+  }
+}

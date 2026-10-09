@@ -33,6 +33,11 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 # ---------------------------------------------------------------------------
 FROM ${FEDORA_BOOTC}
 
+# Provider images, pinned by digest in CI so a service and the OS move and
+# roll back together (design: "Container conventions").
+ARG KEA_IMAGE=ghcr.io/sparewall/kea:testing
+ARG UNBOUND_IMAGE=ghcr.io/sparewall/unbound:testing
+
 LABEL org.opencontainers.image.title="Sparewall" \
       org.opencontainers.image.description="Image-based Linux firewall: one node or an HA pair, configured from one versioned document" \
       org.opencontainers.image.source="https://github.com/sparewall/sparewall" \
@@ -66,7 +71,9 @@ RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManag
 COPY --from=build /out/ /
 COPY image/files/ /
 
-RUN systemctl preset-all \
+RUN sed -i -e "s|@KEA_IMAGE@|${KEA_IMAGE}|" /usr/share/containers/systemd/sparewall-kea.container \
+    && sed -i -e "s|@UNBOUND_IMAGE@|${UNBOUND_IMAGE}|" /usr/share/containers/systemd/sparewall-unbound.container \
+    && systemctl preset-all \
     && systemctl mask bootc-fetch-apply-updates.timer \
     && chmod 0440 /etc/sudoers.d/sparewall \
     && /usr/bin/sparewall --version \

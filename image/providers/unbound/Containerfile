@@ -1,0 +1,14 @@
+# Unbound for Sparewall, from Fedora's packages.
+ARG FEDORA_VERSION=45
+FROM quay.io/fedora/fedora-minimal:${FEDORA_VERSION}
+RUN microdnf -y install --setopt=install_weak_deps=0 unbound \
+    && microdnf clean all \
+    && install -d -o unbound -g unbound /var/lib/unbound \
+    && (unbound-anchor -a /var/lib/unbound/root.key || test -s /var/lib/unbound/root.key) \
+    && chown unbound:unbound /var/lib/unbound/root.key \
+    && rm -rf /var/cache/* /var/log/*
+LABEL org.opencontainers.image.title="Sparewall Unbound" \
+      org.opencontainers.image.source="https://github.com/sparewall/sparewall" \
+      org.opencontainers.image.licenses="BSD-3-Clause"
+ENTRYPOINT []
+CMD ["/usr/sbin/unbound", "-d", "-p", "-c", "/etc/unbound/unbound.conf"]

@@ -14,6 +14,16 @@ use crate::health::{Check, Health, Level};
 use crate::store::{Generation, Pending, State, Store};
 use crate::system::{Files, System};
 
+/// Subsystems whose files a provider service reads from /run/sparewall.
+const PROVIDER_SUBSYSTEMS: &[Subsystem] = &[Subsystem::Dhcp, Subsystem::Dns, Subsystem::Ntp];
+
+fn subsystem_files(r: &Rendered, s: Subsystem) -> Files {
+    r.subsystem(s)
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
 /// Generations kept on disk.
 pub const DEFAULT_KEEP: usize = 50;
 
@@ -233,16 +243,29 @@ impl<S: System> Coordinator<S> {
     /// Validate only: schema, semantics, rendering and the nft dry run.
     pub fn validate(&mut self, value: Value) -> Result<Vec<String>, Error> {
         let (_, warnings, rendered) = self.check(value)?;
-        self.dry_run(&rendered)?;
+        let active = self.rendered_for(self.active()?)?;
+        self.dry_run(&rendered, Some(&active))?;
         Ok(warnings)
     }
 
-    fn dry_run(&mut self, r: &Rendered) -> Result<(), Error> {
+    /// Check every artifact with its own checker: nft, and each provider
+    /// whose files differ from `old`.
+    fn dry_run(&mut self, r: &Rendered, old: Option<&Rendered>) -> Result<(), Error> {
         let body = r
             .files
             .get(&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT))
             .ok_or_else(|| Error::Internal("no nft script rendered".into()))?;
-        self.sys.nft_check(body, &r.meta.preserved_sets)
+        self.sys.nft_check(body, &r.meta.preserved_sets)?;
+        for svc in r.meta.services.values() {
+            let changed =
+                old.is_none_or(|o| o.subsystem(svc.subsystem) != r.subsystem(svc.subsystem));
+            if let (true, Some(spec)) = (changed, &svc.check) {
+                self.sys
+                    .service_check(spec, &subsystem_files(r, svc.subsystem))
+                    .map_err(|e| Error::Check(format!("{}: {e}", svc.provider)))?;
+            }
+        }
+        Ok(())
     }
 
     fn check_base(&self, base: u64) -> Result<State, Error> {
@@ -281,7 +304,7 @@ impl<S: System> Coordinator<S> {
                 dry_run: opts.dry_run,
             });
         }
-        self.dry_run(&rendered)?;
+        self.dry_run(&rendered, Some(&old_rendered))?;
 
         let mut summary = diff.clone();
         summary.truncate(200);
@@ -484,13 +507,13 @@ impl<S: System> Coordinator<S> {
     fn activate(&mut self, id: u64, old: Option<&Rendered>, early: bool) -> Result<(), Error> {
         let t0 = Instant::now();
         let r = self.rendered_for(id)?;
-        let files = |r: &Rendered, s: Subsystem| -> Files {
-            r.subsystem(s)
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect()
-        };
+        let files = subsystem_files;
         let changed = |s: Subsystem| old.is_none_or(|o| o.subsystem(s) != r.subsystem(s));
+        let changed_list: Vec<Subsystem> = Subsystem::all()
+            .iter()
+            .copied()
+            .filter(|s| changed(*s))
+            .collect();
         let result = (|| -> Result<(), Error> {
             // Firewall first, so new interfaces are covered as they appear.
             let mut new_sets = Vec::new();
@@ -521,6 +544,11 @@ impl<S: System> Coordinator<S> {
                     self.sys.sysctl_apply(&sysctl)?;
                 }
             }
+            for sub in PROVIDER_SUBSYSTEMS {
+                if changed(*sub) {
+                    self.sys.install_files(*sub, &files(&r, *sub))?;
+                }
+            }
             if !early {
                 let links: Vec<String> = new_sets
                     .iter()
@@ -529,7 +557,7 @@ impl<S: System> Coordinator<S> {
                 if !links.is_empty() {
                     self.sys.networkd_reconfigure(&links)?;
                 }
-                self.sys.services_apply(&r.meta)?;
+                self.sys.services_apply(&r.meta, &changed_list)?;
             }
             Ok(())
         })();
@@ -640,6 +668,25 @@ impl<S: System> Coordinator<S> {
         } else {
             Check::new("links", Level::Failed, down.join(", "))
         });
+
+        let units: Vec<String> = r.meta.services.values().map(|s| s.unit.clone()).collect();
+        if !units.is_empty() {
+            let states = self.sys.unit_states(&units);
+            let bad: Vec<String> = states
+                .iter()
+                .filter(|(_, st)| st.as_str() != "active")
+                .map(|(u, st)| format!("{u} is {st}"))
+                .collect();
+            checks.push(if bad.is_empty() {
+                Check::new(
+                    "services",
+                    Level::Ok,
+                    format!("{} services running", units.len()),
+                )
+            } else {
+                Check::new("services", Level::Failed, bad.join(", "))
+            });
+        }
 
         Ok(Health::from_checks(checks))
     }

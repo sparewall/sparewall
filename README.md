@@ -60,13 +60,12 @@ More complete examples live in [`examples/`](examples/).
 | Path | Contents |
 | --- | --- |
 | `crates/sparewall-config` | Document model, JSON Schema, validation, canonical form, merge/patch/path operations |
-| `crates/sparewall-render` | Renderers: networkd, nftables, sysctl, keepalived, conntrackd, WireGuard |
-| `crates/sparewall-providers` | Service providers (Kea, Unbound, ...) |
+| `crates/sparewall-render` | Renderers: networkd, nftables, sysctl, and the service providers (Kea, Unbound, chrony) |
 | `crates/sparewall-core` | Generations, apply/confirm/rollback, health, adapters |
 | `crates/sparewall-api` | Varlink interface (`org.sparewall.*`) shared by daemon and CLI |
 | `crates/sparewalld` | The coordinator daemon |
 | `crates/sparewall` | The CLI |
-| `image/` | bootc Containerfile, systemd units, Quadlet files |
+| `image/` | bootc Containerfile, systemd units, Quadlet files, provider images |
 | `tests/` | VM test suites |
 | `docs/` | Design and documentation |
 

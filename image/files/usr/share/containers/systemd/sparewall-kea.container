@@ -1,0 +1,30 @@
+# Kea DHCPv4. Started, reloaded and stopped by sparewalld according to the
+# live generation; not enabled on its own.
+[Unit]
+Description=Sparewall DHCPv4 server (Kea)
+Documentation=https://github.com/sparewall/sparewall
+After=network-online.target sparewalld.service
+Wants=network-online.target
+
+[Container]
+ContainerName=sparewall-kea
+Image=@KEA_IMAGE@
+Pull=never
+Network=host
+# Raw sockets for directly connected clients; nothing else.
+DropCapability=all
+AddCapability=NET_RAW NET_BIND_SERVICE
+User=root
+NoNewPrivileges=true
+ReadOnly=true
+Volume=/run/sparewall/dhcp:/etc/kea:ro,z
+Volume=sparewall-kea-leases:/var/lib/kea:z
+Volume=/run/kea:/run/kea:z
+Tmpfile=/tmp
+LogDriver=journald
+
+[Service]
+ExecStartPre=/usr/bin/install -d -m 0750 /run/kea
+ExecReload=/usr/bin/podman kill --signal HUP sparewall-kea
+Restart=on-failure
+RestartSec=5s

@@ -8,10 +8,13 @@ use serde::{Deserialize, Serialize};
 use sparewall_config::Document;
 use sparewall_config::identity::Identity;
 
+pub mod chrony;
 mod ini;
+pub mod kea;
 pub mod networkd;
 pub mod nft;
 pub mod sysctl;
+pub mod unbound;
 
 /// Where secrets and node keys are made available to daemons at runtime.
 pub const KEY_DIR: &str = "/run/sparewall/keys";
@@ -71,6 +74,37 @@ pub struct Rendered {
     pub meta: Meta,
 }
 
+/// A service a provider runs, and how the coordinator manages it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Service {
+    /// Provider name, e.g. `kea`.
+    pub provider: String,
+    /// The systemd unit (a Quadlet container or a host service).
+    pub unit: String,
+    /// The files this service reads.
+    pub subsystem: Subsystem,
+    /// Whether a config change can be applied with a reload rather than a
+    /// restart.
+    pub reload: bool,
+    /// How to dry-run the rendered files with the daemon's own checker.
+    pub check: Option<CheckSpec>,
+}
+
+/// A config test: run `command` with the subsystem's files available at
+/// `mount`, either inside the provider's container image (`container`, the
+/// Quadlet that names the image) or on the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckSpec {
+    pub container: Option<String>,
+    pub mount: String,
+    pub command: Vec<String>,
+    /// Files to check in place of the rendered ones, where the checker
+    /// would reject something only true at runtime (e.g. a VLAN interface
+    /// that does not exist until the change is applied).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overrides: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Meta {
     /// nft sets filled by networkd, which a reload must not delete.
@@ -81,8 +115,8 @@ pub struct Meta {
     pub required_links: Vec<String>,
     /// Interfaces that carry gateway addresses.
     pub vip_links: Vec<String>,
-    /// systemd units that should run with this generation, by role.
-    pub services: BTreeMap<String, String>,
+    /// Services this generation runs, by role (`dhcp`, `dns`, `ntp`).
+    pub services: BTreeMap<String, Service>,
     /// Bootstrap mode (generation 0).
     pub bootstrap: bool,
 }
@@ -129,6 +163,9 @@ pub fn render(doc: &Document, node: &str) -> Result<Rendered, Error> {
     networkd::render(doc, node, &mut out)?;
     nft::render(doc, node, &mut out)?;
     sysctl::render(doc, node, &mut out);
+    kea::render(doc, node, &mut out)?;
+    unbound::render(doc, node, &mut out)?;
+    chrony::render(doc, node, &mut out);
     Ok(out)
 }
 
@@ -139,6 +176,7 @@ pub fn render_bootstrap(id: &Identity) -> Rendered {
     networkd::render_bootstrap(id, &mut out);
     nft::render_bootstrap(id, &mut out);
     sysctl::render_bootstrap(&mut out);
+    chrony::render_bootstrap(&mut out);
     out.meta.bootstrap = true;
     out
 }

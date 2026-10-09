@@ -22,8 +22,14 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 log "building a qcow2 from $IMAGE"
 if [ ! -f output/qcow2/disk.qcow2 ]; then
+    # bootc pulls the bound provider images during the install.
+    auth=()
+    if sudo test -f /run/containers/0/auth.json; then
+        auth=(-v /run/containers/0/auth.json:/run/containers/0/auth.json:ro)
+    fi
     sudo podman run --rm --privileged --pull=newer \
         --security-opt label=type:unconfined_t \
+        "${auth[@]}" \
         -v "$WORK/output:/output" \
         -v /var/lib/containers/storage:/var/lib/containers/storage \
         "$BIB" --type qcow2 --rootfs xfs "$IMAGE"

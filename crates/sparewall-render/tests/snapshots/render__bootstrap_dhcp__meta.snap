@@ -7,5 +7,18 @@ set_links: {}
 required_links:
   - mgmt0
 vip_links: []
-services: {}
+services:
+  ntp:
+    provider: chrony
+    unit: chronyd.service
+    subsystem: ntp
+    reload: false
+    check:
+      container: ~
+      mount: /run/sparewall/ntp
+      command:
+        - chronyd
+        - "-p"
+        - "-f"
+        - /run/sparewall/ntp/chrony.conf
 bootstrap: true
