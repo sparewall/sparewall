@@ -122,6 +122,10 @@ struct ChangeOpts {
     /// Don't ask whether to keep the change; leave it pending.
     #[arg(long)]
     no_prompt: bool,
+    /// In a pair, accept the change even though the peer is unreachable
+    /// (the pair is then diverged until `sparewall sync`).
+    #[arg(long)]
+    allow_diverge: bool,
 }
 
 #[derive(Subcommand)]
@@ -389,10 +393,11 @@ impl App {
         };
         let mut conn = self.conn().await?;
         let dry = Some(c.dry_run);
+        let div = Some(c.allow_diverge);
         let r: ApplyReply = match kind {
-            "apply" => conn.apply(&body, current.id, window, dry).await??,
-            "merge" => conn.merge(&body, current.id, window, dry).await??,
-            "patch" => conn.patch(&body, current.id, window, dry).await??,
+            "apply" => conn.apply(&body, current.id, window, dry, div).await??,
+            "merge" => conn.merge(&body, current.id, window, dry, div).await??,
+            "patch" => conn.patch(&body, current.id, window, dry, div).await??,
             _ => unreachable!(),
         };
         drop(conn);
@@ -538,6 +543,7 @@ impl App {
                     confirm: None,
                     dry_run: true,
                     no_prompt: true,
+                    allow_diverge: true,
                 };
                 self.change(
                     &c,
@@ -574,6 +580,23 @@ impl App {
                         println!("node:        {}", s.node);
                         println!("role:        {}", s.role);
                         println!("generation:  {}", s.sync["active"]);
+                        if let Some(peer) = s.sync["peer"].as_str() {
+                            let reach = if s.sync["peer_reachable"].as_bool() == Some(true) {
+                                format!("generation {}", s.sync["peer_active"])
+                            } else {
+                                "unreachable".to_string()
+                            };
+                            println!(
+                                "pair:        {} with {peer} ({reach})",
+                                s.sync["state"].as_str().unwrap_or("?")
+                            );
+                        }
+                        if let Some(k) = s.sync["sync_public_key"].as_str() {
+                            println!("sync key:    {k}");
+                        }
+                        if let Some(f) = s.tls["fingerprint"].as_str() {
+                            println!("tls:         {f}");
+                        }
                         if let Some(p) = s.sync.get("pending").filter(|p| !p.is_null()) {
                             println!(
                                 "pending:     generation {} reverts in {}s",

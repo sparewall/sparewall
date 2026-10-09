@@ -2,7 +2,9 @@
 
 mod author;
 mod http;
+mod peer;
 mod service;
+mod vrrp;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -219,6 +221,8 @@ fn run(args: Args) -> Result<(), String> {
 
     let core: Core = Arc::new(Mutex::new(coordinator));
     let (tx, _) = broadcast::channel::<Value>(256);
+    let pair: peer::Pair = Default::default();
+    let wake = Arc::new(tokio::sync::Notify::new());
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -227,7 +231,27 @@ fn run(args: Args) -> Result<(), String> {
         // Publish anything boot did (a revert of an unconfirmed change).
         let _ = with_core(&core, &tx, |_| Ok(())).await;
         let l = listener(&args.socket).map_err(|e| format!("socket: {e}"))?;
-        let server = zlink::Server::new(l, Firewall::new(core.clone(), tx.clone()));
+        let server = zlink::Server::new(
+            l,
+            Firewall::new(core.clone(), tx.clone(), pair.clone(), wake.clone()),
+        );
+        // The peer service, reached only through the sync-tunnel listener.
+        let peer_socket = args.socket.with_file_name("org.sparewall.Peer");
+        let _ = std::fs::remove_file(&peer_socket);
+        let peer_listener = std::os::unix::net::UnixListener::bind(&peer_socket)
+            .and_then(|l| {
+                std::fs::set_permissions(&peer_socket, std::fs::Permissions::from_mode(0o600))?;
+                l.set_nonblocking(true)?;
+                Ok(l)
+            })
+            .map_err(|e| format!("{}: {e}", peer_socket.display()))?;
+        let peer_server = zlink::Server::new(
+            zlink::tokio::unix::Listener::from(
+                tokio::net::UnixListener::from_std(peer_listener).map_err(|e| e.to_string())?,
+            ),
+            peer::PeerService::new(core.clone(), tx.clone(), wake.clone()),
+        );
+        let fifo = args.socket.with_file_name("keepalived.fifo");
         let _ = sd_notify::notify(&[
             sd_notify::NotifyState::Ready,
             sd_notify::NotifyState::Status("running"),
@@ -260,6 +284,10 @@ fn run(args: Args) -> Result<(), String> {
             r = server.run() => r.map_err(|e| format!("varlink server: {e}")),
             () = ticker(core.clone(), tx.clone()) => Ok(()),
             () = https => Ok(()),
+            r = peer_server.run() => r.map_err(|e| format!("peer server: {e}")),
+            () = peer::listener(core.clone(), tx.clone(), peer_socket.clone()) => Ok(()),
+            () = peer::sync_loop(core.clone(), tx.clone(), pair.clone(), wake.clone()) => Ok(()),
+            () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone()) => Ok(()),
             _ = term.recv() => {
                 tracing::info!("terminating");
                 Ok(())

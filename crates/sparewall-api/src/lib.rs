@@ -178,6 +178,7 @@ pub trait FirewallProxy {
         base: i64,
         confirm_seconds: Option<i64>,
         dry_run: Option<bool>,
+        allow_diverge: Option<bool>,
     ) -> zlink::Result<Result<ApplyReply, FirewallError>>;
     async fn merge(
         &mut self,
@@ -185,6 +186,7 @@ pub trait FirewallProxy {
         base: i64,
         confirm_seconds: Option<i64>,
         dry_run: Option<bool>,
+        allow_diverge: Option<bool>,
     ) -> zlink::Result<Result<ApplyReply, FirewallError>>;
     async fn patch(
         &mut self,
@@ -192,6 +194,7 @@ pub trait FirewallProxy {
         base: i64,
         confirm_seconds: Option<i64>,
         dry_run: Option<bool>,
+        allow_diverge: Option<bool>,
     ) -> zlink::Result<Result<ApplyReply, FirewallError>>;
     async fn confirm(&mut self, id: i64) -> zlink::Result<Result<Empty, FirewallError>>;
     async fn rollback(
@@ -226,4 +229,105 @@ pub trait FirewallProxy {
     ) -> zlink::Result<
         impl futures_util::Stream<Item = zlink::Result<Result<EventReply, FirewallError>>>,
     >;
+}
+
+// ---------------------------------------------------------------------------
+// Node to node, over the sync tunnel only.
+
+pub const PEER_INTERFACE: &str = "org.sparewall.Peer";
+/// The peer service's root-only socket; the sync tunnel listener splices
+/// connections from the peer onto it.
+pub const PEER_SOCKET: &str = "/run/sparewall/org.sparewall.Peer";
+/// TCP port of the peer listener on the sync tunnel address.
+pub const PEER_PORT: u16 = 8649;
+/// Peer protocol version, negotiated in `Hello`.
+pub const PEER_PROTOCOL: i64 = 1;
+
+/// A generation as it travels between nodes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct PeerGeneration {
+    pub id: i64,
+    pub hash: String,
+    pub base: Option<i64>,
+    pub schema: i64,
+    pub author: String,
+    pub created: String,
+    pub summary: Vec<String>,
+}
+
+/// One step of a node's lineage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct LineageEntry {
+    pub id: i64,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct HelloReply {
+    pub node: String,
+    pub protocol: i64,
+    pub active: i64,
+    pub desired: String,
+    pub applied: Option<String>,
+    pub applying: bool,
+    /// Newest first, back through each base.
+    pub lineage: Vec<LineageEntry>,
+    /// A change is waiting for confirmation on that node.
+    pub pending: bool,
+    pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PushReply {
+    pub active: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct FetchReply {
+    pub generation: PeerGeneration,
+    pub config: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, zlink::ReplyError, ReplyError)]
+#[zlink(interface = "org.sparewall.Peer")]
+pub enum PeerError {
+    Conflict { current: i64 },
+    Rejected { message: String },
+    NotFound { id: i64 },
+    WrongNode { expected: String },
+}
+
+impl std::fmt::Display for PeerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerError::Conflict { current } => {
+                write!(f, "peer conflict: its generation is {current}")
+            }
+            PeerError::Rejected { message } => write!(f, "peer rejected the generation: {message}"),
+            PeerError::NotFound { id } => write!(f, "peer has no generation {id}"),
+            PeerError::WrongNode { expected } => write!(f, "peer expected node {expected}"),
+        }
+    }
+}
+
+impl std::error::Error for PeerError {}
+
+#[zlink::proxy("org.sparewall.Peer")]
+pub trait PeerProxy {
+    /// Exchange state. `node` is the caller; the reply describes the callee.
+    async fn hello(
+        &mut self,
+        node: &str,
+        protocol: i64,
+    ) -> zlink::Result<Result<HelloReply, PeerError>>;
+    /// Offer a generation whose base should be the callee's active one.
+    /// With `force`, the callee adopts it regardless (`sync --from`).
+    async fn push(
+        &mut self,
+        generation: &PeerGeneration,
+        config: &Value,
+        force: Option<bool>,
+    ) -> zlink::Result<Result<PushReply, PeerError>>;
+    /// Read a generation (default: the active one).
+    async fn fetch(&mut self, id: Option<i64>) -> zlink::Result<Result<FetchReply, PeerError>>;
 }

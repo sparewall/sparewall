@@ -13,7 +13,7 @@ pub mod system;
 use std::path::Path;
 
 pub use coordinator::{ApplyOptions, ApplyResult, Coordinator, Event};
-pub use health::{Health, Level};
+pub use health::{Check, Health, Level};
 pub use store::{Generation, Store};
 pub use system::System;
 

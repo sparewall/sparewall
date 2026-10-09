@@ -35,7 +35,12 @@ pub struct Linux {
 
 /// Provider units the coordinator may start; any not wanted by the live
 /// generation are stopped.
-pub const PROVIDER_UNITS: &[&str] = &["sparewall-kea.service", "sparewall-unbound.service"];
+pub const PROVIDER_UNITS: &[&str] = &[
+    "sparewall-kea.service",
+    "sparewall-unbound.service",
+    "keepalived.service",
+    "conntrackd.service",
+];
 
 impl Default for Linux {
     fn default() -> Self {

@@ -8,14 +8,16 @@ use sparewall_api::{
     ApplyReply, BackupReply, ConfigReply, Empty, EventReply, ExportReply, FirewallError,
     GenerationReply, HealthCheck, HealthReply, HistoryReply, StatusReply, ValidateReply,
 };
+use sparewall_core::pair::SyncState;
 use sparewall_core::{ApplyOptions, ApplyResult, Coordinator, Error, Generation, System};
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use zlink::connection::socket::FetchPeerCredentials;
 use zlink::{Reply, service};
 
 use crate::author;
+use crate::peer::{Pair, PairStatus};
 
 pub type Core = Arc<Mutex<Coordinator<Box<dyn System>>>>;
 
@@ -42,20 +44,64 @@ pub fn booted_image_digest() -> Option<String> {
 pub struct Firewall {
     core: Core,
     events: broadcast::Sender<Value>,
+    pair: Pair,
+    sync: Arc<Notify>,
 }
 
 impl Firewall {
-    pub fn new(core: Core, events: broadcast::Sender<Value>) -> Self {
-        Firewall { core, events }
+    pub fn new(
+        core: Core,
+        events: broadcast::Sender<Value>,
+        pair: Pair,
+        sync: Arc<Notify>,
+    ) -> Self {
+        Firewall {
+            core,
+            events,
+            pair,
+            sync,
+        }
+    }
+
+    /// The divergence policy: in a pair, a change needs the peer reachable
+    /// (or `allow_diverge`), and a node behind its peer takes no changes.
+    fn gate(
+        &self,
+        allow_diverge: Option<bool>,
+        dry_run: Option<bool>,
+    ) -> Result<(), FirewallError> {
+        if dry_run.unwrap_or(false) {
+            return Ok(());
+        }
+        let (paired, reachable, state) = crate::peer::reachable(&self.pair);
+        if !paired {
+            return Ok(());
+        }
+        if state == Some(SyncState::LocalBehind) {
+            return Err(FirewallError::ApplyFailed {
+                message: "this node is behind its peer and catches up shortly; or run sparewall sync --from <peer>".into(),
+            });
+        }
+        if !reachable && !allow_diverge.unwrap_or(false) {
+            let peer = self
+                .pair
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .peer
+                .clone()
+                .unwrap_or_default();
+            return Err(FirewallError::PeerUnreachable { peer });
+        }
+        Ok(())
     }
 }
 
 /// Run a coordinator call off the async thread, then publish its events.
-pub async fn with_core<T: Send + 'static>(
+pub async fn with_core_raw<T: Send + 'static>(
     core: &Core,
     events: &broadcast::Sender<Value>,
     f: impl FnOnce(&mut Coordinator<Box<dyn System>>) -> Result<T, Error> + Send + 'static,
-) -> Result<T, FirewallError> {
+) -> Result<T, Error> {
     let core = core.clone();
     let (result, evs) = tokio::task::spawn_blocking(move || {
         let mut c = core.lock().unwrap_or_else(|p| p.into_inner());
@@ -63,15 +109,22 @@ pub async fn with_core<T: Send + 'static>(
         (r, c.drain_events())
     })
     .await
-    .map_err(|e| FirewallError::ApplyFailed {
-        message: format!("internal: {e}"),
-    })?;
+    .map_err(|e| Error::Internal(e.to_string()))?;
     for e in evs {
         let v = serde_json::to_value(&e).unwrap_or(Value::Null);
         tracing::info!(event = %v, "event");
         let _ = events.send(v);
     }
-    result.map_err(to_api_error)
+    result
+}
+
+/// [`with_core_raw`] with errors as the API reports them.
+pub async fn with_core<T: Send + 'static>(
+    core: &Core,
+    events: &broadcast::Sender<Value>,
+    f: impl FnOnce(&mut Coordinator<Box<dyn System>>) -> Result<T, Error> + Send + 'static,
+) -> Result<T, FirewallError> {
+    with_core_raw(core, events, f).await.map_err(to_api_error)
 }
 
 pub fn to_api_error(e: Error) -> FirewallError {
@@ -159,14 +212,18 @@ where
         base: i64,
         confirm_seconds: Option<i64>,
         dry_run: Option<bool>,
+        allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<ApplyReply, FirewallError> {
+        self.gate(allow_diverge, dry_run)?;
         let o = opts(base, confirm_seconds, dry_run, author::of(conn).await);
-        with_core(&self.core, &self.events, move |c| {
+        let r = with_core(&self.core, &self.events, move |c| {
             let r = c.apply(config, &o)?;
             Ok(apply_reply(c, r))
         })
-        .await
+        .await;
+        self.sync.notify_one();
+        r
     }
 
     async fn merge(
@@ -175,14 +232,18 @@ where
         base: i64,
         confirm_seconds: Option<i64>,
         dry_run: Option<bool>,
+        allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<ApplyReply, FirewallError> {
+        self.gate(allow_diverge, dry_run)?;
         let o = opts(base, confirm_seconds, dry_run, author::of(conn).await);
-        with_core(&self.core, &self.events, move |c| {
+        let r = with_core(&self.core, &self.events, move |c| {
             let r = c.merge(&patch, &o)?;
             Ok(apply_reply(c, r))
         })
-        .await
+        .await;
+        self.sync.notify_one();
+        r
     }
 
     async fn patch(
@@ -191,14 +252,18 @@ where
         base: i64,
         confirm_seconds: Option<i64>,
         dry_run: Option<bool>,
+        allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<ApplyReply, FirewallError> {
+        self.gate(allow_diverge, dry_run)?;
         let o = opts(base, confirm_seconds, dry_run, author::of(conn).await);
-        with_core(&self.core, &self.events, move |c| {
+        let r = with_core(&self.core, &self.events, move |c| {
             let r = c.patch(&ops, &o)?;
             Ok(apply_reply(c, r))
         })
-        .await
+        .await;
+        self.sync.notify_one();
+        r
     }
 
     async fn confirm(&mut self, id: i64) -> Result<Empty, FirewallError> {
@@ -206,6 +271,8 @@ where
             c.confirm(id.max(0) as u64)
         })
         .await?;
+        // A confirmed generation goes to the peer.
+        self.sync.notify_one();
         Ok(Empty {})
     }
 
@@ -214,6 +281,7 @@ where
             c.rollback(id.map(|i| i.max(0) as u64))
         })
         .await?;
+        self.sync.notify_one();
         Ok(GenerationReply {
             generation: api_generation(&g, true),
         })
@@ -261,14 +329,53 @@ where
     }
 
     async fn sync(&mut self, from_node: String) -> Result<GenerationReply, FirewallError> {
-        Err(FirewallError::NotSupported {
-            message: format!("sync --from {from_node}: HA pairs arrive in milestone 3"),
+        let (node, peer) = with_core(&self.core, &self.events, |c| {
+            let doc = c.active_document()?;
+            Ok((
+                c.node().to_string(),
+                doc.and_then(|d| d.peer_of(c.node()).map(str::to_string)),
+            ))
+        })
+        .await?;
+        let Some(peer) = peer else {
+            return Err(FirewallError::NotSupported {
+                message: "this node is not in a pair".into(),
+            });
+        };
+        let result = if from_node == peer {
+            crate::peer::take_from_peer(&self.core, &self.events).await
+        } else if from_node == node {
+            crate::peer::give_to_peer(&self.core, &self.events).await
+        } else {
+            return Err(FirewallError::NotSupported {
+                message: format!("{from_node} is neither {node} nor its peer {peer}"),
+            });
+        };
+        let g = result.map_err(|e| {
+            if e.contains("timed out") || e.contains("refused") || e.contains("unreachable") {
+                FirewallError::PeerUnreachable { peer: peer.clone() }
+            } else {
+                FirewallError::ApplyFailed { message: e }
+            }
+        })?;
+        self.sync.notify_one();
+        Ok(GenerationReply {
+            generation: api_generation(&g, true),
         })
     }
 
     async fn health(&mut self, verbose: Option<bool>) -> Result<HealthReply, FirewallError> {
-        let (h, role) = with_core(&self.core, &self.events, |c| {
-            let role = role_of(c)?;
+        let vrrp = self
+            .pair
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .role
+            .clone();
+        let (h, role) = with_core(&self.core, &self.events, move |c| {
+            let role = match vrrp {
+                Some(r) => r,
+                None => role_of(c)?,
+            };
             Ok((c.health()?, role))
         })
         .await?;
@@ -289,7 +396,8 @@ where
     }
 
     async fn status(&mut self) -> Result<StatusReply, FirewallError> {
-        with_core(&self.core, &self.events, status).await
+        let pair = self.pair.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        with_core(&self.core, &self.events, move |c| status(c, &pair)).await
     }
 
     async fn backup(&mut self) -> Result<BackupReply, FirewallError> {
@@ -300,10 +408,7 @@ where
                 image_digest: booted_image_digest(),
             };
             let keep = c
-                .active()
-                .ok()
-                .filter(|id| *id != 0)
-                .and_then(|id| c.store().document(id).ok())
+                .active_document()?
                 .and_then(|d| d.backup)
                 .and_then(|b| b.generations)
                 .map_or(sparewall_core::backup::DEFAULT_GENERATIONS, |g| g as usize);
@@ -340,31 +445,42 @@ where
 }
 
 pub fn role_of(c: &Coordinator<Box<dyn System>>) -> Result<String, Error> {
-    let active = c.active()?;
-    if active == 0 {
-        return Ok("bootstrap".into());
-    }
-    let doc = c.store().document(active)?;
-    Ok(if doc.is_pair() {
-        "unknown".into()
-    } else {
-        "standalone".into()
+    Ok(match c.active_document()? {
+        None => "bootstrap".into(),
+        Some(d) if d.is_pair() => "unknown".into(),
+        Some(_) => "standalone".into(),
     })
 }
 
-pub fn status(c: &mut Coordinator<Box<dyn System>>) -> Result<StatusReply, Error> {
+pub fn status(
+    c: &mut Coordinator<Box<dyn System>>,
+    pair: &PairStatus,
+) -> Result<StatusReply, Error> {
     let state = c.state()?;
-    let role = role_of(c)?;
+    let role = match &pair.role {
+        Some(r) => r.clone(),
+        None => role_of(c)?,
+    };
     let (desired, applied) = c.hashes()?;
     let pending = c
         .pending_remaining()?
         .map(|(id, s)| json!({"id": id, "reverts_in": s}));
     let health = c.health()?;
     let links = c.system().link_states();
-    let ct = |k: &str| {
-        std::fs::read_to_string(format!("/proc/sys/net/netfilter/{k}"))
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
+    let sync_key = c.system().sync_public_key().ok();
+    let ct = |c: &mut Coordinator<Box<dyn System>>, k: &str| {
+        c.system()
+            .proc_sys(&format!("net/netfilter/{k}"))
+            .and_then(|s| s.parse::<u64>().ok())
+    };
+    let ct_count = ct(c, "nf_conntrack_count");
+    let ct_max = ct(c, "nf_conntrack_max");
+    let sync_state = if pair.peer.is_none() {
+        "standalone".to_string()
+    } else {
+        pair.state
+            .as_ref()
+            .map_or("unknown".to_string(), |s| s.name().to_string())
     };
     Ok(StatusReply {
         node: c.node().to_string(),
@@ -375,12 +491,20 @@ pub fn status(c: &mut Coordinator<Box<dyn System>>) -> Result<StatusReply, Error
             "pending": pending,
             "desired_hash": desired,
             "applied_hash": applied,
-            "state": "standalone",
+            "state": sync_state,
+            "peer": pair.peer,
+            "peer_reachable": pair.reachable,
+            "peer_active": pair.peer_view.as_ref().map(|v| v.active),
+            "peer_desired_hash": pair.peer_view.as_ref().map(|v| v.desired.clone()),
+            "peer_applied_hash": pair.peer_view.as_ref().and_then(|v| v.applied.clone()),
+            "peer_image": pair.peer_image,
+            "sync_public_key": sync_key,
+            "last_error": pair.last_error,
             "last_apply_ms": c.last_apply_ms(),
         }),
         links: serde_json::to_value(links).unwrap_or_default(),
-        vrrp: json!({}),
-        conntrack: json!({"count": ct("nf_conntrack_count"), "max": ct("nf_conntrack_max")}),
+        vrrp: json!({"role": pair.role}),
+        conntrack: json!({"count": ct_count, "max": ct_max}),
         services: json!({}),
         tls: json!({"fingerprint": crate::http::FINGERPRINT.get()}),
         health: serde_json::to_value(&health).unwrap_or_default(),

@@ -15,7 +15,13 @@ use crate::store::{Generation, Pending, State, Store};
 use crate::system::{Files, System};
 
 /// Subsystems whose files a provider service reads from /run/sparewall.
-const PROVIDER_SUBSYSTEMS: &[Subsystem] = &[Subsystem::Dhcp, Subsystem::Dns, Subsystem::Ntp];
+const PROVIDER_SUBSYSTEMS: &[Subsystem] = &[
+    Subsystem::Dhcp,
+    Subsystem::Dns,
+    Subsystem::Ntp,
+    Subsystem::Keepalived,
+    Subsystem::Conntrackd,
+];
 
 fn subsystem_files(r: &Rendered, s: Subsystem) -> Files {
     r.subsystem(s)
@@ -86,6 +92,8 @@ pub struct Coordinator<S: System> {
     last_apply_ms: Option<u128>,
     events: Vec<Event>,
     keep: usize,
+    /// Checks the daemon contributes (pair sync, VRRP), included in health.
+    extra_checks: Vec<Check>,
 }
 
 fn now_unix() -> i64 {
@@ -115,6 +123,7 @@ impl<S: System> Coordinator<S> {
             last_apply_ms: None,
             events: Vec::new(),
             keep: DEFAULT_KEEP,
+            extra_checks: Vec::new(),
         }
     }
 
@@ -528,6 +537,19 @@ impl<S: System> Coordinator<S> {
         Ok(out)
     }
 
+    /// Replace the checks contributed from outside the core.
+    pub fn set_extra_checks(&mut self, checks: Vec<Check>) {
+        self.extra_checks = checks;
+    }
+
+    /// The live document, if any.
+    pub fn active_document(&self) -> Result<Option<Document>, Error> {
+        match self.active()? {
+            0 => Ok(None),
+            id => self.store.document(id).map(Some),
+        }
+    }
+
     /// What this node reports to its peer.
     pub fn view(&self) -> Result<crate::pair::NodeView, Error> {
         let state = self.store.state()?;
@@ -781,6 +803,8 @@ impl<S: System> Coordinator<S> {
         } else {
             Check::new("links", Level::Failed, down.join(", "))
         });
+
+        checks.extend(self.extra_checks.iter().cloned());
 
         let units: Vec<String> = r.meta.services.values().map(|s| s.unit.clone()).collect();
         if !units.is_empty() {
