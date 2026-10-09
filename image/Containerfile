@@ -78,7 +78,9 @@ LABEL org.opencontainers.image.title="Sparewall" \
       org.opencontainers.image.licenses="GPL-3.0-only" \
       org.opencontainers.image.vendor="Sparewall"
 
-# networkd owns every link; NetworkManager and cloud-init go.
+# networkd owns every link; NetworkManager and cloud-init go. GRUB's BIOS
+# tools are listed explicitly so installs do not depend on the base image
+# keeping them (a daily base once dropped grub2-install).
 RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManager-team \
              NetworkManager-tui cloud-init firewalld; do \
         if rpm -q "$p" >/dev/null; then dnf -y remove "$p"; fi; \
@@ -103,6 +105,9 @@ RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManag
         libmnl \
         libnetfilter_conntrack \
         jansson \
+        grub2-tools \
+        grub2-pc \
+        grub2-pc-modules \
     && dnf clean all \
     && rm -rf /var/cache/* /var/log/dnf* /var/lib/dnf
 
