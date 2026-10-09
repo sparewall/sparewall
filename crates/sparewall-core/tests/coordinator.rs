@@ -313,6 +313,7 @@ fn services_follow_generations() {
         [
             "chronyd.service",
             "sparewall-kea.service",
+            "sparewall-ulogd.service",
             "sparewall-unbound.service"
         ]
     );

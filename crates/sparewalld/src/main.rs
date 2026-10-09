@@ -4,6 +4,7 @@ mod acme;
 mod author;
 mod http;
 mod peer;
+mod rules;
 mod service;
 mod upgrade;
 mod vrrp;
@@ -309,6 +310,7 @@ fn run(args: Args) -> Result<(), String> {
             () = peer::listener(core.clone(), tx.clone(), peer_socket.clone()) => Ok(()),
             () = peer::sync_loop(core.clone(), tx.clone(), pair.clone(), wake.clone()) => Ok(()),
             () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone()) => Ok(()),
+            () = rules::listener(args.socket.with_file_name("rules.sock")) => Ok(()),
             _ = term.recv() => {
                 tracing::info!("terminating");
                 Ok(())

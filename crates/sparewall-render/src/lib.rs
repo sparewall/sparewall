@@ -13,6 +13,7 @@ pub mod conntrackd;
 mod ini;
 pub mod kea;
 pub mod keepalived;
+pub mod logging;
 pub mod networkd;
 pub mod nft;
 pub mod sysctl;
@@ -35,6 +36,7 @@ pub enum Subsystem {
     Dhcp,
     Dns,
     Ntp,
+    Logging,
 }
 
 impl Subsystem {
@@ -50,6 +52,7 @@ impl Subsystem {
             Subsystem::Dhcp => "dhcp",
             Subsystem::Dns => "dns",
             Subsystem::Ntp => "ntp",
+            Subsystem::Logging => "logging",
         }
     }
 
@@ -63,6 +66,7 @@ impl Subsystem {
             Subsystem::Dhcp,
             Subsystem::Dns,
             Subsystem::Ntp,
+            Subsystem::Logging,
         ]
     }
 }
@@ -170,6 +174,7 @@ pub fn render(doc: &Document, node: &str) -> Result<Rendered, Error> {
     chrony::render(doc, node, &mut out);
     keepalived::render(doc, node, &mut out);
     conntrackd::render(doc, node, &mut out);
+    logging::render(doc, &mut out);
     Ok(out)
 }
 

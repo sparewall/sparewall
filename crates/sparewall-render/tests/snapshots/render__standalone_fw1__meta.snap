@@ -51,4 +51,10 @@ services:
         - "-p"
         - "-f"
         - /run/sparewall/ntp/chrony.conf
+  rule-logging:
+    provider: ulogd
+    unit: sparewall-ulogd.service
+    subsystem: logging
+    reload: false
+    check: ~
 bootstrap: false

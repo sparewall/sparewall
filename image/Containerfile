@@ -31,6 +31,39 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     && rm /out/schema.json
 
 # ---------------------------------------------------------------------------
+# ulogd2 for rule logging; Fedora no longer packages it. ulogd needs
+# libnetfilter_log >= 1.0.2 and Fedora 45 has 1.0.1, so that is built too,
+# statically, and linked into the NFLOG plugin only.
+FROM ${FEDORA_BUILD} AS ulogd
+ARG NFLOG_VERSION=1.0.2
+ARG NFLOG_SHA256=e3f408575614d849e4726b45e90c7ebb0e6744b04859555a9ce6ec40744ffeea
+ARG ULOGD_VERSION=2.0.9
+ARG ULOGD_SHA256=523a651fe0a9f25b0cd87d5d35fc37d9382e7eecfcf61e48d5505ff3cf80eda5
+RUN dnf -y install --setopt=install_weak_deps=False gcc make pkgconf-pkg-config xz bzip2 \
+        diffutils file libnfnetlink-devel libmnl-devel libnetfilter_conntrack-devel \
+        jansson-devel \
+    && dnf clean all
+WORKDIR /src
+RUN curl -fsSLO https://netfilter.org/pub/libnetfilter_log/libnetfilter_log-${NFLOG_VERSION}.tar.bz2 \
+    && echo "${NFLOG_SHA256}  libnetfilter_log-${NFLOG_VERSION}.tar.bz2" | sha256sum -c - \
+    && tar -xf libnetfilter_log-${NFLOG_VERSION}.tar.bz2 \
+    && cd libnetfilter_log-${NFLOG_VERSION} \
+    && ./configure --prefix=/opt/nflog --disable-shared --enable-static --with-pic \
+    && make -j"$(nproc)" && make install
+RUN curl -fsSLO https://netfilter.org/pub/ulogd/ulogd-${ULOGD_VERSION}.tar.xz \
+    && echo "${ULOGD_SHA256}  ulogd-${ULOGD_VERSION}.tar.xz" | sha256sum -c - \
+    && tar -xf ulogd-${ULOGD_VERSION}.tar.xz \
+    && cd ulogd-${ULOGD_VERSION} \
+    && PKG_CONFIG_PATH=/opt/nflog/lib/pkgconfig ./configure --prefix=/usr --libdir=/usr/lib64 \
+        --sysconfdir=/etc --disable-static --disable-nfacct --disable-mysql --disable-pgsql \
+        --disable-sqlite3 --disable-dbi --disable-pcap \
+    && make -j"$(nproc)" \
+    && make install DESTDIR=/out \
+    && rm -rf /out/usr/share/man /out/usr/lib64/ulogd/*.la \
+    && test -f /out/usr/lib64/ulogd/ulogd_inppkt_NFLOG.so \
+    && test -f /out/usr/lib64/ulogd/ulogd_output_JSON.so
+
+# ---------------------------------------------------------------------------
 FROM ${FEDORA_BOOTC}
 
 # Provider images, pinned by digest in CI so a service and the OS move and
@@ -65,10 +98,16 @@ RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManag
         iputils \
         bind-utils \
         jq \
+        systemd-journal-remote \
+        libnfnetlink \
+        libmnl \
+        libnetfilter_conntrack \
+        jansson \
     && dnf clean all \
     && rm -rf /var/cache/* /var/log/dnf* /var/lib/dnf
 
 COPY --from=build /out/ /
+COPY --from=ulogd /out/ /
 COPY image/files/ /
 
 RUN sed -i -e "s|@KEA_IMAGE@|${KEA_IMAGE}|" /usr/share/containers/systemd/sparewall-kea.container \

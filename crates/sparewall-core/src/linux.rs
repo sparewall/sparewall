@@ -40,6 +40,8 @@ pub const PROVIDER_UNITS: &[&str] = &[
     "sparewall-unbound.service",
     "keepalived.service",
     "conntrackd.service",
+    "sparewall-ulogd.service",
+    "systemd-journal-upload.service",
 ];
 
 impl Default for Linux {

@@ -21,6 +21,7 @@ const PROVIDER_SUBSYSTEMS: &[Subsystem] = &[
     Subsystem::Ntp,
     Subsystem::Keepalived,
     Subsystem::Conntrackd,
+    Subsystem::Logging,
 ];
 
 fn subsystem_files(r: &Rendered, s: Subsystem) -> Files {
