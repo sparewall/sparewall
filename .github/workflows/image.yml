@@ -63,14 +63,17 @@ jobs:
             podman build --label org.opencontainers.image.revision=${{ github.sha }} \
               -t "$repo:ci" "image/providers/$p"
             podman run --rm "$repo:ci" true
+            # Bound images are pinned by an immutable per-commit tag:
+            # bootc cannot copy a digest-referenced image between storages.
+            short=$(git rev-parse --short=12 HEAD)
             if [ "$PUSH" = true ]; then
-              podman push --digestfile "$p.digest" "$repo:ci" "docker://$repo:testing"
-              ref="$repo@$(cat "$p.digest")"
-              cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$ref"
+              podman push --digestfile "$p.digest" "$repo:ci" "docker://$repo:sha-$short"
+              podman push "$repo:ci" "docker://$repo:testing"
+              cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$repo@$(cat "$p.digest")"
+              ref="$repo:sha-$short"
             else
               # Pull requests boot with the published provider images.
-              ref="$repo@$(skopeo inspect --format '{{.Digest}}' "docker://$repo:testing" 2>/dev/null)" \
-                || ref="$repo:testing"
+              ref="$repo:testing"
             fi
             echo "$p=$ref" >> "$GITHUB_OUTPUT"
             echo "$p: $ref" >> "$GITHUB_STEP_SUMMARY"
