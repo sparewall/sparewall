@@ -9,8 +9,10 @@ use sparewall_config::Document;
 use sparewall_config::identity::Identity;
 
 pub mod chrony;
+pub mod conntrackd;
 mod ini;
 pub mod kea;
+pub mod keepalived;
 pub mod networkd;
 pub mod nft;
 pub mod sysctl;
@@ -166,6 +168,8 @@ pub fn render(doc: &Document, node: &str) -> Result<Rendered, Error> {
     kea::render(doc, node, &mut out)?;
     unbound::render(doc, node, &mut out)?;
     chrony::render(doc, node, &mut out);
+    keepalived::render(doc, node, &mut out);
+    conntrackd::render(doc, node, &mut out);
     Ok(out)
 }
 

@@ -103,6 +103,11 @@ fn pair_with_sync_keys_renders_tunnel() {
     assert!(nd.contains("AllowedIPs=169.254.77.2/32"), "{nd}");
     let nn = &r.files["network/40-sparewall-swsync.network"];
     assert!(nn.contains("Address=169.254.77.1/30"), "{nn}");
+    insta::assert_snapshot!(
+        "paired_fw1__conntrackd",
+        r.files["conntrackd/conntrackd.conf"]
+    );
+    assert!(r.meta.services.contains_key("conntrack-sync"));
     assert_nft_ok(&r);
 }
 

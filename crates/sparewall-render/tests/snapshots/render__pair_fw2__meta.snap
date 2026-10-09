@@ -52,4 +52,18 @@ services:
         - "-p"
         - "-f"
         - /run/sparewall/ntp/chrony.conf
+  vrrp:
+    provider: keepalived
+    unit: keepalived.service
+    subsystem: keepalived
+    reload: true
+    check:
+      container: ~
+      mount: /run/sparewall/keepalived
+      command:
+        - unshare
+        - "--net"
+        - sh
+        - "-ec"
+        - "for i in uplink users wan; do ip link add \"$i\" type dummy; ip link set \"$i\" multicast on up; done; exec keepalived --config-test --use-file /run/sparewall/keepalived/keepalived.conf"
 bootstrap: false
