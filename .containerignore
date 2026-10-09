@@ -1,0 +1,5 @@
+target
+.git
+*.qcow2
+*.raw
+*.iso

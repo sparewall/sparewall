@@ -1,0 +1,9 @@
+enable sparewall-early.service
+enable sparewalld.socket
+enable sparewalld.service
+enable systemd-networkd.service
+enable systemd-networkd-wait-online.service
+enable systemd-resolved.service
+enable chronyd.service
+enable sshd.service
+disable bootc-fetch-apply-updates.timer

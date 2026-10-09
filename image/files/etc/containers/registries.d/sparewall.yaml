@@ -1,0 +1,3 @@
+docker:
+  ghcr.io/sparewall:
+    use-sigstore-attachments: true

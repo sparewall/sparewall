@@ -1,0 +1,18 @@
+# The single-node VM used by tests/vm/boot-test.sh: one virtio NIC on QEMU
+# user networking, which is both management (DHCP from QEMU) and the only
+# zone. Deliberately renames the bootstrap port (mgmt0 -> uplink).
+schema: 1
+cluster: { nodes: [fw1] }
+management: { network: mgmt }
+ports:
+  fw1:
+    uplink: { nic: "52:54:00:12:34:56" }
+networks:
+  mgmt: { port: uplink, role: management, dhcp_client: true }
+zones:
+  mgmt: { networks: [mgmt] }
+policy:
+  mgmt->self:
+    action: drop
+    rules:
+      ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }

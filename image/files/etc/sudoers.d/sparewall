@@ -1,0 +1,2 @@
+# The admin account runs the CLI (and `sparewall bridge` over SSH) as root.
+admin ALL=(ALL) NOPASSWD: ALL

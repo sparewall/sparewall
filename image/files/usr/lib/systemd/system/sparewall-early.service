@@ -1,0 +1,21 @@
+[Unit]
+Description=Sparewall: install the live configuration before networking
+Documentation=https://github.com/sparewall/sparewall
+# Interface names come from .link files, which udev applies at coldplug,
+# and the firewall must be loaded before any interface comes up.
+DefaultDependencies=no
+Before=systemd-udev-trigger.service systemd-networkd.service network-pre.target sysinit.target shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+RequiresMountsFor=/var/lib/sparewall
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/sparewalld --early
+ImportCredential=sparewall.*
+StateDirectory=sparewall
+StateDirectoryMode=0711
+
+[Install]
+WantedBy=sysinit.target

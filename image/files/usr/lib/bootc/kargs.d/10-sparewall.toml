@@ -1,0 +1,2 @@
+# Serial console for headless boxes and VMs, the fallback for management.
+kargs = ["console=tty0", "console=ttyS0,115200n8"]

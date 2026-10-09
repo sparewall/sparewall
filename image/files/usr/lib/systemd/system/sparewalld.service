@@ -1,0 +1,43 @@
+[Unit]
+Description=Sparewall coordinator
+Documentation=https://github.com/sparewall/sparewall
+Requires=sparewalld.socket
+After=sparewalld.socket sparewall-early.service systemd-networkd.service systemd-udevd.service
+Wants=systemd-networkd.service
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/sparewalld
+ImportCredential=sparewall.*
+Restart=on-failure
+RestartSec=2s
+WatchdogSec=60s
+StateDirectory=sparewall
+StateDirectoryMode=0711
+Environment=SPAREWALL_LOG=info
+
+# Sandboxing (design: "Host hardening"). The coordinator writes its state,
+# runtime networkd files and kernel tunables, and drives nft, networkctl,
+# udevadm and ip.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sparewall -/run/systemd/network -/run/sparewall -/etc/sparewall
+ProtectHome=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER CAP_SYS_ADMIN
+
+[Install]
+WantedBy=multi-user.target

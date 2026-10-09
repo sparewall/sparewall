@@ -19,6 +19,9 @@ use crate::system::{Files, System};
 pub struct Linux {
     /// Where networkd reads runtime configuration.
     pub network_dir: PathBuf,
+    /// Distribution `.network` files to mask (e.g. `89-ethernet.network`,
+    /// which would run DHCP on every unclaimed NIC).
+    pub vendor_network_dir: PathBuf,
     pub proc_sys: PathBuf,
     pub sys_class_net: PathBuf,
 }
@@ -27,6 +30,7 @@ impl Default for Linux {
     fn default() -> Self {
         Linux {
             network_dir: "/run/systemd/network".into(),
+            vendor_network_dir: "/usr/lib/systemd/network".into(),
             proc_sys: "/proc/sys".into(),
             sys_class_net: "/sys/class/net".into(),
         }
@@ -271,6 +275,18 @@ impl System for Linux {
             let p = dir.join(name);
             if fs::read_to_string(&p).ok().as_deref() != Some(content) {
                 write_atomic(&p, content.as_bytes()).map_err(|e| Error::io(&p, e))?;
+            }
+        }
+        // Only the document configures links: mask the vendor's .network
+        // files with /dev/null symlinks in /run, leaving /etc for
+        // emergency overrides.
+        if let Ok(rd) = fs::read_dir(&self.vendor_network_dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let mask = dir.join(&name);
+                if name.ends_with(".network") && !new.contains_key(&name) && fs::symlink_metadata(&mask).is_err() {
+                    std::os::unix::fs::symlink("/dev/null", &mask).map_err(|err| Error::io(&mask, err))?;
+                }
             }
         }
         // Remove our files that are no longer rendered, including leftovers

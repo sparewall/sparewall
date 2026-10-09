@@ -1,0 +1,73 @@
+# Sparewall OS image (design: "Platform: a bootc image").
+#
+# Build from the repository root:
+#   podman build -f image/Containerfile -t sparewall:dev .
+#
+# CI pins FEDORA_BOOTC to a digest; bump it to take security fixes.
+
+ARG FEDORA_VERSION=45
+ARG FEDORA_BOOTC=quay.io/fedora/fedora-bootc:${FEDORA_VERSION}
+ARG FEDORA_BUILD=quay.io/fedora/fedora:${FEDORA_VERSION}
+
+# ---------------------------------------------------------------------------
+# The coordinator and CLI, built against the same Fedora release.
+FROM ${FEDORA_BUILD} AS build
+RUN dnf -y install --setopt=install_weak_deps=False cargo rust gcc \
+    && dnf clean all
+WORKDIR /src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates crates
+COPY examples examples
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p sparewalld -p sparewall \
+    && install -D -m 0755 target/release/sparewalld /out/usr/bin/sparewalld \
+    && install -D -m 0755 target/release/sparewall /out/usr/bin/sparewall \
+    && /out/usr/bin/sparewall completion bash > /out/sparewall.bash \
+    && install -D -m 0644 /out/sparewall.bash /out/usr/share/bash-completion/completions/sparewall \
+    && rm /out/sparewall.bash \
+    && /out/usr/bin/sparewall schema show > /out/schema.json \
+    && install -D -m 0644 /out/schema.json /out/usr/share/sparewall/schema/v1.json \
+    && rm /out/schema.json
+
+# ---------------------------------------------------------------------------
+FROM ${FEDORA_BOOTC}
+
+LABEL org.opencontainers.image.title="Sparewall" \
+      org.opencontainers.image.description="Image-based Linux firewall: one node or an HA pair, configured from one versioned document" \
+      org.opencontainers.image.source="https://github.com/sparewall/sparewall" \
+      org.opencontainers.image.url="https://sparewall.org" \
+      org.opencontainers.image.licenses="GPL-3.0-only" \
+      org.opencontainers.image.vendor="Sparewall"
+
+# networkd owns every link; NetworkManager and cloud-init go.
+RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManager-team \
+             NetworkManager-tui cloud-init firewalld; do \
+        if rpm -q "$p" >/dev/null; then dnf -y remove "$p"; fi; \
+    done \
+    && dnf -y install --setopt=install_weak_deps=False \
+        systemd-networkd \
+        systemd-resolved \
+        nftables \
+        keepalived \
+        conntrack-tools \
+        chrony \
+        wireguard-tools \
+        restic \
+        tcpdump \
+        ethtool \
+        iproute \
+        iputils \
+        bind-utils \
+        jq \
+    && dnf clean all \
+    && rm -rf /var/cache/* /var/log/dnf* /var/lib/dnf
+
+COPY --from=build /out/ /
+COPY image/files/ /
+
+RUN systemctl preset-all \
+    && systemctl mask bootc-fetch-apply-updates.timer \
+    && chmod 0440 /etc/sudoers.d/sparewall \
+    && /usr/bin/sparewall --version \
+    && bootc container lint

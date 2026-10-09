@@ -1,0 +1,13 @@
+[Unit]
+Description=Sparewall coordinator Varlink socket
+Documentation=https://github.com/sparewall/sparewall
+
+[Socket]
+ListenStream=/run/sparewall/org.sparewall.Firewall
+FileDescriptorName=varlink
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
