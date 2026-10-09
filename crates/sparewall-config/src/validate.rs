@@ -49,6 +49,7 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
     v.dns();
     v.ntp();
     v.vpn();
+    v.tls();
     v.secrets();
     v.issues
         .sort_by(|a, b| b.severity.cmp(&a.severity).then(a.path.cmp(&b.path)));
@@ -1080,6 +1081,65 @@ impl Validator<'_> {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    fn tls(&mut self) {
+        let doc = self.doc;
+        let Some(t) = &doc.tls else { return };
+        for (name, c) in &t.certificates {
+            let p = format!("tls.certificates.{name}");
+            if c.names.is_empty() {
+                self.err(
+                    format!("{p}.names"),
+                    "a certificate needs at least one name",
+                );
+            }
+            for (i, n) in c.names.iter().enumerate() {
+                let host = n.strip_prefix("*.").unwrap_or(n);
+                let ok = host.contains('.')
+                    && host.split('.').all(|l| {
+                        !l.is_empty()
+                            && l.len() <= 63
+                            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                    });
+                if !ok {
+                    self.err(
+                        format!("{p}.names[{i}]"),
+                        format!("{n:?} is not a DNS name"),
+                    );
+                }
+            }
+            let Some(a) = &c.acme else { continue };
+            if !a.directory.starts_with("https://") {
+                self.err(format!("{p}.acme.directory"), "must be an https:// URL");
+            }
+            match a.challenge.as_deref().unwrap_or("dns-01") {
+                "dns-01" => match &a.dns {
+                    None => self.err(format!("{p}.acme.dns"), "dns-01 needs a DNS provider"),
+                    Some(d) => {
+                        if d.credentials.is_none() {
+                            self.err(
+                                format!("{p}.acme.dns.credentials"),
+                                "needs a secret:<name> reference",
+                            );
+                        }
+                        if d.provider == "rfc2136" && !d.options.contains_key("server") {
+                            self.err(
+                                format!("{p}.acme.dns.options.server"),
+                                "rfc2136 needs the primary server, host[:port]",
+                            );
+                        }
+                    }
+                },
+                "http-01" => {
+                    self.warn(format!("{p}.acme.challenge"), "http-01 is not built in yet")
+                }
+                other => self.err(
+                    format!("{p}.acme.challenge"),
+                    format!("unknown challenge {other:?}"),
+                ),
             }
         }
     }

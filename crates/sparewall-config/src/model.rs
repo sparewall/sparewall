@@ -680,6 +680,10 @@ pub struct Acme {
     /// External Account Binding key ID and secret reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eab: Option<Eab>,
+    /// PEM of the CA that signs the directory's TLS certificate, for a
+    /// private CA (default: the system trust store).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

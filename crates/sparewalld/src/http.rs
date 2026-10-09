@@ -76,18 +76,71 @@ pub fn self_signed(dir: &Path, node: &str) -> Result<SelfSigned, String> {
     Ok(out)
 }
 
-pub fn acceptor(cert: &SelfSigned) -> Result<TlsAcceptor, String> {
+fn server_config(
+    chain: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<Arc<rustls::ServerConfig>, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?
         .with_no_client_auth()
-        .with_single_cert(
+        .with_single_cert(chain, key)
+        .map_err(|e| e.to_string())?;
+    Ok(Arc::new(config))
+}
+
+/// The certificate the HTTPS listener serves, swappable without
+/// restarting it.
+pub struct Tls {
+    self_signed: Arc<rustls::ServerConfig>,
+    current: std::sync::Mutex<(Arc<rustls::ServerConfig>, Option<String>)>,
+}
+
+impl Tls {
+    pub fn new(cert: &SelfSigned) -> Result<Tls, String> {
+        let ss = server_config(
             vec![cert.cert_der.clone().into()],
             rustls::pki_types::PrivateKeyDer::Pkcs8(cert.key_der.clone().into()),
+        )?;
+        Ok(Tls {
+            current: std::sync::Mutex::new((ss.clone(), None)),
+            self_signed: ss,
+        })
+    }
+
+    fn acceptor(&self) -> TlsAcceptor {
+        TlsAcceptor::from(
+            self.current
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .0
+                .clone(),
         )
-        .map_err(|e| e.to_string())?;
-    Ok(TlsAcceptor::from(Arc::new(config)))
+    }
+
+    pub fn use_self_signed(&self) {
+        *self.current.lock().unwrap_or_else(|p| p.into_inner()) = (self.self_signed.clone(), None);
+    }
+
+    /// Serve a PEM chain and key (no-op when already serving them).
+    pub fn use_pem(&self, chain_pem: &str, key_pem: &str) -> Result<(), String> {
+        let id = hex::encode(Sha256::digest(chain_pem.as_bytes()));
+        let mut cur = self.current.lock().unwrap_or_else(|p| p.into_inner());
+        if cur.1.as_deref() == Some(id.as_str()) {
+            return Ok(());
+        }
+        let chain: Vec<_> =
+            rustls_pemfile::certs(&mut std::io::BufReader::new(chain_pem.as_bytes()))
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?;
+        let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(key_pem.as_bytes()))
+            .map_err(|e| e.to_string())?
+            .ok_or("no private key")?;
+        *cur = (server_config(chain, key)?, Some(id));
+        tracing::info!("serving the ACME certificate");
+        Ok(())
+    }
 }
 
 fn reply(status: u16, body: Value) -> Response<Full<Bytes>> {
@@ -222,7 +275,7 @@ async fn handle(
 /// Serve the health endpoints until the listener fails.
 pub async fn serve(
     listener: TcpListener,
-    acceptor: TlsAcceptor,
+    tls: Arc<Tls>,
     core: Core,
     events: broadcast::Sender<Value>,
 ) {
@@ -234,7 +287,7 @@ pub async fn serve(
                 continue;
             }
         };
-        let acceptor = acceptor.clone();
+        let acceptor = tls.acceptor();
         let core = core.clone();
         let events = events.clone();
         tokio::spawn(async move {

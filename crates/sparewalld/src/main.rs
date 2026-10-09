@@ -1,5 +1,6 @@
 //! sparewalld: the Sparewall coordinator.
 
+mod acme;
 mod author;
 mod http;
 mod peer;
@@ -237,6 +238,7 @@ fn run(args: Args) -> Result<(), String> {
     let (tx, _) = broadcast::channel::<Value>(256);
     let pair: peer::Pair = Default::default();
     let wake = Arc::new(tokio::sync::Notify::new());
+    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -277,15 +279,20 @@ fn run(args: Args) -> Result<(), String> {
             let setup = async {
                 let cert = http::self_signed(&args.state.join("tls"), &node)?;
                 let _ = http::FINGERPRINT.set(cert.fingerprint());
-                let acceptor = http::acceptor(&cert)?;
+                let tls = Arc::new(http::Tls::new(&cert)?);
                 let l = tokio::net::TcpListener::bind(&args.https)
                     .await
                     .map_err(|e| format!("{}: {e}", args.https))?;
                 tracing::info!(addr = %args.https, "serving health endpoints");
-                Ok::<_, String>((l, acceptor))
+                Ok::<_, String>((l, tls))
             };
             match setup.await {
-                Ok((l, acceptor)) => http::serve(l, acceptor, core.clone(), tx.clone()).await,
+                Ok((l, tls)) => {
+                    tokio::join!(
+                        http::serve(l, tls.clone(), core.clone(), tx.clone()),
+                        acme::acme_loop(core.clone(), tx.clone(), pair.clone(), tls),
+                    );
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "health endpoints unavailable");
                     std::future::pending::<()>().await

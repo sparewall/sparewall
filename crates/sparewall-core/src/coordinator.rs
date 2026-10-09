@@ -92,8 +92,8 @@ pub struct Coordinator<S: System> {
     last_apply_ms: Option<u128>,
     events: Vec<Event>,
     keep: usize,
-    /// Checks the daemon contributes (pair sync, VRRP), included in health.
-    extra_checks: Vec<Check>,
+    /// Checks the daemon contributes (pair sync, TLS), by source.
+    extra_checks: std::collections::BTreeMap<String, Vec<Check>>,
 }
 
 fn now_unix() -> i64 {
@@ -123,7 +123,7 @@ impl<S: System> Coordinator<S> {
             last_apply_ms: None,
             events: Vec::new(),
             keep: DEFAULT_KEEP,
-            extra_checks: Vec::new(),
+            extra_checks: Default::default(),
         }
     }
 
@@ -544,9 +544,14 @@ impl<S: System> Coordinator<S> {
         Ok(out)
     }
 
-    /// Replace the checks contributed from outside the core.
+    /// Replace the pair checks contributed from outside the core.
     pub fn set_extra_checks(&mut self, checks: Vec<Check>) {
-        self.extra_checks = checks;
+        self.set_named_checks("pair", checks);
+    }
+
+    /// Replace the checks one outside source contributes.
+    pub fn set_named_checks(&mut self, source: &str, checks: Vec<Check>) {
+        self.extra_checks.insert(source.to_string(), checks);
     }
 
     /// The live document, if any.
@@ -812,7 +817,7 @@ impl<S: System> Coordinator<S> {
             Check::new("links", Level::Failed, down.join(", "))
         });
 
-        checks.extend(self.extra_checks.iter().cloned());
+        checks.extend(self.extra_checks.values().flatten().cloned());
 
         let units: Vec<String> = r.meta.services.values().map(|s| s.unit.clone()).collect();
         if !units.is_empty() {
