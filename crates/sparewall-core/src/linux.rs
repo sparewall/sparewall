@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
@@ -29,6 +29,8 @@ pub struct Linux {
     pub runtime_dir: PathBuf,
     /// Where Quadlet files naming provider images live.
     pub quadlet_dir: PathBuf,
+    /// The sync tunnel's private key (readable by systemd-network).
+    pub sync_key: PathBuf,
 }
 
 /// Provider units the coordinator may start; any not wanted by the live
@@ -44,6 +46,7 @@ impl Default for Linux {
             sys_class_net: "/sys/class/net".into(),
             runtime_dir: "/run/sparewall".into(),
             quadlet_dir: "/usr/share/containers/systemd".into(),
+            sync_key: sparewall_render::SYNC_KEY_FILE.into(),
         }
     }
 }
@@ -428,6 +431,27 @@ impl System for Linux {
                 .map_err(|e| Error::io(&p, e))?;
         }
         let d = dir.display().to_string();
+        // Under systemd the checks run as transient units, outside this
+        // service's sandbox (podman and unshare need what it forbids).
+        let wrap = |cmd: &str, args: &[&str]| -> Result<String, Error> {
+            if std::env::var_os("INVOCATION_ID").is_some()
+                && Path::new("/run/systemd/system").exists()
+            {
+                let mut a = vec![
+                    "--wait",
+                    "--pipe",
+                    "--quiet",
+                    "--collect",
+                    "--service-type=exec",
+                    "--",
+                    cmd,
+                ];
+                a.extend_from_slice(args);
+                run("systemd-run", &a, None)
+            } else {
+                run(cmd, args, None)
+            }
+        };
         let result = match &spec.container {
             Some(container) => match self.quadlet_image(container) {
                 Some(image) => {
@@ -445,7 +469,7 @@ impl System for Linux {
                         &image,
                     ];
                     args.extend(spec.command.iter().map(String::as_str));
-                    run("podman", &args, None).map(|_| ())
+                    wrap("podman", &args).map(|_| ())
                 }
                 None => {
                     tracing::warn!(container, "no image for the config check; skipping it");
@@ -461,7 +485,7 @@ impl System for Linux {
                     .map(|a| a.replace(&spec.mount, &d))
                     .collect();
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                run(&spec.command[0], &args, None).map(|_| ())
+                wrap(&spec.command[0], &args).map(|_| ())
             }
         };
         let _ = fs::remove_dir_all(&dir);
@@ -498,6 +522,30 @@ impl System for Linux {
 
     fn nft_json(&mut self) -> Result<Option<Value>, Error> {
         Linux::nft_json_table()
+    }
+
+    fn sync_public_key(&mut self) -> Result<String, Error> {
+        let key = &self.sync_key;
+        if !key.exists() {
+            let private = run("wg", &["genkey"], None)?;
+            if let Some(d) = key.parent() {
+                fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+            }
+            write_atomic(key, private.trim().as_bytes()).map_err(|e| Error::io(key, e))?;
+            // networkd reads it as systemd-network.
+            fs::set_permissions(key, fs::Permissions::from_mode(0o640))
+                .map_err(|e| Error::io(key, e))?;
+            let _ = run(
+                "chgrp",
+                &["systemd-network", &key.display().to_string()],
+                None,
+            );
+            tracing::info!(path = %key.display(), "generated the sync-tunnel key");
+        }
+        let private = fs::read_to_string(key).map_err(|e| Error::io(key, e))?;
+        Ok(run("wg", &["pubkey"], Some(private.trim()))?
+            .trim()
+            .to_string())
     }
 
     fn proc_sys(&mut self, key: &str) -> Option<String> {

@@ -6,6 +6,7 @@ pub mod coordinator;
 pub mod health;
 pub mod linux;
 pub mod metrics;
+pub mod pair;
 pub mod store;
 pub mod system;
 

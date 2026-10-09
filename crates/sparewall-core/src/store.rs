@@ -198,6 +198,18 @@ impl Store {
         write_json(&self.gen_dir(id).join("rendered.json"), r)
     }
 
+    /// Move a generation out of the numbered sequence (kept on disk as
+    /// `generations/<id>.diverged-<hash>`), freeing its id for the peer's.
+    pub fn set_aside(&self, id: u64) -> Result<PathBuf, Error> {
+        let g = self.meta(id)?;
+        let to = self
+            .root
+            .join("generations")
+            .join(format!("{id}.diverged-{}", &g.hash[..g.hash.len().min(12)]));
+        fs::rename(self.gen_dir(id), &to).map_err(|e| Error::io(&to, e))?;
+        Ok(to)
+    }
+
     /// Delete the oldest generations beyond `keep`, never touching the
     /// ones listed in `protect`.
     pub fn prune(&self, keep: usize, protect: &[u64]) -> Result<Vec<u64>, Error> {

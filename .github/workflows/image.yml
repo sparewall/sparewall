@@ -124,7 +124,8 @@ jobs:
         if: failure()
         run: |
           mkdir -p logs
-          cp "$RUNNER_TEMP/vm/serial.log" logs/ 2>/dev/null || true
+          sudo cp "$RUNNER_TEMP/vm/serial.log" logs/ 2>/dev/null || true
+          sudo chown -R "$(id -u)" logs
           tail -200 logs/serial.log 2>/dev/null || true
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

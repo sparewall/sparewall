@@ -21,8 +21,9 @@ Environment=SPAREWALL_LOG=info
 # udevadm and ip.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/sparewall -/run/systemd/network -/run/sparewall -/etc/sparewall
-ProtectHome=yes
+ReadWritePaths=/var/lib/sparewall -/run/systemd/network -/run/sparewall -/etc/sparewall -/var/home/admin/.ssh
+# The admin account's authorized_keys live in its home.
+ProtectHome=no
 PrivateTmp=yes
 ProtectClock=yes
 ProtectHostname=yes
@@ -32,7 +33,6 @@ ProtectControlGroups=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-RestrictNamespaces=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

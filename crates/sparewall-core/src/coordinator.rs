@@ -490,9 +490,14 @@ impl<S: System> Coordinator<S> {
     }
 
     fn switch_to(&mut self, target: u64, why: &str) -> Result<(), Error> {
+        let old = self.rendered_for(self.store.state()?.active)?;
+        self.switch_from(&old, target, why)
+    }
+
+    /// Switch to `target`, reloading what differs from `old`.
+    fn switch_from(&mut self, old: &Rendered, target: u64, why: &str) -> Result<(), Error> {
         let state = self.store.state()?;
-        let old = self.rendered_for(state.active)?;
-        self.activate(target, Some(&old), false)?;
+        self.activate(target, Some(old), false)?;
         let new_state = State {
             active: target,
             confirmed: target,
@@ -500,6 +505,104 @@ impl<S: System> Coordinator<S> {
         };
         self.store.set_state(&new_state)?;
         tracing::info!(to = target, from = state.active, why, "switched generation");
+        Ok(())
+    }
+
+    /// The chain of `(id, hash)` from the active generation back through
+    /// each `base`, newest first (bootstrap, id 0, last).
+    pub fn lineage(&self) -> Result<Vec<(u64, String)>, Error> {
+        let mut out = Vec::new();
+        let mut id = Some(self.active()?);
+        while let Some(i) = id {
+            if i == 0 || !self.store.exists(i) {
+                break;
+            }
+            let g = self.store.meta(i)?;
+            out.push((g.id, g.hash.clone()));
+            id = g.base;
+            if out.len() > 10_000 {
+                break;
+            }
+        }
+        out.push((0, String::new()));
+        Ok(out)
+    }
+
+    /// What this node reports to its peer.
+    pub fn view(&self) -> Result<crate::pair::NodeView, Error> {
+        let state = self.store.state()?;
+        Ok(crate::pair::NodeView {
+            node: self.node().to_string(),
+            active: state.active,
+            desired: self.generation(state.active)?.hash,
+            applied: self.applied_hash.clone(),
+            lineage: self.lineage()?,
+            applying: false,
+        })
+    }
+
+    /// Accept a generation pushed by the peer. It keeps the peer's id and
+    /// is refused unless its `base` is this node's active generation, so a
+    /// push never overwrites a change this node has not seen.
+    pub fn receive(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
+        let state = self.store.state()?;
+        if self.store.exists(g.id) {
+            let have = self.store.meta(g.id)?;
+            if have.hash == g.hash {
+                if state.active != g.id {
+                    self.switch_to(g.id, "peer push")?;
+                }
+                return Ok(());
+            }
+            return Err(Error::Conflict {
+                current: state.active,
+            });
+        }
+        if state.pending.is_some() || g.base != Some(state.active) {
+            return Err(Error::Conflict {
+                current: state.active,
+            });
+        }
+        self.install_foreign(g, value, "peer push")
+    }
+
+    /// Take the peer's generation regardless of history (`sync --from`).
+    /// A local generation with the same id but other content is set aside.
+    pub fn adopt(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
+        if self.store.exists(g.id) {
+            let have = self.store.meta(g.id)?;
+            if have.hash == g.hash {
+                return self.switch_to(g.id, "sync");
+            }
+        }
+        self.install_foreign(g, value, "sync")
+    }
+
+    fn install_foreign(&mut self, g: &Generation, value: Value, why: &str) -> Result<(), Error> {
+        let (doc, _, rendered) = self.check(value)?;
+        if sparewall_config::hash(&doc) != g.hash {
+            return Err(Error::Validation(vec![format!(
+                "generation {} does not match its hash",
+                g.id
+            )]));
+        }
+        let from = self.active()?;
+        let old_rendered = self.rendered_for(from)?;
+        self.dry_run(&rendered, Some(&old_rendered))?;
+        if self.store.exists(g.id) {
+            // Only `adopt` gets here: keep the diverged generation aside.
+            let to = self.store.set_aside(g.id)?;
+            tracing::warn!(id = g.id, kept = %to.display(), "set aside a diverged generation");
+        }
+        self.store.save(g, &doc, &rendered)?;
+        self.switch_from(&old_rendered, g.id, why)?;
+        self.events.push(Event::Applied {
+            id: g.id,
+            hash: g.hash.clone(),
+            author: g.author.clone(),
+            pending: false,
+        });
+        tracing::info!(id = g.id, from, why, "installed the peer's generation");
         Ok(())
     }
 

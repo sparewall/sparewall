@@ -24,6 +24,8 @@ const IDENTITY_DROP: &[&str] = &[
     "/etc/sparewall/identity.yaml",
     "/etc/sparewall/identity.json",
 ];
+/// The admin account's home (`/home` is a symlink to it on bootc).
+const ADMIN_HOME: &str = "/var/home/admin";
 /// The systemd credential carrying the identity on VMs.
 const IDENTITY_CREDENTIAL: &str = "sparewall.identity";
 
@@ -97,19 +99,28 @@ fn load_identity(store: &Store, args: &Args) -> Result<Option<Identity>, String>
     Ok(None)
 }
 
-/// Install the identity's SSH keys for the `admin` account. sshd reads
-/// them through `AuthorizedKeysFile` (see image/files).
-fn install_ssh_keys(state: &Path, id: &Identity) {
-    let p = state.join("ssh/admin.keys");
+/// Install the identity's SSH keys for the `admin` account, in its
+/// `~/.ssh/authorized_keys` (labelled for sshd by SELinux).
+fn install_ssh_keys(home: &Path, id: &Identity) {
+    let p = home.join(".ssh/authorized_keys");
     let mut keys = id.ssh_keys.join("\n");
     keys.push('\n');
     if std::fs::read_to_string(&p).ok().as_deref() == Some(keys.as_str()) {
         return;
     }
     let r = sparewall_core::store::write_atomic(&p, keys.as_bytes())
-        .and_then(|()| std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)));
-    if let Err(e) = r {
-        tracing::error!(error = %e, "cannot install admin SSH keys");
+        .and_then(|()| std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)));
+    match r {
+        Ok(()) => {
+            let owner = std::process::Command::new("chown")
+                .args(["admin:admin", &p.display().to_string()])
+                .status();
+            if !owner.is_ok_and(|s| s.success()) {
+                tracing::error!(path = %p.display(), "cannot give authorized_keys to admin");
+            }
+            tracing::info!(keys = id.ssh_keys.len(), "installed admin SSH keys");
+        }
+        Err(e) => tracing::error!(error = %e, path = %p.display(), "cannot install admin SSH keys"),
     }
 }
 
@@ -192,7 +203,7 @@ fn run(args: Args) -> Result<(), String> {
         Box::new(sparewall_core::linux::Linux::default())
     };
     if !args.fake_system {
-        install_ssh_keys(&args.state, &identity);
+        install_ssh_keys(Path::new(ADMIN_HOME), &identity);
     }
     let node = identity.node.clone();
     let mut coordinator = Coordinator::new(store, sys, identity);

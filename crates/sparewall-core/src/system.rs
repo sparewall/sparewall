@@ -56,6 +56,10 @@ pub trait System: Send {
 
     /// A kernel value under /proc/sys, e.g. `net/netfilter/nf_conntrack_count`.
     fn proc_sys(&mut self, key: &str) -> Option<String>;
+
+    /// This node's sync-tunnel WireGuard public key, generating the key
+    /// pair on first use. The private key never leaves the node.
+    fn sync_public_key(&mut self) -> Result<String, Error>;
 }
 
 /// A recording fake for tests.
@@ -81,6 +85,8 @@ pub struct Fake {
     pub nft_json: Option<serde_json::Value>,
     /// What `proc_sys` returns, by key.
     pub proc: BTreeMap<String, String>,
+    /// The sync public key `sync_public_key` reports.
+    pub sync_key: Option<String>,
 }
 
 impl System for Fake {
@@ -192,6 +198,13 @@ impl System for Fake {
     fn proc_sys(&mut self, key: &str) -> Option<String> {
         self.proc.get(key).cloned()
     }
+
+    fn sync_public_key(&mut self) -> Result<String, Error> {
+        Ok(self
+            .sync_key
+            .get_or_insert_with(|| "RmFrZVN5bmNLZXlGb3JUZXN0c0Zha2VTeW5jS2V5MTI=".into())
+            .clone())
+    }
 }
 
 impl System for Box<dyn System> {
@@ -233,5 +246,8 @@ impl System for Box<dyn System> {
     }
     fn proc_sys(&mut self, key: &str) -> Option<String> {
         (**self).proc_sys(key)
+    }
+    fn sync_public_key(&mut self) -> Result<String, Error> {
+        (**self).sync_public_key()
     }
 }

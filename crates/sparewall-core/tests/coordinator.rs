@@ -384,3 +384,86 @@ fn backup_and_restore_drill() {
     assert_eq!(g.id, 1);
     assert_eq!(c.history(None).unwrap().len(), 2);
 }
+
+fn pair_example() -> Value {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/pair.yaml"
+    ))
+    .unwrap();
+    sparewall_config::parse_value(&text, sparewall_config::Format::Yaml).unwrap()
+}
+
+fn pair_node(name: &str) -> T {
+    let dir = tempfile::tempdir().unwrap();
+    let mut id = identity();
+    id.node = name.into();
+    let mut c = Coordinator::new(Store::open(dir.path()).unwrap(), Fake::default(), id);
+    c.boot(false).unwrap();
+    T { _dir: dir, c }
+}
+
+#[test]
+fn pair_push_conflict_and_sync_from() {
+    use sparewall_core::pair::{SyncState, push_plan, sync_state};
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v.clone(), &opts(1, None)).unwrap();
+
+    // b is two generations behind; push them in order.
+    let (va, vb) = (a.c.view().unwrap(), b.c.view().unwrap());
+    assert_eq!(sync_state(&va, Some(&vb)), SyncState::PeerBehind);
+    for id in push_plan(&va, vb.active, &vb.desired).unwrap() {
+        let g = a.c.generation(id).unwrap();
+        b.c.receive(&g, a.c.document_value(id).unwrap()).unwrap();
+    }
+    assert_eq!(b.c.active().unwrap(), 2);
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+    // Pushing the same generation again is harmless.
+    b.c.receive(&a.c.generation(2).unwrap(), a.c.document_value(2).unwrap())
+        .unwrap();
+
+    // Both sides change while apart: generation 3 differs.
+    v["networks"]["users"]["mtu"] = json!(1300);
+    a.c.apply(v.clone(), &opts(2, None)).unwrap();
+    v["networks"]["users"]["mtu"] = json!(1200);
+    b.c.apply(v, &opts(2, None)).unwrap();
+    let (va, vb) = (a.c.view().unwrap(), b.c.view().unwrap());
+    assert_eq!(sync_state(&va, Some(&vb)), SyncState::Diverged);
+    let g3 = a.c.generation(3).unwrap();
+    assert!(matches!(
+        b.c.receive(&g3, a.c.document_value(3).unwrap()),
+        Err(Error::Conflict { current: 3 })
+    ));
+    // `sync --from fw1` on fw2: fw2's own generation 3 is set aside.
+    b.c.adopt(&g3, a.c.document_value(3).unwrap()).unwrap();
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+    assert_eq!(
+        b.c.document_value(3).unwrap()["networks"]["users"]["mtu"],
+        1300
+    );
+    let aside: Vec<_> = std::fs::read_dir(b.c.store().root().join("generations"))
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with("3.diverged-"))
+        .collect();
+    assert_eq!(aside.len(), 1);
+    // A tampered push is refused.
+    let mut bad = a.c.generation(3).unwrap();
+    bad.id = 4;
+    bad.base = Some(3);
+    bad.hash = "0".repeat(64);
+    assert!(matches!(
+        b.c.receive(&bad, a.c.document_value(3).unwrap()),
+        Err(Error::Validation(_))
+    ));
+}

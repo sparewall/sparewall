@@ -19,6 +19,7 @@ cd "$WORK"
 
 log() { printf '\n=== %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
+trap 'dump' ERR
 
 log "building a qcow2 from $IMAGE"
 if [ ! -f output/qcow2/disk.qcow2 ]; then
@@ -54,7 +55,12 @@ sudo qemu-system-x86_64 \
     -pidfile qemu.pid -daemonize
 
 cleanup() {
+    local rc=$?
+    if [ $rc -ne 0 ]; then
+        vm 'systemctl --failed --no-legend; sudo journalctl -b -u sparewall-early -u sparewalld -u systemd-networkd --no-pager | tail -80' 2>/dev/null || true
+    fi
     if [ -f qemu.pid ]; then sudo kill "$(sudo cat qemu.pid)" 2>/dev/null || true; fi
+    sudo chmod a+r serial.log 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -63,10 +69,15 @@ SSH=(ssh -p "$SSH_PORT" -i "$WORK/id_ed25519" -o StrictHostKeyChecking=no
      admin@127.0.0.1)
 vm() { "${SSH[@]}" "$@"; }
 
+dump() {
+    echo "--- serial console (last 150 lines)"
+    sudo tail -150 serial.log || true
+}
+
 wait_ssh() {
     local deadline=$((SECONDS + ${1:-600}))
     until vm true 2>/dev/null; do
-        [ $SECONDS -lt $deadline ] || { tail -50 serial.log; fail "no SSH"; }
+        [ $SECONDS -lt $deadline ] || { dump; fail "no SSH"; }
         sleep 5
     done
 }
