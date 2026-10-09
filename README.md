@@ -53,7 +53,9 @@ sparewall get policy.'users->wan' -o yaml
 sparewall history
 ```
 
-More complete examples live in [`examples/`](examples/).
+More complete examples live in [`examples/`](examples/). Start with
+[docs/getting-started.md](docs/getting-started.md), then
+[docs/pairing.md](docs/pairing.md) and [docs/operations.md](docs/operations.md).
 
 ## Repository layout
 
