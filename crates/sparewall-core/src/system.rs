@@ -123,3 +123,30 @@ impl System for Fake {
         Ok(())
     }
 }
+
+impl System for Box<dyn System> {
+    fn nft_check(&mut self, body: &str, preserved: &[String]) -> Result<(), Error> {
+        (**self).nft_check(body, preserved)
+    }
+    fn nft_load(&mut self, body: &str, preserved: &[String]) -> Result<Vec<String>, Error> {
+        (**self).nft_load(body, preserved)
+    }
+    fn nft_chains(&mut self) -> Result<Option<Vec<String>>, Error> {
+        (**self).nft_chains()
+    }
+    fn networkd_apply(&mut self, old: &Files, new: &Files, early: bool) -> Result<(), Error> {
+        (**self).networkd_apply(old, new, early)
+    }
+    fn networkd_reconfigure(&mut self, links: &[String]) -> Result<(), Error> {
+        (**self).networkd_reconfigure(links)
+    }
+    fn sysctl_apply(&mut self, content: &str) -> Result<(), Error> {
+        (**self).sysctl_apply(content)
+    }
+    fn link_states(&mut self) -> BTreeMap<String, String> {
+        (**self).link_states()
+    }
+    fn services_apply(&mut self, meta: &Meta) -> Result<(), Error> {
+        (**self).services_apply(meta)
+    }
+}

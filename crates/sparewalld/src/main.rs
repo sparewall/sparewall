@@ -1,0 +1,231 @@
+//! sparewalld: the Sparewall coordinator.
+
+mod author;
+mod service;
+
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use clap::Parser;
+use serde_json::Value;
+use sparewall_config::identity::Identity;
+use sparewall_core::{Coordinator, Store, System};
+use tokio::sync::broadcast;
+use tracing_subscriber::prelude::*;
+
+use crate::service::{Core, Firewall, with_core};
+
+/// Where an install-time identity may be dropped (by a kickstart, or by
+/// `sparewall init`) to be recorded at the next start.
+const IDENTITY_DROP: &[&str] = &[
+    "/etc/sparewall/identity.yaml",
+    "/etc/sparewall/identity.json",
+];
+/// The systemd credential carrying the identity on VMs.
+const IDENTITY_CREDENTIAL: &str = "sparewall.identity";
+
+#[derive(Parser)]
+#[command(version, about = "The Sparewall coordinator")]
+struct Args {
+    /// State directory (generations, identity, keys).
+    #[arg(long, env = "SPAREWALL_STATE", default_value = "/var/lib/sparewall")]
+    state: PathBuf,
+    /// Varlink socket to listen on when not socket-activated.
+    #[arg(long, env = "SPAREWALL_SOCKET", default_value = sparewall_api::SOCKET)]
+    socket: PathBuf,
+    /// Install the live generation's files and load the firewall, then exit.
+    /// Runs before udev and networkd at boot.
+    #[arg(long)]
+    early: bool,
+    /// Import a node identity (JSON or YAML) if none is recorded yet.
+    #[arg(long)]
+    identity: Option<PathBuf>,
+    /// Use an in-memory fake system instead of the real one (testing only).
+    #[arg(long, hide = true, env = "SPAREWALL_FAKE_SYSTEM")]
+    fake_system: bool,
+}
+
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_env("SPAREWALL_LOG")
+        .unwrap_or_else(|_| "info".into());
+    let registry = tracing_subscriber::registry().with(filter);
+    if std::env::var_os("JOURNAL_STREAM").is_some()
+        && let Ok(journald) = tracing_journald::layer()
+    {
+        registry
+            .with(journald.with_syslog_identifier("sparewalld".into()))
+            .init();
+        return;
+    }
+    registry
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .init();
+}
+
+fn read_identity(path: &Path) -> Result<Identity, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let format = sparewall_config::Format::detect(path.to_str(), &text);
+    let v = sparewall_config::parse_value(&text, format).map_err(|e| e.to_string())?;
+    let id: Identity = serde_json::from_value(v).map_err(|e| format!("{}: {e}", path.display()))?;
+    id.check()?;
+    Ok(id)
+}
+
+/// The recorded identity, or one supplied at install time (recorded now).
+fn load_identity(store: &Store, args: &Args) -> Result<Option<Identity>, String> {
+    if let Some(id) = store.identity().map_err(|e| e.to_string())? {
+        return Ok(Some(id));
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    candidates.extend(args.identity.clone());
+    if let Some(dir) = std::env::var_os("CREDENTIALS_DIRECTORY") {
+        candidates.push(Path::new(&dir).join(IDENTITY_CREDENTIAL));
+    }
+    candidates.extend(IDENTITY_DROP.iter().map(PathBuf::from));
+    if let Some(p) = candidates.into_iter().find(|p| p.exists()) {
+        let id = read_identity(&p)?;
+        store.set_identity(&id).map_err(|e| e.to_string())?;
+        tracing::info!(node = %id.node, source = %p.display(), "recorded node identity");
+        return Ok(Some(id));
+    }
+    Ok(None)
+}
+
+/// Install the identity's SSH keys for the `admin` account. sshd reads
+/// them through `AuthorizedKeysFile` (see image/files).
+fn install_ssh_keys(state: &Path, id: &Identity) {
+    let p = state.join("ssh/admin.keys");
+    let mut keys = id.ssh_keys.join("\n");
+    keys.push('\n');
+    if std::fs::read_to_string(&p).ok().as_deref() == Some(keys.as_str()) {
+        return;
+    }
+    let r = sparewall_core::store::write_atomic(&p, keys.as_bytes())
+        .and_then(|()| std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)));
+    if let Err(e) = r {
+        tracing::error!(error = %e, "cannot install admin SSH keys");
+    }
+}
+
+fn listener(socket: &Path) -> std::io::Result<zlink::tokio::unix::Listener> {
+    let mut fds = listenfd::ListenFd::from_env();
+    let std_listener = match fds.take_unix_listener(0)? {
+        Some(l) => {
+            tracing::info!("using socket-activated listener");
+            l
+        }
+        None => {
+            if let Some(dir) = socket.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let _ = std::fs::remove_file(socket);
+            let l = std::os::unix::net::UnixListener::bind(socket)?;
+            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+            tracing::info!(path = %socket.display(), "listening");
+            l
+        }
+    };
+    std_listener.set_nonblocking(true)?;
+    Ok(tokio::net::UnixListener::from_std(std_listener)?.into())
+}
+
+/// Revert expired confirm windows and feed the watchdog.
+async fn ticker(core: Core, events: broadcast::Sender<Value>) {
+    let watchdog = sd_notify::watchdog_enabled().is_some();
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        let now = jiff::Timestamp::now().as_second();
+        if let Err(e) = with_core(&core, &events, move |c| c.tick(now)).await {
+            tracing::error!(error = %e, "confirm-window check failed");
+        }
+        if watchdog {
+            let _ = sd_notify::notify(&[sd_notify::NotifyState::Watchdog]);
+        }
+    }
+}
+
+fn main() -> std::process::ExitCode {
+    init_logging();
+    let args = Args::parse();
+    match run(args) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!("{e}");
+            eprintln!("sparewalld: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(args: Args) -> Result<(), String> {
+    let store = Store::open(&args.state).map_err(|e| e.to_string())?;
+    let identity = loop {
+        match load_identity(&store, &args)? {
+            Some(id) => break id,
+            None if args.early => {
+                tracing::warn!("no node identity yet; nothing to install");
+                return Ok(());
+            }
+            None => {
+                // Without an identity there is no management port to bring
+                // up. Wait for one (`sparewall init` on the console).
+                tracing::error!(
+                    "no node identity: supply the {IDENTITY_CREDENTIAL} credential or run `sparewall init` on the console"
+                );
+                let _ = sd_notify::notify(&[sd_notify::NotifyState::Status(
+                    "waiting for a node identity (sparewall init)",
+                )]);
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+    };
+    let sys: Box<dyn System> = if args.fake_system {
+        Box::new(sparewall_core::system::Fake::default())
+    } else {
+        Box::new(sparewall_core::linux::Linux::default())
+    };
+    if !args.fake_system {
+        install_ssh_keys(&args.state, &identity);
+    }
+    let mut coordinator = Coordinator::new(store, sys, identity);
+    let active = coordinator.boot(args.early).map_err(|e| e.to_string())?;
+    tracing::info!(
+        generation = active,
+        early = args.early,
+        "configuration installed"
+    );
+    if args.early {
+        return Ok(());
+    }
+
+    let core: Core = Arc::new(Mutex::new(coordinator));
+    let (tx, _) = broadcast::channel::<Value>(256);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    rt.block_on(async move {
+        // Publish anything boot did (a revert of an unconfirmed change).
+        let _ = with_core(&core, &tx, |_| Ok(())).await;
+        let l = listener(&args.socket).map_err(|e| format!("socket: {e}"))?;
+        let server = zlink::Server::new(l, Firewall::new(core.clone(), tx.clone()));
+        let _ = sd_notify::notify(&[
+            sd_notify::NotifyState::Ready,
+            sd_notify::NotifyState::Status("running"),
+        ]);
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|e| e.to_string())?;
+        tokio::select! {
+            r = server.run() => r.map_err(|e| format!("varlink server: {e}")),
+            () = ticker(core.clone(), tx.clone()) => Ok(()),
+            _ = term.recv() => {
+                tracing::info!("terminating");
+                Ok(())
+            }
+            _ = tokio::signal::ctrl_c() => Ok(()),
+        }
+    })
+}
