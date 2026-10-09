@@ -5,7 +5,7 @@ After=sparewalld.service
 ConditionPathExists=/run/sparewall/logging/ulogd.conf
 
 [Service]
-ExecStart=/usr/sbin/ulogd -c /run/sparewall/logging/ulogd.conf
+ExecStart=/usr/bin/ulogd -c /run/sparewall/logging/ulogd.conf
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=yes
