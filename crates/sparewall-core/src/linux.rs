@@ -1,0 +1,419 @@
+//! The real system adapter. It shells out to `nft`, `networkctl`, `udevadm`
+//! and `ip` rather than reimplementing their netlink protocols (design:
+//! "Adapters for everything else").
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+use serde_json::Value;
+use sparewall_render::Meta;
+use sparewall_render::nft::TABLE;
+
+use crate::Error;
+use crate::store::write_atomic;
+use crate::system::{Files, System};
+
+pub struct Linux {
+    /// Where networkd reads runtime configuration.
+    pub network_dir: PathBuf,
+    pub proc_sys: PathBuf,
+    pub sys_class_net: PathBuf,
+}
+
+impl Default for Linux {
+    fn default() -> Self {
+        Linux {
+            network_dir: "/run/systemd/network".into(),
+            proc_sys: "/proc/sys".into(),
+            sys_class_net: "/sys/class/net".into(),
+        }
+    }
+}
+
+/// Run a command, feeding `stdin`, and return stdout; stderr becomes the
+/// error.
+fn run(cmd: &str, args: &[&str], stdin: Option<&str>) -> Result<String, Error> {
+    tracing::debug!(cmd, ?args, "running");
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Apply(format!("cannot run {cmd}: {e}")))?;
+    if let Some(input) = stdin {
+        child
+            .stdin
+            .take()
+            .expect("piped")
+            .write_all(input.as_bytes())
+            .map_err(|e| Error::Apply(format!("{cmd}: {e}")))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| Error::Apply(format!("{cmd}: {e}")))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(Error::Apply(format!(
+            "{cmd} {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}
+
+/// What the live `inet sparewall` table holds.
+#[derive(Debug, Default)]
+struct LiveTable {
+    exists: bool,
+    chains: Vec<String>,
+    /// Set name to whether it is compatible with a networkd-filled set
+    /// (ipv4_addr with the interval flag).
+    sets: BTreeMap<String, bool>,
+    maps: Vec<String>,
+}
+
+fn live_table() -> Result<LiveTable, Error> {
+    let out = match run("nft", &["-j", "list", "table", "inet", TABLE], None) {
+        Ok(o) => o,
+        Err(Error::Apply(msg))
+            if msg.contains("No such file") || msg.contains("does not exist") =>
+        {
+            return Ok(LiveTable::default());
+        }
+        Err(e) => return Err(e),
+    };
+    parse_live_table(&out)
+}
+
+fn parse_live_table(json: &str) -> Result<LiveTable, Error> {
+    let v: Value = serde_json::from_str(json).map_err(|e| Error::Apply(format!("nft -j: {e}")))?;
+    let mut t = LiveTable {
+        exists: true,
+        ..Default::default()
+    };
+    for item in v["nftables"].as_array().into_iter().flatten() {
+        if let Some(c) = item.get("chain") {
+            if let Some(n) = c["name"].as_str() {
+                t.chains.push(n.to_string());
+            }
+        } else if let Some(s) = item.get("set") {
+            let name = s["name"].as_str().unwrap_or_default().to_string();
+            let flags: Vec<&str> = match &s["flags"] {
+                Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+                Value::String(f) => vec![f.as_str()],
+                _ => vec![],
+            };
+            let compatible = s["type"].as_str() == Some("ipv4_addr") && flags.contains(&"interval");
+            t.sets.insert(name, compatible);
+        } else if let Some(m) = item.get("map")
+            && let Some(n) = m["name"].as_str()
+        {
+            t.maps.push(n.to_string());
+        }
+    }
+    Ok(t)
+}
+
+/// Statements that clear the coordinator-owned parts of the live table so
+/// the new body can be loaded in the same transaction. Sets in `preserved`
+/// survive (with their elements) when compatible.
+fn prelude(live: &LiveTable, preserved: &[String]) -> (String, Vec<String>) {
+    let mut s = String::new();
+    if !live.exists {
+        let created = preserved.to_vec();
+        return (s, created);
+    }
+    for c in &live.chains {
+        s.push_str(&format!("flush chain inet {TABLE} {c}\n"));
+    }
+    for c in &live.chains {
+        s.push_str(&format!("delete chain inet {TABLE} {c}\n"));
+    }
+    for m in &live.maps {
+        s.push_str(&format!("delete map inet {TABLE} {m}\n"));
+    }
+    let mut created = Vec::new();
+    for (name, compatible) in &live.sets {
+        if !(preserved.contains(name) && *compatible) {
+            s.push_str(&format!("delete set inet {TABLE} {name}\n"));
+        }
+    }
+    for p in preserved {
+        if !live.sets.get(p).copied().unwrap_or(false) {
+            created.push(p.clone());
+        }
+    }
+    (s, created)
+}
+
+/// `[Section] Key=` values from an INI file.
+fn ini_values<'a>(content: &'a str, section: &str, key: &str) -> Vec<&'a str> {
+    let mut cur = "";
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(s) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            cur = s;
+        } else if cur == section
+            && let Some((k, v)) = line.split_once('=')
+            && k.trim() == key
+        {
+            out.push(v.trim());
+        }
+    }
+    out
+}
+
+impl Linux {
+    fn ifaces(&self) -> Vec<String> {
+        fs::read_dir(&self.sys_class_net)
+            .map(|d| {
+                d.filter_map(|e| e.ok()?.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Current interface name for a permanent MAC address or udev path.
+    fn find_iface(&self, nic: &str) -> Option<String> {
+        if sparewall_config::validate::mac_ok(nic) {
+            let out = run("ip", &["-j", "-d", "link", "show"], None).ok()?;
+            let v: Value = serde_json::from_str(&out).ok()?;
+            let want = nic.to_ascii_lowercase();
+            v.as_array()?.iter().find_map(|l| {
+                let perm = l
+                    .get("permaddr")
+                    .or_else(|| l.get("address"))
+                    .and_then(Value::as_str)?;
+                (perm.eq_ignore_ascii_case(&want))
+                    .then(|| l["ifname"].as_str().map(str::to_string))?
+            })
+        } else {
+            self.ifaces().into_iter().find(|i| {
+                run(
+                    "udevadm",
+                    &["info", "-q", "property", &format!("/sys/class/net/{i}")],
+                    None,
+                )
+                .is_ok_and(|p| p.lines().any(|l| l == format!("ID_PATH={nic}")))
+            })
+        }
+    }
+
+    /// Apply a `.link` file to a running device: udev renames only devices
+    /// that are down, so take it down first when the name must change.
+    fn apply_link(&self, content: &str) -> Result<(), Error> {
+        let Some(name) = ini_values(content, "Link", "Name")
+            .first()
+            .map(|s| s.to_string())
+        else {
+            return Ok(());
+        };
+        let nic = ini_values(content, "Match", "PermanentMACAddress")
+            .first()
+            .or(ini_values(content, "Match", "Path").first())
+            .map(|s| s.to_string());
+        let Some(nic) = nic else { return Ok(()) };
+        let Some(cur) = self.find_iface(&nic) else {
+            tracing::warn!(nic, "no device for .link file yet");
+            return Ok(());
+        };
+        let dev = format!("/sys/class/net/{cur}");
+        if cur != name {
+            tracing::info!(from = cur, to = name, "renaming interface");
+            run("ip", &["link", "set", "dev", &cur, "down"], None)?;
+        }
+        run(
+            "udevadm",
+            &["trigger", "--action=add", "--settle", &dev],
+            None,
+        )?;
+        if cur != name && !self.sys_class_net.join(&name).exists() {
+            // udev left it alone (another rule won): rename directly.
+            run("ip", &["link", "set", "dev", &cur, "name", &name], None)?;
+        }
+        Ok(())
+    }
+}
+
+impl System for Linux {
+    fn nft_check(&mut self, body: &str, preserved: &[String]) -> Result<(), Error> {
+        let (pre, _) = prelude(&live_table()?, preserved);
+        run("nft", &["-c", "-f", "-"], Some(&format!("{pre}{body}")))
+            .map(|_| ())
+            .map_err(|e| Error::Check(e.to_string()))
+    }
+
+    fn nft_load(&mut self, body: &str, preserved: &[String]) -> Result<Vec<String>, Error> {
+        let (pre, created) = prelude(&live_table()?, preserved);
+        run("nft", &["-f", "-"], Some(&format!("{pre}{body}")))?;
+        Ok(created)
+    }
+
+    fn nft_chains(&mut self) -> Result<Option<Vec<String>>, Error> {
+        let t = live_table()?;
+        Ok(t.exists.then_some(t.chains))
+    }
+
+    fn networkd_apply(&mut self, old: &Files, new: &Files, early: bool) -> Result<(), Error> {
+        let dir = &self.network_dir;
+        fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+        for (name, content) in new {
+            let p = dir.join(name);
+            if fs::read_to_string(&p).ok().as_deref() != Some(content) {
+                write_atomic(&p, content.as_bytes()).map_err(|e| Error::io(&p, e))?;
+            }
+        }
+        // Remove our files that are no longer rendered, including leftovers
+        // from an interrupted apply.
+        for e in fs::read_dir(dir).map_err(|e| Error::io(dir, e))?.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.contains("-sparewall-") && !new.contains_key(&name) {
+                fs::remove_file(e.path()).map_err(|err| Error::io(&e.path(), err))?;
+            }
+        }
+        if early {
+            return Ok(());
+        }
+        // .link files: rename and re-apply link settings.
+        let links_changed: Vec<&String> = new
+            .iter()
+            .filter(|(n, c)| n.ends_with(".link") && old.get(*n) != Some(*c))
+            .map(|(_, c)| c)
+            .collect();
+        if !links_changed.is_empty() {
+            run("udevadm", &["control", "--reload"], None)?;
+            for c in links_changed {
+                self.apply_link(c)?;
+            }
+        }
+        // networkd never updates an existing netdev on reload: delete the
+        // ones that changed or went away so they are recreated.
+        let mut delete: BTreeSet<String> = BTreeSet::new();
+        for (n, c) in old.iter().filter(|(n, _)| n.ends_with(".netdev")) {
+            if new.get(n) != Some(c) {
+                delete.extend(
+                    ini_values(c, "NetDev", "Name")
+                        .into_iter()
+                        .map(String::from),
+                );
+            }
+        }
+        let existing: BTreeSet<String> = self.ifaces().into_iter().collect();
+        let delete: Vec<String> = delete
+            .into_iter()
+            .filter(|d| existing.contains(d))
+            .collect();
+        if !delete.is_empty() {
+            let mut args = vec!["delete"];
+            args.extend(delete.iter().map(String::as_str));
+            run("networkctl", &args, None)?;
+        }
+        run("networkctl", &["reload"], None)?;
+        Ok(())
+    }
+
+    fn networkd_reconfigure(&mut self, links: &[String]) -> Result<(), Error> {
+        let mut args = vec!["reconfigure"];
+        args.extend(links.iter().map(String::as_str));
+        run("networkctl", &args, None).map(|_| ())
+    }
+
+    fn sysctl_apply(&mut self, content: &str) -> Result<(), Error> {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+                continue;
+            }
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let p: PathBuf = self.proc_sys.join(k.trim().replace('.', "/"));
+            match fs::write(&p, v.trim()) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::debug!(key = k.trim(), "sysctl not present yet");
+                }
+                Err(e) => return Err(Error::io(&p, e)),
+            }
+        }
+        Ok(())
+    }
+
+    fn link_states(&mut self) -> BTreeMap<String, String> {
+        self.ifaces()
+            .into_iter()
+            .map(|i| {
+                let s = fs::read_to_string(self.sys_class_net.join(&i).join("operstate"))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".into());
+                (i, s)
+            })
+            .collect()
+    }
+
+    fn services_apply(&mut self, meta: &Meta) -> Result<(), Error> {
+        for (role, unit) in &meta.services {
+            tracing::debug!(role, unit, "service wanted");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prelude_keeps_compatible_preserved_sets() {
+        let json = r#"{"nftables":[{"metainfo":{}},{"table":{"family":"inet","name":"sparewall"}},
+          {"set":{"family":"inet","name":"wan_address","table":"sparewall","type":"ipv4_addr","flags":["interval"]}},
+          {"set":{"family":"inet","name":"old_static","table":"sparewall","type":"ipv4_addr","flags":["interval"]}},
+          {"set":{"family":"inet","name":"bad_type","table":"sparewall","type":"ipv4_addr"}},
+          {"chain":{"family":"inet","table":"sparewall","name":"input"}},
+          {"chain":{"family":"inet","table":"sparewall","name":"in_wan"}}]}"#;
+        let live = parse_live_table(json).unwrap();
+        let (pre, created) = prelude(
+            &live,
+            &[
+                "wan_address".to_string(),
+                "bad_type".to_string(),
+                "new_dyn".to_string(),
+            ],
+        );
+        assert_eq!(
+            pre,
+            "flush chain inet sparewall input\nflush chain inet sparewall in_wan\n\
+             delete chain inet sparewall input\ndelete chain inet sparewall in_wan\n\
+             delete set inet sparewall bad_type\ndelete set inet sparewall old_static\n"
+        );
+        assert_eq!(created, ["bad_type", "new_dyn"]);
+    }
+
+    #[test]
+    fn prelude_for_absent_table() {
+        let (pre, created) = prelude(&LiveTable::default(), &["x".to_string()]);
+        assert!(pre.is_empty());
+        assert_eq!(created, ["x"]);
+    }
+
+    #[test]
+    fn ini_parsing() {
+        let c = "[Match]\nPermanentMACAddress=52:54:00:aa:00:01\n\n[Link]\nName=uplink\n";
+        assert_eq!(ini_values(c, "Link", "Name"), ["uplink"]);
+        assert_eq!(
+            ini_values(c, "Match", "PermanentMACAddress"),
+            ["52:54:00:aa:00:01"]
+        );
+        assert!(ini_values(c, "Match", "Name").is_empty());
+    }
+}

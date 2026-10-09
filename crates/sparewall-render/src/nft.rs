@@ -165,10 +165,7 @@ fn raw_line(name: &str, e: &RawEntry) -> String {
     format!("{} comment {}", e.nft.trim(), q(&format!("raw:{name}")))
 }
 
-fn sorted_raw(
-    doc: &Document,
-    pred: impl Fn(&RawAt) -> bool,
-) -> Vec<(&String, &RawEntry)> {
+fn sorted_raw(doc: &Document, pred: impl Fn(&RawAt) -> bool) -> Vec<(&String, &RawEntry)> {
     let mut v: Vec<_> = doc.raw.iter().filter(|(_, e)| pred(&e.at)).collect();
     v.sort_by_key(|(n, e)| (e.order, n.as_str()));
     v
