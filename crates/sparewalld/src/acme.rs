@@ -434,6 +434,65 @@ mod tests {
         assert!(i.due(60));
     }
 
+    /// Issue a real certificate from Pebble, with challenges published to
+    /// a BIND server by RFC 2136 (tests/acme/run.sh sets this up).
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "needs Pebble and BIND; run by tests/acme/run.sh"]
+    async fn against_pebble() {
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} not set"));
+        let dir = tempfile::tempdir().unwrap();
+        let id = sparewall_config::identity::Identity {
+            node: "fw1".into(),
+            ssh_keys: vec![],
+            management: sparewall_config::identity::BootstrapPort {
+                nic: "52:54:00:aa:00:01".into(),
+                vlan: None,
+                address: None,
+                gateway: None,
+                dns: vec![],
+            },
+        };
+        let sys: Box<dyn sparewall_core::System> =
+            Box::new(sparewall_core::system::Fake::default());
+        let mut c = sparewall_core::Coordinator::new(
+            sparewall_core::Store::open(dir.path()).unwrap(),
+            sys,
+            id,
+        );
+        c.secret_set(
+            "dns-tsig",
+            env("ACME_TSIG").as_bytes(),
+            SecretClass::Cluster,
+        )
+        .unwrap();
+        let core: Core = Arc::new(std::sync::Mutex::new(c));
+        let (events, _) = broadcast::channel(16);
+        let cert: Certificate = serde_json::from_value(serde_json::json!({
+            "names": ["fw.example.test", "vpn.example.test"],
+            "acme": {
+                "directory": env("ACME_DIRECTORY"),
+                "ca": std::fs::read_to_string(env("ACME_CA")).unwrap(),
+                "dns": {
+                    "provider": "rfc2136",
+                    "credentials": "secret:dns-tsig",
+                    "options": {"server": env("ACME_DNS"), "zone": "example.test"}
+                }
+            }
+        }))
+        .unwrap();
+        let issued = issue(&core, &events, &cert).await.unwrap();
+        assert!(issued.chain_pem.contains("BEGIN CERTIFICATE"));
+        assert!(issued.not_after > issued.not_before);
+        // The listener can serve it.
+        let ss = crate::http::self_signed(&dir.path().join("tls"), "fw1").unwrap();
+        crate::http::Tls::new(&ss)
+            .unwrap()
+            .use_pem(&issued.chain_pem, &issued.key_pem)
+            .unwrap();
+        // A second order reuses the stored account.
+        issue(&core, &events, &cert).await.unwrap();
+    }
+
     #[test]
     fn reads_validity() {
         let key = rcgen::KeyPair::generate().unwrap();
