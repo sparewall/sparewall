@@ -20,7 +20,7 @@ ReadOnly=true
 Volume=/run/sparewall/dhcp:/etc/kea:ro,z
 Volume=sparewall-kea-leases:/var/lib/kea:z
 Volume=/run/kea:/run/kea:z
-Tmpfile=/tmp
+Tmpfs=/tmp
 LogDriver=journald
 
 [Service]

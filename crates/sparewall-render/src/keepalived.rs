@@ -15,6 +15,8 @@ use crate::{CheckSpec, Rendered, Service, Subsystem};
 
 pub const UNIT: &str = "keepalived.service";
 pub const CONF: &str = "keepalived.conf";
+/// keepalived's runtime directory (labelled for it); the file is installed here.
+pub const DIR: &str = "/run/keepalived";
 /// Where keepalived reports state changes to the coordinator.
 pub const FIFO: &str = "/run/sparewall/keepalived.fifo";
 pub const SYNC_GROUP: &str = "SPAREWALL";
@@ -121,7 +123,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
             // network namespace holding dummy links of the same names.
             check: Some(CheckSpec {
                 container: None,
-                mount: "/run/sparewall/keepalived".into(),
+                mount: DIR.into(),
                 command: vec![
                     "unshare".into(),
                     "--net".into(),
@@ -129,7 +131,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
                     "-ec".into(),
                     format!(
                         "for i in {}; do ip link add \"$i\" type dummy; ip link set \"$i\" multicast on up; done; \
-                         exec keepalived --config-test --use-file /run/sparewall/keepalived/{CONF}",
+                         exec keepalived --config-test --use-file {DIR}/{CONF}",
                         links.join(" ")
                     ),
                 ],

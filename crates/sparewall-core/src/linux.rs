@@ -33,6 +33,17 @@ pub struct Linux {
     pub sync_key: PathBuf,
 }
 
+/// Daemons confined by SELinux read their configuration from their own
+/// runtime directory, which carries their label; the rest use
+/// `/run/sparewall/<subsystem>`.
+pub fn install_dir(sub: Subsystem) -> Option<&'static str> {
+    match sub {
+        Subsystem::Ntp => Some(sparewall_render::chrony::DIR),
+        Subsystem::Keepalived => Some(sparewall_render::keepalived::DIR),
+        _ => None,
+    }
+}
+
 /// Provider units the coordinator may start; any not wanted by the live
 /// generation are stopped.
 pub const PROVIDER_UNITS: &[&str] = &[
@@ -403,13 +414,21 @@ impl System for Linux {
     }
 
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
-        let dir = self.runtime_dir.join(sub.dir());
+        let (dir, shared) = match install_dir(sub) {
+            Some(d) => (PathBuf::from(d), true),
+            None => (self.runtime_dir.join(sub.dir()), false),
+        };
         fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
         for (name, content) in files {
             let p = dir.join(name);
             write_atomic(&p, content.as_bytes()).map_err(|e| Error::io(&p, e))?;
             fs::set_permissions(&p, fs::Permissions::from_mode(0o644))
                 .map_err(|e| Error::io(&p, e))?;
+        }
+        if shared {
+            // A confined daemon reads only files with its own label.
+            let _ = run("restorecon", &["-R", &dir.display().to_string()], None);
+            return Ok(());
         }
         for e in fs::read_dir(&dir)
             .map_err(|e| Error::io(&dir, e))?

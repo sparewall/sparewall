@@ -15,10 +15,10 @@ services:
     reload: false
     check:
       container: ~
-      mount: /run/sparewall/ntp
+      mount: /run/chrony
       command:
         - chronyd
         - "-p"
         - "-f"
-        - /run/sparewall/ntp/chrony.conf
+        - /run/chrony/sparewall.conf
 bootstrap: true

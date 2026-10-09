@@ -7,3 +7,13 @@ enable systemd-resolved.service
 enable chronyd.service
 enable sshd.service
 disable bootc-fetch-apply-updates.timer
+# Nothing listens on a firewall that it does not need.
+disable avahi-daemon.service
+disable avahi-daemon.socket
+disable rpcbind.service
+disable rpcbind.socket
+disable nfs-client.target
+disable rpc-statd-notify.service
+disable ModemManager.service
+disable cups.service
+disable cups.socket

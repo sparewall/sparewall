@@ -8,7 +8,9 @@ use sparewall_config::model::Document;
 use crate::{CheckSpec, Rendered, Service, Subsystem};
 
 pub const UNIT: &str = "chronyd.service";
-pub const CONF: &str = "chrony.conf";
+pub const CONF: &str = "sparewall.conf";
+/// chronyd's runtime directory (labelled for it); the file is installed here.
+pub const DIR: &str = "/run/chrony";
 pub const DEFAULT_POOL: &str = "2.fedora.pool.ntp.org";
 
 fn base(servers: &[String]) -> String {
@@ -42,12 +44,12 @@ fn service(out: &mut Rendered) {
             reload: false,
             check: Some(CheckSpec {
                 container: None,
-                mount: "/run/sparewall/ntp".into(),
+                mount: DIR.into(),
                 command: vec![
                     "chronyd".into(),
                     "-p".into(),
                     "-f".into(),
-                    format!("/run/sparewall/ntp/{CONF}"),
+                    format!("{DIR}/{CONF}"),
                 ],
                 overrides: Default::default(),
             }),
