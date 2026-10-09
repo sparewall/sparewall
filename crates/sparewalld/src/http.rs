@@ -130,13 +130,13 @@ impl Tls {
         if cur.1.as_deref() == Some(id.as_str()) {
             return Ok(());
         }
-        let chain: Vec<_> =
-            rustls_pemfile::certs(&mut std::io::BufReader::new(chain_pem.as_bytes()))
+        use rustls::pki_types::pem::PemObject;
+        let chain: Vec<rustls::pki_types::CertificateDer<'static>> =
+            rustls::pki_types::CertificateDer::pem_slice_iter(chain_pem.as_bytes())
                 .collect::<Result<_, _>>()
                 .map_err(|e| e.to_string())?;
-        let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(key_pem.as_bytes()))
-            .map_err(|e| e.to_string())?
-            .ok_or("no private key")?;
+        let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
+            .map_err(|e| e.to_string())?;
         *cur = (server_config(chain, key)?, Some(id));
         tracing::info!("serving the ACME certificate");
         Ok(())

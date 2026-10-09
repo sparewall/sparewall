@@ -59,8 +59,8 @@ fn account_secret(directory: &str) -> String {
 
 /// Validity of the first certificate in a PEM chain.
 pub fn validity(chain_pem: &str) -> Result<(i64, i64), String> {
-    let mut rd = std::io::BufReader::new(chain_pem.as_bytes());
-    let der = rustls_pemfile::certs(&mut rd)
+    use tokio_rustls::rustls::pki_types::{CertificateDer, pem::PemObject};
+    let der = CertificateDer::pem_slice_iter(chain_pem.as_bytes())
         .next()
         .ok_or("no certificate in the chain")?
         .map_err(|e| e.to_string())?;
