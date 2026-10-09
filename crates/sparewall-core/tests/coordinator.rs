@@ -467,3 +467,29 @@ fn pair_push_conflict_and_sync_from() {
         Err(Error::Validation(_))
     ));
 }
+
+#[test]
+fn vpn_keys_and_client_config() {
+    let mut a = pair_node("fw1");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    assert!(
+        a.c.system()
+            .runtime_keys
+            .contains_key("vpn-roadwarrior.key")
+    );
+    let cfg = a.c.vpn_client_config(None, "alice-laptop").unwrap();
+    assert!(cfg.contains("Endpoint = vpn.example.org:51820"), "{cfg}");
+    assert!(cfg.contains("Address = 10.99.0.10/32"), "{cfg}");
+    // The key is generated once; a peer receives it rather than making one.
+    let shared = a.c.cluster_secrets().unwrap();
+    assert_eq!(shared.len(), 1);
+    let mut b = pair_node("fw2");
+    assert_eq!(b.c.receive_secrets(shared).unwrap(), 1);
+    b.c.receive(&a.c.generation(1).unwrap(), a.c.document_value(1).unwrap())
+        .unwrap();
+    assert_eq!(b.c.system().keys_made, 0);
+    assert_eq!(
+        b.c.vpn_public_key("roadwarrior").unwrap(),
+        a.c.vpn_public_key("roadwarrior").unwrap()
+    );
+}

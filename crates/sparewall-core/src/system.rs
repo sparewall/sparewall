@@ -60,6 +60,23 @@ pub trait System: Send {
     /// This node's sync-tunnel WireGuard public key, generating the key
     /// pair on first use. The private key never leaves the node.
     fn sync_public_key(&mut self) -> Result<String, Error>;
+
+    /// Encrypt a secret for this node (`systemd-creds`, TPM2-bound where
+    /// available).
+    fn encrypt(&mut self, name: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error>;
+
+    /// Decrypt what [`System::encrypt`] produced on this node.
+    fn decrypt(&mut self, name: &str, ciphertext: &[u8]) -> Result<Vec<u8>, Error>;
+
+    /// A new WireGuard private key and its public key.
+    fn wg_keypair(&mut self) -> Result<(String, String), Error>;
+
+    /// The public key of a WireGuard private key.
+    fn wg_public(&mut self, private: &str) -> Result<String, Error>;
+
+    /// Make a secret available to a daemon in tmpfs (`/run/sparewall/keys`),
+    /// readable by `group`.
+    fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error>;
 }
 
 /// A recording fake for tests.
@@ -87,6 +104,10 @@ pub struct Fake {
     pub proc: BTreeMap<String, String>,
     /// The sync public key `sync_public_key` reports.
     pub sync_key: Option<String>,
+    /// WireGuard key pairs generated so far.
+    pub keys_made: u32,
+    /// Keys installed for daemons, by file name.
+    pub runtime_keys: BTreeMap<String, Vec<u8>>,
 }
 
 impl System for Fake {
@@ -199,6 +220,42 @@ impl System for Fake {
         self.proc.get(key).cloned()
     }
 
+    fn encrypt(&mut self, name: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        let mut v = format!("fake:{name}:").into_bytes();
+        v.extend(plaintext.iter().map(|b| b ^ 0x5a));
+        Ok(v)
+    }
+
+    fn decrypt(&mut self, name: &str, ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+        let prefix = format!("fake:{name}:");
+        let body = ciphertext
+            .strip_prefix(prefix.as_bytes())
+            .ok_or_else(|| Error::Apply(format!("secret {name}: wrong key")))?;
+        Ok(body.iter().map(|b| b ^ 0x5a).collect())
+    }
+
+    fn wg_keypair(&mut self) -> Result<(String, String), Error> {
+        self.keys_made += 1;
+        let private = format!("{:0>43}=", format!("FakePrivateKey{}", self.keys_made));
+        let public = self.wg_public(&private)?;
+        Ok((private, public))
+    }
+
+    fn wg_public(&mut self, private: &str) -> Result<String, Error> {
+        Ok(format!(
+            "{:0>43}=",
+            format!(
+                "FakePublic{}",
+                private.trim_start_matches('0').trim_end_matches('=')
+            )
+        ))
+    }
+
+    fn install_key(&mut self, file: &str, content: &[u8], _group: &str) -> Result<(), Error> {
+        self.runtime_keys.insert(file.to_string(), content.to_vec());
+        Ok(())
+    }
+
     fn sync_public_key(&mut self) -> Result<String, Error> {
         Ok(self
             .sync_key
@@ -249,5 +306,20 @@ impl System for Box<dyn System> {
     }
     fn sync_public_key(&mut self) -> Result<String, Error> {
         (**self).sync_public_key()
+    }
+    fn encrypt(&mut self, name: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        (**self).encrypt(name, plaintext)
+    }
+    fn decrypt(&mut self, name: &str, ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+        (**self).decrypt(name, ciphertext)
+    }
+    fn wg_keypair(&mut self) -> Result<(String, String), Error> {
+        (**self).wg_keypair()
+    }
+    fn wg_public(&mut self, private: &str) -> Result<String, Error> {
+        (**self).wg_public(private)
+    }
+    fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
+        (**self).install_key(file, content, group)
     }
 }

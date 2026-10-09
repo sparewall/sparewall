@@ -529,6 +529,79 @@ impl System for Linux {
         Linux::nft_json_table()
     }
 
+    fn encrypt(&mut self, name: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        let out = Command::new("systemd-creds")
+            .args([
+                "encrypt",
+                "--with-key=auto",
+                &format!("--name={name}"),
+                "-",
+                "-",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .and_then(|mut c| {
+                c.stdin.take().expect("piped").write_all(plaintext)?;
+                c.wait_with_output()
+            })
+            .map_err(|e| Error::Apply(format!("systemd-creds: {e}")))?;
+        if !out.status.success() {
+            return Err(Error::Apply(format!(
+                "systemd-creds encrypt {name}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(out.stdout)
+    }
+
+    fn decrypt(&mut self, name: &str, ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+        let out = Command::new("systemd-creds")
+            .args(["decrypt", &format!("--name={name}"), "-", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .and_then(|mut c| {
+                c.stdin.take().expect("piped").write_all(ciphertext)?;
+                c.wait_with_output()
+            })
+            .map_err(|e| Error::Apply(format!("systemd-creds: {e}")))?;
+        if !out.status.success() {
+            return Err(Error::Apply(format!(
+                "systemd-creds decrypt {name}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(out.stdout)
+    }
+
+    fn wg_keypair(&mut self) -> Result<(String, String), Error> {
+        let private = run("wg", &["genkey"], None)?.trim().to_string();
+        let public = self.wg_public(&private)?;
+        Ok((private, public))
+    }
+
+    fn wg_public(&mut self, private: &str) -> Result<String, Error> {
+        Ok(run("wg", &["pubkey"], Some(private.trim()))?
+            .trim()
+            .to_string())
+    }
+
+    fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
+        let dir = self.runtime_dir.join("keys");
+        fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o750))
+            .map_err(|e| Error::io(&dir, e))?;
+        let _ = run("chgrp", &[group, &dir.display().to_string()], None);
+        let p = dir.join(file);
+        write_atomic(&p, content).map_err(|e| Error::io(&p, e))?;
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o640)).map_err(|e| Error::io(&p, e))?;
+        run("chgrp", &[group, &p.display().to_string()], None)?;
+        Ok(())
+    }
+
     fn sync_public_key(&mut self) -> Result<String, Error> {
         let key = &self.sync_key;
         if !key.exists() {

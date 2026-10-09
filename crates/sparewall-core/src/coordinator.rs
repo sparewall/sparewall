@@ -235,6 +235,11 @@ impl<S: System> Coordinator<S> {
                 Err(e) => tracing::error!(error = %e, "cannot re-render active generation"),
             }
         }
+        if let Ok(Some(doc)) = self.active_document()
+            && let Err(e) = self.install_vpn_keys(&doc)
+        {
+            tracing::error!(error = %e, "cannot install remote-access keys");
+        }
         self.activate(state.active, None, early)?;
         Ok(state.active)
     }
@@ -347,6 +352,8 @@ impl<S: System> Coordinator<S> {
             });
         }
 
+        self.ensure_vpn_keys(&doc)?;
+        self.install_vpn_keys(&doc)?;
         self.store.save(&g, &doc, &rendered)?;
         if let Err(e) = self.activate(g.id, Some(&old_rendered), false) {
             tracing::error!(id = g.id, error = %e, "activation failed; restoring previous generation");
@@ -616,6 +623,7 @@ impl<S: System> Coordinator<S> {
             let to = self.store.set_aside(g.id)?;
             tracing::warn!(id = g.id, kept = %to.display(), "set aside a diverged generation");
         }
+        self.install_vpn_keys(&doc)?;
         self.store.save(g, &doc, &rendered)?;
         self.switch_from(&old_rendered, g.id, why)?;
         self.events.push(Event::Applied {
