@@ -23,7 +23,12 @@ trap 'dump' ERR
 
 log "building a qcow2 from $IMAGE"
 if [ ! -f output/qcow2/disk.qcow2 ]; then
-    # bootc pulls the bound provider images during the install.
+    # bootc copies the logically bound provider images into the new system
+    # from the host's container storage, so they must be there first.
+    for ref in $(sudo podman run --rm --entrypoint sh "$IMAGE" -c \
+            'for f in /usr/lib/bootc/bound-images.d/*; do sed -n "s/^Image=//p" "$f"; done'); do
+        sudo podman image exists "$ref" || sudo podman pull "$ref"
+    done
     auth=()
     if sudo test -f /run/containers/0/auth.json; then
         auth=(-v /run/containers/0/auth.json:/run/containers/0/auth.json:ro)
