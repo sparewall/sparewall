@@ -77,6 +77,9 @@ pub trait System: Send {
     /// Make a secret available to a daemon in tmpfs (`/run/sparewall/keys`),
     /// readable by `group`.
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error>;
+
+    /// Delete and recreate a netdev from its (unchanged) files.
+    fn netdev_recreate(&mut self, name: &str) -> Result<(), Error>;
 }
 
 /// A recording fake for tests.
@@ -251,6 +254,11 @@ impl System for Fake {
         ))
     }
 
+    fn netdev_recreate(&mut self, name: &str) -> Result<(), Error> {
+        self.log.push(format!("recreate {name}"));
+        Ok(())
+    }
+
     fn install_key(&mut self, file: &str, content: &[u8], _group: &str) -> Result<(), Error> {
         self.runtime_keys.insert(file.to_string(), content.to_vec());
         Ok(())
@@ -321,5 +329,8 @@ impl System for Box<dyn System> {
     }
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
         (**self).install_key(file, content, group)
+    }
+    fn netdev_recreate(&mut self, name: &str) -> Result<(), Error> {
+        (**self).netdev_recreate(name)
     }
 }

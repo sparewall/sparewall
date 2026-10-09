@@ -9,7 +9,7 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
-use sparewall_api::{ApplyReply, FirewallError, FirewallProxy, Generation};
+use sparewall_api::{ApplyReply, FirewallError, FirewallProxy, Generation, SecretsProxy, VpnProxy};
 use sparewall_config::{Format, path};
 
 use crate::conn::{Context, Contexts, Target};
@@ -227,6 +227,12 @@ enum Cmd {
     /// Schema operations.
     #[command(subcommand)]
     Schema(SchemaCmd),
+    /// The write-only secret store.
+    #[command(subcommand)]
+    Secret(SecretCmd),
+    /// Remote-access VPN.
+    #[command(subcommand)]
+    Vpn(VpnCmd),
     /// Manage named contexts (deployments reached over SSH).
     #[command(subcommand)]
     Context(ContextCmd),
@@ -289,6 +295,34 @@ enum SchemaCmd {
 }
 
 #[derive(Subcommand)]
+enum SecretCmd {
+    /// Store a secret, read from stdin (or a prompt). It cannot be read back.
+    Set {
+        name: String,
+        /// Keep it on this node only instead of sharing it with the peer.
+        #[arg(long)]
+        node: bool,
+    },
+    /// List secret names and versions.
+    List,
+    /// Remove a secret.
+    Delete { name: String },
+}
+
+#[derive(Subcommand)]
+enum VpnCmd {
+    /// Print a WireGuard client configuration (and a QR code with
+    /// --qr, using qrencode) for one peer.
+    ClientConfig {
+        peer: String,
+        #[arg(long)]
+        instance: Option<String>,
+        #[arg(long)]
+        qr: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ContextCmd {
     /// Add or replace a context.
     Add {
@@ -325,6 +359,31 @@ fn read_input(file: &str) -> Result<Value, Fail> {
     };
     let format = Format::detect((file != "-").then_some(file), &text);
     Ok(sparewall_config::parse_value(&text, format)?)
+}
+
+/// A secret from stdin, or a prompt without echo on a terminal.
+fn read_secret(name: &str) -> Result<String, Fail> {
+    let tty = std::io::stdin().is_terminal();
+    if tty {
+        eprint!("Value for {name}: ");
+        let _ = std::process::Command::new("stty").arg("-echo").status();
+    }
+    let mut s = String::new();
+    let r = if tty {
+        std::io::stdin().read_line(&mut s).map(|_| ())
+    } else {
+        std::io::stdin().read_to_string(&mut s).map(|_| ())
+    };
+    if tty {
+        let _ = std::process::Command::new("stty").arg("echo").status();
+        eprintln!();
+    }
+    r.map_err(|e| Fail::other(e.to_string()))?;
+    let v = s.strip_suffix('\n').unwrap_or(&s).to_string();
+    if v.is_empty() {
+        return Err(Fail::usage("empty secret"));
+    }
+    Ok(v)
 }
 
 fn print_value(v: &Value, output: Option<Output>) {
@@ -707,6 +766,59 @@ impl App {
                 while let Some(item) = stream.next().await {
                     let ev = item??;
                     println!("{}", ev.event);
+                }
+            }
+            Cmd::Secret(SecretCmd::Set { name, node }) => {
+                let value = read_secret(&name)?;
+                let r = self.conn().await?.set(&name, &value, Some(!node)).await??;
+                self.say(format!(
+                    "Stored {} (version {}, {}).",
+                    r.secret.name, r.secret.version, r.secret.class
+                ));
+            }
+            Cmd::Secret(SecretCmd::List) => {
+                let r = self.conn().await?.list().await??;
+                match self.output {
+                    Some(Output::Json) | Some(Output::Yaml) => print_value(
+                        &serde_json::to_value(&r.secrets).unwrap_or_default(),
+                        self.output,
+                    ),
+                    _ => {
+                        println!("{:<32} {:<8} {:>7}  UPDATED", "NAME", "CLASS", "VERSION");
+                        for x in &r.secrets {
+                            println!(
+                                "{:<32} {:<8} {:>7}  {}",
+                                x.name, x.class, x.version, x.updated
+                            );
+                        }
+                    }
+                }
+            }
+            Cmd::Secret(SecretCmd::Delete { name }) => {
+                self.conn().await?.delete(&name).await??;
+                self.say(format!("Deleted {name}."));
+            }
+            Cmd::Vpn(VpnCmd::ClientConfig { peer, instance, qr }) => {
+                let r = self
+                    .conn()
+                    .await?
+                    .vpn_client_config(instance.as_deref(), &peer)
+                    .await??;
+                print!("{}", r.config);
+                if qr {
+                    let child = std::process::Command::new("qrencode")
+                        .args(["-t", "ansiutf8"])
+                        .stdin(std::process::Stdio::piped())
+                        .spawn();
+                    match child {
+                        Ok(mut c) => {
+                            if let Some(mut i) = c.stdin.take() {
+                                let _ = i.write_all(r.config.as_bytes());
+                            }
+                            let _ = c.wait();
+                        }
+                        Err(_) => self.say("qrencode is not installed; no QR code."),
+                    }
                 }
             }
             Cmd::Schema(SchemaCmd::Show) => {

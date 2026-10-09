@@ -205,6 +205,44 @@ fn pair_pushes_refuses_and_catches_up() {
     fw1.wait("in sync", |s| s["sync"]["state"] == "in-sync");
     fw2.wait("in sync", |s| s["sync"]["state"] == "in-sync");
 
+    // Each node generated a VPN server key when it applied the pairing
+    // document; they converge on the first one.
+    let config = |n: &Node| n.ok(&["vpn", "client-config", "alice-laptop"]);
+    let t0 = Instant::now();
+    while config(&fw1) != config(&fw2) {
+        assert!(
+            t0.elapsed() < Duration::from_secs(40),
+            "VPN keys did not converge"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(config(&fw1).contains("Endpoint = vpn.example.org:51820"));
+
+    // A new cluster secret reaches the peer; values never come back out.
+    let mut set = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+        .args(["secret", "set", "dns-tsig"])
+        .env("SPAREWALL_SOCKET", fw1.dir.join("fw.sock"))
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        set.stdin.take().unwrap().write_all(b"hunter2\n").unwrap();
+    }
+    assert!(set.wait().unwrap().success());
+    let t0 = Instant::now();
+    while !fw2.ok(&["secret", "list"]).contains("dns-tsig") {
+        assert!(
+            t0.elapsed() < Duration::from_secs(40),
+            "secret did not reach fw2"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(
+        !fw2.ok(&["secret", "list", "-o", "json"])
+            .contains("hunter2")
+    );
+
     // A change on fw1 reaches fw2 with the same generation id.
     fw1.ok(&["set", "networks.users.mtu=1400", "--confirm", "0"]);
     let s = fw2.wait("generation 2", |s| s["sync"]["active"] == 2);

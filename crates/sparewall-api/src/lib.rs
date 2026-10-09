@@ -331,3 +331,78 @@ pub trait PeerProxy {
     /// Read a generation (default: the active one).
     async fn fetch(&mut self, id: Option<i64>) -> zlink::Result<Result<FetchReply, PeerError>>;
 }
+
+// ---------------------------------------------------------------------------
+// The write-only secret store.
+
+pub const SECRETS_INTERFACE: &str = "org.sparewall.Secrets";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct SecretInfo {
+    pub name: String,
+    /// `node` or `cluster`.
+    pub class: String,
+    pub version: i64,
+    pub updated: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SecretSetReply {
+    pub secret: SecretInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct SecretListReply {
+    pub secrets: Vec<SecretInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct VpnConfigReply {
+    pub config: String,
+}
+
+#[zlink::proxy("org.sparewall.Secrets")]
+pub trait SecretsProxy {
+    /// Store a secret. Values can never be read back.
+    async fn set(
+        &mut self,
+        name: &str,
+        value: &str,
+        cluster: Option<bool>,
+    ) -> zlink::Result<Result<SecretSetReply, FirewallError>>;
+    async fn list(&mut self) -> zlink::Result<Result<SecretListReply, FirewallError>>;
+    async fn delete(&mut self, name: &str) -> zlink::Result<Result<Empty, FirewallError>>;
+}
+
+#[zlink::proxy("org.sparewall.Firewall")]
+pub trait VpnProxy {
+    /// A WireGuard client configuration for one remote-access peer.
+    async fn vpn_client_config(
+        &mut self,
+        instance: Option<&str>,
+        peer: &str,
+    ) -> zlink::Result<Result<VpnConfigReply, FirewallError>>;
+}
+
+/// A cluster secret on its way to the peer (value hex-encoded).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct PeerSecret {
+    pub name: String,
+    pub version: i64,
+    pub updated: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct PutSecretsReply {
+    pub stored: i64,
+}
+
+#[zlink::proxy("org.sparewall.Peer")]
+pub trait PeerSecretsProxy {
+    /// Store cluster secrets, keeping newer local versions.
+    async fn put_secrets(
+        &mut self,
+        secrets: Vec<PeerSecret>,
+    ) -> zlink::Result<Result<PutSecretsReply, PeerError>>;
+}

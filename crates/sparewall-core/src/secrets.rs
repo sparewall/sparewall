@@ -156,21 +156,29 @@ impl<S: System> Coordinator<S> {
     }
 
     /// Store cluster secrets from the peer, keeping newer local versions.
-    pub fn receive_secrets(&mut self, secrets: Vec<SharedSecret>) -> Result<usize, Error> {
-        let mut n = 0;
+    /// When both nodes made the same version independently (each applied
+    /// the pairing document), both keep the one created first. Returns the
+    /// names that changed.
+    pub fn receive_secrets(&mut self, secrets: Vec<SharedSecret>) -> Result<Vec<String>, Error> {
+        let mut changed = Vec::new();
         for s in secrets {
             if s.info.class != SecretClass::Cluster {
                 continue;
             }
-            let newer = self
-                .secret_info(&s.info.name)?
-                .is_none_or(|have| have.version < s.info.version);
-            if newer {
+            let take = match self.secret_info(&s.info.name)? {
+                None => true,
+                Some(have) if have.version < s.info.version => true,
+                Some(have) if have.version == s.info.version && s.info.updated < have.updated => {
+                    self.secret_get(&s.info.name)?.as_deref() != Some(s.value.as_slice())
+                }
+                _ => false,
+            };
+            if take {
+                changed.push(s.info.name.clone());
                 self.secret_put(s.info, &s.value)?;
-                n += 1;
             }
         }
-        Ok(n)
+        Ok(changed)
     }
 
     /// Generate the server key of every remote-access instance that lacks
@@ -183,6 +191,21 @@ impl<S: System> Coordinator<S> {
                 let (private, public) = self.system().wg_keypair()?;
                 self.secret_set(&secret, private.as_bytes(), SecretClass::Cluster)?;
                 tracing::info!(instance = %name, public, "generated the remote-access server key");
+            }
+        }
+        Ok(())
+    }
+
+    /// After a remote-access key changed: install it and recreate the
+    /// WireGuard interface, since networkd reads keys only at creation.
+    pub fn refresh_vpn_keys(&mut self, changed: &[String]) -> Result<(), Error> {
+        let Some(doc) = self.active_document()? else {
+            return Ok(());
+        };
+        self.install_vpn_keys(&doc)?;
+        for name in doc.vpn.keys() {
+            if changed.contains(&vpn_secret(name)) {
+                self.system().netdev_recreate(name)?;
             }
         }
         Ok(())

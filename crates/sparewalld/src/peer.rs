@@ -14,9 +14,10 @@ use serde::Serialize;
 use serde_json::Value;
 use sparewall_api::{
     FetchReply, HelloReply, LineageEntry, PEER_PORT, PEER_PROTOCOL, PeerError, PeerGeneration,
-    PeerProxy, PushReply,
+    PeerProxy, PeerSecret, PeerSecretsProxy, PushReply, PutSecretsReply,
 };
 use sparewall_core::pair::{NodeView, SyncState, push_plan, sync_state};
+use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
 use sparewall_core::{Check, Error, Generation, Level};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, broadcast};
@@ -37,6 +38,9 @@ pub struct PairStatus {
     pub last_error: Option<String>,
     /// VRRP role from keepalived (`MASTER`, `BACKUP`, `FAULT`).
     pub role: Option<String>,
+    /// Cluster secret versions last delivered to the peer.
+    #[serde(skip)]
+    pub secrets_sent: Vec<(String, u64)>,
 }
 
 pub type Pair = Arc<Mutex<PairStatus>>;
@@ -103,7 +107,7 @@ impl PeerService {
     }
 }
 
-#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry])]
+#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, PeerSecret])]
 impl PeerService {
     async fn hello(&mut self, node: String, protocol: i64) -> Result<HelloReply, PeerError> {
         with_core_raw(&self.core, &self.events, move |c| {
@@ -160,6 +164,40 @@ impl PeerService {
         self.sync.notify_one();
         Ok(PushReply {
             active: active as i64,
+        })
+    }
+
+    async fn put_secrets(
+        &mut self,
+        secrets: Vec<PeerSecret>,
+    ) -> Result<PutSecretsReply, PeerError> {
+        let mut shared = Vec::new();
+        for s in secrets {
+            let value = hex::decode(&s.value).map_err(|e| PeerError::Rejected {
+                message: format!("secret {}: {e}", s.name),
+            })?;
+            shared.push(SharedSecret {
+                info: SecretInfo {
+                    name: s.name,
+                    class: SecretClass::Cluster,
+                    version: s.version.max(0) as u64,
+                    updated: s.updated,
+                },
+                value,
+            });
+        }
+        let stored = with_core_raw(&self.core, &self.events, move |c| {
+            let changed = c.receive_secrets(shared)?;
+            // Keys for the live generation may have just arrived.
+            if !changed.is_empty() {
+                c.refresh_vpn_keys(&changed)?;
+            }
+            Ok(changed.len())
+        })
+        .await
+        .map_err(peer_error)?;
+        Ok(PutSecretsReply {
+            stored: stored as i64,
         })
     }
 
@@ -347,6 +385,7 @@ async fn sync_once(
         let p = pair.lock().unwrap_or_else(|p| p.into_inner());
         PairStatus {
             role: p.role.clone(),
+            secrets_sent: p.secrets_sent.clone(),
             ..Default::default()
         }
     };
@@ -357,6 +396,12 @@ async fn sync_once(
             Ok(h) => {
                 status.reachable = true;
                 status.peer_image = h.image.clone();
+                if let Err(e) =
+                    send_secrets(core, events, peer_addr, &mut status.secrets_sent).await
+                {
+                    tracing::warn!(peer, error = %e, "sending secrets to the peer failed");
+                    status.last_error = Some(e);
+                }
                 let pv = view_of(&h);
                 let state = sync_state(&local, Some(&pv));
                 if state == SyncState::PeerBehind
@@ -371,6 +416,8 @@ async fn sync_once(
                 status.peer_view = Some(pv);
             }
             Err(e) => {
+                // Resend everything once it is back (it may be a new node).
+                status.secrets_sent.clear();
                 status.state = Some(SyncState::PeerUnreachable);
                 status.last_error = Some(e);
             }
@@ -383,6 +430,45 @@ async fn sync_once(
         Ok(())
     })
     .await;
+    Ok(())
+}
+
+/// Deliver cluster secrets whose versions the peer has not had from us.
+async fn send_secrets(
+    core: &Core,
+    events: &broadcast::Sender<Value>,
+    addr: IpAddr,
+    sent: &mut Vec<(String, u64)>,
+) -> Result<(), String> {
+    let list = with_core_raw(core, events, |c| c.secret_list())
+        .await
+        .map_err(|e| e.to_string())?;
+    let now: Vec<(String, u64)> = list
+        .iter()
+        .filter(|i| i.class == SecretClass::Cluster)
+        .map(|i| (i.name.clone(), i.version))
+        .collect();
+    if now.is_empty() || now == *sent {
+        return Ok(());
+    }
+    let shared = with_core_raw(core, events, |c| c.cluster_secrets())
+        .await
+        .map_err(|e| e.to_string())?;
+    let secrets: Vec<PeerSecret> = shared
+        .into_iter()
+        .map(|s| PeerSecret {
+            name: s.info.name,
+            version: s.info.version as i64,
+            updated: s.info.updated,
+            value: hex::encode(s.value),
+        })
+        .collect();
+    let mut conn = connect(addr).await?;
+    conn.put_secrets(secrets)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    *sent = now;
     Ok(())
 }
 

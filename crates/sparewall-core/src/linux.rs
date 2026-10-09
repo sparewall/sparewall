@@ -589,6 +589,13 @@ impl System for Linux {
             .to_string())
     }
 
+    fn netdev_recreate(&mut self, name: &str) -> Result<(), Error> {
+        if self.sys_class_net.join(name).exists() {
+            run("networkctl", &["delete", name], None)?;
+        }
+        run("networkctl", &["reload"], None).map(|_| ())
+    }
+
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
         let dir = self.runtime_dir.join("keys");
         fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;

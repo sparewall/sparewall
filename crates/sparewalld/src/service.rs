@@ -6,9 +6,11 @@ use futures_util::Stream;
 use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, BackupReply, ConfigReply, Empty, EventReply, ExportReply, FirewallError,
-    GenerationReply, HealthCheck, HealthReply, HistoryReply, StatusReply, ValidateReply,
+    GenerationReply, HealthCheck, HealthReply, HistoryReply, SecretInfo, SecretListReply,
+    SecretSetReply, StatusReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
+use sparewall_core::secrets::SecretClass;
 use sparewall_core::{ApplyOptions, ApplyResult, Coordinator, Error, Generation, System};
 use tokio::sync::{Notify, broadcast};
 use tokio_stream::StreamExt;
@@ -190,8 +192,6 @@ fn opts(base: i64, confirm: Option<i64>, dry_run: Option<bool>, author: String) 
 }
 
 #[service(
-    interface = "org.sparewall.Firewall",
-    types = [sparewall_api::Generation, HealthCheck],
     vendor = "Sparewall",
     product = "sparewalld",
     version = env!("CARGO_PKG_VERSION"),
@@ -201,6 +201,7 @@ impl<Sock> Firewall
 where
     Sock::ReadHalf: FetchPeerCredentials,
 {
+    #[zlink(interface = "org.sparewall.Firewall", types = [sparewall_api::Generation, HealthCheck])]
     async fn validate(&mut self, config: Value) -> Result<ValidateReply, FirewallError> {
         let warnings = with_core(&self.core, &self.events, move |c| c.validate(config)).await?;
         Ok(ValidateReply { warnings })
@@ -441,6 +442,71 @@ where
             Box::pin(tokio_stream::empty())
         };
         tokio_stream::once(hello).chain(rest)
+    }
+
+    async fn vpn_client_config(
+        &mut self,
+        instance: Option<String>,
+        peer: String,
+    ) -> Result<VpnConfigReply, FirewallError> {
+        let config = with_core(&self.core, &self.events, move |c| {
+            c.vpn_client_config(instance.as_deref(), &peer)
+        })
+        .await?;
+        Ok(VpnConfigReply { config })
+    }
+
+    #[zlink(interface = "org.sparewall.Secrets", types = [SecretInfo], rename = "Set")]
+    async fn secret_set(
+        &mut self,
+        name: String,
+        value: String,
+        cluster: Option<bool>,
+    ) -> Result<SecretSetReply, FirewallError> {
+        let class = if cluster.unwrap_or(true) {
+            SecretClass::Cluster
+        } else {
+            SecretClass::Node
+        };
+        let info = with_core(&self.core, &self.events, move |c| {
+            c.secret_set(&name, value.as_bytes(), class)
+        })
+        .await?;
+        self.sync.notify_one();
+        Ok(SecretSetReply {
+            secret: api_secret(&info),
+        })
+    }
+
+    #[zlink(rename = "List")]
+    async fn secret_list(&mut self) -> Result<SecretListReply, FirewallError> {
+        let list = with_core(&self.core, &self.events, |c| c.secret_list()).await?;
+        Ok(SecretListReply {
+            secrets: list.iter().map(api_secret).collect(),
+        })
+    }
+
+    #[zlink(rename = "Delete")]
+    async fn secret_delete(&mut self, name: String) -> Result<Empty, FirewallError> {
+        let existed = with_core(&self.core, &self.events, move |c| c.secret_delete(&name)).await?;
+        if !existed {
+            return Err(FirewallError::NotSupported {
+                message: "no such secret".into(),
+            });
+        }
+        Ok(Empty {})
+    }
+}
+
+pub fn api_secret(i: &sparewall_core::secrets::SecretInfo) -> SecretInfo {
+    SecretInfo {
+        name: i.name.clone(),
+        class: match i.class {
+            SecretClass::Node => "node".into(),
+            SecretClass::Cluster => "cluster".into(),
+        },
+        version: i.version as i64,
+        updated: i.updated.clone(),
     }
 }
 

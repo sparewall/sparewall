@@ -484,7 +484,7 @@ fn vpn_keys_and_client_config() {
     let shared = a.c.cluster_secrets().unwrap();
     assert_eq!(shared.len(), 1);
     let mut b = pair_node("fw2");
-    assert_eq!(b.c.receive_secrets(shared).unwrap(), 1);
+    assert_eq!(b.c.receive_secrets(shared).unwrap(), ["vpn-roadwarrior"]);
     b.c.receive(&a.c.generation(1).unwrap(), a.c.document_value(1).unwrap())
         .unwrap();
     assert_eq!(b.c.system().keys_made, 0);
