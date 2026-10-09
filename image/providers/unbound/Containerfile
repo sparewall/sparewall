@@ -1,6 +1,5 @@
 # Unbound for Sparewall, from Fedora's packages.
-ARG FEDORA_VERSION=45
-FROM quay.io/fedora/fedora-minimal:${FEDORA_VERSION}
+FROM quay.io/fedora/fedora-minimal:45@sha256:e6674de05c3eaae918d76d467b15149a3c43a21b0562dad177a86c20e346105e
 RUN microdnf -y install --setopt=install_weak_deps=0 unbound \
     && microdnf clean all \
     && install -d -o unbound -g unbound /var/lib/unbound \

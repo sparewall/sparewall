@@ -11,7 +11,7 @@ set -euo pipefail
 IMAGE=${1:?usage: boot-test.sh IMAGE [WORKDIR]}
 WORK=${2:-$(mktemp -d)}
 HERE=$(cd "$(dirname "$0")" && pwd)
-BIB=${BIB:-quay.io/centos-bootc/bootc-image-builder:latest}
+BIB=${BIB:-quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b}
 SSH_PORT=${SSH_PORT:-2222}
 MAC=52:54:00:12:34:56
 mkdir -p "$WORK/output"
@@ -33,7 +33,7 @@ if [ ! -f output/qcow2/disk.qcow2 ]; then
     if sudo test -f /run/containers/0/auth.json; then
         auth=(-v /run/containers/0/auth.json:/run/containers/0/auth.json:ro)
     fi
-    sudo podman run --rm --privileged --pull=newer \
+    sudo podman run --rm --privileged \
         --security-opt label=type:unconfined_t \
         "${auth[@]}" \
         -v "$WORK/output:/output" \

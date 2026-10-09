@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: docker
+    directories: ["/image", "/image/providers/kea", "/image/providers/unbound"]
+    schedule: { interval: weekly }
+    groups:
+      fedora: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule: { interval: weekly }
+    groups:
+      rust: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
