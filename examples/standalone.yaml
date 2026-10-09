@@ -1,0 +1,96 @@
+# A standalone firewall on a single-NIC mini PC fed a VLAN trunk.
+schema: 1
+cluster:
+  nodes: [fw1]
+management:
+  network: mgmt
+ports:
+  fw1:
+    uplink: { nic: "52:54:00:aa:00:01" }
+networks:
+  mgmt:
+    port: uplink
+    role: management
+    addresses: { fw1: 10.0.99.2/24 }
+  wan:
+    port: uplink
+    vlan: 10
+    role: wan
+    dhcp_client: true
+  users:
+    port: uplink
+    vlan: 20
+    addresses: { fw1: 192.0.2.2/24 }
+    vip: 192.0.2.1/24
+  guests:
+    port: uplink
+    vlan: 30
+    addresses: { fw1: 198.51.100.2/24 }
+    vip: 198.51.100.1/24
+zones:
+  wan: { networks: [wan] }
+  users: { networks: [users] }
+  guests: { networks: [guests] }
+objects:
+  admin_nets:
+    type: ipv4
+    elements: [10.0.99.0/24, 192.0.2.10]
+  wan_address:
+    type: ipv4
+    dynamic: { network: wan }
+  web:
+    type: port
+    elements: [80, 443]
+policy:
+  users->wan: { action: accept, nat: masquerade }
+  guests->wan: { action: accept, nat: masquerade }
+  users->guests: { action: accept }
+  guests->users: { action: drop, log: true }
+  users->self:
+    action: drop
+    rules:
+      ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }
+      ssh: { order: 200, proto: tcp, dport: 22, src: "@admin_nets", action: accept }
+  guests->self:
+    action: drop
+    rules:
+      ping: { order: 100, proto: icmp, icmp_type: [echo-request], limit: 5/second, action: accept }
+  wan->self:
+    action: drop
+    rules:
+      ping:
+        order: 100
+        proto: icmp
+        icmp_type: [echo-request]
+        limit: 2/second burst 5
+        action: accept
+forwards:
+  web-server:
+    proto: tcp
+    dport: "@web"
+    dst: "@wan_address"
+    to: 192.0.2.80
+raw:
+  block-scanner:
+    at: { pair: wan->self, position: before }
+    order: 100
+    nft: ip saddr 203.0.113.0/24 counter drop
+  mss-clamp:
+    at: { hook: forward }
+    order: 100
+    nft: tcp flags syn tcp option maxseg size set rt mtu
+dhcp:
+  users:
+    pool: 192.0.2.100-192.0.2.199
+    reservations:
+      printer: { mac: "52:54:00:12:34:56", address: 192.0.2.20, hostname: printer }
+  guests:
+    pool: 198.51.100.100-198.51.100.250
+    lease_time: 3600
+dns:
+  enabled: true
+  provider: unbound
+  domain: home.arpa
+ntp:
+  servers: [2.fedora.pool.ntp.org]
+  serve: [users, guests]

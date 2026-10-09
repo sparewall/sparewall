@@ -1,0 +1,383 @@
+use serde_json::json;
+
+use super::*;
+use crate::path::{combine, get, parse_assignment, parse_path, set_patch, unset_patch};
+
+const STANDALONE: &str = include_str!("../../../examples/standalone.yaml");
+const PAIR: &str = include_str!("../../../examples/pair.yaml");
+
+fn load(text: &str) -> Document {
+    parse(text, Format::Yaml).unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn assert_valid(doc: &Document) {
+    let issues = validate(doc);
+    let errs = validate::errors(&issues);
+    assert!(errs.is_empty(), "unexpected errors: {errs:#?}");
+}
+
+fn error_paths(doc: &Document) -> Vec<String> {
+    validate(doc)
+        .into_iter()
+        .filter(|i| i.severity == Severity::Error)
+        .map(|i| format!("{}: {}", i.path, i.message))
+        .collect()
+}
+
+fn has_error(doc: &Document, needle: &str) -> bool {
+    error_paths(doc).iter().any(|e| e.contains(needle))
+}
+
+#[test]
+fn examples_are_valid() {
+    assert_valid(&load(STANDALONE));
+    assert_valid(&load(PAIR));
+}
+
+#[test]
+fn hash_is_stable_across_key_order_and_format() {
+    let doc = load(STANDALONE);
+    let h = hash(&doc);
+    // JSON export reparsed.
+    let json = export(&doc, Format::Json);
+    assert_eq!(hash(&parse(&json, Format::Json).unwrap()), h);
+    // YAML export reparsed.
+    let yaml = export(&doc, Format::Yaml);
+    assert_eq!(hash(&parse(&yaml, Format::Yaml).unwrap()), h);
+    // Reverse every object's key order.
+    fn reverse(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(m) => {
+                let mut pairs: Vec<_> = m.iter().collect();
+                pairs.reverse();
+                let mut s = String::from("{");
+                for (i, (k, v)) in pairs.into_iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    s.push_str(&serde_json::to_string(k).unwrap());
+                    s.push(':');
+                    s.push_str(&reverse(v).to_string());
+                }
+                s.push('}');
+                serde_json::from_str(&s).unwrap()
+            }
+            serde_json::Value::Array(a) => {
+                serde_json::Value::Array(a.iter().map(reverse).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    let rev = reverse(&to_value(&doc));
+    assert_eq!(hash(&from_value(rev).unwrap()), h);
+}
+
+#[test]
+fn defaults_are_canonical() {
+    // Stating a default explicitly hashes the same as omitting it.
+    let doc = load(STANDALONE);
+    let mut v = to_value(&doc);
+    merge_patch(&mut v, &json!({"management": {"anti_lockout": true}}));
+    assert_eq!(hash(&from_value(v).unwrap()), hash(&doc));
+}
+
+#[test]
+fn export_is_idempotent() {
+    for text in [STANDALONE, PAIR] {
+        let doc = load(text);
+        for f in [Format::Json, Format::Yaml] {
+            let once = export(&doc, f);
+            let twice = export(&parse(&once, f).unwrap(), f);
+            assert_eq!(once, twice);
+        }
+    }
+}
+
+#[test]
+fn yaml_is_1_2() {
+    // YAML 1.1 would read `no` and `on` as booleans.
+    let v = parse_value("a: no\nb: 10\nc: on\nd: true\n", Format::Yaml).unwrap();
+    assert_eq!(v, json!({"a": "no", "b": 10, "c": "on", "d": true}));
+    assert!(parse_value("a: 1\na: 2\n", Format::Yaml).is_err());
+}
+
+#[test]
+fn type_errors_have_paths() {
+    let mut v = to_value(&load(STANDALONE));
+    v["networks"]["users"]["vlan"] = json!("twenty");
+    let err = from_value(v).unwrap_err().to_string();
+    assert!(err.starts_with("networks.users.vlan"), "{err}");
+    let mut v = to_value(&load(STANDALONE));
+    v["zones"]["users"]["bogus"] = json!(1);
+    let err = from_value(v).unwrap_err().to_string();
+    assert!(err.contains("bogus"), "{err}");
+}
+
+#[test]
+fn paths_parse_and_format() {
+    assert_eq!(
+        parse_path("policy.'wan->self'.rules").unwrap(),
+        ["policy", "wan->self", "rules"]
+    );
+    assert_eq!(parse_path("a.\"b.c\"").unwrap(), ["a", "b.c"]);
+    assert_eq!(parse_path("").unwrap(), Vec::<String>::new());
+    assert!(parse_path("a..b").is_err());
+    assert!(parse_path("a.'b").is_err());
+    let segs = ["policy", "wan->self", "rules"];
+    assert_eq!(parse_path(&path::format_path(&segs)).unwrap(), segs);
+}
+
+#[test]
+fn set_types_values_from_schema() {
+    let (p, v) = parse_assignment("networks.users.vlan=20").unwrap();
+    assert_eq!(p, ["networks", "users", "vlan"]);
+    assert_eq!(v, json!(20));
+    // A string field keeps a numeric-looking value as a string.
+    let (_, v) = parse_assignment("dhcp.users.reservations.x.mac=52:54:00:00:00:01").unwrap();
+    assert_eq!(v, json!("52:54:00:00:00:01"));
+    let (_, v) = parse_assignment("vpn.rw.endpoint=1234").unwrap();
+    assert_eq!(v, json!("1234"));
+    let (_, v) = parse_assignment("networks.wan.dhcp_client=true").unwrap();
+    assert_eq!(v, json!(true));
+    let (_, v) = parse_assignment("cluster.nodes=[fw1, fw2]").unwrap();
+    assert_eq!(v, json!(["fw1", "fw2"]));
+    assert!(parse_assignment("networks.users.vlan=abc").is_err());
+    // Untagged enums accept either form.
+    let (_, v) = parse_assignment("policy.'a->b'.rules.r.dport=443").unwrap();
+    assert_eq!(v, json!(443));
+    let (_, v) = parse_assignment("policy.'a->b'.rules.r.dport=@web").unwrap();
+    assert_eq!(v, json!("@web"));
+}
+
+#[test]
+fn set_then_get_round_trips() {
+    let doc = load(STANDALONE);
+    let mut v = to_value(&doc);
+    let patch = combine([
+        set_patch(&["networks", "users", "vip"], json!("192.0.2.254/24")).unwrap(),
+        set_patch(&["dhcp", "users", "pool"], json!("192.0.2.50-192.0.2.60")).unwrap(),
+    ]);
+    merge_patch(&mut v, &patch);
+    let doc2 = from_value(v.clone()).unwrap();
+    let v2 = to_value(&doc2);
+    assert_eq!(
+        get(&v2, &["networks", "users", "vip"]),
+        Some(&json!("192.0.2.254/24"))
+    );
+    assert_eq!(
+        get(&v2, &["dhcp", "users", "pool"]),
+        Some(&json!("192.0.2.50-192.0.2.60"))
+    );
+    // Merging the same patch again changes nothing.
+    let mut v3 = v2.clone();
+    merge_patch(&mut v3, &patch);
+    assert_eq!(v3, v2);
+}
+
+#[test]
+fn unset_removes_map_entries() {
+    let mut v = to_value(&load(PAIR));
+    merge_patch(
+        &mut v,
+        &unset_patch(&["vpn", "roadwarrior", "peers", "alice-laptop"]).unwrap(),
+    );
+    let doc = from_value(v).unwrap();
+    assert!(doc.vpn["roadwarrior"].peers.is_empty());
+}
+
+#[test]
+fn json_patch_ops() {
+    let mut v = to_value(&load(PAIR));
+    json_patch(
+        &mut v,
+        &json!([
+            {"op": "replace", "path": "/cluster/nodes/1", "value": "fw9"},
+        ]),
+    )
+    .unwrap();
+    assert_eq!(v["cluster"]["nodes"], json!(["fw1", "fw9"]));
+    assert!(json_patch(&mut v, &json!([{"op": "remove", "path": "/nope"}])).is_err());
+}
+
+#[test]
+fn diff_summary_lists_leaves() {
+    let a = json!({"x": {"y": 1, "z": 2}, "k": 1});
+    let b = json!({"x": {"y": 1, "z": 3}, "n": {"m": true}});
+    assert_eq!(
+        diff_summary(&a, &b),
+        ["- k", "+ n = {\"m\":true}", "~ x.z = 3"]
+    );
+}
+
+#[test]
+fn explain_describes_fields() {
+    let text = schema::explain(&["networks", "users"]).unwrap();
+    assert!(text.contains("vlan"), "{text}");
+    assert!(text.contains("802.1Q"), "{text}");
+    let text = schema::explain(&["policy", "a->b", "action"]).unwrap();
+    assert!(text.contains("accept | drop | reject"), "{text}");
+    assert!(schema::explain(&["nope"]).is_none());
+}
+
+// --- semantic validation -------------------------------------------------
+
+fn edit(text: &str, patch: serde_json::Value) -> Document {
+    let mut v = to_value(&load(text));
+    merge_patch(&mut v, &patch);
+    from_value(v).unwrap_or_else(|e| panic!("{e}"))
+}
+
+#[test]
+fn rejects_sync_network_when_standalone() {
+    let d = edit(STANDALONE, json!({"cluster": {"sync_network": "mgmt"}}));
+    assert!(has_error(&d, "standalone node has no sync network"));
+}
+
+#[test]
+fn pair_needs_vrid_and_sync() {
+    let d = edit(PAIR, json!({"networks": {"users": {"vrid": null}}}));
+    assert!(has_error(&d, "needs a VRRP ID"));
+    let d = edit(PAIR, json!({"cluster": {"sync_network": null}}));
+    assert!(has_error(&d, "needs a sync network"));
+    let d = edit(PAIR, json!({"networks": {"wan": {"vrid": 20}}}));
+    assert!(has_error(&d, "already used by network"));
+}
+
+#[test]
+fn rejects_overlaps_and_bad_addresses() {
+    let d = edit(
+        STANDALONE,
+        json!({"networks": {"guests": {"addresses": {"fw1": "192.0.2.5/25"}, "vip": "192.0.2.6/25"}}}),
+    );
+    assert!(has_error(&d, "overlaps"), "{:?}", error_paths(&d));
+    let d = edit(
+        STANDALONE,
+        json!({"networks": {"users": {"vip": "192.0.3.1/24"}}}),
+    );
+    assert!(has_error(&d, "not in the network's subnet"));
+    let d = edit(
+        STANDALONE,
+        json!({"networks": {"users": {"vip": "192.0.2.2/24"}}}),
+    );
+    assert!(has_error(&d, "must differ"));
+}
+
+#[test]
+fn rejects_missing_references() {
+    let d = edit(
+        STANDALONE,
+        json!({"zones": {"users": {"networks": ["nope"]}}}),
+    );
+    assert!(has_error(&d, "no network named \"nope\""));
+    let d = edit(
+        STANDALONE,
+        json!({"policy": {"users->mars": {"action": "accept"}}}),
+    );
+    assert!(has_error(&d, "no zone named \"mars\""));
+    let d = edit(
+        STANDALONE,
+        json!({"policy": {"wan->self": {"rules": {"x": {"order": 300, "proto": "tcp", "dport": "@nope", "action": "accept"}}}}}),
+    );
+    assert!(has_error(&d, "no object named \"nope\""));
+    let d = edit(
+        STANDALONE,
+        json!({"policy": {"wan->self": {"rules": {"x": {"order": 300, "proto": "tcp", "src": "@web", "action": "accept"}}}}}),
+    );
+    assert!(has_error(&d, "is not of type ipv4"));
+    let d = edit(
+        STANDALONE,
+        json!({"raw": {"r": {"at": {"pair": "wan->guests", "position": "after"}, "order": 1, "nft": "counter"}}}),
+    );
+    assert!(has_error(&d, "no policy for"));
+}
+
+#[test]
+fn rejects_rule_mistakes() {
+    let d = edit(
+        STANDALONE,
+        json!({"policy": {"wan->self": {"rules": {"dup": {"order": 100, "proto": "tcp", "dport": 1, "action": "accept"}}}}}),
+    );
+    assert!(has_error(&d, "order 100 is also used"));
+    let d = edit(
+        STANDALONE,
+        json!({"policy": {"wan->self": {"rules": {"p": {"order": 5, "dport": 22, "action": "accept"}}}}}),
+    );
+    assert!(has_error(&d, "ports need proto"));
+    let d = edit(
+        STANDALONE,
+        json!({"policy": {"wan->self": {"rules": {"p": {"order": 5, "proto": "tcp", "dport": "70000", "action": "accept"}}}}}),
+    );
+    assert!(has_error(&d, "expected a port"));
+    let d = edit(
+        STANDALONE,
+        json!({"policy": {"wan->self": {"rules": {"p": {"order": 5, "proto": "icmp", "limit": "fast", "action": "accept"}}}}}),
+    );
+    assert!(has_error(&d, "expected e.g. 10/second"));
+    let d = edit(
+        STANDALONE,
+        json!({"raw": {"evil": {"at": {"hook": "forward"}, "order": 1, "nft": "accept; flush ruleset"}}}),
+    );
+    assert!(has_error(&d, "one statement per entry"));
+}
+
+#[test]
+fn rejects_dhcp_mistakes() {
+    let d = edit(
+        STANDALONE,
+        json!({"dhcp": {"users": {"pool": "192.0.2.1-192.0.2.50"}}}),
+    );
+    assert!(has_error(&d, "contains the firewall's address"));
+    let d = edit(
+        STANDALONE,
+        json!({"dhcp": {"users": {"pool": "10.1.1.1-10.1.1.2"}}}),
+    );
+    assert!(has_error(&d, "not inside the usable range"));
+    let d = edit(
+        STANDALONE,
+        json!({"dhcp": {"wan": {"pool": "1.1.1.1-1.1.1.2"}}}),
+    );
+    assert!(has_error(&d, "not served on WAN"));
+    let d = edit(PAIR, json!({"dhcp": {"provider": "networkd"}}));
+    assert!(has_error(&d, "no HA"));
+}
+
+#[test]
+fn rejects_port_mistakes() {
+    let d = edit(
+        PAIR,
+        json!({"ports": {"fw2": {"uplink": {"bond": {"primary": "9c:6b:00:00:00:01"}}}}}),
+    );
+    assert!(has_error(&d, "only valid with mode active-backup"));
+    let d = edit(PAIR, json!({"ports": {"fw2": null}}));
+    assert!(has_error(&d, "not bound on node \"fw2\""));
+    let d = edit(
+        STANDALONE,
+        json!({"ports": {"fw1": {"uplink": {"nic": "eth0"}}}}),
+    );
+    assert!(has_error(&d, "MAC address or a udev path"));
+    let d = edit(
+        STANDALONE,
+        json!({"networks": {"averyveryverylongname": {"port": "uplink", "vlan": 50, "addresses": {"fw1": "10.5.0.1/24"}}}}),
+    );
+    assert!(has_error(&d, "at most 15 characters"));
+}
+
+#[test]
+fn secrets_must_be_references() {
+    let d = edit(
+        STANDALONE,
+        json!({"backup": {"enabled": true, "credentials": "hunter2"}}),
+    );
+    assert!(has_error(&d, "secret:<name>"));
+    let d = edit(
+        STANDALONE,
+        json!({"backup": {"enabled": true, "credentials": "secret:restic-s3"}}),
+    );
+    assert_valid(&d);
+}
+
+#[test]
+fn self_zone_is_reserved() {
+    let d = edit(STANDALONE, json!({"zones": {"self": {"networks": []}}}));
+    assert!(has_error(&d, "built in"));
+}

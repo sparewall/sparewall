@@ -1,0 +1,5 @@
+/target
+*.qcow2
+*.raw
+*.iso
+/.vm/

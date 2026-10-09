@@ -1,0 +1,82 @@
+# An HA pair: one VM on a virtio trunk, one mini PC with an LACP bond.
+schema: 1
+cluster:
+  nodes: [fw1, fw2]
+  sync_network: sync
+  vrrp:
+    priority: { fw1: 150, fw2: 100 }
+  conntrack:
+    max: 262144
+    tcp_established_timeout: 86400
+management:
+  network: mgmt
+ports:
+  fw1:
+    uplink: { nic: "52:54:00:aa:00:01" }
+  fw2:
+    uplink:
+      bond:
+        members: ["9c:6b:00:00:00:01", "9c:6b:00:00:00:02"]
+        mode: 802.3ad
+        lacp_rate: fast
+        hash_policy: layer3+4
+networks:
+  mgmt:
+    port: uplink
+    vlan: 99
+    role: management
+    addresses: { fw1: 10.0.99.2/24, fw2: 10.0.99.3/24 }
+  wan:
+    port: uplink
+    vlan: 10
+    role: wan
+    addresses: { fw1: 203.0.113.2/29, fw2: 203.0.113.3/29 }
+    vip: 203.0.113.1/29
+    vrid: 10
+    gateway: 203.0.113.6
+  users:
+    port: uplink
+    vlan: 20
+    addresses: { fw1: 192.0.2.2/24, fw2: 192.0.2.3/24 }
+    vip: 192.0.2.1/24
+    vrid: 20
+  sync:
+    port: uplink
+    vlan: 4000
+    role: sync
+    addresses: { fw1: 10.255.0.1/30, fw2: 10.255.0.2/30 }
+zones:
+  wan: { networks: [wan] }
+  users: { networks: [users] }
+  vpn: {}
+objects:
+  admin_nets:
+    type: ipv4
+    elements: [10.0.99.0/24]
+policy:
+  users->wan: { action: accept, nat: masquerade }
+  vpn->users: { action: accept }
+  vpn->wan: { action: accept, nat: masquerade }
+  wan->self:
+    action: drop
+    rules:
+      ssh-admin: { order: 100, proto: tcp, dport: 22, src: "@admin_nets", action: accept }
+raw:
+  notrack-vrrp:
+    at: { hook: prerouting-raw }
+    order: 100
+    nft: ip protocol vrrp notrack
+dhcp:
+  users: { pool: 192.0.2.100-192.0.2.199, reservations: {} }
+dns: { enabled: true, provider: unbound }
+vpn:
+  roadwarrior:
+    listen_port: 51820
+    endpoint: vpn.example.org
+    addresses: [10.99.0.1/24]
+    zone: vpn
+    dns: [10.99.0.1]
+    peers:
+      alice-laptop:
+        public_key: "xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg="
+        addresses: [10.99.0.10/32]
