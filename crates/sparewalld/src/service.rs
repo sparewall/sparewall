@@ -7,10 +7,12 @@ use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, BackupReply, ConfigReply, Empty, EventReply, ExportReply, FirewallError,
     GenerationReply, HealthCheck, HealthReply, HistoryReply, SecretInfo, SecretListReply,
-    SecretSetReply, StatusReply, ValidateReply, VpnConfigReply,
+    SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply, ValidateReply,
+    VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::SecretClass;
+use sparewall_core::tokens::Role;
 use sparewall_core::{ApplyOptions, ApplyResult, Coordinator, Error, Generation, System};
 use tokio::sync::{Notify, broadcast};
 use tokio_stream::StreamExt;
@@ -486,7 +488,47 @@ where
         })
     }
 
-    #[zlink(rename = "Delete")]
+    #[zlink(interface = "org.sparewall.Auth", types = [TokenInfo])]
+    async fn create_token(
+        &mut self,
+        name: String,
+        role: String,
+        expires_days: Option<i64>,
+    ) -> Result<TokenCreateReply, FirewallError> {
+        let role = Role::parse(&role).ok_or_else(|| FirewallError::ValidationFailed {
+            errors: vec![format!(
+                "role must be monitor, viewer, operator or admin, not {role:?}"
+            )],
+        })?;
+        let ttl = expires_days.map(|d| d.clamp(1, 3650) as u32);
+        let (token, info) = with_core(&self.core, &self.events, move |c| {
+            c.token_create(&name, role, ttl)
+        })
+        .await?;
+        Ok(TokenCreateReply {
+            token,
+            info: api_token(&info),
+        })
+    }
+
+    async fn list_tokens(&mut self) -> Result<TokenListReply, FirewallError> {
+        let t = with_core(&self.core, &self.events, |c| c.tokens()).await?;
+        Ok(TokenListReply {
+            tokens: t.iter().map(api_token).collect(),
+        })
+    }
+
+    async fn revoke_token(&mut self, name: String) -> Result<Empty, FirewallError> {
+        let existed = with_core(&self.core, &self.events, move |c| c.token_revoke(&name)).await?;
+        if !existed {
+            return Err(FirewallError::NotSupported {
+                message: "no such token".into(),
+            });
+        }
+        Ok(Empty {})
+    }
+
+    #[zlink(interface = "org.sparewall.Secrets", rename = "Delete")]
     async fn secret_delete(&mut self, name: String) -> Result<Empty, FirewallError> {
         let existed = with_core(&self.core, &self.events, move |c| c.secret_delete(&name)).await?;
         if !existed {
@@ -495,6 +537,16 @@ where
             });
         }
         Ok(Empty {})
+    }
+}
+
+pub fn api_token(t: &sparewall_core::tokens::TokenInfo) -> TokenInfo {
+    TokenInfo {
+        name: t.name.clone(),
+        role: t.role.as_str().into(),
+        created: t.created.clone(),
+        expires: t.expires,
+        last_used: t.last_used.clone(),
     }
 }
 

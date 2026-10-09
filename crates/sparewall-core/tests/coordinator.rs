@@ -493,3 +493,17 @@ fn vpn_keys_and_client_config() {
         a.c.vpn_public_key("roadwarrior").unwrap()
     );
 }
+
+#[test]
+fn tokens_create_check_revoke() {
+    use sparewall_core::tokens::Role;
+    let mut t = setup();
+    let (tok, info) = t.c.token_create("prom", Role::Monitor, Some(90)).unwrap();
+    assert!(tok.starts_with("swt_") && !info.hash.contains(&tok));
+    assert_eq!(t.c.token_check(&tok).unwrap(), Some(Role::Monitor));
+    assert!(t.c.tokens().unwrap()[0].last_used.is_some());
+    assert_eq!(t.c.token_check("swt_nope").unwrap(), None);
+    assert!(t.c.token_create("prom", Role::Admin, None).is_err());
+    assert!(t.c.token_revoke("prom").unwrap());
+    assert_eq!(t.c.token_check(&tok).unwrap(), None);
+}

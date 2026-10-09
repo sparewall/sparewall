@@ -2,9 +2,9 @@
 //!
 //! `/livez` answers without checks; `/readyz` (and its alias `/healthz`)
 //! returns the health level: 200 for ok and degraded, 503 for failed.
-//! Unauthenticated requests get only the level; `?verbose` and
-//! `/readyz/<check>` detail is limited to loopback callers until API
-//! tokens exist (milestone 4).
+//! Unauthenticated requests get only the level; `?verbose`,
+//! `/readyz/<check>` and `/metrics` need an API token
+//! (`Authorization: Bearer`), unless `metrics.mode` is `external`.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -103,7 +103,7 @@ fn reply(status: u16, body: Value) -> Response<Full<Bytes>> {
 
 async fn handle(
     req: Request<Incoming>,
-    peer: SocketAddr,
+    _peer: SocketAddr,
     core: Core,
     events: broadcast::Sender<Value>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
@@ -112,7 +112,22 @@ async fn handle(
         q.split('&')
             .any(|p| p == "verbose" || p.starts_with("verbose="))
     });
-    let trusted = peer.ip().is_loopback();
+    // A monitor-role (or higher) API token unlocks detail and metrics.
+    let bearer = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| t.trim().to_string());
+    let token_ok = match bearer {
+        Some(t) => with_core(&core, &events, move |c| c.token_check(&t))
+            .await
+            .ok()
+            .flatten()
+            .is_some(),
+        None => false,
+    };
+    let trusted = token_ok;
     if req.method() != hyper::Method::GET && req.method() != hyper::Method::HEAD {
         return Ok(reply(405, json!({"error": "method not allowed"})));
     }
@@ -120,8 +135,8 @@ async fn handle(
         return Ok(reply(200, json!({"level": "ok"})));
     }
     if path == "/metrics" {
-        // Exposed to the management network only when the document asks
-        // for an external scrape; tokens arrive in milestone 4.
+        // With a token, or to anyone on the management network when the
+        // document asks for an unauthenticated external scrape.
         let r = with_core(&core, &events, move |c| {
             let mode = c
                 .active()

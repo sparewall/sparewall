@@ -406,3 +406,41 @@ pub trait PeerSecretsProxy {
         secrets: Vec<PeerSecret>,
     ) -> zlink::Result<Result<PutSecretsReply, PeerError>>;
 }
+
+// ---------------------------------------------------------------------------
+// Users, tokens and roles.
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct TokenInfo {
+    pub name: String,
+    /// `monitor`, `viewer`, `operator` or `admin`.
+    pub role: String,
+    pub created: String,
+    /// Unix time it expires, if ever.
+    pub expires: Option<i64>,
+    pub last_used: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct TokenCreateReply {
+    /// Shown once; only its hash is kept.
+    pub token: String,
+    pub info: TokenInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct TokenListReply {
+    pub tokens: Vec<TokenInfo>,
+}
+
+#[zlink::proxy("org.sparewall.Auth")]
+pub trait AuthProxy {
+    async fn create_token(
+        &mut self,
+        name: &str,
+        role: &str,
+        expires_days: Option<i64>,
+    ) -> zlink::Result<Result<TokenCreateReply, FirewallError>>;
+    async fn list_tokens(&mut self) -> zlink::Result<Result<TokenListReply, FirewallError>>;
+    async fn revoke_token(&mut self, name: &str) -> zlink::Result<Result<Empty, FirewallError>>;
+}

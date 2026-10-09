@@ -9,7 +9,9 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
-use sparewall_api::{ApplyReply, FirewallError, FirewallProxy, Generation, SecretsProxy, VpnProxy};
+use sparewall_api::{
+    ApplyReply, AuthProxy, FirewallError, FirewallProxy, Generation, SecretsProxy, VpnProxy,
+};
 use sparewall_config::{Format, path};
 
 use crate::conn::{Context, Contexts, Target};
@@ -233,6 +235,9 @@ enum Cmd {
     /// Remote-access VPN.
     #[command(subcommand)]
     Vpn(VpnCmd),
+    /// API tokens for scripts, monitoring and front ends.
+    #[command(subcommand)]
+    Token(TokenCmd),
     /// Manage named contexts (deployments reached over SSH).
     #[command(subcommand)]
     Context(ContextCmd),
@@ -307,6 +312,24 @@ enum SecretCmd {
     List,
     /// Remove a secret.
     Delete { name: String },
+}
+
+#[derive(Subcommand)]
+enum TokenCmd {
+    /// Create a token; it is printed once.
+    Create {
+        name: String,
+        /// monitor, viewer, operator or admin.
+        #[arg(long, default_value = "viewer")]
+        role: String,
+        /// Lifetime, e.g. 90d (days).
+        #[arg(long)]
+        expires: Option<String>,
+    },
+    /// List tokens (never their values).
+    List,
+    /// Revoke a token at once.
+    Revoke { name: String },
 }
 
 #[derive(Subcommand)]
@@ -797,6 +820,58 @@ impl App {
             Cmd::Secret(SecretCmd::Delete { name }) => {
                 self.conn().await?.delete(&name).await??;
                 self.say(format!("Deleted {name}."));
+            }
+            Cmd::Token(TokenCmd::Create {
+                name,
+                role,
+                expires,
+            }) => {
+                let days = match expires.as_deref() {
+                    None => None,
+                    Some(e) => Some(
+                        e.trim_end_matches('d')
+                            .parse::<i64>()
+                            .map_err(|_| Fail::usage("--expires takes days, e.g. 90d"))?,
+                    ),
+                };
+                let r = self
+                    .conn()
+                    .await?
+                    .create_token(&name, &role, days)
+                    .await??;
+                println!("{}", r.token);
+                self.say(format!(
+                    "Token {} ({}) created. It is shown only once.",
+                    r.info.name, r.info.role
+                ));
+            }
+            Cmd::Token(TokenCmd::List) => {
+                let r = self.conn().await?.list_tokens().await??;
+                match self.output {
+                    Some(Output::Json) | Some(Output::Yaml) => print_value(
+                        &serde_json::to_value(&r.tokens).unwrap_or_default(),
+                        self.output,
+                    ),
+                    _ => {
+                        println!(
+                            "{:<24} {:<9} {:<21} LAST USED",
+                            "NAME", "ROLE", "EXPIRES (UNIX)"
+                        );
+                        for t in &r.tokens {
+                            println!(
+                                "{:<24} {:<9} {:<21} {}",
+                                t.name,
+                                t.role,
+                                t.expires.map_or("never".into(), |e| e.to_string()),
+                                t.last_used.as_deref().unwrap_or("-")
+                            );
+                        }
+                    }
+                }
+            }
+            Cmd::Token(TokenCmd::Revoke { name }) => {
+                self.conn().await?.revoke_token(&name).await??;
+                self.say(format!("Revoked {name}."));
             }
             Cmd::Vpn(VpnCmd::ClientConfig { peer, instance, qr }) => {
                 let r = self
