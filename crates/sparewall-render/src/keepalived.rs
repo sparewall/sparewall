@@ -70,11 +70,14 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
     if instances.is_empty() {
         return;
     }
-    writeln!(s, "vrrp_sync_group {SYNC_GROUP} {{\n    group {{").unwrap();
-    for (name, _) in &instances {
-        writeln!(s, "        {}", instance_name(name)).unwrap();
+    // keepalived rejects a sync group of one.
+    if instances.len() > 1 {
+        writeln!(s, "vrrp_sync_group {SYNC_GROUP} {{\n    group {{").unwrap();
+        for (name, _) in &instances {
+            writeln!(s, "        {}", instance_name(name)).unwrap();
+        }
+        s.push_str("    }\n}\n\n");
     }
-    s.push_str("    }\n}\n\n");
     for (name, net) in &instances {
         let iface = doc.network_iface(name).expect("exists");
         let port = &net.port;

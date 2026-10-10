@@ -82,7 +82,7 @@ k2=$(at fw2 'sudo sparewall status -o json' | jq -r .sync.sync_public_key)
 sed -e "s|@FW1_KEY@|$k1|" -e "s|@FW2_KEY@|$k2|" "$HERE/site-pair.yaml" > pair.yaml
 for n in fw1 fw2; do
     at "$n" 'cat > /tmp/pair.yaml' < pair.yaml
-    at "$n" 'sudo sparewall apply -f /tmp/pair.yaml --confirm 0' || true
+    at "$n" 'sudo sparewall apply -f /tmp/pair.yaml --confirm 0' || fail "pairing apply failed on $n"
 done
 in_sync() { at "$1" 'sudo sparewall status -o json' | jq -e '.sync.state == "in-sync"'; }
 wait_for 300 "fw1 in sync" in_sync fw1

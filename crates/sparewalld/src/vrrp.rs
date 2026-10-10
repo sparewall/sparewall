@@ -101,9 +101,17 @@ pub async fn fifo_reader(pair: Pair, events: broadcast::Sender<Value>, path: Pat
             continue;
         };
         tracing::info!(kind, name, state, "keepalived transition");
-        if kind == "GROUP" {
-            pair.lock().unwrap_or_else(|p| p.into_inner()).role = Some(state.to_string());
-            let _ = events.send(json!({"type": "vrrp", "group": name, "state": state}));
+        // The sync group moves every instance together; with a single
+        // instance there is no group, only instance lines. Act once per
+        // change of role.
+        let changed = {
+            let mut p = pair.lock().unwrap_or_else(|p| p.into_inner());
+            let changed = p.role.as_deref() != Some(state);
+            p.role = Some(state.to_string());
+            changed
+        };
+        if changed {
+            let _ = events.send(json!({"type": "vrrp", "source": name, "state": state}));
             let st = state.to_string();
             let _ = tokio::task::spawn_blocking(move || run_conntrackd(&st)).await;
         }
