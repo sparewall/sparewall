@@ -23,6 +23,20 @@ Where the implementation departs from, or settles open questions in,
 - **Confined daemons read their configs from their own runtime
   directories** (`/run/chrony`, `/run/keepalived`), which carry their
   SELinux labels; everything else is under `/run/sparewall/<subsystem>`.
+- **SELinux stays enforcing**, and confined daemons get files they may
+  read: networkd's WireGuard keys are copies in `/run/systemd/network`
+  (masters stay root-only under `/var/lib/sparewall`); conntrackd's
+  configuration is relabelled `conntrackd_conf_t`; keepalived's health
+  check and notify scripts live in `/usr/libexec/keepalived` (where they run
+  unconfined), and transitions reach the coordinator through a FIFO the
+  notify script writes, since keepalived itself may not use notify_fifo.
+- **Commands the coordinator's sandbox forbids** (podman config checks,
+  the keepalived netns check, bootc) run as the oneshot unit
+  `sparewall-run@<id>.service`; `systemd-run` from inside the sandbox fails.
+- **Bound images** are reached with
+  `--storage-opt=additionalimagestore=/usr/lib/bootc/storage` per podman
+  invocation (Quadlet `GlobalArgs=`): a global storage setting breaks
+  `bootc install`.
 - **Admin SSH keys** are written to `~admin/.ssh/authorized_keys`: with
   SELinux enforcing, sshd cannot read keys under `/var/lib`. The `admin`
   account has passwordless sudo; root cannot log in over SSH.
