@@ -212,6 +212,8 @@ for n in fw1 fw2; do
 location = "10.0.2.2:5000"
 insecure = true
 TOML
+    # The image's policy rejects anything unsigned; trust this registry.
+    at "$n" 'sudo jq ".transports.docker[\"10.0.2.2:5000\"] = [{\"type\": \"insecureAcceptAnything\"}]" /etc/containers/policy.json > /tmp/policy.json && sudo install -m 0644 /tmp/policy.json /etc/containers/policy.json'
 done
 
 log "rolling upgrade from fw2"

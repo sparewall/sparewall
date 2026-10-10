@@ -104,8 +104,10 @@ rebooted first, and once it is back on the new image, healthy and in sync,
 the master hands it the gateway addresses (established connections carry
 over through conntrackd) and upgrades itself. A failed gate stops the
 upgrade and the master keeps the addresses; `bootc rollback` and a reboot
-return a node to its previous image. Images from `ghcr.io/sparewall` must
-carry a valid signature.
+return a node to its previous image. The containers signature policy
+rejects images from anywhere but `ghcr.io/sparewall`, whose images must
+carry a valid signature; to upgrade from a mirror, add it to
+`/etc/containers/policy.json` with its own signature requirement.
 
 ## Exit codes
 
