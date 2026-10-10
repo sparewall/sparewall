@@ -1,5 +1,6 @@
 # Two-node test (tests/vm/pair-test.sh). Management on QEMU user networking
-# (one per VM), and a shared VLAN trunk: users on VLAN 20, sync on 4000.
+# (one per VM), and a shared VLAN trunk: users on VLAN 20, servers on 30,
+# sync on 4000.
 # The sync keys are filled in by the test from each node's status.
 schema: 1
 cluster:
@@ -26,6 +27,12 @@ networks:
     addresses: { fw1: 192.0.2.2/24, fw2: 192.0.2.3/24 }
     vip: 192.0.2.1/24
     vrid: 20
+  servers:
+    port: trunk
+    vlan: 30
+    addresses: { fw1: 198.51.100.2/24, fw2: 198.51.100.3/24 }
+    vip: 198.51.100.1/24
+    vrid: 30
   sync:
     port: trunk
     vlan: 4000
@@ -34,8 +41,14 @@ networks:
 zones:
   mgmt: { networks: [mgmt] }
   users: { networks: [users] }
+  servers: { networks: [servers] }
 policy:
   mgmt->self: { action: drop }
+  users->servers:
+    action: drop
+    rules:
+      echo: { order: 100, proto: tcp, dport: [7000], action: accept }
+  servers->self: { action: drop }
   users->self:
     action: drop
     rules:

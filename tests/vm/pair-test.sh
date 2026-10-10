@@ -1,6 +1,7 @@
 #!/bin/bash
 # Two-node suite (design: milestone 3): pairing, push, the gateway address,
-# DHCP from the Kea HA pair, and failover when the master dies.
+# DHCP from the Kea HA pair, and failover when the master dies, with an
+# established TCP connection surviving it (conntrackd).
 #
 #   tests/vm/pair-test.sh WORKDIR    (reuses WORKDIR/output/qcow2/disk.qcow2
 #                                     from boot-test.sh)
@@ -22,6 +23,7 @@ for t in swtap1 swtap2; do
     sudo ip link set "$t" master swbr up
     sudo bridge vlan del dev "$t" vid 1
     sudo bridge vlan add dev "$t" vid 20
+    sudo bridge vlan add dev "$t" vid 30
     sudo bridge vlan add dev "$t" vid 4000
 done
 
@@ -59,10 +61,13 @@ wait_for() { # seconds description command...
 cleanup() {
     local rc=$?
     if [ $rc -ne 0 ]; then
+        [ -f flow.log ] && { echo "--- flow.log"; tail -5 flow.log; }
         for n in fw1 fw2; do
             echo "--- $n"
             at "$n" 'sudo sparewall status
                 sudo wg show swsync 2>&1; ip -br addr
+                sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -s 2>&1 | head -30
+                sudo journalctl -b -u sparewalld --no-pager | grep -iE "vrrp|conntrackd" | tail -15
                 for u in keepalived conntrackd sparewall-kea; do echo "-- $u"; sudo journalctl -b -u $u --no-pager | tail -15; done
                 echo "-- networkd"; sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "swsync|wireguard|key" | tail -15
                 echo "-- AVC"; sudo journalctl -b -k --no-pager | grep -oE "avc: +denied.*" | sed -E "s/pid=[0-9]+ //; s/ino=[0-9]+ //" | sort | uniq -c | tail -25
@@ -70,6 +75,7 @@ cleanup() {
                 || sudo tail -60 "$n.serial" || true
         done
     fi
+    sudo pkill -f "$WORK/echo.py" 2>/dev/null || true
     for n in fw1 fw2; do
         [ -f "$n.pid" ] && sudo kill "$(sudo cat "$n.pid")" 2>/dev/null || true
     done
@@ -113,10 +119,57 @@ got_lease() { ns users busybox udhcpc -i eth0 -n -q -t 5 -T 3 -s "$WORK/udhcpc.s
 wait_for 120 "a DHCP lease from the pair" got_lease
 ns users ping -c 2 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachable"
 
+log "a connection through the pair"
+# A TCP echo server behind the servers VLAN and a client in users that
+# sends a line every half second on one connection, counting the echoes.
+cat > echo.py <<'PY'
+import socket, sys, time
+if sys.argv[1] == "server":
+    s = socket.create_server(("0.0.0.0", 7000))
+    while True:
+        c, _ = s.accept()
+        f = c.makefile("rwb", buffering=0)
+        for line in f:
+            f.write(line)
+else:
+    c = socket.create_connection((sys.argv[2], 7000), timeout=5)
+    c.settimeout(30)
+    f = c.makefile("rwb", buffering=0)
+    n = 0
+    while True:
+        f.write(b"ping\n")
+        if f.readline() != b"ping\n":
+            print("broken", flush=True)
+            sys.exit(1)
+        n += 1
+        print(n, flush=True)
+        time.sleep(0.5)
+PY
+ns guests ip addr flush dev eth0
+ns guests ip addr add 198.51.100.10/24 dev eth0
+ns guests ip route replace default via 198.51.100.1
+ns guests python3 "$WORK/echo.py" server &
+sleep 1
+ns users python3 "$WORK/echo.py" client 198.51.100.10 > flow.log 2>&1 &
+echoes() { tail -1 flow.log | grep -qE '^[0-9]+$' && echo "$(tail -1 flow.log)"; }
+sleep 3
+before=$(echoes) || fail "no echoes through fw1: $(cat flow.log)"
+# Let conntrackd send the entry to fw2.
+sleep 3
+at fw2 'sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -e' | grep -q 'dport=7000' \
+    || fail "fw2's external cache does not hold the connection"
+
 log "failover"
 sudo kill "$(sudo cat fw1.pid)"; rm -f fw1.pid
 wait_for 60 "fw2 master" is_master fw2
 ns users ping -c 3 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachable after failover"
+# The same connection keeps going through fw2.
+sleep 10
+grep -q broken flow.log && fail "the connection broke in the failover: $(tail -5 flow.log)"
+after=$(echoes) || fail "the connection stalled: $(tail -5 flow.log)"
+sleep 3
+[ "$(echoes)" -gt "$after" ] && [ "$after" -gt "$before" ] \
+    || fail "the connection stalled after the failover ($before, $after, $(echoes))"
 peer_down() { at fw2 'sudo sparewall status -o json' | jq -e '.sync.state == "peer-unreachable"'; }
 wait_for 60 "fw2 reports the peer down" peer_down
 log "pair PASS"
