@@ -115,5 +115,6 @@ log "failover"
 sudo kill "$(sudo cat fw1.pid)"; rm -f fw1.pid
 wait_for 60 "fw2 master" is_master fw2
 ns users ping -c 3 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachable after failover"
-at fw2 'sudo sparewall status' | grep -q 'peer-unreachable' || fail "fw2 does not report the peer down"
+peer_down() { at fw2 'sudo sparewall status -o json' | jq -e '.sync.state == "peer-unreachable"'; }
+wait_for 60 "fw2 reports the peer down" peer_down
 log "pair PASS"
