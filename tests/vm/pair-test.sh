@@ -108,7 +108,9 @@ log "the gateway address and DHCP"
 . "$HERE/conformance.sh"
 dhcp_script
 ns users ip addr flush dev eth0
-ns users busybox udhcpc -i eth0 -n -q -t 10 -T 3 -s "$WORK/udhcpc.sh" >/dev/null 2>&1 || fail "no DHCP lease from the pair"
+# After a configuration change Kea HA resynchronizes before serving again.
+got_lease() { ns users busybox udhcpc -i eth0 -n -q -t 5 -T 3 -s "$WORK/udhcpc.sh" >/dev/null 2>&1; }
+wait_for 120 "a DHCP lease from the pair" got_lease
 ns users ping -c 2 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachable"
 
 log "failover"
