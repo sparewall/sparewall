@@ -61,7 +61,12 @@ cleanup() {
     if [ $rc -ne 0 ]; then
         for n in fw1 fw2; do
             echo "--- $n"
-            at "$n" 'sudo sparewall status; sudo journalctl -b -u sparewalld -u keepalived -u sparewall-kea --no-pager | tail -60' 2>/dev/null || sudo tail -60 "$n.serial" || true
+            at "$n" 'sudo sparewall status
+                sudo wg show swsync 2>&1; ip -br addr
+                for u in keepalived conntrackd sparewall-kea; do echo "-- $u"; sudo journalctl -b -u $u --no-pager | tail -15; done
+                echo "-- networkd"; sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "swsync|wireguard|key" | tail -15
+                echo "-- AVC"; sudo ausearch -m avc -ts boot 2>/dev/null | grep -oE "avc: .*" | sort | uniq -c | tail -20' 2>/dev/null \
+                || sudo tail -60 "$n.serial" || true
         done
     fi
     for n in fw1 fw2; do

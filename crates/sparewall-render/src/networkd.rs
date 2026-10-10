@@ -11,7 +11,7 @@ use sparewall_config::topology::{SYNC_TUNNEL_IFACE, SYNC_TUNNEL_PORT};
 use sparewall_config::validate::mac_ok;
 
 use crate::ini::Ini;
-use crate::{Error, KEY_DIR, Rendered, SYNC_KEY_FILE, Subsystem};
+use crate::{Error, KEY_DIR, Rendered, SYNC_KEY_RUNTIME, Subsystem};
 
 /// Interface name of the management port in bootstrap mode.
 pub const BOOTSTRAP_PORT: &str = "mgmt0";
@@ -287,7 +287,7 @@ fn sync_tunnel(doc: &Document, node: &str, out: &mut Rendered) {
         .set("Kind", "wireguard")
         .set("Description", "Sparewall pair sync tunnel");
     nd.section("WireGuard")
-        .set("PrivateKeyFile", SYNC_KEY_FILE)
+        .set("PrivateKeyFile", SYNC_KEY_RUNTIME)
         .set("ListenPort", port);
     let peer_tunnel = sync_tunnel_addr(doc, peer).expect("peer is a node");
     nd.section("WireGuardPeer")
@@ -324,7 +324,10 @@ fn remote_access(name: &str, vpn: &Vpn, out: &mut Rendered) {
         .set("Kind", "wireguard")
         .set("Description", format!("Sparewall remote-access VPN {name}"));
     nd.section("WireGuard")
-        .set("PrivateKeyFile", format!("{KEY_DIR}/vpn-{name}.key"))
+        .set(
+            "PrivateKeyFile",
+            format!("{KEY_DIR}/sparewall-vpn-{name}.key"),
+        )
         .set("ListenPort", vpn.listen_port);
     for peer in vpn.peers.values() {
         nd.section("WireGuardPeer")

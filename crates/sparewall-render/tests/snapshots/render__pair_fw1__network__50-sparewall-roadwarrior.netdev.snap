@@ -10,7 +10,7 @@ Kind=wireguard
 Description=Sparewall remote-access VPN roadwarrior
 
 [WireGuard]
-PrivateKeyFile=/run/sparewall/keys/vpn-roadwarrior.key
+PrivateKeyFile=/run/systemd/network/sparewall-vpn-roadwarrior.key
 ListenPort=51820
 
 [WireGuardPeer]

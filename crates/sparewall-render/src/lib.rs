@@ -20,8 +20,12 @@ pub mod sysctl;
 pub mod unbound;
 
 /// Where secrets and node keys are made available to daemons at runtime.
-pub const KEY_DIR: &str = "/run/sparewall/keys";
-/// The sync tunnel's private key (node secret).
+/// Where networkd reads WireGuard private keys: its own runtime directory,
+/// whose SELinux label lets it read them (it cannot read /var/lib).
+pub const KEY_DIR: &str = "/run/systemd/network";
+/// networkd's copy of the sync tunnel key.
+pub const SYNC_KEY_RUNTIME: &str = "/run/systemd/network/sparewall-sync.key";
+/// The sync tunnel's private key (node secret); the master copy.
 pub const SYNC_KEY_FILE: &str = "/var/lib/sparewall/keys/sync.key";
 
 /// Subsystems a rendered file belongs to, used to decide what to reload.

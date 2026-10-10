@@ -400,8 +400,21 @@ impl System for Linux {
     }
 
     fn networkd_apply(&mut self, old: &Files, new: &Files, early: bool) -> Result<(), Error> {
-        let dir = &self.network_dir;
+        let dir = &self.network_dir.clone();
         fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+        // networkd's copy of the sync tunnel key.
+        if new
+            .values()
+            .any(|c| c.contains(sparewall_render::SYNC_KEY_RUNTIME))
+            && let Ok(key) = fs::read(&self.sync_key)
+        {
+            let name = std::path::Path::new(sparewall_render::SYNC_KEY_RUNTIME)
+                .file_name()
+                .expect("file name")
+                .to_string_lossy()
+                .into_owned();
+            self.install_key(&name, &key, "systemd-network")?;
+        }
         for (name, content) in new {
             let p = dir.join(name);
             if fs::read_to_string(&p).ok().as_deref() != Some(content) {
@@ -701,11 +714,9 @@ impl System for Linux {
     }
 
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
-        let dir = self.runtime_dir.join("keys");
+        // WireGuard keys go where networkd may read them (see KEY_DIR).
+        let dir = PathBuf::from(sparewall_render::KEY_DIR);
         fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o750))
-            .map_err(|e| Error::io(&dir, e))?;
-        let _ = run("chgrp", &[group, &dir.display().to_string()], None);
         let p = dir.join(file);
         write_atomic(&p, content).map_err(|e| Error::io(&p, e))?;
         fs::set_permissions(&p, fs::Permissions::from_mode(0o640)).map_err(|e| Error::io(&p, e))?;
@@ -721,14 +732,9 @@ impl System for Linux {
                 fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
             }
             write_atomic(key, private.trim().as_bytes()).map_err(|e| Error::io(key, e))?;
-            // networkd reads it as systemd-network.
-            fs::set_permissions(key, fs::Permissions::from_mode(0o640))
+            // The master copy is root's; networkd gets a copy in /run.
+            fs::set_permissions(key, fs::Permissions::from_mode(0o600))
                 .map_err(|e| Error::io(key, e))?;
-            let _ = run(
-                "chgrp",
-                &["systemd-network", &key.display().to_string()],
-                None,
-            );
             tracing::info!(path = %key.display(), "generated the sync-tunnel key");
         }
         let private = fs::read_to_string(key).map_err(|e| Error::io(key, e))?;
