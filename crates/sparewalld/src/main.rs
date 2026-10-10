@@ -279,6 +279,9 @@ fn run(args: Args) -> Result<(), String> {
         } else {
             std::path::PathBuf::from(sparewall_render::keepalived::FIFO)
         };
+        if !args.fake_system {
+            tokio::task::spawn_blocking(service::lookup_booted_image);
+        }
         let _ = sd_notify::notify(&[
             sd_notify::NotifyState::Ready,
             sd_notify::NotifyState::Status("running"),

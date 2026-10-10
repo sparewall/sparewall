@@ -52,8 +52,11 @@ start() { # name ssh-port mgmt-mac trunk-mac tap (the disk as it is)
 
 at() { # node command...
     local port; case $1 in fw1) port=2231 ;; fw2) port=2232 ;; esac; shift
-    ssh -p "$port" -i "$WORK/id_ed25519" -o StrictHostKeyChecking=no \
+    # QEMU accepts the forwarded connection before the guest is up, so
+    # ConnectTimeout alone does not bound a call: a hung one is retried.
+    timeout "${AT_TIMEOUT:-90}" ssh -p "$port" -i "$WORK/id_ed25519" -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR \
+        -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
         admin@127.0.0.1 "$@"
 }
 
@@ -71,7 +74,8 @@ cleanup() {
         [ -f flow.log ] && { echo "--- flow.log"; tail -5 flow.log; }
         for n in fw1 fw2; do
             echo "--- $n"
-            at "$n" 'sudo sparewall status
+            at "$n" 'sudo journalctl -b -u sparewalld --no-pager | tail -40
+                timeout 20 sudo sparewall status
                 sudo wg show swsync 2>&1; ip -br addr
                 sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -s 2>&1 | head -30
                 sudo journalctl -b -u sparewalld --no-pager | grep -iE "vrrp|conntrackd" | tail -15
@@ -212,7 +216,8 @@ done
 
 log "rolling upgrade from fw2"
 before=$(echoes) || fail "the connection is gone before the upgrade: $(tail -3 flow.log)"
-at fw2 "sudo sparewall upgrade --image $NEXT" || fail "the upgrade did not start"
+# The command follows the upgrade until fw2 itself reboots.
+AT_TIMEOUT=1800 at fw2 "sudo sparewall upgrade --image $NEXT" || fail "the upgrade failed"
 upgraded() { at "$1" 'test -e /usr/share/sparewall/upgrade-marker'; }
 wait_for 900 "fw1 on the new image" upgraded fw1
 wait_for 600 "fw2 on the new image" upgraded fw2

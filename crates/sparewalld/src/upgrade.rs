@@ -217,6 +217,9 @@ async fn upgrade_peer(
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
+    if before.image.is_none() {
+        return Err(format!("{} does not report its image yet", before.node));
+    }
     event(
         events,
         "stage-peer",
@@ -245,7 +248,8 @@ async fn upgrade_peer(
             && let Ok(Ok(h)) = c.hello(&node, PEER_PROTOCOL).await
         {
             let healthy = h.health.as_deref() != Some("failed");
-            if h.image != before.image
+            if h.image.is_some()
+                && h.image != before.image
                 && healthy
                 && h.desired == ours
                 && h.applied.as_deref() == Some(ours.as_str())

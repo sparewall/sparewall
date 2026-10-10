@@ -29,19 +29,36 @@ pub type Core = Arc<Mutex<Coordinator<Box<dyn System>>>>;
 const KEA_LEASES: &str =
     "/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv";
 
-/// The digest of the booted image, from `bootc status`.
+/// The booted image (`name@digest`), looked up once by
+/// [`lookup_booted_image`]; fixed for the life of the boot.
+static BOOTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The digest of the booted image, once known. Never blocks: request
+/// handlers call this.
 pub fn booted_image_digest() -> Option<String> {
-    // Fixed for the life of the boot; bootc needs to run outside the sandbox.
-    static BOOTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    if let Some(b) = BOOTED.get() {
-        return Some(b.clone());
+    BOOTED.get().cloned()
+}
+
+/// Ask bootc (outside the sandbox) for the booted image, retrying for a
+/// while during boot. Blocking; run it off the async workers.
+pub fn lookup_booted_image() {
+    for _ in 0..20 {
+        let found = crate::upgrade::host_run("bootc", &["status", "--format=json"])
+            .ok()
+            .and_then(|out| {
+                let v: Value = serde_json::from_str(&out).ok()?;
+                let img = &v["status"]["booted"]["image"];
+                let digest = img["imageDigest"].as_str()?;
+                let name = img["image"]["image"].as_str().unwrap_or_default();
+                Some(format!("{name}@{digest}"))
+            });
+        if let Some(b) = found {
+            let _ = BOOTED.set(b);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(15));
     }
-    let out = crate::upgrade::host_run("bootc", &["status", "--format=json"]).ok()?;
-    let v: Value = serde_json::from_str(&out).ok()?;
-    let img = &v["status"]["booted"]["image"];
-    let digest = img["imageDigest"].as_str()?;
-    let name = img["image"]["image"].as_str().unwrap_or_default();
-    Some(BOOTED.get_or_init(|| format!("{name}@{digest}")).clone())
+    tracing::warn!("cannot read the booted image from bootc status");
 }
 
 /// The Varlink service. Coordinator calls run on the blocking pool, since
