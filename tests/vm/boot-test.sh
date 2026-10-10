@@ -157,8 +157,10 @@ token=$(vm 'sudo sparewall token create ci-monitor --role monitor -q')
 vm "curl -sfk -H 'Authorization: Bearer $token' https://localhost/metrics" > metrics.txt \
     || fail "/metrics refused a monitor token"
 grep -q '^sparewall_generation' metrics.txt || fail "no coordinator metrics: $(head -5 metrics.txt)"
-grep -q '^node_network_receive_bytes_total{device="uplink"}' metrics.txt \
-    || fail "no node_exporter metrics for the uplink"
+grep -q '^node_network_receive_bytes_total{device="uplink"}' metrics.txt || {
+    vm 'systemctl status prometheus-node-exporter.service --no-pager' || true
+    fail "no node_exporter metrics for the uplink: $(grep -c '^node_' metrics.txt) node_ samples"
+}
 vm 'curl -sk https://localhost/metrics' | grep -q '^node_' && fail "/metrics without a token leaked host metrics"
 
 run_conformance
