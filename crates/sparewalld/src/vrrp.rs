@@ -73,6 +73,8 @@ pub async fn fifo_reader(pair: Pair, events: broadcast::Sender<Value>, path: Pat
     }
     tracing::info!(path = %path.display(), "reading keepalived notifications");
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let tx_state = tx.clone();
+    let state_file = path.with_file_name("keepalived.state");
     std::thread::spawn(move || {
         // Opened read-write so it never blocks waiting for a writer and
         // never sees end-of-file when keepalived restarts.
@@ -96,6 +98,23 @@ pub async fn fifo_reader(pair: Pair, events: broadcast::Sender<Value>, path: Pat
                 }
                 Err(_) => return,
             }
+        }
+    });
+    // A transition the FIFO missed is in the state file the notify script
+    // also writes; read it now and every few seconds.
+    let tx2 = tx_state;
+    tokio::spawn(async move {
+        let mut last = String::new();
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&state_file)
+                && s != last
+            {
+                last = s.clone();
+                if tx2.send(s.trim().to_string()).is_err() {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     });
     while let Some(line) = rx.recv().await {

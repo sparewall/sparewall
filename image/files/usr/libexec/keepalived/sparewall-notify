@@ -2,7 +2,11 @@
 # keepalived notify script: passes "TYPE NAME STATE" to sparewalld, which
 # serializes transitions and runs the conntrackd failover sequence. It
 # lives here so SELinux runs it unconfined. Never blocks keepalived.
+line="$1 $2 $3"
+# The latest transition, for a coordinator that was not listening.
+printf '%s\n' "$line" > /run/sparewall/keepalived.state.tmp \
+    && mv -f /run/sparewall/keepalived.state.tmp /run/sparewall/keepalived.state
 fifo=/run/sparewall/keepalived.fifo
 [ -p "$fifo" ] || exit 0
-printf '%s %s %s\n' "$1" "$2" "$3" | timeout 2 tee "$fifo" >/dev/null
+printf '%s\n' "$line" | timeout 2 tee "$fifo" >/dev/null
 exit 0
