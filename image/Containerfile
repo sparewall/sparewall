@@ -111,7 +111,6 @@ COPY --from=ulogd /out/ /
 COPY image/files/ /
 
 RUN test -L /usr/sbin \
-    && podman info --format '{{json .Store.GraphOptions}}' | grep -q /usr/lib/bootc/storage \
     && sed -i -e "s|@KEA_IMAGE@|${KEA_IMAGE}|" /usr/share/containers/systemd/sparewall-kea.container \
     && sed -i -e "s|@UNBOUND_IMAGE@|${UNBOUND_IMAGE}|" /usr/share/containers/systemd/sparewall-unbound.container \
     && systemctl preset-all \
