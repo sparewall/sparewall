@@ -1,0 +1,8 @@
+#!/bin/sh
+# keepalived notify script: passes "TYPE NAME STATE" to sparewalld, which
+# serializes transitions and runs the conntrackd failover sequence. It
+# lives here so SELinux runs it unconfined. Never blocks keepalived.
+fifo=/run/sparewall/keepalived.fifo
+[ -p "$fifo" ] || exit 0
+printf '%s %s %s\n' "$1" "$2" "$3" | timeout 2 tee "$fifo" >/dev/null
+exit 0

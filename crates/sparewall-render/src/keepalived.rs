@@ -18,9 +18,11 @@ pub const CONF: &str = "keepalived.conf";
 /// keepalived's runtime directory (labelled for it); the file is installed here.
 pub const DIR: &str = "/run/keepalived";
 /// Where keepalived reports state changes to the coordinator.
-/// Where keepalived reports state changes to the coordinator (in
-/// keepalived's own runtime directory, for SELinux).
-pub const FIFO: &str = "/run/keepalived/sparewall.fifo";
+/// Where the notify script reports state changes to the coordinator.
+pub const FIFO: &str = "/run/sparewall/keepalived.fifo";
+/// keepalived's notify script (unconfined under SELinux by its location;
+/// keepalived itself may neither create nor open the coordinator's FIFO).
+pub const NOTIFY_SCRIPT: &str = "/usr/libexec/keepalived/sparewall-notify";
 /// The track script (unconfined under SELinux by its location).
 pub const HEALTH_SCRIPT: &str = "/usr/libexec/keepalived/sparewall-health";
 pub const SYNC_GROUP: &str = "SPAREWALL";
@@ -53,7 +55,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
     writeln!(
         s,
         "global_defs {{\n    router_id {node}\n    vrrp_version 3\n    enable_script_security\n    \
-         script_user root\n    notify_fifo {FIFO}\n    vrrp_garp_master_refresh 60\n}}\n"
+         script_user root\n    vrrp_garp_master_refresh 60\n}}\n"
     )
     .unwrap();
     writeln!(
@@ -76,7 +78,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         for (name, _) in &instances {
             writeln!(s, "        {}", instance_name(name)).unwrap();
         }
-        s.push_str("    }\n}\n\n");
+        writeln!(s, "    }}\n    notify \"{NOTIFY_SCRIPT}\"\n}}\n").unwrap();
     }
     for (name, net) in &instances {
         let iface = doc.network_iface(name).expect("exists");
@@ -106,6 +108,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
             writeln!(s, "    track_interface {{\n        {port}\n    }}").unwrap();
         }
         s.push_str("    track_script {\n        sparewall_health\n    }\n");
+        writeln!(s, "    notify \"{NOTIFY_SCRIPT}\"").unwrap();
         writeln!(
             s,
             "    virtual_ipaddress {{\n        {} dev {iface}\n    }}\n}}\n",
