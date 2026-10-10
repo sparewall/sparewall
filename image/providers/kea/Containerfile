@@ -1,13 +1,17 @@
 # Kea DHCPv4 for Sparewall, from Fedora's packages (design, "To prove":
 # ISC does not publish Kea 3.2 images, so build from distribution RPMs).
 FROM quay.io/fedora/fedora-minimal:45@sha256:e6674de05c3eaae918d76d467b15149a3c43a21b0562dad177a86c20e346105e
+# Kea runs as root with every capability dropped but NET_RAW and
+# NET_BIND_SERVICE (raw sockets need it), so without DAC_OVERRIDE its state
+# directories must belong to root.
 RUN microdnf -y install --setopt=install_weak_deps=0 kea kea-hooks \
     && microdnf clean all \
-    && rm -rf /var/cache/* /var/log/*
+    && rm -rf /var/cache/* /var/log/* \
+    && install -d -m 0750 -o root -g root /var/lib/kea /run/kea \
+    && chown -R root:root /var/lib/kea
 LABEL org.opencontainers.image.title="Sparewall Kea" \
       org.opencontainers.image.source="https://github.com/sparewall/sparewall" \
       org.opencontainers.image.licenses="MPL-2.0"
 # The coordinator renders /etc/kea; leases persist in /var/lib/kea.
-USER kea
 ENTRYPOINT []
 CMD ["/usr/bin/kea-dhcp4", "-c", "/etc/kea/kea-dhcp4.conf"]
