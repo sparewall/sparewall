@@ -44,6 +44,15 @@ pub fn install_dir(sub: Subsystem) -> Option<&'static str> {
     }
 }
 
+/// The SELinux type a confined daemon needs on its configuration when it
+/// has no labelled runtime directory of its own.
+pub fn install_label(sub: Subsystem) -> Option<&'static str> {
+    match sub {
+        Subsystem::Conntrackd => Some("conntrackd_conf_t"),
+        _ => None,
+    }
+}
+
 /// Provider units the coordinator may start; any not wanted by the live
 /// generation are stopped.
 pub const PROVIDER_UNITS: &[&str] = &[
@@ -541,6 +550,12 @@ impl System for Linux {
             // A confined daemon reads only files with its own label.
             let _ = run("restorecon", &["-R", &dir.display().to_string()], None);
             return Ok(());
+        }
+        if let Some(label) = install_label(sub) {
+            for name in files.keys() {
+                let p = dir.join(name).display().to_string();
+                let _ = run("chcon", &["-t", label, &p], None);
+            }
         }
         for e in fs::read_dir(&dir)
             .map_err(|e| Error::io(&dir, e))?
