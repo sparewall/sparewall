@@ -63,6 +63,7 @@ jobs:
             podman build --label org.opencontainers.image.revision=${{ github.sha }} \
               -t "$repo:ci" "image/providers/$p"
             podman run --rm "$repo:ci" true
+            echo "base: $(podman image inspect quay.io/fedora/fedora-minimal:45 --format '{{.Digest}}') fedora-minimal:45" >> "$GITHUB_STEP_SUMMARY"
             # Bound images are pinned by an immutable per-commit tag:
             # bootc cannot copy a digest-referenced image between storages.
             short=$(git rev-parse --short=12 HEAD)
@@ -114,6 +115,9 @@ jobs:
             --label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
             --tag "$LOCAL" .
           sudo podman image inspect "$LOCAL" --format '{{.Size}}' | numfmt --to=iec
+          for b in quay.io/fedora/fedora:45 quay.io/fedora/fedora-bootc:45; do
+            echo "base: $(sudo podman image inspect "$b" --format '{{.Digest}}') $b" >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Boot test
         env:

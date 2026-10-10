@@ -16,6 +16,12 @@ Where the implementation departs from, or settles open questions in,
   cannot copy a digest-referenced logically bound image from host storage
   ("would require changing layer representation"). Signatures are still
   verified on the digest by the containers policy.
+- **Fedora base images are used by tag, not digest.** quay.io/fedora
+  publishes no dated tags and prunes a superseded `:45` manifest within
+  about a day, so digest pins broke CI within a day of being set. Builds
+  record the digests they used in the CI run summary, and the SBOM lists
+  every package. bootc-image-builder, whose digests are retained, stays
+  pinned.
 - **ulogd2 is built from source** in an image stage (Fedora 45 does not
   package it), with libnetfilter_log 1.0.2 linked statically because
   Fedora has 1.0.1. node_exporter is likewise not packaged and not yet
