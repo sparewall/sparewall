@@ -564,6 +564,8 @@ impl System for Linux {
                 Some(image) => {
                     let vol = format!("{d}:{}:ro", spec.mount);
                     let mut args = vec![
+                        // Bound images live in bootc's store.
+                        "--storage-opt=additionalimagestore=/usr/lib/bootc/storage",
                         "run",
                         "--rm",
                         "--network=none",

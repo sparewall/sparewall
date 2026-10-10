@@ -10,6 +10,8 @@ Wants=network-online.target
 ContainerName=sparewall-kea
 Image=@KEA_IMAGE@
 Pull=never
+# The image is a logically bound image in bootc's store.
+GlobalArgs=--storage-opt=additionalimagestore=/usr/lib/bootc/storage
 Network=host
 # Raw sockets for directly connected clients; nothing else.
 DropCapability=all

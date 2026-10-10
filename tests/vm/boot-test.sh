@@ -107,7 +107,7 @@ vm 'sudo sparewall status -o json' > status.json
 [ "$(jq -r .role status.json)" = bootstrap ] || fail "expected bootstrap role"
 vm 'sudo nft list table inet sparewall' | grep -q anti-lockout || fail "no anti-lockout rule"
 vm 'ip -br link' | grep -q '^mgmt0 ' || fail "management port not named mgmt0"
-if ! vm 'sudo podman image exists $(sed -n "s/^Image=//p" /usr/share/containers/systemd/sparewall-kea.container)'; then
+if ! vm 'sudo podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists $(sed -n "s/^Image=//p" /usr/share/containers/systemd/sparewall-kea.container)'; then
     vm 'set -x; sed -n "s/^Image=//p" /usr/share/containers/systemd/sparewall-kea.container
         ls -la /usr/lib/bootc/ /sysroot/ostree/bootc/ 2>&1; sudo ls -la /usr/lib/bootc/storage/ 2>&1
         sudo podman images --all 2>&1; sudo podman --storage-opt additionalimagestore=/usr/lib/bootc/storage images 2>&1
