@@ -65,7 +65,8 @@ cleanup() {
                 sudo wg show swsync 2>&1; ip -br addr
                 for u in keepalived conntrackd sparewall-kea; do echo "-- $u"; sudo journalctl -b -u $u --no-pager | tail -15; done
                 echo "-- networkd"; sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "swsync|wireguard|key" | tail -15
-                echo "-- AVC"; sudo ausearch -m avc -ts boot 2>/dev/null | grep -oE "avc: .*" | sort | uniq -c | tail -20' 2>/dev/null \
+                echo "-- AVC"; sudo journalctl -b -k --no-pager | grep -oE "avc: +denied.*" | sed -E "s/pid=[0-9]+ //; s/ino=[0-9]+ //" | sort | uniq -c | tail -25
+                ls -laZ /run/keepalived/' 2>/dev/null \
                 || sudo tail -60 "$n.serial" || true
         done
     fi

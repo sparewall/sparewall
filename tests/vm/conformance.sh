@@ -59,7 +59,7 @@ run_conformance() {
         if [ $SECONDS -ge $deadline ]; then
             vm 'sudo sparewall health --verbose' || true
             vm 'for u in sparewall-kea sparewall-unbound; do sudo systemctl status --no-pager -l $u; sudo journalctl -b -u $u --no-pager | tail -40; done' || true
-            vm 'sudo podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage ps -a; sudo systemctl cat sparewall-kea.service | head -60; sudo ausearch -m avc -ts boot 2>/dev/null | tail -20' || true
+            vm 'sudo podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage ps -a; sudo systemctl cat sparewall-kea.service | head -60; sudo journalctl -b -k --no-pager | grep -oE "avc: +denied.*" | sort | uniq -c | tail -20' || true
             fail "health not ok after the VLAN apply"
         fi
         sleep 5
