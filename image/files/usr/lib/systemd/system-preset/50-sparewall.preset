@@ -5,6 +5,7 @@ enable systemd-networkd.service
 enable systemd-networkd-wait-online.service
 enable systemd-resolved.service
 enable chronyd.service
+enable node_exporter.service
 enable sshd.service
 disable bootc-fetch-apply-updates.timer
 # Nothing listens on a firewall that it does not need.

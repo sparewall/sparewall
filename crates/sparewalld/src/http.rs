@@ -213,6 +213,17 @@ async fn handle(
             }
         })
         .await;
+        let r = match r {
+            // Host metrics from node_exporter, which listens only on
+            // localhost so this endpoint's access rules cover it too.
+            Ok(Some(mut text)) => {
+                if let Some(host) = node_exporter().await {
+                    text.push_str(&host);
+                }
+                Ok(Some(text))
+            }
+            other => other,
+        };
         return Ok(match r {
             Ok(Some(text)) => Response::builder()
                 .status(200)
@@ -308,4 +319,32 @@ pub async fn serve(
                 .await;
         });
     }
+}
+
+/// Where node_exporter serves host metrics.
+const NODE_EXPORTER: &str = "127.0.0.1:9100";
+
+/// node_exporter's metrics, or `None` when it is not running.
+async fn node_exporter() -> Option<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let fetch = async {
+        let mut s = tokio::net::TcpStream::connect(NODE_EXPORTER).await.ok()?;
+        s.write_all(b"GET /metrics HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .await
+            .ok()?;
+        let mut buf = Vec::new();
+        s.read_to_end(&mut buf).await.ok()?;
+        let text = String::from_utf8(buf).ok()?;
+        let (head, body) = text.split_once("\r\n\r\n")?;
+        head.lines()
+            .next()?
+            .split(' ')
+            .nth(1)
+            .filter(|c| *c == "200")?;
+        Some(body.to_string())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), fetch)
+        .await
+        .ok()
+        .flatten()
 }

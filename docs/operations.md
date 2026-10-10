@@ -66,7 +66,7 @@ sparewall vpn client-config laptop --qr
 | `/livez` | The coordinator answers |
 | `/readyz`, `/healthz` | 200 when ok or degraded, 503 when failed |
 | `/readyz?verbose`, `/readyz/<check>` | Detail (needs a token) |
-| `/metrics` | Prometheus metrics (needs a token unless `metrics.mode: external`) |
+| `/metrics` | Prometheus metrics: the appliance's own and the host's from node\_exporter, which listens only on localhost (needs a token unless `metrics.mode: external`) |
 
 ```shell
 curl -k -H "Authorization: Bearer $TOKEN" https://fw1/metrics

@@ -96,6 +96,7 @@ RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManag
         iputils \
         bind-utils \
         jq \
+        node-exporter \
         systemd-journal-remote \
         libnfnetlink \
         libmnl \

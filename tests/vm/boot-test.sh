@@ -152,6 +152,15 @@ if vm 'sudo journalctl -b -u sparewalld --no-pager' | grep -q 'renaming interfac
 fi
 [ "$(jq -r .health.level status.json)" = ok ] || fail "health not ok after reboot: $(jq -c .health status.json)"
 
+log "metrics, with host metrics from node_exporter"
+token=$(vm 'sudo sparewall token create ci-monitor --role monitor -q')
+vm "curl -sfk -H 'Authorization: Bearer $token' https://localhost/metrics" > metrics.txt \
+    || fail "/metrics refused a monitor token"
+grep -q '^sparewall_generation' metrics.txt || fail "no coordinator metrics: $(head -5 metrics.txt)"
+grep -q '^node_network_receive_bytes_total{device="uplink"}' metrics.txt \
+    || fail "no node_exporter metrics for the uplink"
+vm 'curl -sk https://localhost/metrics' | grep -q '^node_' && fail "/metrics without a token leaked host metrics"
+
 run_conformance
 
 log "PASS"
