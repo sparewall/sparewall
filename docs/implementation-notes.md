@@ -22,6 +22,15 @@ Where the implementation departs from, or settles open questions in,
   record the digests they used in the CI run summary, and the SBOM lists
   every package. bootc-image-builder, whose digests are retained, stays
   pinned.
+- **Providers order after `sparewall-early.service`, not sparewalld.**
+  sparewalld starts them during its own start-up activation, so ordering
+  them after sparewalld deadlocked a reboot of a configured node. Early
+  boot installs their configuration; at start-up sparewalld queues the
+  starts (`--no-block`) rather than waiting on them.
+- **The containers signature policy defaults to `reject`.** bootc's
+  `--enforce-container-sigpolicy`, which upgrades use, refuses a policy
+  whose default accepts anything. `ghcr.io/sparewall` requires the
+  project's signature and local transports are open.
 - **ulogd2 is built from source** in an image stage (Fedora 45 does not
   package it), with libnetfilter_log 1.0.2 linked statically because
   Fedora has 1.0.1. node_exporter is likewise not packaged and not yet
