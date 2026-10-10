@@ -22,36 +22,7 @@ pub const DEFAULT_CHANNEL: &str = "testing";
 
 /// Run a host command outside this service's sandbox.
 pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, String> {
-    let under_systemd = std::env::var_os("INVOCATION_ID").is_some();
-    let mut c = if under_systemd {
-        let mut c = std::process::Command::new("systemd-run");
-        c.args([
-            "--wait",
-            "--pipe",
-            "--quiet",
-            "--collect",
-            "--service-type=exec",
-            "--",
-            cmd,
-        ]);
-        c
-    } else {
-        std::process::Command::new(cmd)
-    };
-    let out = c
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("{cmd}: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(format!(
-            "{cmd} {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
-    }
+    sparewall_core::linux::host_run(cmd, args).map_err(|e| e.to_string())
 }
 
 fn bootc_status() -> Option<Value> {

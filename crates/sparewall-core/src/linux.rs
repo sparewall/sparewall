@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
@@ -104,6 +104,105 @@ fn run(cmd: &str, args: &[&str], stdin: Option<&str>) -> Result<String, Error> {
             String::from_utf8_lossy(&out.stderr).trim()
         )))
     }
+}
+
+/// Where commands for `sparewall-run@.service` are spooled (root only).
+pub const RUN_SPOOL: &str = "/run/sparewall/run";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Spooled {
+    argv: Vec<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SpoolResult {
+    code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+/// Run a command outside this service's sandbox. Under systemd it runs as
+/// the oneshot `sparewall-run@<id>.service` (podman, unshare and bootc need
+/// what the coordinator's sandbox forbids); elsewhere it runs directly.
+pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, Error> {
+    let under_systemd = std::env::var_os("INVOCATION_ID").is_some()
+        && std::path::Path::new("/run/systemd/system").exists()
+        && std::env::var_os("SPAREWALL_NO_HOST_RUN").is_none();
+    if !under_systemd {
+        return run(cmd, args, None);
+    }
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = format!(
+        "{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let dir = PathBuf::from(RUN_SPOOL);
+    fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    let job = dir.join(format!("{id}.json"));
+    let out = dir.join(format!("{id}.out.json"));
+    let mut argv = vec![cmd.to_string()];
+    argv.extend(args.iter().map(|a| a.to_string()));
+    write_atomic(&job, &serde_json::to_vec(&Spooled { argv }).expect("json"))
+        .map_err(|e| Error::io(&job, e))?;
+    // A oneshot unit: `systemctl start` returns when it has finished.
+    let started = run(
+        "systemctl",
+        &["start", &format!("sparewall-run@{id}.service")],
+        None,
+    );
+    let result = fs::read(&out);
+    let _ = fs::remove_file(&job);
+    let _ = fs::remove_file(&out);
+    let r: SpoolResult = match result {
+        Ok(b) => {
+            serde_json::from_slice(&b).map_err(|e| Error::Apply(format!("run result: {e}")))?
+        }
+        Err(_) => {
+            started?;
+            return Err(Error::Apply(format!(
+                "{cmd}: no result from sparewall-run@{id}"
+            )));
+        }
+    };
+    if r.code == 0 {
+        Ok(r.stdout)
+    } else {
+        Err(Error::Apply(format!(
+            "{cmd} {}: {}",
+            args.join(" "),
+            r.stderr.trim()
+        )))
+    }
+}
+
+/// The body of `sparewall-run@<id>.service`: run a spooled command and
+/// record its result.
+pub fn run_spooled(id: &str) -> Result<(), Error> {
+    if !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return Err(Error::Validation(vec![format!("bad job id {id:?}")]));
+    }
+    let dir = PathBuf::from(RUN_SPOOL);
+    let job = dir.join(format!("{id}.json"));
+    let j: Spooled = serde_json::from_slice(&fs::read(&job).map_err(|e| Error::io(&job, e))?)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    let (cmd, args) = j
+        .argv
+        .split_first()
+        .ok_or_else(|| Error::Internal("empty job".into()))?;
+    let o = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| Error::Apply(format!("{cmd}: {e}")))?;
+    let r = SpoolResult {
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+    };
+    let out = dir.join(format!("{id}.out.json"));
+    write_atomic(&out, &serde_json::to_vec(&r).expect("json")).map_err(|e| Error::io(&out, e))
 }
 
 /// What the live `inet sparewall` table holds.
@@ -459,25 +558,7 @@ impl System for Linux {
         let d = dir.display().to_string();
         // Under systemd the checks run as transient units, outside this
         // service's sandbox (podman and unshare need what it forbids).
-        let wrap = |cmd: &str, args: &[&str]| -> Result<String, Error> {
-            if std::env::var_os("INVOCATION_ID").is_some()
-                && Path::new("/run/systemd/system").exists()
-            {
-                let mut a = vec![
-                    "--wait",
-                    "--pipe",
-                    "--quiet",
-                    "--collect",
-                    "--service-type=exec",
-                    "--",
-                    cmd,
-                ];
-                a.extend_from_slice(args);
-                run("systemd-run", &a, None)
-            } else {
-                run(cmd, args, None)
-            }
-        };
+        let wrap = |cmd: &str, args: &[&str]| host_run(cmd, args);
         let result = match &spec.container {
             Some(container) => match self.quadlet_image(container) {
                 Some(image) => {

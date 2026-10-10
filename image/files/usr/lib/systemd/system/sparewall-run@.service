@@ -1,0 +1,11 @@
+# Runs one command for sparewalld outside its sandbox: config checks in
+# provider images (podman), the keepalived check (unshare), bootc.
+# The command is spooled in /run/sparewall/run, which only root can write.
+[Unit]
+Description=Sparewall helper job %i
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/sparewalld --run %i
+TimeoutStartSec=60min

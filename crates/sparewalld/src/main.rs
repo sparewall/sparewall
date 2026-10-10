@@ -53,6 +53,9 @@ struct Args {
     /// Address for the HTTPS health endpoints, or `off`.
     #[arg(long, env = "SPAREWALL_HTTPS", default_value = "[::]:443")]
     https: String,
+    /// Run a spooled command (the body of sparewall-run@.service).
+    #[arg(long, hide = true, value_name = "ID")]
+    run: Option<String>,
     /// Use an in-memory fake system instead of the real one (testing only).
     #[arg(long, hide = true, env = "SPAREWALL_FAKE_SYSTEM")]
     fake_system: bool,
@@ -192,6 +195,9 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(args: Args) -> Result<(), String> {
+    if let Some(id) = &args.run {
+        return sparewall_core::linux::run_spooled(id).map_err(|e| e.to_string());
+    }
     let store = Store::open(&args.state).map_err(|e| e.to_string())?;
     let identity = loop {
         match load_identity(&store, &args)? {
