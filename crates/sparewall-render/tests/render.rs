@@ -156,3 +156,15 @@ fn unknown_node_is_rejected() {
     let doc = example("standalone.yaml");
     assert!(render(&doc, "fw9").is_err());
 }
+
+#[test]
+fn single_gateway_pair_has_no_sync_group() {
+    let mut doc = example("pair.yaml");
+    let wan = doc.networks.get_mut("wan").unwrap();
+    wan.vip = None;
+    wan.vrid = None;
+    let r = render(&doc, "fw1").unwrap();
+    let ka = &r.files["keepalived/keepalived.conf"];
+    assert!(!ka.contains("vrrp_sync_group"), "{ka}");
+    assert!(ka.contains("vrrp_instance VI_users"), "{ka}");
+}
