@@ -286,8 +286,11 @@ enum Cmd {
     /// Rolling, health-gated OS upgrade (run on the master of a pair).
     Upgrade {
         /// stable or testing; default the document's updates.channel.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "image")]
         channel: Option<String>,
+        /// A full image reference instead of a channel (a mirror, a pinned build).
+        #[arg(long)]
+        image: Option<String>,
         /// Only report whether a newer image is available.
         #[arg(long)]
         check: bool,
@@ -910,8 +913,16 @@ impl App {
                     sparewall_config::SCHEMA_VERSION
                 )));
             }
-            Cmd::Upgrade { channel, check } => {
-                let r = self.conn().await?.check(channel.as_deref()).await??;
+            Cmd::Upgrade {
+                channel,
+                image,
+                check,
+            } => {
+                let r = self
+                    .conn()
+                    .await?
+                    .check(channel.as_deref(), image.as_deref())
+                    .await??;
                 println!("booted:    {}", r.booted.as_deref().unwrap_or("unknown"));
                 println!("target:    {}", r.target);
                 println!("available: {}", if r.available { "yes" } else { "no" });
@@ -920,7 +931,11 @@ impl App {
                 }
                 let mut events = self.conn().await?;
                 let stream = events.subscribe().await?;
-                let plan = self.conn().await?.start(channel.as_deref()).await??;
+                let plan = self
+                    .conn()
+                    .await?
+                    .start(channel.as_deref(), image.as_deref())
+                    .await??;
                 for (i, step) in plan.plan.iter().enumerate() {
                     println!("{}. {step}", i + 1);
                 }

@@ -124,6 +124,8 @@ jobs:
           tests/vm/boot-test.sh "$LOCAL" "$RUNNER_TEMP/vm"
 
       - name: Pair test
+        env:
+          IMAGE: ${{ env.LOCAL }}
         run: tests/vm/pair-test.sh "$RUNNER_TEMP/vm"
 
       - name: Collect VM logs

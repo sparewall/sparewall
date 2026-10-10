@@ -478,15 +478,18 @@ pub struct UpgradeStartReply {
 
 #[zlink::proxy("org.sparewall.Upgrade")]
 pub trait UpgradeProxy {
-    /// Whether a newer image is available on the channel.
+    /// Whether a newer image is available on the channel. `image`, a full
+    /// reference, overrides the channel (a mirror, a pinned build).
     async fn check(
         &mut self,
         channel: Option<&str>,
+        image: Option<&str>,
     ) -> zlink::Result<Result<UpgradeCheckReply, FirewallError>>;
     /// Start a rolling, health-gated upgrade (one reboot for a standalone
     /// node). Progress arrives as events.
     async fn start(
         &mut self,
         channel: Option<&str>,
+        image: Option<&str>,
     ) -> zlink::Result<Result<UpgradeStartReply, FirewallError>>;
 }

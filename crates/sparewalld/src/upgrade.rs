@@ -36,21 +36,35 @@ pub fn tracked_ref() -> Option<String> {
         .map(str::to_string)
 }
 
-/// The image to move to: the requested channel, else the document's
-/// `updates.channel`, else the tag already tracked.
-pub fn target_ref(channel: Option<&str>, doc_channel: Option<&str>) -> String {
-    let tracked = tracked_ref();
+/// Split a reference into repository and tag (`None` for a digest or no tag).
+fn split_ref(r: &str) -> (&str, Option<&str>) {
+    let r = r.split_once('@').map_or(r, |(repo, _)| repo);
+    match r.rsplit_once(':') {
+        // A colon after the last '/' starts the tag; before it, a port.
+        Some((repo, tag)) if !tag.contains('/') => (repo, Some(tag)),
+        _ => (r, None),
+    }
+}
+
+/// The image to move to: an explicit `image`, else the requested channel,
+/// else the document's `updates.channel`, else the tag already tracked. A
+/// channel is a tag of the repository the node tracks (so a node installed
+/// from a mirror stays on it).
+pub fn target_ref(
+    image: Option<&str>,
+    channel: Option<&str>,
+    doc_channel: Option<&str>,
+    tracked: Option<&str>,
+) -> String {
+    if let Some(i) = image {
+        return i.to_string();
+    }
+    let (repo, tracked_tag) = tracked.map_or((IMAGE_REPO, None), split_ref);
     let tag = channel
         .or(doc_channel)
-        .map(str::to_string)
-        .or_else(|| {
-            tracked
-                .as_deref()
-                .and_then(|t| t.rsplit_once(':'))
-                .map(|(_, t)| t.to_string())
-        })
-        .unwrap_or_else(|| DEFAULT_CHANNEL.into());
-    format!("{IMAGE_REPO}:{tag}")
+        .or(tracked_tag)
+        .unwrap_or(DEFAULT_CHANNEL);
+    format!("{repo}:{tag}")
 }
 
 /// Stage `image` for the next boot. Returns the staged image, or `None`
@@ -86,6 +100,7 @@ pub async fn plan(
     events: &broadcast::Sender<Value>,
     pair: &Pair,
     channel: Option<String>,
+    image: Option<String>,
 ) -> Result<(String, Option<IpAddr>, Vec<String>), String> {
     let (doc, node) = with_core_raw(core, events, |c| {
         Ok((c.active_document()?, c.node().to_string()))
@@ -96,7 +111,15 @@ pub async fn plan(
         .as_ref()
         .and_then(|d| d.updates.as_ref())
         .and_then(|u| u.channel.clone());
-    let target = target_ref(channel.as_deref(), doc_channel.as_deref());
+    let tracked = tokio::task::spawn_blocking(tracked_ref)
+        .await
+        .map_err(|e| e.to_string())?;
+    let target = target_ref(
+        image.as_deref(),
+        channel.as_deref(),
+        doc_channel.as_deref(),
+        tracked.as_deref(),
+    );
     let Some((_, peer_addr, peer)) = doc.as_ref().and_then(|d| tunnel_addrs(d, &node)) else {
         return Ok((
             target.clone(),
@@ -259,13 +282,34 @@ mod tests {
 
     #[test]
     fn target_from_channel() {
+        let tracked = "ghcr.io/sparewall/sparewall:testing";
+        let ghcr = Some(tracked);
         assert_eq!(
-            target_ref(Some("stable"), Some("testing")),
+            target_ref(None, Some("stable"), Some("testing"), ghcr),
             "ghcr.io/sparewall/sparewall:stable"
         );
         assert_eq!(
-            target_ref(None, Some("testing")),
+            target_ref(None, None, Some("testing"), None),
             "ghcr.io/sparewall/sparewall:testing"
+        );
+        assert_eq!(target_ref(None, None, None, ghcr), tracked);
+        // A mirror with a port keeps its repository.
+        assert_eq!(
+            target_ref(
+                None,
+                Some("stable"),
+                None,
+                Some("mirror:5000/fw/sparewall:testing")
+            ),
+            "mirror:5000/fw/sparewall:stable"
+        );
+        assert_eq!(
+            target_ref(None, None, None, Some("mirror:5000/sparewall@sha256:ab")),
+            "mirror:5000/sparewall:testing"
+        );
+        assert_eq!(
+            target_ref(Some("r/x:1"), Some("stable"), None, ghcr),
+            "r/x:1"
         );
     }
 }

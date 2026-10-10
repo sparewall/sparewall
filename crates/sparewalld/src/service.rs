@@ -31,16 +31,17 @@ const KEA_LEASES: &str =
 
 /// The digest of the booted image, from `bootc status`.
 pub fn booted_image_digest() -> Option<String> {
-    let out = std::process::Command::new("bootc")
-        .args(["status", "--format=json"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
-    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    // Fixed for the life of the boot; bootc needs to run outside the sandbox.
+    static BOOTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(b) = BOOTED.get() {
+        return Some(b.clone());
+    }
+    let out = crate::upgrade::host_run("bootc", &["status", "--format=json"]).ok()?;
+    let v: Value = serde_json::from_str(&out).ok()?;
     let img = &v["status"]["booted"]["image"];
     let digest = img["imageDigest"].as_str()?;
     let name = img["image"]["image"].as_str().unwrap_or_default();
-    Some(format!("{name}@{digest}"))
+    Some(BOOTED.get_or_init(|| format!("{name}@{digest}")).clone())
 }
 
 /// The Varlink service. Coordinator calls run on the blocking pool, since
@@ -492,6 +493,7 @@ where
     async fn upgrade_check(
         &mut self,
         channel: Option<String>,
+        image: Option<String>,
     ) -> Result<UpgradeCheckReply, FirewallError> {
         let doc_channel = with_core(&self.core, &self.events, |c| {
             Ok(c.active_document()?
@@ -499,18 +501,28 @@ where
                 .and_then(|u| u.channel))
         })
         .await?;
-        let target = crate::upgrade::target_ref(channel.as_deref(), doc_channel.as_deref());
-        let t = target.clone();
-        let out = tokio::task::spawn_blocking(move || {
-            crate::upgrade::host_run("bootc", &["upgrade", "--check"]).map(|o| (o, t))
-        })
-        .await
-        .map_err(|e| FirewallError::ApplyFailed {
-            message: e.to_string(),
-        })?;
-        let available = match &out {
-            Ok((o, _)) => !o.contains("No changes") && !o.contains("No update available"),
-            Err(_) => false,
+        let tracked = crate::upgrade::tracked_ref();
+        let target = crate::upgrade::target_ref(
+            image.as_deref(),
+            channel.as_deref(),
+            doc_channel.as_deref(),
+            tracked.as_deref(),
+        );
+        let available = if tracked.as_deref() == Some(target.as_str()) {
+            let out = tokio::task::spawn_blocking(|| {
+                crate::upgrade::host_run("bootc", &["upgrade", "--check"])
+            })
+            .await
+            .map_err(|e| FirewallError::ApplyFailed {
+                message: e.to_string(),
+            })?;
+            match &out {
+                Ok(o) => !o.contains("No changes") && !o.contains("No update available"),
+                Err(_) => false,
+            }
+        } else {
+            // Moving to another channel or image is always a change.
+            true
         };
         Ok(UpgradeCheckReply {
             booted: booted_image_digest(),
@@ -523,9 +535,10 @@ where
     async fn upgrade_start(
         &mut self,
         channel: Option<String>,
+        image: Option<String>,
     ) -> Result<UpgradeStartReply, FirewallError> {
         let (target, peer, plan) =
-            crate::upgrade::plan(&self.core, &self.events, &self.pair, channel)
+            crate::upgrade::plan(&self.core, &self.events, &self.pair, channel, image)
                 .await
                 .map_err(|message| FirewallError::ApplyFailed { message })?;
         tokio::spawn(crate::upgrade::run(

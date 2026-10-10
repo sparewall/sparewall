@@ -1,10 +1,13 @@
 #!/bin/bash
 # Two-node suite (design: milestone 3): pairing, push, the gateway address,
 # DHCP from the Kea HA pair, and failover when the master dies, with an
-# established TCP connection surviving it (conntrackd).
+# established TCP connection surviving it (conntrackd). With IMAGE set
+# (the image the disk was built from), the failed node then returns and
+# `sparewall upgrade` rolls the pair onto a derived image served from a
+# local registry, handing the gateway over between the reboots.
 #
-#   tests/vm/pair-test.sh WORKDIR    (reuses WORKDIR/output/qcow2/disk.qcow2
-#                                     from boot-test.sh)
+#   [IMAGE=localhost/sparewall:ci] tests/vm/pair-test.sh WORKDIR
+#       (reuses WORKDIR/output/qcow2/disk.qcow2 from boot-test.sh)
 set -euo pipefail
 WORK=${1:?usage: pair-test.sh WORKDIR}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -28,11 +31,15 @@ for t in swtap1 swtap2; do
 done
 
 boot() { # name ssh-port mgmt-mac trunk-mac tap
-    local name=$1 port=$2 mac=$3 tmac=$4 tap=$5
-    cp output/qcow2/disk.qcow2 "$name.qcow2"
-    cat > "$name.json" <<JSON
-{"node": "$name", "ssh_keys": ["$(cat id_ed25519.pub)"], "management": {"nic": "$mac"}}
+    cp output/qcow2/disk.qcow2 "$1.qcow2"
+    cat > "$1.json" <<JSON
+{"node": "$1", "ssh_keys": ["$(cat id_ed25519.pub)"], "management": {"nic": "$3"}}
 JSON
+    start "$@"
+}
+
+start() { # name ssh-port mgmt-mac trunk-mac tap (the disk as it is)
+    local name=$1 port=$2 mac=$3 tmac=$4 tap=$5
     sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 1536 -smp 2 \
         -drive "file=$name.qcow2,if=virtio,format=qcow2" \
         -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${port}-:22" \
@@ -76,6 +83,7 @@ cleanup() {
         done
     fi
     sudo pkill -f "$WORK/echo.py" 2>/dev/null || true
+    [ -n "${REGISTRY:-}" ] && sudo podman rm -f "$REGISTRY" >/dev/null 2>&1 || true
     for n in fw1 fw2; do
         [ -f "$n.pid" ] && sudo kill "$(sudo cat "$n.pid")" 2>/dev/null || true
     done
@@ -83,8 +91,10 @@ cleanup() {
 trap cleanup EXIT
 
 log "booting two nodes"
-boot fw1 2231 52:54:00:12:34:56 52:54:00:12:34:57 swtap1
-boot fw2 2232 52:54:00:12:35:56 52:54:00:12:35:57 swtap2
+FW1=(fw1 2231 52:54:00:12:34:56 52:54:00:12:34:57 swtap1)
+FW2=(fw2 2232 52:54:00:12:35:56 52:54:00:12:35:57 swtap2)
+boot "${FW1[@]}"
+boot "${FW2[@]}"
 wait_for 900 "fw1 SSH" at fw1 true
 wait_for 300 "fw2 SSH" at fw2 true
 
@@ -172,4 +182,47 @@ sleep 3
     || fail "the connection stalled after the failover ($before, $after, $(echoes))"
 peer_down() { at fw2 'sudo sparewall status -o json' | jq -e '.sync.state == "peer-unreachable"'; }
 wait_for 60 "fw2 reports the peer down" peer_down
-log "pair PASS"
+[ -n "${IMAGE:-}" ] || { log "pair PASS (no IMAGE: rolling upgrade skipped)"; exit 0; }
+
+log "fw1 returns and rejoins as the backup"
+start "${FW1[@]}"
+wait_for 300 "fw1 SSH" at fw1 true
+wait_for 300 "fw1 in sync" in_sync fw1
+wait_for 120 "fw2 in sync" in_sync fw2
+is_backup() { [ "$(role "$1")" = BACKUP ]; }
+wait_for 60 "fw1 backup" is_backup fw1
+is_master fw2 || fail "fw2 gave up the gateway when fw1 returned (nopreempt)"
+
+log "a derived image in a local registry"
+# QEMU user networking reaches the host at 10.0.2.2.
+REGISTRY=sw-registry
+sudo podman run -d --name "$REGISTRY" -p 5000:5000 quay.io/libpod/registry:2.8.2 >/dev/null
+printf 'FROM %s\nRUN echo upgraded > /usr/share/sparewall/upgrade-marker\n' "$IMAGE" \
+    | sudo podman build -t localhost/sparewall:next -f - "$(mktemp -d)"
+wait_for 30 "the registry" curl -sf http://127.0.0.1:5000/v2/
+sudo podman push --tls-verify=false localhost/sparewall:next docker://127.0.0.1:5000/sparewall:next
+NEXT=10.0.2.2:5000/sparewall:next
+for n in fw1 fw2; do
+    at "$n" 'sudo tee /etc/containers/registries.conf.d/50-test.conf >/dev/null' <<'TOML'
+[[registry]]
+location = "10.0.2.2:5000"
+insecure = true
+TOML
+done
+
+log "rolling upgrade from fw2"
+before=$(echoes) || fail "the connection is gone before the upgrade: $(tail -3 flow.log)"
+at fw2 "sudo sparewall upgrade --image $NEXT" || fail "the upgrade did not start"
+upgraded() { at "$1" 'test -e /usr/share/sparewall/upgrade-marker'; }
+wait_for 900 "fw1 on the new image" upgraded fw1
+wait_for 600 "fw2 on the new image" upgraded fw2
+wait_for 300 "fw2 in sync" in_sync fw2
+wait_for 120 "fw1 in sync" in_sync fw1
+is_master fw1 || fail "fw1 is $(role fw1) after the upgrade, not MASTER"
+at fw2 'sudo bootc status --format=json' | jq -e --arg i "$NEXT" '.status.booted.image.image.image == $i' >/dev/null \
+    || fail "fw2 does not track $NEXT"
+ns users ping -c 3 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachable after the upgrade"
+grep -q broken flow.log && fail "the connection broke in the upgrade: $(tail -5 flow.log)"
+after=$(echoes) || fail "the connection stalled in the upgrade: $(tail -5 flow.log)"
+[ "$after" -gt "$before" ] || fail "the connection stalled in the upgrade ($before, $after)"
+log "pair PASS (with a rolling upgrade)"
