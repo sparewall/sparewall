@@ -1,6 +1,6 @@
 # Kea DHCPv4 for Sparewall, from Fedora's packages (design, "To prove":
 # ISC does not publish Kea 3.2 images, so build from distribution RPMs).
-FROM quay.io/fedora/fedora-minimal:45@sha256:e6674de05c3eaae918d76d467b15149a3c43a21b0562dad177a86c20e346105e
+FROM quay.io/fedora/fedora-minimal:46@sha256:741ae85e144dfc7578ff2a6a528dde37f656927bca2501912b2cdbee503a33e6
 # Kea runs as root with every capability dropped but NET_RAW and
 # NET_BIND_SERVICE (raw sockets need it), so without DAC_OVERRIDE its state
 # directories must belong to root.
