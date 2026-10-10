@@ -146,6 +146,10 @@ wait_ssh 600
 vm 'sudo sparewall status -o json' > status.json
 [ "$(jq -r .sync.active status.json)" = 1 ] || fail "generation 1 not active after reboot"
 vm 'ip -br link' | grep -q '^uplink ' || fail "port not named uplink after reboot"
+# udev names the port at coldplug; sparewalld should not have to.
+if vm 'sudo journalctl -b -u sparewalld --no-pager' | grep -q 'renaming interface'; then
+    fail "the port was renamed late, by sparewalld, not at coldplug"
+fi
 [ "$(jq -r .health.level status.json)" = ok ] || fail "health not ok after reboot: $(jq -c .health status.json)"
 
 run_conformance

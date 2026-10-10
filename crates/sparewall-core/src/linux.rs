@@ -455,6 +455,15 @@ impl System for Linux {
             }
         }
         if early {
+            // udevd may already have loaded its link configuration, and it
+            // notices new files only every few seconds: make the coldplug
+            // that follows apply ours. Best effort; udevd reads them when
+            // it starts anyway.
+            if new.keys().any(|n| n.ends_with(".link"))
+                && let Err(e) = run("udevadm", &["control", "--reload", "--timeout=30"], None)
+            {
+                tracing::warn!(error = %e, "cannot ask udevd to reload");
+            }
             return Ok(());
         }
         // .link files: rename and re-apply link settings.
