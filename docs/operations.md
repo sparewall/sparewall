@@ -86,6 +86,27 @@ Bundles hold the document, recent generations, DHCP leases and the image
 digest. Node private keys are never included; a rebuilt node of a pair is
 re-paired with its new sync key.
 
+## Upgrades
+
+Nodes run a signed bootc image and track a channel (`testing` or `stable`)
+of the repository they were installed from:
+
+```shell
+sparewall upgrade --check                 # is a newer image available?
+sparewall upgrade                         # the document's updates.channel
+sparewall upgrade --channel stable
+sparewall upgrade --image mirror.example:5000/sparewall:stable
+```
+
+On a standalone node this stages the image and reboots (one reboot of
+downtime). In a pair, run it on the master: the standby is upgraded and
+rebooted first, and once it is back on the new image, healthy and in sync,
+the master hands it the gateway addresses (established connections carry
+over through conntrackd) and upgrades itself. A failed gate stops the
+upgrade and the master keeps the addresses; `bootc rollback` and a reboot
+return a node to its previous image. Images from `ghcr.io/sparewall` must
+carry a valid signature.
+
 ## Exit codes
 
 0 ok, 1 error, 2 usage, 3 validation failed, 4 conflict, 5 unreachable
