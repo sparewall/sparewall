@@ -59,17 +59,13 @@ fn run_conntrackd(state: &str) {
 
 /// Read keepalived's FIFO forever, serializing transitions in one place.
 pub async fn fifo_reader(pair: Pair, events: broadcast::Sender<Value>, path: PathBuf) {
-    if !path.exists() {
-        let ok = std::process::Command::new("mkfifo")
-            .args(["-m", "0600"])
-            .arg(&path)
-            .status()
-            .is_ok_and(|s| s.success());
-        if !ok {
-            tracing::error!(path = %path.display(), "cannot create keepalived FIFO");
-            return;
-        }
+    // keepalived creates the FIFO itself (so SELinux labels it for
+    // keepalived); wait for it to appear.
+    use std::os::unix::fs::FileTypeExt;
+    while !std::fs::metadata(&path).is_ok_and(|m| m.file_type().is_fifo()) {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
+    tracing::info!(path = %path.display(), "reading keepalived notifications");
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     std::thread::spawn(move || {
         // Opened read-write so it never blocks waiting for a writer and
