@@ -420,7 +420,6 @@ async fn sync_once(
     let mut status = {
         let p = pair.lock().unwrap_or_else(|p| p.into_inner());
         PairStatus {
-            role: p.role.clone(),
             secrets_sent: p.secrets_sent.clone(),
             ..Default::default()
         }
@@ -460,7 +459,13 @@ async fn sync_once(
         }
     }
     let checks = set_checks(&status);
-    *pair.lock().unwrap_or_else(|p| p.into_inner()) = status;
+    {
+        // The role belongs to the keepalived reader, which may have moved
+        // it while this pass was talking to the peer: keep its value.
+        let mut p = pair.lock().unwrap_or_else(|p| p.into_inner());
+        status.role = p.role.take();
+        *p = status;
+    }
     let _ = with_core_raw(core, events, move |c| {
         c.set_extra_checks(checks);
         Ok(())
