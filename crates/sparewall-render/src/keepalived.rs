@@ -18,7 +18,11 @@ pub const CONF: &str = "keepalived.conf";
 /// keepalived's runtime directory (labelled for it); the file is installed here.
 pub const DIR: &str = "/run/keepalived";
 /// Where keepalived reports state changes to the coordinator.
-pub const FIFO: &str = "/run/sparewall/keepalived.fifo";
+/// Where keepalived reports state changes to the coordinator (in
+/// keepalived's own runtime directory, for SELinux).
+pub const FIFO: &str = "/run/keepalived/sparewall.fifo";
+/// The track script (unconfined under SELinux by its location).
+pub const HEALTH_SCRIPT: &str = "/usr/libexec/keepalived/sparewall-health";
 pub const SYNC_GROUP: &str = "SPAREWALL";
 pub const DEFAULT_PRIORITY: [u8; 2] = [150, 100];
 
@@ -52,10 +56,12 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
          script_user root\n    notify_fifo {FIFO}\n    vrrp_garp_master_refresh 60\n}}\n"
     )
     .unwrap();
-    s.push_str(
-        "vrrp_script sparewall_health {\n    script \"/usr/bin/sparewall health --quiet\"\n    \
-         interval 2\n    timeout 5\n    fall 3\n    rise 2\n}\n\n",
-    );
+    writeln!(
+        s,
+        "vrrp_script sparewall_health {{\n    script \"{HEALTH_SCRIPT}\"\n    \
+         interval 2\n    timeout 5\n    fall 3\n    rise 2\n}}\n"
+    )
+    .unwrap();
     let instances: Vec<(&String, &sparewall_config::model::Network)> = doc
         .networks
         .iter()

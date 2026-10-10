@@ -1,0 +1,5 @@
+#!/bin/sh
+# keepalived's track script. It lives here so SELinux runs it unconfined
+# (keepalived_unconfined_script_exec_t) and it may reach the coordinator.
+# Exits non-zero only when the node's health is "failed".
+exec /usr/bin/sparewall health --quiet

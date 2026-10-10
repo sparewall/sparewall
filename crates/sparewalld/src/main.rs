@@ -274,7 +274,11 @@ fn run(args: Args) -> Result<(), String> {
             ),
             peer::PeerService::new(core.clone(), tx.clone(), wake.clone(), pair.clone()),
         );
-        let fifo = args.socket.with_file_name("keepalived.fifo");
+        let fifo = if args.fake_system {
+            args.socket.with_file_name("keepalived.fifo")
+        } else {
+            std::path::PathBuf::from(sparewall_render::keepalived::FIFO)
+        };
         let _ = sd_notify::notify(&[
             sd_notify::NotifyState::Ready,
             sd_notify::NotifyState::Status("running"),

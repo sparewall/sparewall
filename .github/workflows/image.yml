@@ -123,11 +123,14 @@ jobs:
           echo "$TOKEN" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
           tests/vm/boot-test.sh "$LOCAL" "$RUNNER_TEMP/vm"
 
+      - name: Pair test
+        run: tests/vm/pair-test.sh "$RUNNER_TEMP/vm"
+
       - name: Collect VM logs
         if: failure()
         run: |
           mkdir -p logs
-          sudo cp "$RUNNER_TEMP/vm/serial.log" logs/ 2>/dev/null || true
+          sudo cp "$RUNNER_TEMP"/vm/*.serial "$RUNNER_TEMP/vm/serial.log" logs/ 2>/dev/null || true
           sudo chown -R "$(id -u)" logs
           tail -200 logs/serial.log 2>/dev/null || true
 
