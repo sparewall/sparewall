@@ -3,7 +3,7 @@
 [Unit]
 Description=Sparewall DHCPv4 server (Kea)
 Documentation=https://github.com/sparewall/sparewall
-After=network-online.target sparewalld.service
+After=network-online.target sparewall-early.service
 Wants=network-online.target
 
 [Container]

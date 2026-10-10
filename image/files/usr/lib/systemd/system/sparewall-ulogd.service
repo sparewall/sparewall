@@ -1,7 +1,7 @@
 [Unit]
 Description=Sparewall rule logging (ulogd2)
 Documentation=https://github.com/sparewall/sparewall
-After=sparewalld.service
+After=sparewall-early.service
 ConditionPathExists=/run/sparewall/logging/ulogd.conf
 
 [Service]

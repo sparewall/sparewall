@@ -31,6 +31,10 @@ pub struct Linux {
     pub quadlet_dir: PathBuf,
     /// The sync tunnel's private key (readable by systemd-network).
     pub sync_key: PathBuf,
+    /// Services started so far. The first start is the coordinator's own
+    /// startup, which must not wait for a provider (one waiting for
+    /// network-online, say): those starts are queued, not awaited.
+    pub started: bool,
 }
 
 /// Daemons confined by SELinux read their configuration from their own
@@ -74,6 +78,7 @@ impl Default for Linux {
             runtime_dir: "/run/sparewall".into(),
             quadlet_dir: "/usr/share/containers/systemd".into(),
             sync_key: sparewall_render::SYNC_KEY_FILE.into(),
+            started: false,
         }
     }
 }
@@ -639,8 +644,11 @@ impl System for Linux {
     }
 
     fn services_apply(&mut self, meta: &Meta, changed: &[Subsystem]) -> Result<(), Error> {
+        let startup = !std::mem::replace(&mut self.started, true);
         // Providers bind to links networkd may still be creating.
-        self.wait_links(&meta.required_links, std::time::Duration::from_secs(30));
+        if !startup {
+            self.wait_links(&meta.required_links, std::time::Duration::from_secs(30));
+        }
         let wanted: BTreeSet<&str> = meta.services.values().map(|s| s.unit.as_str()).collect();
         for unit in PROVIDER_UNITS.iter().filter(|u| !wanted.contains(*u)) {
             if self.unit_active(unit) {
@@ -651,8 +659,12 @@ impl System for Linux {
         for svc in meta.services.values() {
             let unit = svc.unit.as_str();
             if !self.unit_active(unit) {
-                tracing::info!(unit, "starting service");
-                run("systemctl", &["start", unit], None)?;
+                tracing::info!(unit, startup, "starting service");
+                if startup {
+                    run("systemctl", &["start", "--no-block", unit], None)?;
+                } else {
+                    run("systemctl", &["start", unit], None)?;
+                }
             } else if changed.contains(&svc.subsystem) {
                 let verb = if svc.reload {
                     "reload-or-restart"
