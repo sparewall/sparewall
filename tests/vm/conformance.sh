@@ -54,9 +54,14 @@ run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
     vm 'sudo sparewall apply -f /tmp/vlans.yaml --confirm 0'
-    local deadline=$((SECONDS + 300))
+    local deadline=$((SECONDS + 180))
     until vm 'sudo sparewall health' >/dev/null 2>&1; do
-        [ $SECONDS -lt $deadline ] || { vm 'sudo sparewall health --verbose; sudo journalctl -b -u sparewall-kea -u sparewall-unbound --no-pager | tail -60'; fail "health not ok after the VLAN apply"; }
+        if [ $SECONDS -ge $deadline ]; then
+            vm 'sudo sparewall health --verbose' || true
+            vm 'for u in sparewall-kea sparewall-unbound; do sudo systemctl status --no-pager -l $u; sudo journalctl -b -u $u --no-pager | tail -40; done' || true
+            vm 'sudo podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage ps -a; sudo systemctl cat sparewall-kea.service | head -60; sudo ausearch -m avc -ts boot 2>/dev/null | tail -20' || true
+            fail "health not ok after the VLAN apply"
+        fi
         sleep 5
     done
     vm 'sudo sparewall health --verbose'
