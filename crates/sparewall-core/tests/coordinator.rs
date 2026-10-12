@@ -1222,11 +1222,156 @@ fn peer_generation_that_breaks_health_is_not_confirmed() {
     )
     .unwrap();
     let e = b.c.confirm_received(2).unwrap_err();
-    assert!(e.to_string().contains("links"), "{e}");
+    assert!(e.to_string().contains("link lab"), "{e}");
     assert!(b.c.state().unwrap().pending.is_some(), "still pending");
     let deadline = b.c.state().unwrap().pending.unwrap().deadline;
     assert_eq!(b.c.tick(deadline).unwrap(), Some(1));
     assert!(b.c.state().unwrap().rejected.is_some());
+}
+
+/// Mark every link generation `id` needs on `t` up, except `down`.
+fn links_up_except(t: &mut T, id: u64, down: &[&str]) {
+    let r = sparewall_render::render(
+        &sparewall_config::from_value(t.c.document_value(id).unwrap()).unwrap(),
+        t.c.node(),
+    )
+    .unwrap();
+    for l in r
+        .meta
+        .required_links
+        .iter()
+        .chain(&r.meta.replication_links)
+    {
+        let state = if down.contains(&l.as_str()) {
+            "down"
+        } else {
+            "up"
+        };
+        t.c.system().links.insert(l.clone(), state.into());
+    }
+}
+
+/// `b` runs generation 1 from `a`; `a` has generation 2, made from
+/// `change` applied to the pair example.
+fn peers_with(change: impl Fn(&mut Value)) -> (T, T, Generation, Value) {
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    b.c.receive(
+        &a.c.generation(1).unwrap(),
+        a.c.document_value(1).unwrap(),
+        PeerGate::Immediate,
+    )
+    .unwrap();
+    let mut v = pair_example();
+    change(&mut v);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    let g2 = a.c.generation(2).unwrap();
+    let v2 = a.c.document_value(2).unwrap();
+    (a, b, g2, v2)
+}
+
+fn add_lab(v: &mut Value) {
+    v["networks"]["lab"] = json!({"port": "uplink", "vlan": 30,
+        "addresses": {"fw1": "198.51.100.2/24", "fw2": "198.51.100.3/24"}});
+    v["zones"]["lab"] = json!({"networks": ["lab"]});
+}
+
+/// A link already down when the generation ran does not excuse a new
+/// one: the gate compares failed resources, not check names (review of
+/// #20).
+#[test]
+fn a_known_fault_does_not_hide_a_new_one() {
+    let (_a, mut b, g2, v2) = peers_with(add_lab);
+    links_up_except(&mut b, 1, &["wan"]);
+    assert_eq!(
+        b.c.health().unwrap().check("links").unwrap().level,
+        Level::Failed
+    );
+    b.c.receive(&g2, v2, PeerGate::PeerConfirms).unwrap();
+    // wan recovers; lab, which generation 2 needs, never appears.
+    b.c.system().links.insert("wan".into(), "up".into());
+    let msg =
+        b.c.health()
+            .unwrap()
+            .check("links")
+            .unwrap()
+            .message
+            .clone();
+    assert_eq!(msg, "lab is missing");
+    let e = b.c.confirm_received(2).unwrap_err();
+    assert!(e.to_string().contains("link lab"), "{e}");
+    let st = b.c.state().unwrap();
+    assert_eq!((st.confirmed, st.pending.is_some()), (1, true));
+}
+
+/// An unchanged fault from before is tolerated: a change can still land
+/// on a node with a link down.
+#[test]
+fn an_unchanged_fault_is_tolerated() {
+    let (_a, mut b, g2, v2) = peers_with(|v| v["dhcp"]["lease_time"] = json!(7200));
+    links_up_except(&mut b, 1, &["wan"]);
+    b.c.receive(&g2, v2, PeerGate::PeerConfirms).unwrap();
+    assert_eq!(
+        b.c.health().unwrap().check("links").unwrap().level,
+        Level::Failed
+    );
+    b.c.confirm_received(2).unwrap();
+    assert_eq!(b.c.state().unwrap().confirmed, 2);
+}
+
+/// Status, metrics and health agree with the peer view: a pushed
+/// generation is not applied before the peer confirms it, is after, and
+/// after a timeout the previous generation is (review of #20).
+#[test]
+fn status_and_metrics_wait_for_the_peers_confirmation() {
+    let applied_metric = |t: &mut T| {
+        t.c.metrics()
+            .unwrap()
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("sparewall_config_applied ")
+                    .map(str::to_string)
+            })
+            .unwrap()
+    };
+    for outcome in ["confirmed", "timed out"] {
+        let (_a, mut b, g2, v2) = peers_with(|v| v["dhcp"]["lease_time"] = json!(7200));
+        let h1 = b.c.generation(1).unwrap().hash;
+        links_up_except(&mut b, 1, &[]);
+        b.c.receive(&g2, v2, PeerGate::PeerConfirms).unwrap();
+        assert_eq!(b.c.hashes().unwrap().1, None, "{outcome}");
+        assert_eq!(applied_metric(&mut b), "0", "{outcome}");
+        let h = b.c.health().unwrap();
+        let applied = h.check("applied").unwrap();
+        assert_eq!(applied.level, Level::Degraded, "{outcome}");
+        assert!(
+            applied.message.contains("awaiting its confirmation"),
+            "{}",
+            applied.message
+        );
+        // Waiting is not a failure (it would block its own confirmation
+        // and lower VRRP priority).
+        assert_ne!(h.level, Level::Failed, "{outcome}: {h:?}");
+        if outcome == "confirmed" {
+            b.c.confirm_received(2).unwrap();
+            assert_eq!(b.c.hashes().unwrap().1, Some(g2.hash.clone()));
+            assert_eq!(applied_metric(&mut b), "1");
+            assert_eq!(
+                b.c.health().unwrap().check("applied").unwrap().level,
+                Level::Ok
+            );
+        } else {
+            let deadline = b.c.state().unwrap().pending.unwrap().deadline;
+            b.c.tick(deadline).unwrap();
+            assert_eq!(b.c.hashes().unwrap().1, Some(h1));
+            assert_eq!(applied_metric(&mut b), "1");
+            assert_eq!(
+                b.c.health().unwrap().check("applied").unwrap().level,
+                Level::Ok
+            );
+        }
+    }
 }
 
 #[test]

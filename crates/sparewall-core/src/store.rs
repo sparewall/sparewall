@@ -51,8 +51,9 @@ pub struct Pending {
     /// runs here (see `Coordinator::confirm_received`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_peer: bool,
-    /// Health checks already failed before it was activated: confirming a
-    /// pushed generation requires that it failed no others.
+    /// What already failed before it was activated, per resource (`link
+    /// wan`, `service …`, `check nft`): confirming a pushed generation
+    /// requires that nothing else fails.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_before: Vec<String>,
 }

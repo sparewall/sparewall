@@ -668,15 +668,15 @@ impl<S: System> Coordinator<S> {
     pub fn view(&mut self) -> Result<crate::pair::NodeView, Error> {
         let state = self.store.state()?;
         // A generation from the peer is not reported applied until the
-        // peer has confirmed it: until then the pair is "applying".
-        let awaiting = state.pending.as_ref().is_some_and(|p| p.from_peer);
+        // peer has confirmed it (`applied`): until then the pair is
+        // "applying".
         Ok(crate::pair::NodeView {
             node: self.node().to_string(),
             active: state.active,
             desired: self.generation(state.active)?.hash,
-            applied: if awaiting { None } else { self.applied()? },
+            applied: self.applied()?,
             lineage: self.lineage()?,
-            applying: awaiting,
+            applying: self.awaiting_peer()?.is_some(),
         })
     }
 
@@ -716,11 +716,27 @@ impl<S: System> Coordinator<S> {
 
     /// The hash of the configuration this node verifiably runs: the last
     /// one activated, unless the live firewall has drifted from it since.
+    /// A generation pushed by the peer counts as applied only once the
+    /// peer has confirmed it: until then status, metrics and the peer view
+    /// all report nothing applied.
     pub fn applied(&mut self) -> Result<Option<String>, Error> {
+        if self.awaiting_peer()?.is_some() {
+            return Ok(None);
+        }
         if self.applied_hash.is_some() && self.nft_drift()?.is_some() {
             return Ok(None);
         }
         Ok(self.applied_hash.clone())
+    }
+
+    /// The generation from the peer that runs pending its confirmation.
+    fn awaiting_peer(&self) -> Result<Option<u64>, Error> {
+        Ok(self
+            .store
+            .state()?
+            .pending
+            .filter(|p| p.from_peer)
+            .map(|p| p.id))
     }
 
     /// Accept a generation pushed by the peer and run it. It keeps the
@@ -855,15 +871,46 @@ impl<S: System> Coordinator<S> {
         self.run_foreign(g, &old_rendered, gate, why)
     }
 
-    /// Names of the health checks currently failed.
-    fn failed_checks(&mut self) -> Result<Vec<String>, Error> {
-        Ok(self
+    /// What currently fails, per resource a change could break: each
+    /// required link that is not up (`link wan`), each provider unit that
+    /// is not active (`service sparewall-kea.service`), and every other
+    /// failed check by name (`check nft`). A fault that was there before a
+    /// change is told apart from a new one of the same kind.
+    fn failures(&mut self) -> Result<Vec<String>, Error> {
+        let failed: Vec<String> = self
             .health()?
             .checks
             .into_iter()
             .filter(|c| c.level == Level::Failed)
             .map(|c| c.name)
-            .collect())
+            .collect();
+        let r = self.rendered_for(self.active()?)?;
+        let mut out = Vec::new();
+        for name in failed {
+            match name.as_str() {
+                "links" => {
+                    let states = self.sys.link_states();
+                    for l in &r.meta.required_links {
+                        if !matches!(states.get(l).map(String::as_str), Some("up" | "unknown")) {
+                            out.push(format!("link {l}"));
+                        }
+                    }
+                }
+                "services" => {
+                    let units: Vec<String> =
+                        r.meta.services.values().map(|s| s.unit.clone()).collect();
+                    for (u, st) in self.sys.unit_states(&units) {
+                        if st != "active" {
+                            out.push(format!("service {u}"));
+                        }
+                    }
+                }
+                other => out.push(format!("check {other}")),
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
     }
 
     /// Run a stored generation from the peer. If activation fails partway
@@ -882,7 +929,7 @@ impl<S: System> Coordinator<S> {
         let state = self.store.state()?;
         let from = state.active;
         let failed_before = match gate {
-            PeerGate::PeerConfirms => self.failed_checks()?,
+            PeerGate::PeerConfirms => self.failures()?,
             PeerGate::Immediate => vec![],
         };
         if let Err(e) = self.activate(g.id, Some(old), false) {
@@ -960,13 +1007,13 @@ impl<S: System> Coordinator<S> {
             return Err(Error::NotPending(id));
         };
         let newly: Vec<String> = self
-            .failed_checks()?
+            .failures()?
             .into_iter()
             .filter(|c| !p.failed_before.contains(c))
             .collect();
         if !newly.is_empty() {
-            return Err(Error::Check(format!(
-                "generation {id} fails health checks it did not fail before: {}",
+            return Err(Error::Apply(format!(
+                "generation {id} is not confirmed: it fails what did not fail before: {}",
                 newly.join(", ")
             )));
         }
@@ -1125,7 +1172,18 @@ impl<S: System> Coordinator<S> {
         }
 
         let drift = self.nft_drift()?;
+        let awaiting = self.awaiting_peer()?;
         checks.push(match (&self.applied_hash, &self.last_error, &drift) {
+            // Degraded, not failed: a failed check would block the very
+            // confirmation it waits for, and lower VRRP priority.
+            (Some(h), None, None) if *h == desired.hash && awaiting.is_some() => Check::new(
+                "applied",
+                Level::Degraded,
+                format!(
+                    "running generation {} from the peer, awaiting its confirmation",
+                    state.active
+                ),
+            ),
             (_, Some(e), _) => {
                 Check::new("applied", Level::Failed, format!("last apply failed: {e}"))
             }
