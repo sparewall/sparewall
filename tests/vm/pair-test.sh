@@ -222,8 +222,8 @@ sleep 3
 [ "$(echoes)" -gt "$after" ] && [ "$after" -gt "$before" ] \
     || fail "the connection stalled after the failover ($before, $after, $(echoes))"
 wait_for 60 "fw2 reports the peer down" unreachable fw2
-# The client keeps its address, now from fw2.
-ns users ip addr flush dev eth0
+# The client keeps its address, now from fw2. (Without flushing it first:
+# the connection above runs from it.)
 wait_for 120 "a DHCP lease from fw2" got_lease
 [ "$(client_ip)" = "$LEASE" ] || fail "the client got $(client_ip) from fw2, not its lease $LEASE"
 [ -n "${IMAGE:-}" ] || { log "pair PASS (no IMAGE: rolling upgrade skipped)"; exit 0; }
