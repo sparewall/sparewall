@@ -144,6 +144,22 @@ Where the implementation departs from, or settles open questions in,
   moving the gateway addresses, as a cut sync link affects both nodes
   equally. A shared trunk carrying service networks still fails health.
 
+- **Pushed generations are gated by the pusher's confirmation** (peer
+  protocol 2: `Push` with `gated`, then `Confirm` on a new connection).
+  The receiver records what already fails before it runs the generation,
+  per resource (each required link down, each provider unit inactive,
+  each other failed check), and confirms only if nothing else fails, so
+  a change that breaks a link it needs is not kept, even beside an older
+  fault of the same kind, while one landing on a node with a known fault
+  can be. Until confirmed, `applied()` (status, `sparewall_config_applied`,
+  the peer view) reports nothing applied, and the `applied` check is
+  degraded, not failed: failed would block the confirmation and lower
+  VRRP priority. The pusher confirms right after
+  pushing and again on each sync pass while the peer reports it waiting,
+  so a transient tunnel blip during reconfiguration is retried until the
+  deadline (`PEER_CONFIRM_SECONDS`, 120 s, in the persisted state). An
+  older peer is pushed ungated and confirms at once, as before.
+
 ## Not built yet
 
 - ACME `http-01` and lego-based DNS providers (RFC 2136 is built in).

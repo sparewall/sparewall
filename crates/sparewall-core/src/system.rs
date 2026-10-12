@@ -82,6 +82,11 @@ pub trait System: Send {
     fn netdev_recreate(&mut self, name: &str) -> Result<(), Error>;
 }
 
+/// An injected failure's message, cleared after use with `once`.
+fn injected(slot: &mut Option<String>, once: bool) -> Option<String> {
+    if once { slot.take() } else { slot.clone() }
+}
+
 /// A recording fake for tests.
 #[derive(Debug, Default)]
 pub struct Fake {
@@ -94,6 +99,14 @@ pub struct Fake {
     pub fail_nft_check: Option<String>,
     /// Make `nft_load` fail with this message.
     pub fail_nft_load: Option<String>,
+    /// Make `networkd_apply` fail with this message (after taking the
+    /// files: a failure partway through changing links).
+    pub fail_networkd_apply: Option<String>,
+    /// Make `services_apply` fail with this message (a provider reload).
+    pub fail_services_apply: Option<String>,
+    /// Injected failures (`fail_nft_load`, `fail_networkd_apply`,
+    /// `fail_services_apply`) fire once, then clear.
+    pub fail_once: bool,
     pub existing_sets: Vec<String>,
     /// Provider files installed, by subsystem.
     pub installed: BTreeMap<Subsystem, Files>,
@@ -128,8 +141,8 @@ impl System for Fake {
 
     fn nft_load(&mut self, body: &str, preserved: &[String]) -> Result<Vec<String>, Error> {
         self.log.push("nft-load".into());
-        if let Some(m) = &self.fail_nft_load {
-            return Err(Error::Apply(m.clone()));
+        if let Some(m) = injected(&mut self.fail_nft_load, self.fail_once) {
+            return Err(Error::Apply(m));
         }
         self.nft_body = Some(body.to_string());
         let new: Vec<String> = preserved
@@ -160,7 +173,10 @@ impl System for Fake {
             .into(),
         );
         self.network = new.clone();
-        Ok(())
+        match injected(&mut self.fail_networkd_apply, self.fail_once) {
+            Some(m) => Err(Error::Apply(m)),
+            None => Ok(()),
+        }
     }
 
     fn networkd_reconfigure(&mut self, links: &[String]) -> Result<(), Error> {
@@ -202,7 +218,10 @@ impl System for Fake {
             changed.join(",")
         ));
         self.running = units;
-        Ok(())
+        match injected(&mut self.fail_services_apply, self.fail_once) {
+            Some(m) => Err(Error::Apply(m)),
+            None => Ok(()),
+        }
     }
 
     fn unit_states(&mut self, units: &[String]) -> BTreeMap<String, String> {

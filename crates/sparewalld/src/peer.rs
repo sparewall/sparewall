@@ -18,7 +18,7 @@ use sparewall_api::{
 };
 use sparewall_core::pair::{NodeView, SyncState, push_plan, sync_state};
 use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
-use sparewall_core::{Check, Error, Generation, Level};
+use sparewall_core::{Check, Error, Generation, Level, PeerGate};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::sync::{Notify, broadcast};
 use zlink::Connection;
@@ -177,13 +177,19 @@ impl PeerService {
         config: Value,
         force: Option<bool>,
         activate: Option<bool>,
+        gated: Option<bool>,
     ) -> Result<PushReply, PeerError> {
         let g = from_peer(&generation);
+        let gate = if gated.unwrap_or(false) {
+            PeerGate::PeerConfirms
+        } else {
+            PeerGate::Immediate
+        };
         let active = with_core_raw(&self.core, &self.events, move |c| {
             if force.unwrap_or(false) {
-                c.adopt(&g, config)?;
+                c.adopt(&g, config, gate)?;
             } else if activate.unwrap_or(true) {
-                c.receive(&g, config)?;
+                c.receive(&g, config, gate)?;
             } else {
                 c.receive_history(&g, config)?;
             }
@@ -191,6 +197,20 @@ impl PeerService {
         })
         .await
         .map_err(peer_error)?;
+        self.sync.notify_one();
+        Ok(PushReply {
+            active: active as i64,
+        })
+    }
+
+    async fn confirm(&mut self, id: i64) -> Result<PushReply, PeerError> {
+        let active = with_core_raw(&self.core, &self.events, move |c| {
+            c.confirm_received(id.max(0) as u64)?;
+            c.active()
+        })
+        .await
+        .map_err(peer_error)?;
+        // Report the confirmed generation as applied now, not a pass later.
         self.sync.notify_one();
         Ok(PushReply {
             active: active as i64,
@@ -538,13 +558,26 @@ async fn sync_once(
                 }
                 let pv = view_of(&h);
                 let state = sync_state(&local, Some(&pv));
+                // Protocol 2 peers run what we push pending until we
+                // confirm it over the tunnel.
+                let gated = h.protocol >= 2;
                 if state == SyncState::PeerBehind
                     && !pending
                     && !h.pending
-                    && let Err(e) = push_missing(core, events, link, &local, &pv).await
+                    && let Err(e) = push_missing(core, events, link, &local, &pv, gated).await
                 {
                     tracing::warn!(peer, error = %e, "push to peer failed");
                     status.last_error = Some(e);
+                }
+                // The peer runs our generation, waiting for our confirmation
+                // (a first attempt failed, or this node restarted): confirm.
+                if gated
+                    && h.pending
+                    && pv.active == local.active
+                    && pv.desired == local.desired
+                    && let Err(e) = confirm_pushed(link, local.active).await
+                {
+                    tracing::info!(peer, error = %e, "the peer has not confirmed our generation yet");
                 }
                 status.state = Some(state);
                 status.peer_view = Some(pv);
@@ -612,6 +645,18 @@ async fn send_secrets(
     Ok(())
 }
 
+/// Confirm a generation the peer runs pending from our push. A new
+/// connection: it proves the sync tunnel still works after the change.
+async fn confirm_pushed(link: Link, id: u64) -> Result<(), String> {
+    let mut conn = connect(link).await?;
+    conn.confirm(id as i64)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    tracing::info!(id, "the peer confirmed our generation");
+    Ok(())
+}
+
 async fn hello(link: Link, node: &str) -> Result<HelloReply, String> {
     let mut conn = connect(link).await?;
     let r = tokio::time::timeout(Duration::from_secs(5), conn.hello(node, PEER_PROTOCOL))
@@ -627,6 +672,7 @@ async fn push_missing(
     link: Link,
     local: &NodeView,
     peer: &NodeView,
+    gated: bool,
 ) -> Result<(), String> {
     let Some(plan) = push_plan(local, peer.active, &peer.desired) else {
         return Ok(());
@@ -643,10 +689,18 @@ async fn push_missing(
         .map_err(|e| e.to_string())?;
         tracing::info!(id, peer = %peer.node, "pushing generation to the peer");
         let activate = (Some(id) != last).then_some(false);
-        conn.push(&to_peer(&g), &config, None, activate)
+        let gate = (gated && Some(id) == last).then_some(true);
+        conn.push(&to_peer(&g), &config, None, activate, gate)
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
+    }
+    if gated
+        && let Some(id) = last
+        && let Err(e) = confirm_pushed(link, id).await
+    {
+        // Retried on each sync pass until the peer's deadline.
+        tracing::info!(id, error = %e, "the peer has not confirmed generation yet");
     }
     Ok(())
 }
@@ -674,9 +728,12 @@ pub async fn take_from_peer(
         .map_err(|e| e.to_string())?;
     let g = from_peer(&f.generation);
     let g2 = g.clone();
-    with_core_raw(core, events, move |c| c.adopt(&g2, f.config))
-        .await
-        .map_err(|e| e.to_string())?;
+    // This node asked for it, through the tunnel it is reached by.
+    with_core_raw(core, events, move |c| {
+        c.adopt(&g2, f.config, PeerGate::Immediate)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(g)
 }
 
@@ -700,11 +757,22 @@ pub async fn give_to_peer(
     })
     .await
     .map_err(|e| e.to_string())?;
+    let gated = hello(link, &node).await?.protocol >= 2;
     let mut conn = connect(link).await?;
-    conn.push(&to_peer(&g), &config, Some(true), None)
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+    conn.push(
+        &to_peer(&g),
+        &config,
+        Some(true),
+        None,
+        gated.then_some(true),
+    )
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if gated && let Err(e) = confirm_pushed(link, g.id).await {
+        // Retried on each sync pass until the peer's deadline.
+        tracing::info!(id = g.id, error = %e, "the peer has not confirmed generation yet");
+    }
     Ok(g)
 }
 

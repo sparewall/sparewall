@@ -16,7 +16,9 @@ pub mod tokens;
 
 use std::path::Path;
 
-pub use coordinator::{ApplyOptions, ApplyResult, Coordinator, Event};
+pub use coordinator::{
+    ApplyOptions, ApplyResult, Coordinator, Event, PEER_CONFIRM_SECONDS, PeerGate,
+};
 pub use health::{Check, Health, Level};
 pub use store::{Generation, Store};
 pub use system::System;
