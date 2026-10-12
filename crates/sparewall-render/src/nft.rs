@@ -345,6 +345,22 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
 
     // --- input ----------------------------------------------------------------
     let mut input = String::from("type filter hook input priority filter; policy drop;\n");
+    // The sync tunnel's addresses carry the peer API and Kea HA, which
+    // trust whoever reaches them: only WireGuard (the peer's key) may.
+    // First, before conntrack state, zone policy and raw rules, so no
+    // configuration can open them from another interface.
+    let tunnel_net = pair
+        .then(|| crate::networkd::sync_tunnel_addr(doc, node))
+        .flatten()
+        .map(|n| n.trunc());
+    if let Some(net) = tunnel_net {
+        writeln!(
+            input,
+            "iifname != {{ \"lo\", {} }} ip daddr {net} drop comment \"infra:sync-isolation\"",
+            q(SYNC_TUNNEL_IFACE)
+        )
+        .unwrap();
+    }
     input.push_str(CT_STATE);
     input.push_str("iifname \"lo\" accept\n");
     let mgmt_if = doc
@@ -432,6 +448,15 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
 
     // --- forward --------------------------------------------------------------
     let mut fwd = String::from("type filter hook forward priority filter; policy drop;\n");
+    if tunnel_net.is_some() {
+        // Nothing is routed into or out of the sync tunnel.
+        writeln!(
+            fwd,
+            "iifname {t} drop comment \"infra:sync-isolation\"\noifname {t} drop comment \"infra:sync-isolation\"",
+            t = q(SYNC_TUNNEL_IFACE)
+        )
+        .unwrap();
+    }
     fwd.push_str(&raw_at_hook(doc, RawHook::Forward));
     if !doc.vpn.is_empty() {
         // Clamp MSS to the tunnels' smaller MTU.

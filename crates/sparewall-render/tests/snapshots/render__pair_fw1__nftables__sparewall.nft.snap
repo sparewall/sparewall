@@ -19,6 +19,7 @@ table inet sparewall {
 	}
 	chain input {
 		type filter hook input priority filter; policy drop;
+		iifname != { "lo", "swsync" } ip daddr 169.254.77.0/30 drop comment "infra:sync-isolation"
 		ct state vmap { established : accept, related : accept, invalid : drop }
 		iifname "lo" accept
 		iifname "mgmt" tcp dport { 22, 443 } accept comment "anti-lockout"
@@ -37,6 +38,8 @@ table inet sparewall {
 	}
 	chain forward {
 		type filter hook forward priority filter; policy drop;
+		iifname "swsync" drop comment "infra:sync-isolation"
+		oifname "swsync" drop comment "infra:sync-isolation"
 		oifname "roadwarrior" tcp flags syn tcp option maxseg size set rt mtu comment "vpn-mss"
 		ct state vmap { established : accept, related : accept, invalid : drop }
 		meta nfproto ipv6 drop

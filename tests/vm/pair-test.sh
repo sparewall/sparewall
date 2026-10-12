@@ -140,6 +140,24 @@ LEASES=/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases
 fw2_has_lease() { at fw2 "sudo grep -q '^$LEASE,02:00:00:00:00:20' $LEASES"; }
 wait_for 60 "fw2 holds the lease of $LEASE (Kea HA)" fw2_has_lease
 
+log "the LAN cannot reach the peer API, even with a permissive policy"
+# A client on users routes to the sync-tunnel addresses through fw1 (issue #3).
+ns users ip route replace 169.254.77.0/24 via 192.0.2.2
+peer_api() { ns users timeout 3 bash -c "exec 3<>/dev/tcp/$1/8649" 2>/dev/null; }
+at fw1 "sudo sparewall set 'policy.users->self.action=accept' --confirm 0"
+wait_for 120 "fw1 in sync after opening users->self" in_sync fw1
+ns users timeout 3 bash -c 'exec 3<>/dev/tcp/192.0.2.2/22' 2>/dev/null \
+    || fail "users->self accept did not open fw1 to the LAN"
+for a in 169.254.77.1 169.254.77.2; do
+    ! peer_api "$a" || fail "a LAN client reached the peer API at $a"
+done
+# Back to the original policy (a pair rollback does not propagate yet).
+at fw1 "sudo sparewall set 'policy.users->self.action=drop' --confirm 0"
+wait_for 120 "fw1 in sync after reverting users->self" in_sync fw1
+wait_for 120 "fw2 in sync after reverting users->self" in_sync fw2
+! peer_api 169.254.77.1 || fail "a LAN client reached the peer API after the revert"
+ns users ip route del 169.254.77.0/24
+
 log "cutting only the sync VLAN"
 for t in swtap1 swtap2; do sudo bridge vlan del dev "$t" vid 4000; done
 state() { at "$1" 'sudo sparewall status -o json' | jq -r .sync.state; }

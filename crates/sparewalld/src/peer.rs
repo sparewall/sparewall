@@ -19,7 +19,7 @@ use sparewall_api::{
 use sparewall_core::pair::{NodeView, SyncState, push_plan, sync_state};
 use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
 use sparewall_core::{Check, Error, Generation, Level};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket};
 use tokio::sync::{Notify, broadcast};
 use zlink::Connection;
 use zlink::service;
@@ -82,6 +82,13 @@ fn peer_error(e: Error) -> PeerError {
 }
 
 /// The node's own and the peer's sync-tunnel addresses, once paired.
+/// The two ends of the sync tunnel, as this node sees them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Link {
+    pub own: IpAddr,
+    pub peer: IpAddr,
+}
+
 pub fn tunnel_addrs(
     doc: &sparewall_config::Document,
     node: &str,
@@ -253,11 +260,20 @@ impl PeerService {
     }
 }
 
-/// Connect to the peer's listener on the tunnel.
-pub async fn connect(addr: IpAddr) -> Result<Connection<zlink::tokio::unix::Stream>, String> {
+/// Connect to the peer's listener on the tunnel, from this node's own
+/// tunnel address (the peer accepts no other source).
+pub async fn connect(link: Link) -> Result<Connection<zlink::tokio::unix::Stream>, String> {
+    let addr = link.peer;
+    let sock = match addr {
+        IpAddr::V4(_) => TcpSocket::new_v4(),
+        IpAddr::V6(_) => TcpSocket::new_v6(),
+    }
+    .map_err(|e| e.to_string())?;
+    sock.bind(SocketAddr::new(link.own, 0))
+        .map_err(|e| format!("{}: {e}", link.own))?;
     let tcp = tokio::time::timeout(
         Duration::from_secs(3),
-        TcpStream::connect(SocketAddr::new(addr, PEER_PORT)),
+        sock.connect(SocketAddr::new(addr, PEER_PORT)),
     )
     .await
     .map_err(|_| format!("{addr}: timed out"))?
@@ -272,39 +288,75 @@ pub async fn connect(addr: IpAddr) -> Result<Connection<zlink::tokio::unix::Stre
     Ok(Connection::new(stream))
 }
 
-/// Accept connections from the peer on the tunnel address and splice them
-/// onto the peer socket. Rebinds when the configuration changes.
-pub async fn listener(core: Core, events: broadcast::Sender<Value>, socket: std::path::PathBuf) {
-    let mut bound: Option<(IpAddr, TcpListener)> = None;
+/// Listen for the peer on this node's tunnel address. With `device`, the
+/// socket is also bound to the tunnel interface (`SO_BINDTODEVICE`): the
+/// kernel then delivers only connections that arrived through WireGuard,
+/// whatever the firewall policy lets reach the address from elsewhere.
+pub fn bind_peer(addr: IpAddr, device: Option<&str>) -> std::io::Result<TcpListener> {
+    let s = match addr {
+        IpAddr::V4(_) => TcpSocket::new_v4()?,
+        IpAddr::V6(_) => TcpSocket::new_v6()?,
+    };
+    s.set_reuseaddr(true)?;
+    if let Some(d) = device {
+        s.bind_device(Some(d.as_bytes()))?;
+    }
+    s.bind(SocketAddr::new(addr, PEER_PORT))?;
+    s.listen(16)
+}
+
+/// Whether an accepted connection comes from the peer. WireGuard only
+/// accepts the peer's tunnel address from the peer's key, so on the
+/// tunnel interface the source address is the peer's identity.
+pub fn from_peer_addr(link: &Link, from: SocketAddr) -> bool {
+    from.ip() == link.peer
+}
+
+/// Accept connections from the peer on the tunnel and splice them onto the
+/// peer socket. Rebinds when the configuration changes. `device` is the
+/// tunnel interface (`None` only for `--fake-system` tests).
+pub async fn listener(
+    core: Core,
+    events: broadcast::Sender<Value>,
+    socket: std::path::PathBuf,
+    device: Option<String>,
+) {
+    let mut bound: Option<(Link, TcpListener)> = None;
     loop {
         let want = with_core_raw(&core, &events, |c| {
             Ok(c.active_document()?
                 .and_then(|d| tunnel_addrs(&d, c.node()))
-                .map(|a| a.0))
+                .map(|(own, peer, _)| Link { own, peer }))
         })
         .await
         .ok()
         .flatten();
         if bound.as_ref().map(|b| b.0) != want {
             bound = None;
-            if let Some(addr) = want {
-                match TcpListener::bind(SocketAddr::new(addr, PEER_PORT)).await {
+            if let Some(link) = want {
+                match bind_peer(link.own, device.as_deref()) {
                     Ok(l) => {
-                        tracing::info!(%addr, port = PEER_PORT, "listening for the peer");
-                        bound = Some((addr, l));
+                        tracing::info!(addr = %link.own, port = PEER_PORT, device = ?device, "listening for the peer");
+                        bound = Some((link, l));
                     }
                     // The tunnel address appears once networkd brings it up.
-                    Err(e) => tracing::debug!(%addr, error = %e, "peer listener not ready"),
+                    Err(e) => {
+                        tracing::debug!(addr = %link.own, error = %e, "peer listener not ready")
+                    }
                 }
             }
         }
-        let Some((_, l)) = &bound else {
+        let Some((link, l)) = &bound else {
             tokio::time::sleep(Duration::from_secs(5)).await;
             continue;
         };
         tokio::select! {
             r = l.accept() => {
                 if let Ok((mut tcp, from)) = r {
+                    if !from_peer_addr(link, from) {
+                        tracing::warn!(%from, expected = %link.peer, "refused a peer connection from another address");
+                        continue;
+                    }
                     let socket = socket.clone();
                     tokio::spawn(async move {
                         match tokio::net::UnixStream::connect(&socket).await {
@@ -425,15 +477,17 @@ async fn sync_once(
         }
     };
     status.peer = peer_name.clone();
-    if let Some((_, peer_addr, peer)) = addrs {
+    if let Some((own, peer_addr, peer)) = addrs {
+        let link = Link {
+            own,
+            peer: peer_addr,
+        };
         status.paired = true;
-        match hello(peer_addr, &node).await {
+        match hello(link, &node).await {
             Ok(h) => {
                 status.reachable = true;
                 status.peer_image = h.image.clone();
-                if let Err(e) =
-                    send_secrets(core, events, peer_addr, &mut status.secrets_sent).await
-                {
+                if let Err(e) = send_secrets(core, events, link, &mut status.secrets_sent).await {
                     tracing::warn!(peer, error = %e, "sending secrets to the peer failed");
                     status.last_error = Some(e);
                 }
@@ -442,7 +496,7 @@ async fn sync_once(
                 if state == SyncState::PeerBehind
                     && !pending
                     && !h.pending
-                    && let Err(e) = push_missing(core, events, peer_addr, &local, &pv).await
+                    && let Err(e) = push_missing(core, events, link, &local, &pv).await
                 {
                     tracing::warn!(peer, error = %e, "push to peer failed");
                     status.last_error = Some(e);
@@ -478,7 +532,7 @@ async fn sync_once(
 async fn send_secrets(
     core: &Core,
     events: &broadcast::Sender<Value>,
-    addr: IpAddr,
+    link: Link,
     sent: &mut Vec<(String, u64)>,
 ) -> Result<(), String> {
     let list = with_core_raw(core, events, |c| c.secret_list())
@@ -504,7 +558,7 @@ async fn send_secrets(
             value: hex::encode(s.value),
         })
         .collect();
-    let mut conn = connect(addr).await?;
+    let mut conn = connect(link).await?;
     conn.put_secrets(secrets)
         .await
         .map_err(|e| e.to_string())?
@@ -513,8 +567,8 @@ async fn send_secrets(
     Ok(())
 }
 
-async fn hello(addr: IpAddr, node: &str) -> Result<HelloReply, String> {
-    let mut conn = connect(addr).await?;
+async fn hello(link: Link, node: &str) -> Result<HelloReply, String> {
+    let mut conn = connect(link).await?;
     let r = tokio::time::timeout(Duration::from_secs(5), conn.hello(node, PEER_PROTOCOL))
         .await
         .map_err(|_| "hello timed out".to_string())?
@@ -525,14 +579,14 @@ async fn hello(addr: IpAddr, node: &str) -> Result<HelloReply, String> {
 async fn push_missing(
     core: &Core,
     events: &broadcast::Sender<Value>,
-    addr: IpAddr,
+    link: Link,
     local: &NodeView,
     peer: &NodeView,
 ) -> Result<(), String> {
     let Some(plan) = push_plan(local, peer.active, &peer.desired) else {
         return Ok(());
     };
-    let mut conn = connect(addr).await?;
+    let mut conn = connect(link).await?;
     for id in plan {
         let (g, config) = with_core_raw(core, events, move |c| {
             Ok((c.generation(id)?, c.document_value(id)?))
@@ -558,11 +612,12 @@ pub async fn take_from_peer(
     })
     .await
     .map_err(|e| e.to_string())?;
-    let (_, addr, _) = doc
+    let (own, peer, _) = doc
         .as_ref()
         .and_then(|d| tunnel_addrs(d, &node))
         .ok_or("this node is not paired")?;
-    let mut conn = connect(addr).await?;
+    let link = Link { own, peer };
+    let mut conn = connect(link).await?;
     let f = conn
         .fetch(None)
         .await
@@ -586,16 +641,17 @@ pub async fn give_to_peer(
     })
     .await
     .map_err(|e| e.to_string())?;
-    let (_, addr, _) = doc
+    let (own, peer, _) = doc
         .as_ref()
         .and_then(|d| tunnel_addrs(d, &node))
         .ok_or("this node is not paired")?;
+    let link = Link { own, peer };
     let (g, config) = with_core_raw(core, events, move |c| {
         Ok((c.generation(active)?, c.document_value(active)?))
     })
     .await
     .map_err(|e| e.to_string())?;
-    let mut conn = connect(addr).await?;
+    let mut conn = connect(link).await?;
     conn.push(&to_peer(&g), &config, Some(true))
         .await
         .map_err(|e| e.to_string())?
