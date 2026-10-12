@@ -212,7 +212,13 @@ enum Cmd {
     /// Keep a change that is waiting for confirmation.
     Confirm { id: Option<i64> },
     /// Return to a generation (default: the previous one).
-    Rollback { id: Option<i64> },
+    Rollback {
+        id: Option<i64>,
+        /// In a pair, roll back even though the peer is unreachable (the
+        /// pair is then diverged until `sparewall sync`).
+        #[arg(long)]
+        allow_diverge: bool,
+    },
     /// Resolve a diverged pair by taking one node's configuration.
     Sync {
         #[arg(long = "from")]
@@ -628,7 +634,7 @@ impl App {
                 Ok(())
             }
             Ok(_) => {
-                let g = self.conn().await?.rollback(None).await??;
+                let g = self.conn().await?.rollback(None, None).await??;
                 self.say(format!("Rolled back to generation {}.", g.generation.id));
                 Ok(())
             }
@@ -832,8 +838,12 @@ impl App {
                 self.conn().await?.confirm(id).await??;
                 self.say(format!("Confirmed generation {id}."));
             }
-            Cmd::Rollback { id } => {
-                let g = self.conn().await?.rollback(id).await??;
+            Cmd::Rollback { id, allow_diverge } => {
+                let g = self
+                    .conn()
+                    .await?
+                    .rollback(id, allow_diverge.then_some(true))
+                    .await??;
                 self.say(format!("Now running generation {}.", g.generation.id));
             }
             Cmd::Sync { from_node } => {

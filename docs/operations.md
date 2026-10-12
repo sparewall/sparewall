@@ -32,6 +32,13 @@ sparewall rollback 12        # to a specific one
 sparewall export > site.yaml # canonical form, for git
 ```
 
+A rollback is a new generation with the old document ("rollback to
+generation 12" in `history`); the generation it replaced stays in history,
+so a rollback can itself be rolled back. In a pair it reaches the peer like
+any change, so it needs the peer reachable (or `--allow-diverge`). The
+exception is a change still waiting for confirmation: `rollback` just
+discards it, with or without the peer, since it was never pushed.
+
 ## Secrets and tokens
 
 Secrets never appear in the document; it refers to them as

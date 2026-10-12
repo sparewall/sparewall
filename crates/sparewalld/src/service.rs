@@ -208,6 +208,7 @@ fn opts(base: i64, confirm: Option<i64>, dry_run: Option<bool>, author: String) 
         confirm_seconds: confirm.map(|s| s.clamp(0, 24 * 3600) as u32),
         author,
         dry_run: dry_run.unwrap_or(false),
+        note: None,
     }
 }
 
@@ -297,9 +298,27 @@ where
         Ok(Empty {})
     }
 
-    async fn rollback(&mut self, id: Option<i64>) -> Result<GenerationReply, FirewallError> {
+    async fn rollback(
+        &mut self,
+        id: Option<i64>,
+        allow_diverge: Option<bool>,
+        #[zlink(connection)] conn: &mut Connection<Sock>,
+    ) -> Result<GenerationReply, FirewallError> {
+        // Discarding an unconfirmed change touches only this node; any
+        // other rollback is a change like any other, which the peer receives.
+        let target = id.map(|i| i.max(0) as u64);
+        let local_only = with_core(&self.core, &self.events, move |c| {
+            Ok(c.state()?
+                .pending
+                .is_some_and(|p| target.is_none_or(|t| t == p.revert_to)))
+        })
+        .await?;
+        if !local_only {
+            self.gate(allow_diverge, None)?;
+        }
+        let author = author::of(conn).await;
         let g = with_core(&self.core, &self.events, move |c| {
-            c.rollback(id.map(|i| i.max(0) as u64))
+            c.rollback(target, &author)
         })
         .await?;
         self.sync.notify_one();

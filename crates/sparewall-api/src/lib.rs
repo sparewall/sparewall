@@ -205,6 +205,7 @@ pub trait FirewallProxy {
     async fn rollback(
         &mut self,
         id: Option<i64>,
+        allow_diverge: Option<bool>,
     ) -> zlink::Result<Result<GenerationReply, FirewallError>>;
     async fn get_config(
         &mut self,
