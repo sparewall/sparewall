@@ -79,6 +79,22 @@ Where the implementation departs from, or settles open questions in,
   (each applied the pairing document) converge on the one created first.
 - **Health endpoint detail and `/metrics`** need an API token, except
   `/metrics` when `metrics.mode` is `external`.
+- **DHCP takeover is driven by VRRP.** Kea's hot-standby standby declares
+  its partner down only after `max-unacked-clients` (5) distinct clients
+  go unanswered, which a small network may never produce. When a node is
+  the VRRP master and the peer is unreachable over the sync tunnel for
+  15 seconds, the coordinator has its Kea serve the primary's scope
+  (`ha-scopes`). A cut sync VLAN alone leaves the VRRP roles in place
+  (adverts run on the client VLANs), so it cannot split the pool.
+- **Backups seal secrets with the backup password** (Argon2id and
+  ChaCha20-Poly1305) rather than relying on restic's encryption alone, so
+  a bundle on the node's disk or copied by hand is no weaker than one in
+  the repository. The restic upload runs inside sparewalld's sandbox; the
+  timer is a transient unit recreated at start, so no unit file follows
+  the schedule.
+- **`systemd-creds setup` runs before the sandbox** (`ExecStartPre=+`):
+  the host credential key lives under `/var/lib/systemd`, which the
+  sandboxed coordinator cannot create on first use.
 
 ## Not built yet
 

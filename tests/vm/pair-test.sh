@@ -1,10 +1,12 @@
 #!/bin/bash
 # Two-node suite (design: milestone 3): pairing, push, the gateway address,
-# DHCP from the Kea HA pair, and failover when the master dies, with an
-# established TCP connection surviving it (conntrackd). With IMAGE set
-# (the image the disk was built from), the failed node then returns and
-# `sparewall upgrade` rolls the pair onto a derived image served from a
-# local registry, handing the gateway over between the reboots.
+# DHCP from the Kea HA pair, a cut sync VLAN with divergence resolved by
+# `sync --from`, and failover when the master dies, with an established
+# TCP connection (conntrackd) and the client's lease (Kea HA) surviving
+# it. With IMAGE set (the image the disk was built from), the failed node
+# then returns, an unsigned image is refused, and `sparewall upgrade`
+# rolls the pair onto a derived image served from a local registry,
+# handing the gateway over between the reboots.
 #
 #   [IMAGE=localhost/sparewall:ci] tests/vm/pair-test.sh WORKDIR
 #       (reuses WORKDIR/output/qcow2/disk.qcow2 from boot-test.sh)
@@ -132,6 +134,41 @@ ns users ip addr flush dev eth0
 got_lease() { ns users busybox udhcpc -i eth0 -n -q -t 5 -T 3 -s "$WORK/udhcpc.sh" >/dev/null 2>&1; }
 wait_for 120 "a DHCP lease from the pair" got_lease
 ns users ping -c 2 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachable"
+client_ip() { ns users ip -4 -br addr show dev eth0 | awk '{print $3}' | cut -d/ -f1; }
+LEASE=$(client_ip)
+LEASES=/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv
+fw2_has_lease() { at fw2 "sudo grep -q '^$LEASE,02:00:00:00:00:20' $LEASES"; }
+wait_for 60 "fw2 holds the lease of $LEASE (Kea HA)" fw2_has_lease
+
+log "cutting only the sync VLAN"
+for t in swtap1 swtap2; do sudo bridge vlan del dev "$t" vid 4000; done
+state() { at "$1" 'sudo sparewall status -o json' | jq -r .sync.state; }
+unreachable() { [ "$(state "$1")" = peer-unreachable ]; }
+wait_for 120 "fw1 reports the peer down" unreachable fw1
+wait_for 60 "fw2 reports the peer down" unreachable fw2
+# VRRP runs on the other VLANs: nothing fails over.
+[ "$(role fw1)" = MASTER ] && [ "$(role fw2)" = BACKUP ] \
+    || fail "roles changed when only the sync VLAN was cut: fw1 $(role fw1), fw2 $(role fw2)"
+for n in fw1 fw2; do
+    lvl=$(at "$n" 'sudo sparewall status -o json' | jq -r .health.level)
+    [ "$lvl" = degraded ] || fail "$n health is $lvl with the sync VLAN cut, not degraded"
+done
+if at fw1 'sudo sparewall set dhcp.users.lease_time=1800 --confirm 0' 2>/dev/null; then
+    fail "a change was accepted with the peer unreachable and no --allow-diverge"
+fi
+at fw1 'sudo sparewall set dhcp.users.lease_time=1800 --confirm 0 --allow-diverge'
+at fw2 'sudo sparewall set dhcp.users.lease_time=900 --confirm 0 --allow-diverge'
+for t in swtap1 swtap2; do sudo bridge vlan add dev "$t" vid 4000; done
+diverged() { [ "$(state "$1")" = diverged ]; }
+wait_for 120 "fw1 reports divergence" diverged fw1
+wait_for 60 "fw2 reports divergence" diverged fw2
+# Nothing merges by itself; an admin picks a side.
+at fw2 'sudo sparewall sync --from fw1'
+wait_for 120 "fw1 in sync after sync --from" in_sync fw1
+wait_for 60 "fw2 in sync after sync --from" in_sync fw2
+[ "$(at fw2 'sudo sparewall get dhcp.users.lease_time')" = 1800 ] \
+    || fail "fw2 did not take fw1's side: $(at fw2 'sudo sparewall get dhcp.users.lease_time')"
+[ "$(role fw1)" = MASTER ] || fail "fw1 is $(role fw1) after the sync VLAN returned"
 
 log "a connection through the pair"
 # A TCP echo server behind the servers VLAN and a client in users that
@@ -184,8 +221,11 @@ after=$(echoes) || fail "the connection stalled: $(tail -5 flow.log)"
 sleep 3
 [ "$(echoes)" -gt "$after" ] && [ "$after" -gt "$before" ] \
     || fail "the connection stalled after the failover ($before, $after, $(echoes))"
-peer_down() { at fw2 'sudo sparewall status -o json' | jq -e '.sync.state == "peer-unreachable"'; }
-wait_for 60 "fw2 reports the peer down" peer_down
+wait_for 60 "fw2 reports the peer down" unreachable fw2
+# The client keeps its address, now from fw2.
+ns users ip addr flush dev eth0
+wait_for 120 "a DHCP lease from fw2" got_lease
+[ "$(client_ip)" = "$LEASE" ] || fail "the client got $(client_ip) from fw2, not its lease $LEASE"
 [ -n "${IMAGE:-}" ] || { log "pair PASS (no IMAGE: rolling upgrade skipped)"; exit 0; }
 
 log "fw1 returns and rejoins as the backup"
@@ -212,6 +252,21 @@ for n in fw1 fw2; do
 location = "10.0.2.2:5000"
 insecure = true
 TOML
+done
+
+log "an unsigned image is refused"
+if AT_TIMEOUT=600 at fw2 "sudo sparewall upgrade --image $NEXT"; then
+    fail "the upgrade to an unsigned image went ahead"
+fi
+for n in fw1 fw2; do
+    upgraded() { at "$1" 'test -e /usr/share/sparewall/upgrade-marker'; }
+    ! upgraded "$n" || fail "$n runs the unsigned image"
+    at "$n" 'sudo bootc status --format=json' | jq -e '.status.staged == null' >/dev/null \
+        || fail "$n staged the unsigned image"
+done
+is_master fw2 || fail "fw2 is $(role fw2) after the refused upgrade"
+wait_for 60 "fw1 in sync after the refused upgrade" in_sync fw1
+for n in fw1 fw2; do
     # The image's policy rejects anything unsigned; trust this registry.
     at "$n" 'sudo jq ".transports.docker[\"10.0.2.2:5000\"] = [{\"type\": \"insecureAcceptAnything\"}]" /etc/containers/policy.json > /tmp/policy.json && sudo install -m 0644 /tmp/policy.json /etc/containers/policy.json'
 done
@@ -220,7 +275,6 @@ log "rolling upgrade from fw2"
 before=$(echoes) || fail "the connection is gone before the upgrade: $(tail -3 flow.log)"
 # The command follows the upgrade until fw2 itself reboots.
 AT_TIMEOUT=1800 at fw2 "sudo sparewall upgrade --image $NEXT" || fail "the upgrade failed"
-upgraded() { at "$1" 'test -e /usr/share/sparewall/upgrade-marker'; }
 wait_for 900 "fw1 on the new image" upgraded fw1
 wait_for 600 "fw2 on the new image" upgraded fw2
 wait_for 300 "fw2 in sync" in_sync fw2

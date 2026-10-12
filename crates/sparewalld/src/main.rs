@@ -3,6 +3,7 @@
 mod acme;
 mod author;
 mod backup;
+mod dhcp_ha;
 mod http;
 mod peer;
 mod rules;
@@ -325,6 +326,7 @@ fn run(args: Args) -> Result<(), String> {
                 }
                 backup::schedule_loop(core.clone(), tx.clone()).await
             } => Ok(()),
+            () = dhcp_ha::takeover_loop(core.clone(), tx.clone(), pair.clone()) => Ok(()),
             () = https => Ok(()),
             r = peer_server.run() => r.map_err(|e| format!("peer server: {e}")),
             () = peer::listener(core.clone(), tx.clone(), peer_socket.clone()) => Ok(()),

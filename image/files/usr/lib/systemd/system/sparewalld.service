@@ -7,6 +7,10 @@ Wants=systemd-networkd.service
 
 [Service]
 Type=notify
+# The secret store encrypts with the host credential key, which
+# systemd-creds creates under /var/lib/systemd on first use: outside the
+# sandbox below, so create it first ("+": unsandboxed).
+ExecStartPre=+/usr/bin/systemd-creds setup
 ExecStart=/usr/bin/sparewalld
 ImportCredential=sparewall.*
 Restart=on-failure
