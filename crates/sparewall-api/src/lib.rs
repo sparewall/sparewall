@@ -246,8 +246,9 @@ pub const PEER_INTERFACE: &str = "org.sparewall.Peer";
 pub const PEER_SOCKET: &str = "/run/sparewall/org.sparewall.Peer";
 /// TCP port of the peer listener on the sync tunnel address.
 pub const PEER_PORT: u16 = 8649;
-/// Peer protocol version, negotiated in `Hello`.
-pub const PEER_PROTOCOL: i64 = 1;
+/// Peer protocol version, negotiated in `Hello`. 2: pushed generations
+/// can be gated on the pusher's `Confirm`.
+pub const PEER_PROTOCOL: i64 = 2;
 
 /// A generation as it travels between nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
@@ -340,7 +341,11 @@ pub trait PeerProxy {
         // `false`: store in history without running it (default `true`).
         // Older peers ignore it and run every generation pushed.
         activate: Option<bool>,
+        // `true` (protocol 2): run it pending until the caller's `Confirm`.
+        gated: Option<bool>,
     ) -> zlink::Result<Result<PushReply, PeerError>>;
+    /// Confirm a generation the caller pushed with `gated` (protocol 2).
+    async fn confirm(&mut self, id: i64) -> zlink::Result<Result<PushReply, PeerError>>;
     /// Read a generation (default: the active one).
     async fn fetch(&mut self, id: Option<i64>) -> zlink::Result<Result<FetchReply, PeerError>>;
 }

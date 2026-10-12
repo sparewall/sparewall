@@ -2,8 +2,9 @@
 
 use serde_json::{Value, json};
 use sparewall_config::identity::{BootstrapPort, Identity};
+use sparewall_core::Generation;
 use sparewall_core::system::Fake;
-use sparewall_core::{ApplyOptions, Coordinator, Error, Event, Level, Store};
+use sparewall_core::{ApplyOptions, Coordinator, Error, Event, Level, PeerGate, Store};
 
 fn identity() -> Identity {
     Identity {
@@ -731,7 +732,8 @@ fn pair_push_conflict_and_sync_from() {
     assert_eq!(sync_state(&va, Some(&vb)), SyncState::PeerBehind);
     for id in push_plan(&va, vb.active, &vb.desired).unwrap() {
         let g = a.c.generation(id).unwrap();
-        b.c.receive(&g, a.c.document_value(id).unwrap()).unwrap();
+        b.c.receive(&g, a.c.document_value(id).unwrap(), PeerGate::Immediate)
+            .unwrap();
     }
     assert_eq!(b.c.active().unwrap(), 2);
     assert_eq!(
@@ -739,8 +741,12 @@ fn pair_push_conflict_and_sync_from() {
         SyncState::InSync
     );
     // Pushing the same generation again is harmless.
-    b.c.receive(&a.c.generation(2).unwrap(), a.c.document_value(2).unwrap())
-        .unwrap();
+    b.c.receive(
+        &a.c.generation(2).unwrap(),
+        a.c.document_value(2).unwrap(),
+        PeerGate::Immediate,
+    )
+    .unwrap();
 
     // Both sides change while apart: generation 3 differs.
     v["networks"]["users"]["mtu"] = json!(1300);
@@ -751,11 +757,12 @@ fn pair_push_conflict_and_sync_from() {
     assert_eq!(sync_state(&va, Some(&vb)), SyncState::Diverged);
     let g3 = a.c.generation(3).unwrap();
     assert!(matches!(
-        b.c.receive(&g3, a.c.document_value(3).unwrap()),
+        b.c.receive(&g3, a.c.document_value(3).unwrap(), PeerGate::Immediate),
         Err(Error::Conflict { current: 3 })
     ));
     // `sync --from fw1` on fw2: fw2's own generation 3 is set aside.
-    b.c.adopt(&g3, a.c.document_value(3).unwrap()).unwrap();
+    b.c.adopt(&g3, a.c.document_value(3).unwrap(), PeerGate::Immediate)
+        .unwrap();
     assert_eq!(
         sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
         SyncState::InSync
@@ -776,7 +783,7 @@ fn pair_push_conflict_and_sync_from() {
     bad.base = Some(3);
     bad.hash = "0".repeat(64);
     assert!(matches!(
-        b.c.receive(&bad, a.c.document_value(3).unwrap()),
+        b.c.receive(&bad, a.c.document_value(3).unwrap(), PeerGate::Immediate),
         Err(Error::Validation(_))
     ));
 }
@@ -795,7 +802,7 @@ fn sync_pass(from: &mut T, to: &mut T) -> sparewall_core::pair::SyncState {
             let g = from.c.generation(id).unwrap();
             let v = from.c.document_value(id).unwrap();
             if id == last {
-                to.c.receive(&g, v).unwrap();
+                to.c.receive(&g, v, PeerGate::Immediate).unwrap();
             } else {
                 to.c.receive_history(&g, v).unwrap();
             }
@@ -979,11 +986,247 @@ fn pair_rollback_with_the_peer_away() {
         b.c.generation(4).unwrap().hash
     );
     let g = a.c.generation(4).unwrap();
-    b.c.adopt(&g, a.c.document_value(4).unwrap()).unwrap();
+    b.c.adopt(&g, a.c.document_value(4).unwrap(), PeerGate::Immediate)
+        .unwrap();
     assert_eq!(
         sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
         SyncState::InSync
     );
+}
+
+/// Two paired nodes both running generation 1; `a` has made generation
+/// 2, which changes the firewall, links and a provider, and `b` has not
+/// received it yet.
+fn peers_with_change() -> (T, T, Generation, Value) {
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let g1 = a.c.generation(1).unwrap();
+    b.c.receive(&g1, a.c.document_value(1).unwrap(), PeerGate::Immediate)
+        .unwrap();
+    let mut v = pair_example();
+    v["policy"]["wan->self"]["action"] = json!("reject");
+    v["networks"]["users"]["mtu"] = json!(1400);
+    v["dhcp"]["lease_time"] = json!(7200);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    let g2 = a.c.generation(2).unwrap();
+    let v2 = a.c.document_value(2).unwrap();
+    (a, b, g2, v2)
+}
+
+/// What `b` runs: its firewall script, networkd files and providers.
+fn running(t: &mut T) -> (Option<String>, String, Vec<String>) {
+    let s = t.c.system();
+    (
+        s.nft_body.clone(),
+        format!("{:?}", s.network),
+        s.running.clone(),
+    )
+}
+
+/// Issue #7: a peer generation that fails partway through activation
+/// (after the firewall loaded, or links changed, or at the provider
+/// reload) leaves the previous generation running, and is rejected
+/// rather than retried into the same failure.
+#[test]
+fn failed_peer_activation_restores_the_previous_generation() {
+    for stage in ["nft load", "link changes", "provider reload"] {
+        let (mut a, mut b, g2, v2) = peers_with_change();
+        let before = running(&mut b);
+        let fail = Some(format!("injected failure at {stage}"));
+        // A transient failure partway through: restoring generation 1 works.
+        b.c.system().fail_once = true;
+        match stage {
+            "nft load" => b.c.system().fail_nft_load = fail,
+            "link changes" => b.c.system().fail_networkd_apply = fail,
+            _ => b.c.system().fail_services_apply = fail,
+        }
+        let e =
+            b.c.receive(&g2, v2.clone(), PeerGate::PeerConfirms)
+                .unwrap_err();
+        assert!(e.to_string().contains("injected failure"), "{stage}: {e}");
+        assert_eq!(b.c.active().unwrap(), 1, "{stage}");
+        assert!(b.c.state().unwrap().pending.is_none(), "{stage}");
+        // Back on generation 1 everywhere, and the failure cleared itself.
+        assert!(
+            b.c.system().fail_nft_load.is_none()
+                && b.c.system().fail_networkd_apply.is_none()
+                && b.c.system().fail_services_apply.is_none()
+        );
+        assert_eq!(
+            running(&mut b),
+            before,
+            "{stage}: generation 1 not restored"
+        );
+        let h = b.c.health().unwrap();
+        assert_eq!(h.check("applied").unwrap().level, Level::Ok, "{stage}");
+        let r = h.check("peer-generation").unwrap();
+        assert_eq!(r.level, Level::Degraded, "{stage}");
+        assert!(
+            r.message.contains("activating it failed"),
+            "{stage}: {}",
+            r.message
+        );
+
+        // The same generation is refused without another attempt.
+        let tries = b.c.system().log.len();
+        let e =
+            b.c.receive(&g2, v2.clone(), PeerGate::PeerConfirms)
+                .unwrap_err();
+        assert!(e.to_string().contains("was rejected here"), "{stage}: {e}");
+        assert_eq!(b.c.system().log.len(), tries, "{stage}: activated again");
+
+        // A newer generation replaces it (2 goes to history, 3 runs).
+        let mut v = v2.clone();
+        v["dhcp"]["lease_time"] = json!(3600);
+        a.c.apply(v, &opts(2, None)).unwrap();
+        b.c.receive_history(&g2, v2.clone()).unwrap();
+        let g3 = a.c.generation(3).unwrap();
+        b.c.receive(&g3, a.c.document_value(3).unwrap(), PeerGate::PeerConfirms)
+            .unwrap();
+        b.c.confirm_received(3).unwrap();
+        assert_eq!(b.c.active().unwrap(), 3, "{stage}");
+        assert!(b.c.state().unwrap().rejected.is_none(), "{stage}");
+    }
+}
+
+/// A gated generation runs pending, is not reported applied (the pair
+/// is "applying"), and is confirmed by the pusher.
+#[test]
+fn peer_generation_waits_for_the_pushers_confirmation() {
+    use sparewall_core::pair::{SyncState, sync_state};
+    let (mut a, mut b, g2, v2) = peers_with_change();
+    b.c.receive(&g2, v2, PeerGate::PeerConfirms).unwrap();
+    let st = b.c.state().unwrap();
+    assert_eq!(st.active, 2);
+    assert_eq!(st.confirmed, 1);
+    let p = st.pending.unwrap();
+    assert!(p.from_peer);
+    assert_eq!(p.revert_to, 1);
+    let vb = b.c.view().unwrap();
+    assert_eq!((vb.applied, vb.applying), (None, true));
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::Applying
+    );
+    let h = b.c.health().unwrap();
+    assert!(
+        h.check("confirm")
+            .unwrap()
+            .message
+            .contains("unless the peer confirms it"),
+        "{h:?}"
+    );
+    b.c.confirm_received(2).unwrap();
+    // A repeated confirmation is fine.
+    b.c.confirm_received(2).unwrap();
+    let st = b.c.state().unwrap();
+    assert_eq!((st.active, st.confirmed, st.pending), (2, 2, None));
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+}
+
+/// The pusher never confirms (the change cut the sync tunnel): at the
+/// deadline the receiver returns to the previous generation and rejects
+/// the pushed one.
+#[test]
+fn unconfirmed_peer_generation_reverts_at_its_deadline() {
+    let (_a, mut b, g2, v2) = peers_with_change();
+    let before = running(&mut b);
+    b.c.receive(&g2, v2.clone(), PeerGate::PeerConfirms)
+        .unwrap();
+    let deadline = b.c.state().unwrap().pending.unwrap().deadline;
+    assert_eq!(b.c.tick(deadline - 1).unwrap(), None);
+    assert_eq!(b.c.tick(deadline).unwrap(), Some(1));
+    let st = b.c.state().unwrap();
+    assert_eq!((st.active, st.confirmed, st.pending), (1, 1, None));
+    assert_eq!(running(&mut b), before);
+    assert!(
+        st.rejected
+            .unwrap()
+            .reason
+            .contains("did not confirm it in time")
+    );
+    assert!(
+        b.c.receive(&g2, v2.clone(), PeerGate::PeerConfirms)
+            .is_err()
+    );
+    // An explicit sync retries it.
+    b.c.adopt(&g2, v2, PeerGate::PeerConfirms).unwrap();
+    assert_eq!(b.c.active().unwrap(), 2);
+    b.c.confirm_received(2).unwrap();
+}
+
+/// The receiver's daemon restarts during the window: the revert deadline
+/// is in the persisted state, and booting returns to the previous
+/// generation; the pusher then pushes again (not rejected).
+#[test]
+fn restart_during_the_window_reverts_and_allows_a_retry() {
+    let (_a, mut b, g2, v2) = peers_with_change();
+    b.c.receive(&g2, v2.clone(), PeerGate::PeerConfirms)
+        .unwrap();
+    let mut id = identity();
+    id.node = "fw2".into();
+    let mut c = Coordinator::new(Store::open(b._dir.path()).unwrap(), Fake::default(), id);
+    assert_eq!(c.boot(false).unwrap(), 1);
+    let st = c.state().unwrap();
+    assert_eq!((st.active, st.pending, st.rejected), (1, None, None));
+    c.receive(&g2, v2, PeerGate::PeerConfirms).unwrap();
+    c.confirm_received(2).unwrap();
+    assert_eq!(c.state().unwrap().confirmed, 2);
+}
+
+/// Confirmation needs the generation to fail no health check that did
+/// not fail before it ran (here, a required link it adds never appears);
+/// until then it stays pending, and reverts at the deadline.
+#[test]
+fn peer_generation_that_breaks_health_is_not_confirmed() {
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    b.c.receive(
+        &a.c.generation(1).unwrap(),
+        a.c.document_value(1).unwrap(),
+        PeerGate::Immediate,
+    )
+    .unwrap();
+    // Every link generation 1 needs is up on b.
+    let r = sparewall_render::render(
+        &sparewall_config::from_value(b.c.document_value(1).unwrap()).unwrap(),
+        "fw2",
+    )
+    .unwrap();
+    for l in r
+        .meta
+        .required_links
+        .iter()
+        .chain(&r.meta.replication_links)
+    {
+        b.c.system().links.insert(l.clone(), "up".into());
+    }
+    assert_eq!(
+        b.c.health().unwrap().check("links").unwrap().level,
+        Level::Ok
+    );
+    let mut v = pair_example();
+    v["networks"]["lab"] = json!({"port": "uplink", "vlan": 30,
+        "addresses": {"fw1": "198.51.100.2/24", "fw2": "198.51.100.3/24"}});
+    v["zones"]["lab"] = json!({"networks": ["lab"]});
+    a.c.apply(v, &opts(1, None)).unwrap();
+    b.c.receive(
+        &a.c.generation(2).unwrap(),
+        a.c.document_value(2).unwrap(),
+        PeerGate::PeerConfirms,
+    )
+    .unwrap();
+    let e = b.c.confirm_received(2).unwrap_err();
+    assert!(e.to_string().contains("links"), "{e}");
+    assert!(b.c.state().unwrap().pending.is_some(), "still pending");
+    let deadline = b.c.state().unwrap().pending.unwrap().deadline;
+    assert_eq!(b.c.tick(deadline).unwrap(), Some(1));
+    assert!(b.c.state().unwrap().rejected.is_some());
 }
 
 #[test]
@@ -1003,8 +1246,12 @@ fn vpn_keys_and_client_config() {
     assert_eq!(shared.len(), 1);
     let mut b = pair_node("fw2");
     assert_eq!(b.c.receive_secrets(shared).unwrap(), ["vpn-roadwarrior"]);
-    b.c.receive(&a.c.generation(1).unwrap(), a.c.document_value(1).unwrap())
-        .unwrap();
+    b.c.receive(
+        &a.c.generation(1).unwrap(),
+        a.c.document_value(1).unwrap(),
+        PeerGate::Immediate,
+    )
+    .unwrap();
     assert_eq!(b.c.system().keys_made, 0);
     assert_eq!(
         b.c.vpn_public_key("roadwarrior").unwrap(),

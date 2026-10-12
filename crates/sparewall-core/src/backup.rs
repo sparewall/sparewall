@@ -315,6 +315,7 @@ pub fn restore(
     }
     // Whatever was pending at backup time is not pending now.
     let st = State {
+        rejected: None,
         active: m.active,
         confirmed: m.active,
         pending: None,

@@ -40,13 +40,31 @@ pub struct Generation {
 }
 
 /// A change waiting for `Confirm`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
     pub id: u64,
     /// Generation to return to if the window expires.
     pub revert_to: u64,
     /// Unix time (seconds) the window closes.
     pub deadline: i64,
+    /// Pushed by the peer, which confirms it over the sync tunnel once it
+    /// runs here (see `Coordinator::confirm_received`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_peer: bool,
+    /// Health checks already failed before it was activated: confirming a
+    /// pushed generation requires that it failed no others.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_before: Vec<String>,
+}
+
+/// A generation from the peer that failed to activate, or was reverted
+/// unconfirmed. It is not taken again until a newer generation or an
+/// explicit `sync` replaces it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rejected {
+    pub id: u64,
+    pub hash: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +75,8 @@ pub struct State {
     pub confirmed: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<Pending>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<Rejected>,
 }
 
 pub struct Store {

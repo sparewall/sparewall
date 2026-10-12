@@ -144,6 +144,17 @@ Where the implementation departs from, or settles open questions in,
   moving the gateway addresses, as a cut sync link affects both nodes
   equally. A shared trunk carrying service networks still fails health.
 
+- **Pushed generations are gated by the pusher's confirmation** (peer
+  protocol 2: `Push` with `gated`, then `Confirm` on a new connection).
+  The receiver records the health checks already failing before it runs
+  the generation, and confirms only if no others fail, so a change that
+  breaks a link the generation itself needs is not kept while one that
+  fixes an already-broken link can be. The pusher confirms right after
+  pushing and again on each sync pass while the peer reports it waiting,
+  so a transient tunnel blip during reconfiguration is retried until the
+  deadline (`PEER_CONFIRM_SECONDS`, 120 s, in the persisted state). An
+  older peer is pushed ungated and confirms at once, as before.
+
 ## Not built yet
 
 - ACME `http-01` and lego-based DNS providers (RFC 2136 is built in).

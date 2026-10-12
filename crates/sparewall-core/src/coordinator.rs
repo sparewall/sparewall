@@ -86,6 +86,21 @@ pub enum Event {
     },
 }
 
+/// How long a generation pushed by the peer may run before the peer
+/// confirms it.
+pub const PEER_CONFIRM_SECONDS: i64 = 120;
+
+/// How a generation received from the peer is confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerGate {
+    /// Confirmed as soon as it runs: an older peer, which never confirms,
+    /// or a generation this node fetched itself (`sync --from <peer>`).
+    Immediate,
+    /// Pending until the peer confirms it over the sync tunnel, within
+    /// [`PEER_CONFIRM_SECONDS`]; reverted (and rejected) otherwise.
+    PeerConfirms,
+}
+
 /// What health compares the live firewall with.
 #[derive(Debug, Clone, Default)]
 enum NftBaseline {
@@ -399,6 +414,7 @@ impl<S: System> Coordinator<S> {
                 id: g.id,
                 revert_to,
                 deadline: now_unix() + i64::from(window),
+                ..Default::default()
             });
         } else {
             new_state.confirmed = g.id;
@@ -483,11 +499,20 @@ impl<S: System> Coordinator<S> {
             "confirm window expired; reverting"
         );
         let from = state.active;
-        self.switch_to(p.revert_to, "confirm window expired")?;
+        let reason = if p.from_peer {
+            "the peer did not confirm it in time"
+        } else {
+            "confirm window expired"
+        };
+        let g = self.generation(p.id)?;
+        self.switch_to(p.revert_to, reason)?;
+        if p.from_peer {
+            self.reject(&g, reason)?;
+        }
         self.events.push(Event::RolledBack {
             to: p.revert_to,
             from,
-            reason: "confirm window expired".into(),
+            reason: reason.into(),
         });
         Ok(Some(p.revert_to))
     }
@@ -594,6 +619,7 @@ impl<S: System> Coordinator<S> {
             active: target,
             confirmed: target,
             pending: None,
+            rejected: state.rejected.clone(),
         };
         self.store.set_state(&new_state)?;
         tracing::info!(to = target, from = state.active, why, "switched generation");
@@ -641,13 +667,16 @@ impl<S: System> Coordinator<S> {
     /// What this node reports to its peer.
     pub fn view(&mut self) -> Result<crate::pair::NodeView, Error> {
         let state = self.store.state()?;
+        // A generation from the peer is not reported applied until the
+        // peer has confirmed it: until then the pair is "applying".
+        let awaiting = state.pending.as_ref().is_some_and(|p| p.from_peer);
         Ok(crate::pair::NodeView {
             node: self.node().to_string(),
             active: state.active,
             desired: self.generation(state.active)?.hash,
-            applied: self.applied()?,
+            applied: if awaiting { None } else { self.applied()? },
             lineage: self.lineage()?,
-            applying: false,
+            applying: awaiting,
         })
     }
 
@@ -698,14 +727,25 @@ impl<S: System> Coordinator<S> {
     /// peer's id and is refused unless its `base` is this node's active
     /// generation, or reaches it through generations received with
     /// [`Self::receive_history`], so a push never overwrites a change this
-    /// node has not seen.
-    pub fn receive(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
+    /// node has not seen. A generation rejected here before is refused
+    /// until something newer replaces it.
+    pub fn receive(&mut self, g: &Generation, value: Value, gate: PeerGate) -> Result<(), Error> {
         let state = self.store.state()?;
+        if let Some(r) = &state.rejected
+            && r.id == g.id
+            && r.hash == g.hash
+        {
+            return Err(Error::Apply(format!(
+                "generation {} was rejected here: {}. Make a new change, or run `sparewall sync --from <peer>` on this node to retry it",
+                g.id, r.reason
+            )));
+        }
         if self.store.exists(g.id) {
             let have = self.store.meta(g.id)?;
             if have.hash == g.hash {
                 if state.active != g.id {
-                    self.switch_to(g.id, "peer push")?;
+                    let old = self.rendered_for(state.active)?;
+                    self.run_foreign(g, &old, gate, "peer push")?;
                 }
                 return Ok(());
             }
@@ -718,7 +758,7 @@ impl<S: System> Coordinator<S> {
                 current: state.active,
             });
         }
-        self.install_foreign(g, value, "peer push")
+        self.install_foreign(g, value, gate, "peer push")
     }
 
     /// Store a generation pushed by the peer without running it: one the
@@ -769,17 +809,32 @@ impl<S: System> Coordinator<S> {
 
     /// Take the peer's generation regardless of history (`sync --from`).
     /// A local generation with the same id but other content is set aside.
-    pub fn adopt(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
+    /// An explicit sync retries a generation rejected before.
+    pub fn adopt(&mut self, g: &Generation, value: Value, gate: PeerGate) -> Result<(), Error> {
+        let mut state = self.store.state()?;
+        if state.rejected.take().is_some() {
+            self.store.set_state(&state)?;
+        }
         if self.store.exists(g.id) {
             let have = self.store.meta(g.id)?;
             if have.hash == g.hash {
-                return self.switch_to(g.id, "sync");
+                if state.active == g.id {
+                    return Ok(());
+                }
+                let old = self.rendered_for(state.active)?;
+                return self.run_foreign(g, &old, gate, "sync");
             }
         }
-        self.install_foreign(g, value, "sync")
+        self.install_foreign(g, value, gate, "sync")
     }
 
-    fn install_foreign(&mut self, g: &Generation, value: Value, why: &str) -> Result<(), Error> {
+    fn install_foreign(
+        &mut self,
+        g: &Generation,
+        value: Value,
+        gate: PeerGate,
+        why: &str,
+    ) -> Result<(), Error> {
         let (doc, _, rendered) = self.check(value)?;
         if sparewall_config::hash(&doc) != g.hash {
             return Err(Error::Validation(vec![format!(
@@ -797,14 +852,129 @@ impl<S: System> Coordinator<S> {
         }
         self.install_vpn_keys(&doc)?;
         self.store.save(g, &doc, &rendered)?;
-        self.switch_from(&old_rendered, g.id, why)?;
+        self.run_foreign(g, &old_rendered, gate, why)
+    }
+
+    /// Names of the health checks currently failed.
+    fn failed_checks(&mut self) -> Result<Vec<String>, Error> {
+        Ok(self
+            .health()?
+            .checks
+            .into_iter()
+            .filter(|c| c.level == Level::Failed)
+            .map(|c| c.name)
+            .collect())
+    }
+
+    /// Run a stored generation from the peer. If activation fails partway
+    /// (after nft, links or providers changed), the generation that was
+    /// running is activated again, as for a local apply, and the peer's
+    /// generation is rejected so it is not pushed into the same failure
+    /// over and over. With [`PeerGate::PeerConfirms`] it then runs pending
+    /// until the peer confirms it (see [`Self::confirm_received`]).
+    fn run_foreign(
+        &mut self,
+        g: &Generation,
+        old: &Rendered,
+        gate: PeerGate,
+        why: &str,
+    ) -> Result<(), Error> {
+        let state = self.store.state()?;
+        let from = state.active;
+        let failed_before = match gate {
+            PeerGate::PeerConfirms => self.failed_checks()?,
+            PeerGate::Immediate => vec![],
+        };
+        if let Err(e) = self.activate(g.id, Some(old), false) {
+            tracing::error!(id = g.id, error = %e, "activating the peer's generation failed; restoring the previous one");
+            self.events.push(Event::ApplyFailed {
+                id: g.id,
+                error: e.to_string(),
+            });
+            let new = self.rendered_for(g.id)?;
+            if let Err(e2) = self.activate(from, Some(&new), false) {
+                tracing::error!(error = %e2, "restoring the previous generation also failed");
+            }
+            self.reject(g, &format!("activating it failed: {e}"))?;
+            return Err(e);
+        }
+        let mut st = self.store.state()?;
+        st.active = g.id;
+        st.rejected = None;
+        match gate {
+            PeerGate::Immediate => {
+                st.confirmed = g.id;
+                st.pending = None;
+            }
+            PeerGate::PeerConfirms => {
+                st.pending = Some(Pending {
+                    id: g.id,
+                    revert_to: state.pending.as_ref().map_or(from, |p| p.revert_to),
+                    deadline: now_unix() + PEER_CONFIRM_SECONDS,
+                    from_peer: true,
+                    failed_before,
+                });
+            }
+        }
+        self.store.set_state(&st)?;
         self.events.push(Event::Applied {
             id: g.id,
             hash: g.hash.clone(),
             author: g.author.clone(),
-            pending: false,
+            pending: gate == PeerGate::PeerConfirms,
         });
-        tracing::info!(id = g.id, from, why, "installed the peer's generation");
+        tracing::info!(
+            id = g.id,
+            from,
+            why,
+            ?gate,
+            "installed the peer's generation"
+        );
+        Ok(())
+    }
+
+    fn reject(&mut self, g: &Generation, reason: &str) -> Result<(), Error> {
+        let mut st = self.store.state()?;
+        st.rejected = Some(crate::store::Rejected {
+            id: g.id,
+            hash: g.hash.clone(),
+            reason: reason.to_string(),
+        });
+        self.store.set_state(&st)?;
+        tracing::warn!(id = g.id, reason, "rejected the peer's generation");
+        Ok(())
+    }
+
+    /// The peer confirms a generation it pushed, over a new connection
+    /// through the sync tunnel, so the change has left the tunnel working.
+    /// It is confirmed only if it made no further health check fail than
+    /// had failed before it ran; otherwise it stays pending (the peer
+    /// retries while links settle) and reverts at its deadline.
+    pub fn confirm_received(&mut self, id: u64) -> Result<(), Error> {
+        let mut state = self.store.state()?;
+        let Some(p) = state.pending.clone().filter(|p| p.from_peer && p.id == id) else {
+            // A repeated confirmation.
+            if state.pending.is_none() && state.active == id {
+                return Ok(());
+            }
+            return Err(Error::NotPending(id));
+        };
+        let newly: Vec<String> = self
+            .failed_checks()?
+            .into_iter()
+            .filter(|c| !p.failed_before.contains(c))
+            .collect();
+        if !newly.is_empty() {
+            return Err(Error::Check(format!(
+                "generation {id} fails health checks it did not fail before: {}",
+                newly.join(", ")
+            )));
+        }
+        state.confirmed = id;
+        state.pending = None;
+        self.store.set_state(&state)?;
+        tracing::info!(id, "the peer confirmed its generation");
+        self.events.push(Event::Confirmed { id });
         Ok(())
     }
 
@@ -934,10 +1104,23 @@ impl<S: System> Coordinator<S> {
                 "confirm",
                 Level::Degraded,
                 format!(
-                    "generation {} reverts in {}s unless confirmed",
+                    "generation {}{} reverts in {}s unless {}",
                     p.id,
-                    (p.deadline - now_unix()).max(0)
+                    if p.from_peer { " from the peer" } else { "" },
+                    (p.deadline - now_unix()).max(0),
+                    if p.from_peer {
+                        "the peer confirms it"
+                    } else {
+                        "confirmed"
+                    }
                 ),
+            ));
+        }
+        if let Some(r) = &state.rejected {
+            checks.push(Check::new(
+                "peer-generation",
+                Level::Degraded,
+                format!("rejected the peer's generation {}: {}", r.id, r.reason),
             ));
         }
 
