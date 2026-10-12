@@ -299,7 +299,7 @@ impl<S: System> Coordinator<S> {
         }
         s.push_str(&format!(
             "\n[Peer]\nPublicKey = {server}\nEndpoint = {}:{}\nAllowedIPs = {allowed}\n\
-             # Lets a failover be noticed within seconds.\nPersistentKeepalive = 25\n",
+             # Keeps NAT mappings open while idle; it does not speed up recovery\n# after a failover (see the operations guide).\nPersistentKeepalive = 25\n",
             vpn.endpoint, vpn.listen_port
         ));
         Ok(s)

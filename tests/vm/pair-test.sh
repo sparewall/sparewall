@@ -6,7 +6,9 @@
 # it. With IMAGE set (the image the disk was built from), the failed node
 # then returns, an unsigned image is refused, and `sparewall upgrade`
 # rolls the pair onto a derived image served from a local registry,
-# handing the gateway over between the reboots.
+# handing the gateway over between the reboots. Remote-access VPN clients
+# (vpn.sh) measure tunnel recovery and inner-flow continuity across the
+# master loss and the rolling upgrade.
 #
 #   [IMAGE=localhost/sparewall:ci] tests/vm/pair-test.sh WORKDIR
 #       (reuses WORKDIR/output/qcow2/disk.qcow2 from boot-test.sh)
@@ -17,20 +19,23 @@ cd "$WORK"
 log() { printf '\n=== %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ns() { local n=$1; shift; sudo ip netns exec "sw-$n" "$@"; }
+# shellcheck source=vpn.sh
+. "$HERE/vpn.sh"
 
 # Bridge and the users client from boot-test.sh, or fresh ones.
 if ! ip link show swbr >/dev/null 2>&1; then
     . "$HERE/conformance.sh"
     setup_trunk
 fi
-# Trunks carry the service VLANs; each node's dedicated sync port, VLAN 4000.
+# Trunks carry the service VLANs (WAN 10, users 20, servers 30); each
+# node's dedicated sync port, VLAN 4000.
 for t in swtap1 swtap2 swtap1s swtap2s; do
     sudo ip tuntap add "$t" mode tap
     sudo ip link set "$t" master swbr up
     sudo bridge vlan del dev "$t" vid 1
     case $t in
     *s) sudo bridge vlan add dev "$t" vid 4000 ;;
-    *) sudo bridge vlan add dev "$t" vid 20; sudo bridge vlan add dev "$t" vid 30 ;;
+    *) for v in 10 20 30; do sudo bridge vlan add dev "$t" vid $v; done ;;
     esac
 done
 
@@ -78,6 +83,13 @@ cleanup() {
     local rc=$?
     if [ $rc -ne 0 ]; then
         [ -f flow.log ] && { echo "--- flow.log"; tail -5 flow.log; }
+        for c in vpna vpnb vpnc natc; do
+            echo "--- VPN client $c"; ns "$c" wg show wg0 2>/dev/null || true
+        done
+        for f in vpn-tcp.log vpn-udp.log vpna.ping natc.ping; do
+            [ -f "$f" ] && { echo "--- $f"; tail -5 "$f"; }
+        done
+        [ -f "$VPN_RESULTS" ] && cat "$VPN_RESULTS"
         for n in fw1 fw2; do
             echo "--- $n"
             at "$n" 'sudo journalctl -b -u sparewalld --no-pager | tail -40
@@ -93,6 +105,7 @@ cleanup() {
         done
     fi
     sudo pkill -f "$WORK/echo.py" 2>/dev/null || true
+    sudo pkill -f "ping -D -i 0.2" 2>/dev/null || true
     [ -n "${REGISTRY:-}" ] && sudo podman rm -f "$REGISTRY" >/dev/null 2>&1 || true
     for n in fw1 fw2; do
         [ -f "$n.pid" ] && sudo kill "$(sudo cat "$n.pid")" 2>/dev/null || true
@@ -111,7 +124,8 @@ wait_for 300 "fw2 SSH" at fw2 true
 log "pairing"
 k1=$(at fw1 'sudo sparewall status -o json' | jq -r .sync.sync_public_key)
 k2=$(at fw2 'sudo sparewall status -o json' | jq -r .sync.sync_public_key)
-sed -e "s|@FW1_KEY@|$k1|" -e "s|@FW2_KEY@|$k2|" "$HERE/site-pair.yaml" > pair.yaml
+vpn_keys
+sed -e "s|@FW1_KEY@|$k1|" -e "s|@FW2_KEY@|$k2|" "$HERE/site-pair.yaml" | vpn_doc > pair.yaml
 for n in fw1 fw2; do
     at "$n" 'cat > /tmp/pair.yaml' < pair.yaml
     at "$n" 'sudo sparewall apply -f /tmp/pair.yaml --confirm 0' || fail "pairing apply failed on $n"
@@ -143,6 +157,60 @@ LEASE=$(client_ip)
 LEASES=/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv
 fw2_has_lease() { at fw2 "sudo grep -q '^$LEASE,02:00:00:00:00:20' $LEASES"; }
 wait_for 60 "fw2 holds the lease of $LEASE (Kea HA)" fw2_has_lease
+
+log "echo servers behind the servers VLAN"
+# TCP (7000) and UDP (7001) echo servers in sw-guests. A TCP client sends
+# a line every half second on one connection, counting the echoes; the
+# UDP client sends a datagram every 0.3 s, logging each reply.
+cat > echo.py <<'PY'
+import socket, sys, time
+if sys.argv[1] == "server":
+    s = socket.create_server(("0.0.0.0", 7000))
+    while True:
+        c, _ = s.accept()
+        f = c.makefile("rwb", buffering=0)
+        for line in f:
+            f.write(line)
+elif sys.argv[1] == "udpserver":
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("0.0.0.0", 7001))
+    while True:
+        d, a = s.recvfrom(64)
+        s.sendto(d, a)
+elif sys.argv[1] == "udpclient":
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(0.5)
+    n = 0
+    while True:
+        n += 1
+        s.sendto(str(n).encode(), (sys.argv[2], 7001))
+        try:
+            s.recvfrom(64)
+            print(f"[{time.time():.6f}] reply {n}", flush=True)
+        except socket.timeout:
+            print(f"[{time.time():.6f}] lost {n}", flush=True)
+        time.sleep(0.3)
+else:
+    c = socket.create_connection((sys.argv[2], 7000), timeout=5)
+    c.settimeout(float(sys.argv[3]) if len(sys.argv) > 3 else 30)
+    f = c.makefile("rwb", buffering=0)
+    n = 0
+    while True:
+        f.write(b"ping\n")
+        if f.readline() != b"ping\n":
+            print("broken", flush=True)
+            sys.exit(1)
+        n += 1
+        print(n, flush=True)
+        time.sleep(0.5)
+PY
+ns guests ip addr flush dev eth0
+ns guests ip addr add 198.51.100.10/24 dev eth0
+ns guests ip route replace default via 198.51.100.1
+ns guests python3 "$WORK/echo.py" server &
+ns guests python3 "$WORK/echo.py" udpserver &
+sleep 1
+vpn_setup
 
 log "the LAN cannot reach the peer API, even with a permissive policy"
 # A client on users routes to the sync-tunnel addresses through fw1 (issue #3).
@@ -226,36 +294,6 @@ sync_loss "the sync VLAN deleted" 'sudo ip link delete sync' \
     'sudo networkctl reconfigure syncp; sleep 3; ip link show sync >/dev/null 2>&1 || sudo networkctl reload'
 
 log "a connection through the pair"
-# A TCP echo server behind the servers VLAN and a client in users that
-# sends a line every half second on one connection, counting the echoes.
-cat > echo.py <<'PY'
-import socket, sys, time
-if sys.argv[1] == "server":
-    s = socket.create_server(("0.0.0.0", 7000))
-    while True:
-        c, _ = s.accept()
-        f = c.makefile("rwb", buffering=0)
-        for line in f:
-            f.write(line)
-else:
-    c = socket.create_connection((sys.argv[2], 7000), timeout=5)
-    c.settimeout(30)
-    f = c.makefile("rwb", buffering=0)
-    n = 0
-    while True:
-        f.write(b"ping\n")
-        if f.readline() != b"ping\n":
-            print("broken", flush=True)
-            sys.exit(1)
-        n += 1
-        print(n, flush=True)
-        time.sleep(0.5)
-PY
-ns guests ip addr flush dev eth0
-ns guests ip addr add 198.51.100.10/24 dev eth0
-ns guests ip route replace default via 198.51.100.1
-ns guests python3 "$WORK/echo.py" server &
-sleep 1
 ns users python3 "$WORK/echo.py" client 198.51.100.10 > flow.log 2>&1 &
 echoes() { tail -1 flow.log | grep -qE '^[0-9]+$' && echo "$(tail -1 flow.log)"; }
 sleep 3
@@ -265,6 +303,7 @@ sleep 3
 at fw2 'sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -e' | grep -q 'dport=7000' \
     || fail "fw2's external cache does not hold the connection"
 
+vpn_before_loss
 log "failover"
 sudo kill "$(sudo cat fw1.pid)"; rm -f fw1.pid
 wait_for 60 "fw2 master" is_master fw2
@@ -281,7 +320,8 @@ wait_for 60 "fw2 reports the peer down" unreachable fw2
 # the connection above runs from it.)
 wait_for 120 "a DHCP lease from fw2" got_lease
 [ "$(client_ip)" = "$LEASE" ] || fail "the client got $(client_ip) from fw2, not its lease $LEASE"
-[ -n "${IMAGE:-}" ] || { log "pair PASS (no IMAGE: rolling upgrade skipped)"; exit 0; }
+vpn_after_move "master loss" "$VPN_LOSS_AT"
+[ -n "${IMAGE:-}" ] || { vpn_summary; log "pair PASS (no IMAGE: rolling upgrade skipped)"; exit 0; }
 
 log "fw1 returns and rejoins as the backup"
 start "${FW1[@]}"
@@ -327,6 +367,7 @@ for n in fw1 fw2; do
 done
 
 log "rolling upgrade from fw2"
+VPN_UPGRADE_AT=$(date +%s.%N)
 before=$(echoes) || fail "the connection is gone before the upgrade: $(tail -3 flow.log)"
 # The command follows the upgrade until fw2 itself reboots.
 AT_TIMEOUT=1800 at fw2 "sudo sparewall upgrade --image $NEXT" || fail "the upgrade failed"
@@ -341,4 +382,6 @@ ns users ping -c 3 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachabl
 grep -q broken flow.log && fail "the connection broke in the upgrade: $(tail -5 flow.log)"
 after=$(echoes) || fail "the connection stalled in the upgrade: $(tail -5 flow.log)"
 [ "$after" -gt "$before" ] || fail "the connection stalled in the upgrade ($before, $after)"
+vpn_after_move "rolling upgrade" "$VPN_UPGRADE_AT"
+vpn_summary
 log "pair PASS (with a rolling upgrade)"
