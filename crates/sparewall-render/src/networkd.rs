@@ -132,7 +132,13 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             format!("20-sparewall-{role}.network"),
             pn.build(),
         );
-        out.meta.required_links.push(role.to_string());
+        // A port carrying only the sync network is replication-only; one
+        // that also carries other networks (a shared trunk) carries traffic.
+        if !nets.is_empty() && nets.iter().all(|(_, n)| n.role == NetworkRole::Sync) {
+            out.meta.replication_links.push(role.to_string());
+        } else {
+            out.meta.required_links.push(role.to_string());
+        }
     }
 
     for (name, net) in doc.networks.iter().filter(|(_, n)| n.vlan.is_some()) {
@@ -156,7 +162,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             format!("30-sparewall-{name}.network"),
             nn.build(),
         );
-        out.meta.required_links.push(name.clone());
+        if net.role == NetworkRole::Sync {
+            out.meta.replication_links.push(name.clone());
+        } else {
+            out.meta.required_links.push(name.clone());
+        }
     }
 
     for (name, net) in &doc.networks {
@@ -174,6 +184,8 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     }
     out.meta.required_links.sort();
     out.meta.required_links.dedup();
+    out.meta.replication_links.sort();
+    out.meta.replication_links.dedup();
     out.meta.vip_links.sort();
     out.meta.vip_links.dedup();
     Ok(())

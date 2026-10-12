@@ -136,6 +136,14 @@ Where the implementation departs from, or settles open questions in,
   hash, so readiness, VRRP health, pair sync and the upgrade gate all see
   it.
 
+- **Replication-only links degrade, never fail.** The renderer lists the
+  sync network's interface, and a port carrying only it, apart from the
+  links that carry traffic. keepalived's track script fails only on
+  failed health, so losing sync locally (a dedicated port down, the sync
+  VLAN deleted) or upstream degrades health and stops replication without
+  moving the gateway addresses, as a cut sync link affects both nodes
+  equally. A shared trunk carrying service networks still fails health.
+
 ## Not built yet
 
 - ACME `http-01` and lego-based DNS providers (RFC 2136 is built in).

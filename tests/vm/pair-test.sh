@@ -23,16 +23,18 @@ if ! ip link show swbr >/dev/null 2>&1; then
     . "$HERE/conformance.sh"
     setup_trunk
 fi
-for t in swtap1 swtap2; do
+# Trunks carry the service VLANs; each node's dedicated sync port, VLAN 4000.
+for t in swtap1 swtap2 swtap1s swtap2s; do
     sudo ip tuntap add "$t" mode tap
     sudo ip link set "$t" master swbr up
     sudo bridge vlan del dev "$t" vid 1
-    sudo bridge vlan add dev "$t" vid 20
-    sudo bridge vlan add dev "$t" vid 30
-    sudo bridge vlan add dev "$t" vid 4000
+    case $t in
+    *s) sudo bridge vlan add dev "$t" vid 4000 ;;
+    *) sudo bridge vlan add dev "$t" vid 20; sudo bridge vlan add dev "$t" vid 30 ;;
+    esac
 done
 
-boot() { # name ssh-port mgmt-mac trunk-mac tap
+boot() { # name ssh-port mgmt-mac trunk-mac tap sync-mac sync-tap
     cp output/qcow2/disk.qcow2 "$1.qcow2"
     cat > "$1.json" <<JSON
 {"node": "$1", "ssh_keys": ["$(cat id_ed25519.pub)"], "management": {"nic": "$3"}}
@@ -40,14 +42,16 @@ JSON
     start "$@"
 }
 
-start() { # name ssh-port mgmt-mac trunk-mac tap (the disk as it is)
-    local name=$1 port=$2 mac=$3 tmac=$4 tap=$5
+start() { # name ssh-port mgmt-mac trunk-mac tap sync-mac sync-tap (the disk as it is)
+    local name=$1 port=$2 mac=$3 tmac=$4 tap=$5 smac=$6 stap=$7
     sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 1536 -smp 2 \
         -drive "file=$name.qcow2,if=virtio,format=qcow2" \
         -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${port}-:22" \
         -device "virtio-net-pci,netdev=n0,mac=$mac" \
         -netdev "tap,id=n1,ifname=$tap,script=no,downscript=no" \
         -device "virtio-net-pci,netdev=n1,mac=$tmac" \
+        -netdev "tap,id=n2,ifname=$stap,script=no,downscript=no" \
+        -device "virtio-net-pci,netdev=n2,mac=$smac" \
         -smbios "type=11,value=io.systemd.credential.binary:sparewall.identity=$(base64 -w0 "$name.json")" \
         -display none -serial "file:$name.serial" -pidfile "$name.pid" -daemonize
 }
@@ -97,8 +101,8 @@ cleanup() {
 trap cleanup EXIT
 
 log "booting two nodes"
-FW1=(fw1 2231 52:54:00:12:34:56 52:54:00:12:34:57 swtap1)
-FW2=(fw2 2232 52:54:00:12:35:56 52:54:00:12:35:57 swtap2)
+FW1=(fw1 2231 52:54:00:12:34:56 52:54:00:12:34:57 swtap1 52:54:00:12:34:58 swtap1s)
+FW2=(fw2 2232 52:54:00:12:35:56 52:54:00:12:35:57 swtap2 52:54:00:12:35:58 swtap2s)
 boot "${FW1[@]}"
 boot "${FW2[@]}"
 wait_for 900 "fw1 SSH" at fw1 true
@@ -164,7 +168,7 @@ done
 ns users ip route del 169.254.77.0/24
 
 log "cutting only the sync VLAN"
-for t in swtap1 swtap2; do sudo bridge vlan del dev "$t" vid 4000; done
+for t in swtap1s swtap2s; do sudo bridge vlan del dev "$t" vid 4000; done
 state() { at "$1" 'sudo sparewall status -o json' | jq -r .sync.state; }
 unreachable() { [ "$(state "$1")" = peer-unreachable ]; }
 wait_for 120 "fw1 reports the peer down" unreachable fw1
@@ -181,7 +185,7 @@ if at fw1 'sudo sparewall set dhcp.users.lease_time=1800 --confirm 0' 2>/dev/nul
 fi
 at fw1 'sudo sparewall set dhcp.users.lease_time=1800 --confirm 0 --allow-diverge'
 at fw2 'sudo sparewall set dhcp.users.lease_time=900 --confirm 0 --allow-diverge'
-for t in swtap1 swtap2; do sudo bridge vlan add dev "$t" vid 4000; done
+for t in swtap1s swtap2s; do sudo bridge vlan add dev "$t" vid 4000; done
 diverged() { [ "$(state "$1")" = diverged ]; }
 wait_for 120 "fw1 reports divergence" diverged fw1
 wait_for 60 "fw2 reports divergence" diverged fw2
@@ -192,6 +196,34 @@ wait_for 60 "fw2 in sync after sync --from" in_sync fw2
 [ "$(at fw2 'sudo sparewall get dhcp.users.lease_time')" = 1800 ] \
     || fail "fw2 did not take fw1's side: $(at fw2 'sudo sparewall get dhcp.users.lease_time')"
 [ "$(role fw1)" = MASTER ] || fail "fw1 is $(role fw1) after the sync VLAN returned"
+
+# Losing a replication-only link locally (issue #6), on the master: health
+# degrades, nothing fails over, and replication comes back.
+level() { at "$1" 'sudo sparewall status -o json' | jq -r .health.level; }
+sync_loss() { # description, command that breaks it on fw1, command that restores it
+    log "sync loss on the master: $1"
+    at fw1 "$2"
+    wait_for 120 "fw1 reports the peer down ($1)" unreachable fw1
+    [ "$(level fw1)" = degraded ] || {
+        at fw1 'sudo sparewall health --verbose' || true
+        fail "fw1 health is $(level fw1) with $1, not degraded"
+    }
+    at fw1 'sudo sparewall health --verbose' | grep -q '^ *replication *degraded' \
+        || fail "the replication check does not report $1"
+    sleep 10   # longer than keepalived's fall/rise hold-down
+    [ "$(role fw1)" = MASTER ] && [ "$(role fw2)" = BACKUP ] \
+        || fail "roles changed with $1: fw1 $(role fw1), fw2 $(role fw2)"
+    ns users ping -c 2 -W 2 192.0.2.1 >/dev/null || fail "gateway unreachable with $1"
+    at fw1 "$3"
+    wait_for 180 "fw1 in sync after restoring $1" in_sync fw1
+    wait_for 60 "fw2 in sync after restoring $1" in_sync fw2
+    [ "$(role fw1)" = MASTER ] && [ "$(role fw2)" = BACKUP ] \
+        || fail "roles changed after restoring $1: fw1 $(role fw1), fw2 $(role fw2)"
+    [ "$(level fw1)" = ok ] || fail "fw1 health is $(level fw1) after restoring $1"
+}
+sync_loss "the sync port down" 'sudo ip link set syncp down' 'sudo ip link set syncp up'
+sync_loss "the sync VLAN deleted" 'sudo ip link delete sync' \
+    'sudo networkctl reconfigure syncp; sleep 3; ip link show sync >/dev/null 2>&1 || sudo networkctl reload'
 
 log "a connection through the pair"
 # A TCP echo server behind the servers VLAN and a client in users that

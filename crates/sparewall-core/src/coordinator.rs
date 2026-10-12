@@ -991,14 +991,17 @@ impl<S: System> Coordinator<S> {
         });
 
         let states = self.sys.link_states();
-        let mut down = Vec::new();
-        for l in &r.meta.required_links {
-            match states.get(l).map(String::as_str) {
-                Some("up" | "unknown") => {}
-                Some(s) => down.push(format!("{l} is {s}")),
-                None => down.push(format!("{l} is missing")),
-            }
-        }
+        let not_up = |links: &[String]| -> Vec<String> {
+            links
+                .iter()
+                .filter_map(|l| match states.get(l).map(String::as_str) {
+                    Some("up" | "unknown") => None,
+                    Some(s) => Some(format!("{l} is {s}")),
+                    None => Some(format!("{l} is missing")),
+                })
+                .collect()
+        };
+        let down = not_up(&r.meta.required_links);
         checks.push(if down.is_empty() {
             Check::new(
                 "links",
@@ -1008,6 +1011,28 @@ impl<S: System> Coordinator<S> {
         } else {
             Check::new("links", Level::Failed, down.join(", "))
         });
+        // Links carrying only replication: losing one stops the pair
+        // replicating, but traffic still flows, so it degrades and never
+        // fails health (which would move the gateway addresses).
+        if !r.meta.replication_links.is_empty() {
+            let down = not_up(&r.meta.replication_links);
+            checks.push(if down.is_empty() {
+                Check::new(
+                    "replication",
+                    Level::Ok,
+                    format!("{} replication links up", r.meta.replication_links.len()),
+                )
+            } else {
+                Check::new(
+                    "replication",
+                    Level::Degraded,
+                    format!(
+                        "{} (the pair is not replicating; traffic is unaffected)",
+                        down.join(", ")
+                    ),
+                )
+            });
+        }
 
         checks.extend(self.extra_checks.values().flatten().cloned());
 
