@@ -220,7 +220,7 @@ impl<S: System> Coordinator<S> {
         for name in doc.vpn.keys() {
             match self.secret_get(&vpn_secret(name))? {
                 Some(key) => self.system().install_key(
-                    &format!("vpn-{name}.key"),
+                    &sparewall_render::vpn_key_file(name),
                     &key,
                     "systemd-network",
                 )?,
