@@ -97,6 +97,9 @@ pub struct Coordinator<S: System> {
     keep: usize,
     /// Checks the daemon contributes (pair sync, TLS), by source.
     extra_checks: std::collections::BTreeMap<String, Vec<Check>>,
+    /// The live table as it was right after the last load (normalized),
+    /// which health compares with the table as it is now.
+    nft_loaded: Option<crate::nft_state::Components>,
 }
 
 fn now_unix() -> i64 {
@@ -127,6 +130,7 @@ impl<S: System> Coordinator<S> {
             events: Vec::new(),
             keep: DEFAULT_KEEP,
             extra_checks: Default::default(),
+            nft_loaded: None,
         }
     }
 
@@ -622,16 +626,50 @@ impl<S: System> Coordinator<S> {
     }
 
     /// What this node reports to its peer.
-    pub fn view(&self) -> Result<crate::pair::NodeView, Error> {
+    pub fn view(&mut self) -> Result<crate::pair::NodeView, Error> {
         let state = self.store.state()?;
         Ok(crate::pair::NodeView {
             node: self.node().to_string(),
             active: state.active,
             desired: self.generation(state.active)?.hash,
-            applied: self.applied_hash.clone(),
+            applied: self.applied()?,
             lineage: self.lineage()?,
             applying: false,
         })
+    }
+
+    /// The live table, normalized, or `None` when it is not loaded.
+    fn nft_live(
+        &mut self,
+        preserved: &[String],
+    ) -> Result<Option<crate::nft_state::Components>, Error> {
+        Ok(self
+            .sys
+            .nft_json()?
+            .map(|v| crate::nft_state::normalize(&v, preserved)))
+    }
+
+    /// How the live firewall differs from what was loaded, if it does.
+    /// `None` also when nothing was recorded to compare with.
+    pub fn nft_drift(&mut self) -> Result<Option<String>, Error> {
+        let Some(loaded) = self.nft_loaded.clone() else {
+            return Ok(None);
+        };
+        let preserved = self.rendered_for(self.active()?)?.meta.preserved_sets;
+        Ok(match self.nft_live(&preserved) {
+            Ok(Some(live)) => crate::nft_state::drift(&loaded, &live),
+            Ok(None) => Some("table inet sparewall is not loaded".into()),
+            Err(e) => Some(format!("cannot read the ruleset: {e}")),
+        })
+    }
+
+    /// The hash of the configuration this node verifiably runs: the last
+    /// one activated, unless the live firewall has drifted from it since.
+    pub fn applied(&mut self) -> Result<Option<String>, Error> {
+        if self.applied_hash.is_some() && self.nft_drift()?.is_some() {
+            return Ok(None);
+        }
+        Ok(self.applied_hash.clone())
     }
 
     /// Accept a generation pushed by the peer and run it. It keeps the
@@ -764,6 +802,8 @@ impl<S: System> Coordinator<S> {
         let r = self.rendered_for(id)?;
         let files = subsystem_files;
         let changed = |s: Subsystem| old.is_none_or(|o| o.subsystem(s) != r.subsystem(s));
+        // A table that drifted since its load is reloaded with any change.
+        let drifted = old.is_some() && self.nft_drift()?.is_some();
         let changed_list: Vec<Subsystem> = Subsystem::all()
             .iter()
             .copied()
@@ -772,12 +812,13 @@ impl<S: System> Coordinator<S> {
         let result = (|| -> Result<(), Error> {
             // Firewall first, so new interfaces are covered as they appear.
             let mut new_sets = Vec::new();
-            if changed(Subsystem::Nft) || old.is_none() {
+            if changed(Subsystem::Nft) || old.is_none() || drifted {
                 let body = r
                     .files
                     .get(&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT))
                     .ok_or_else(|| Error::Internal("no nft script".into()))?;
                 new_sets = self.sys.nft_load(body, &r.meta.preserved_sets)?;
+                self.nft_loaded = self.nft_live(&r.meta.preserved_sets).ok().flatten();
             }
             let sysctl = r
                 .subsystem(Subsystem::Sysctl)
@@ -867,9 +908,17 @@ impl<S: System> Coordinator<S> {
             ));
         }
 
-        checks.push(match (&self.applied_hash, &self.last_error) {
-            (_, Some(e)) => Check::new("applied", Level::Failed, format!("last apply failed: {e}")),
-            (Some(h), None) if *h == desired.hash => {
+        let drift = self.nft_drift()?;
+        checks.push(match (&self.applied_hash, &self.last_error, &drift) {
+            (_, Some(e), _) => {
+                Check::new("applied", Level::Failed, format!("last apply failed: {e}"))
+            }
+            (Some(_), None, Some(_)) => Check::new(
+                "applied",
+                Level::Failed,
+                "the live firewall no longer matches the desired configuration",
+            ),
+            (Some(h), None, None) if *h == desired.hash => {
                 Check::new("applied", Level::Ok, "running the desired configuration")
             }
             _ => Check::new(
@@ -889,8 +938,16 @@ impl<S: System> Coordinator<S> {
                     .collect()
             })
             .unwrap_or_default();
-        checks.push(match self.sys.nft_chains() {
-            Ok(Some(live)) => {
+        checks.push(match (&drift, self.sys.nft_chains()) {
+            (Some(d), _) => Check::new(
+                "nft",
+                Level::Failed,
+                format!(
+                    "live ruleset differs from what generation {} loaded: {d}",
+                    state.active
+                ),
+            ),
+            (None, Ok(Some(live))) => {
                 let missing: Vec<&String> = expected_chains
                     .iter()
                     .filter(|c| !live.contains(c))
@@ -901,8 +958,10 @@ impl<S: System> Coordinator<S> {
                     Check::new("nft", Level::Failed, format!("missing chains: {missing:?}"))
                 }
             }
-            Ok(None) => Check::new("nft", Level::Failed, "table inet sparewall is not loaded"),
-            Err(e) => Check::new("nft", Level::Failed, format!("cannot read ruleset: {e}")),
+            (None, Ok(None)) => {
+                Check::new("nft", Level::Failed, "table inet sparewall is not loaded")
+            }
+            (None, Err(e)) => Check::new("nft", Level::Failed, format!("cannot read ruleset: {e}")),
         });
 
         let states = self.sys.link_states();
@@ -949,11 +1008,10 @@ impl<S: System> Coordinator<S> {
     }
 
     /// Desired and applied configuration hashes.
-    pub fn hashes(&self) -> Result<(String, Option<String>), Error> {
+    /// The desired hash, and the applied one (`None` while the live
+    /// firewall has drifted from it).
+    pub fn hashes(&mut self) -> Result<(String, Option<String>), Error> {
         let state = self.store.state()?;
-        Ok((
-            self.generation(state.active)?.hash,
-            self.applied_hash.clone(),
-        ))
+        Ok((self.generation(state.active)?.hash, self.applied()?))
     }
 }

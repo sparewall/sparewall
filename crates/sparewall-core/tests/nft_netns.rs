@@ -172,3 +172,220 @@ fn bootstrap_to_full_and_back() {
         "{t}"
     );
 }
+
+/// Real nft for the firewall, a fake for the rest: what a coordinator
+/// needs to load and verify rules in a namespace.
+struct RealNft {
+    nft: Linux,
+    rest: sparewall_core::system::Fake,
+}
+
+impl System for RealNft {
+    fn nft_check(&mut self, body: &str, preserved: &[String]) -> Result<(), sparewall_core::Error> {
+        self.nft.nft_check(body, preserved)
+    }
+    fn nft_load(
+        &mut self,
+        body: &str,
+        preserved: &[String],
+    ) -> Result<Vec<String>, sparewall_core::Error> {
+        self.nft.nft_load(body, preserved)
+    }
+    fn nft_chains(&mut self) -> Result<Option<Vec<String>>, sparewall_core::Error> {
+        self.nft.nft_chains()
+    }
+    fn nft_json(&mut self) -> Result<Option<serde_json::Value>, sparewall_core::Error> {
+        self.nft.nft_json()
+    }
+    fn networkd_apply(
+        &mut self,
+        old: &sparewall_core::system::Files,
+        new: &sparewall_core::system::Files,
+        early: bool,
+    ) -> Result<(), sparewall_core::Error> {
+        self.rest.networkd_apply(old, new, early)
+    }
+    fn networkd_reconfigure(&mut self, links: &[String]) -> Result<(), sparewall_core::Error> {
+        self.rest.networkd_reconfigure(links)
+    }
+    fn sysctl_apply(&mut self, content: &str) -> Result<(), sparewall_core::Error> {
+        self.rest.sysctl_apply(content)
+    }
+    fn link_states(&mut self) -> std::collections::BTreeMap<String, String> {
+        self.rest.link_states()
+    }
+    fn install_files(
+        &mut self,
+        sub: sparewall_render::Subsystem,
+        files: &sparewall_core::system::Files,
+    ) -> Result<(), sparewall_core::Error> {
+        self.rest.install_files(sub, files)
+    }
+    fn service_check(
+        &mut self,
+        spec: &sparewall_render::CheckSpec,
+        files: &sparewall_core::system::Files,
+    ) -> Result<(), sparewall_core::Error> {
+        self.rest.service_check(spec, files)
+    }
+    fn services_apply(
+        &mut self,
+        meta: &sparewall_render::Meta,
+        changed: &[sparewall_render::Subsystem],
+    ) -> Result<(), sparewall_core::Error> {
+        self.rest.services_apply(meta, changed)
+    }
+    fn unit_states(&mut self, units: &[String]) -> std::collections::BTreeMap<String, String> {
+        self.rest.unit_states(units)
+    }
+    fn proc_sys(&mut self, key: &str) -> Option<String> {
+        self.rest.proc_sys(key)
+    }
+    fn sync_public_key(&mut self) -> Result<String, sparewall_core::Error> {
+        self.rest.sync_public_key()
+    }
+    fn encrypt(&mut self, name: &str, plaintext: &[u8]) -> Result<Vec<u8>, sparewall_core::Error> {
+        self.rest.encrypt(name, plaintext)
+    }
+    fn decrypt(&mut self, name: &str, ciphertext: &[u8]) -> Result<Vec<u8>, sparewall_core::Error> {
+        self.rest.decrypt(name, ciphertext)
+    }
+    fn wg_keypair(&mut self) -> Result<(String, String), sparewall_core::Error> {
+        self.rest.wg_keypair()
+    }
+    fn wg_public(&mut self, private: &str) -> Result<String, sparewall_core::Error> {
+        self.rest.wg_public(private)
+    }
+    fn install_key(
+        &mut self,
+        file: &str,
+        content: &[u8],
+        group: &str,
+    ) -> Result<(), sparewall_core::Error> {
+        self.rest.install_key(file, content, group)
+    }
+    fn netdev_recreate(&mut self, name: &str) -> Result<(), sparewall_core::Error> {
+        self.rest.netdev_recreate(name)
+    }
+}
+
+/// Issue #5 against the real kernel: change the live rules without
+/// touching the chain names, and readiness fails; legitimate runtime
+/// changes (networkd's set elements, counters) do not; a reload recovers.
+#[test]
+fn live_rule_drift_fails_readiness() {
+    use sparewall_core::{ApplyOptions, Coordinator, Level, Store};
+    if reexec("live_rule_drift_fails_readiness") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut rest = sparewall_core::system::Fake::default();
+    let doc = sparewall_config::parse_value(&example(), Format::Yaml).unwrap();
+    let r = sparewall_render::render(&sparewall_config::from_value(doc.clone()).unwrap(), "fw1")
+        .unwrap();
+    for l in &r.meta.required_links {
+        rest.links.insert(l.clone(), "up".into());
+    }
+    let id = sparewall_config::identity::Identity {
+        node: "fw1".into(),
+        ssh_keys: vec![],
+        management: sparewall_config::identity::BootstrapPort {
+            nic: "52:54:00:aa:00:01".into(),
+            vlan: None,
+            address: None,
+            gateway: None,
+            dns: vec![],
+        },
+    };
+    let mut c = Coordinator::new(
+        Store::open(dir.path()).unwrap(),
+        RealNft {
+            nft: Linux::default(),
+            rest,
+        },
+        id,
+    );
+    c.boot(false).unwrap();
+    c.apply(
+        doc,
+        &ApplyOptions {
+            base: 0,
+            author: "test".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ready = |c: &mut Coordinator<RealNft>| {
+        let h = c.health().unwrap();
+        (h.level, h.check("nft").unwrap().message.clone())
+    };
+    assert_eq!(ready(&mut c).0, Level::Ok, "{:?}", c.health().unwrap());
+
+    // Legitimate runtime changes: networkd fills its set, traffic counts.
+    nft(&[
+        "add",
+        "element",
+        "inet",
+        "sparewall",
+        "wan_address",
+        "{ 203.0.113.77 }",
+    ]);
+    sh("ip link set lo up; ping -c 2 -W 1 127.0.0.1 >/dev/null || true");
+    assert_eq!(ready(&mut c).0, Level::Ok, "runtime changes are not drift");
+
+    let tamper: &[(&str, &str, &str)] = &[
+        (
+            "flush the input rules, keep the chain",
+            "flush chain inet sparewall input",
+            "rules input",
+        ),
+        (
+            "an unexpected rule",
+            "insert rule inet sparewall input accept",
+            "rules input",
+        ),
+        (
+            "a chain's policy",
+            "chain inet sparewall input { policy accept ; }",
+            "chain input",
+        ),
+        (
+            "a static set's elements",
+            "add element inet sparewall admin_nets { 0.0.0.0/1 }",
+            "set admin_nets",
+        ),
+        (
+            "an unexpected chain",
+            "add chain inet sparewall sneaky",
+            "chain sneaky",
+        ),
+        (
+            "the whole table",
+            "delete table inet sparewall",
+            "not loaded",
+        ),
+    ];
+    for (what, cmd, expect) in tamper {
+        sh(&format!("nft '{cmd}'"));
+        let (level, msg) = ready(&mut c);
+        assert_eq!(level, Level::Failed, "{what}: readiness still ok");
+        assert!(msg.contains(expect), "{what}: {msg}");
+        assert_eq!(
+            c.hashes().unwrap().1,
+            None,
+            "{what}: still reported applied"
+        );
+        // Reloading the generation (as a sparewalld restart does) repairs it.
+        c.boot(false).unwrap();
+        assert_eq!(
+            ready(&mut c).0,
+            Level::Ok,
+            "{what}: not repaired by a reload"
+        );
+    }
+}
+
+fn sh(cmd: &str) {
+    let st = Command::new("sh").args(["-ec", cmd]).status().unwrap();
+    assert!(st.success(), "{cmd}");
+}

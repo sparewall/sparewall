@@ -265,6 +265,82 @@ fn rollback_discards_a_pending_change() {
     assert!(t.c.state().unwrap().pending.is_none());
 }
 
+/// Issue #5: the live firewall drifts after a successful apply (rules
+/// flushed, chains kept). Health, the applied hash and pair sync all see
+/// it; reloading the generation (what a sparewalld restart does) clears it.
+#[test]
+fn live_firewall_drift_fails_readiness() {
+    let mut t = setup();
+    t.c.apply(example(), &opts(0, None)).unwrap();
+    let h = t.c.health().unwrap();
+    assert_eq!(h.check("nft").unwrap().level, Level::Ok);
+    assert_eq!(h.check("applied").unwrap().level, Level::Ok);
+    let desired = t.c.generation(1).unwrap().hash;
+    assert_eq!(t.c.hashes().unwrap().1.as_deref(), Some(desired.as_str()));
+
+    // Every rule removed, every chain kept.
+    let body = t.c.system().nft_body.clone().unwrap();
+    let flushed: String = body
+        .lines()
+        .filter(|l| {
+            let l = l.trim();
+            l.is_empty()
+                || l.starts_with("chain ")
+                || l.starts_with("type ")
+                || l == "}"
+                || l.starts_with("table ")
+                || l.starts_with("set ")
+        })
+        .map(|l| format!("{l}\n"))
+        .collect();
+    t.c.system().nft_body = Some(flushed);
+    let h = t.c.health().unwrap();
+    assert_eq!(h.level, Level::Failed);
+    let nft = h.check("nft").unwrap();
+    assert_eq!(nft.level, Level::Failed);
+    assert!(
+        nft.message
+            .contains("differs from what generation 1 loaded"),
+        "{}",
+        nft.message
+    );
+    assert_eq!(h.check("applied").unwrap().level, Level::Failed);
+    // Config sync reports the node as not running its configuration.
+    assert_eq!(t.c.hashes().unwrap().1, None);
+    assert_eq!(t.c.view().unwrap().applied, None);
+    let mut peer = t.c.view().unwrap();
+    peer.node = "fw2".into();
+    peer.applied = Some(desired);
+    assert!(matches!(
+        sparewall_core::pair::sync_state(&t.c.view().unwrap(), Some(&peer)),
+        sparewall_core::pair::SyncState::ApplyFailed { .. }
+    ));
+
+    // Any later change reloads the drifted table, even one that does not
+    // touch the firewall.
+    let mut v = example();
+    v["dhcp"]["lease_time"] = json!(7200);
+    t.c.apply(v, &opts(1, None)).unwrap();
+    let h = t.c.health().unwrap();
+    assert_eq!(h.check("nft").unwrap().level, Level::Ok, "{h:?}");
+    assert_eq!(h.check("applied").unwrap().level, Level::Ok);
+
+    // The table gone entirely.
+    t.c.system().nft_body = None;
+    let nft = t.c.health().unwrap().check("nft").unwrap().clone();
+    assert!(nft.message.contains("not loaded"), "{}", nft.message);
+
+    // Reloading the generation restores it.
+    t.c.boot(false).unwrap();
+    let h = t.c.health().unwrap();
+    assert_eq!(h.check("nft").unwrap().level, Level::Ok);
+    assert_eq!(h.check("applied").unwrap().level, Level::Ok);
+    assert_eq!(
+        t.c.hashes().unwrap().1,
+        Some(t.c.generation(2).unwrap().hash)
+    );
+}
+
 #[test]
 fn merge_and_patch() {
     let mut t = setup();

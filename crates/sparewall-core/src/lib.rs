@@ -6,6 +6,7 @@ pub mod coordinator;
 pub mod health;
 pub mod linux;
 pub mod metrics;
+pub mod nft_state;
 pub mod pair;
 pub mod seal;
 pub mod secrets;
