@@ -161,8 +161,13 @@ vpn_after_move() { # event since
     local event=$1 since=$2 bound=60 c s
     log "VPN after $event"
     # Idle clients first, in parallel: probing is what wakes them.
-    for c in vpnb vpnc; do idle_recovery "$c" > "$c.recovery" & done
-    wait
+    # Wait for the probes only: the pings and inner flows keep running.
+    local probes=()
+    for c in vpnb vpnc; do
+        idle_recovery "$c" > "$c.recovery" &
+        probes+=($!)
+    done
+    wait "${probes[@]}"
     sleep 20   # let the active clients' pings show their recovery
     for c in vpnb vpnc; do
         s=$(cat "$c.recovery")
