@@ -83,10 +83,10 @@ cleanup() {
     local rc=$?
     if [ $rc -ne 0 ]; then
         [ -f flow.log ] && { echo "--- flow.log"; tail -5 flow.log; }
-        for c in vpna vpnb vpnc natc; do
+        for c in $VPN_CLIENTS; do
             echo "--- VPN client $c"; ns "$c" wg show wg0 2>/dev/null || true
         done
-        for f in vpn-tcp.log vpn-udp.log vpna.ping natc.ping; do
+        for f in vpn-tcp.log vpn-udp.log vpna.ping natc.ping upgrade.log; do
             [ -f "$f" ] && { echo "--- $f"; tail -5 "$f"; }
         done
         [ -f "$VPN_RESULTS" ] && cat "$VPN_RESULTS"
@@ -309,6 +309,7 @@ at fw2 'sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -e' | grep 
 vpn_before_loss
 log "failover"
 sudo kill "$(sudo cat fw1.pid)"; rm -f fw1.pid
+vpn_moved "master loss"
 wait_for 60 "fw2 master" is_master fw2
 ns users ping -c 3 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachable after failover"
 # The same connection keeps going through fw2.
@@ -323,7 +324,7 @@ wait_for 60 "fw2 reports the peer down" unreachable fw2
 # the connection above runs from it.)
 wait_for 120 "a DHCP lease from fw2" got_lease
 [ "$(client_ip)" = "$LEASE" ] || fail "the client got $(client_ip) from fw2, not its lease $LEASE"
-vpn_after_move "master loss" "$VPN_LOSS_AT"
+vpn_after_move "master loss"
 [ -n "${IMAGE:-}" ] || { vpn_summary; log "pair PASS (no IMAGE: rolling upgrade skipped)"; exit 0; }
 
 log "fw1 returns and rejoins as the backup"
@@ -370,10 +371,10 @@ for n in fw1 fw2; do
 done
 
 log "rolling upgrade from fw2"
-VPN_UPGRADE_AT=$(date +%s.%N)
 before=$(echoes) || fail "the connection is gone before the upgrade: $(tail -3 flow.log)"
 # The command follows the upgrade until fw2 itself reboots.
-AT_TIMEOUT=1800 at fw2 "sudo sparewall upgrade --image $NEXT" || fail "the upgrade failed"
+AT_TIMEOUT=1800 vpn_through_upgrade at fw2 "sudo sparewall upgrade --image $NEXT" \
+    || fail "the upgrade failed"
 wait_for 900 "fw1 on the new image" upgraded fw1
 wait_for 600 "fw2 on the new image" upgraded fw2
 wait_for 300 "fw2 in sync" in_sync fw2
@@ -385,6 +386,6 @@ ns users ping -c 3 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachabl
 grep -q broken flow.log && fail "the connection broke in the upgrade: $(tail -5 flow.log)"
 after=$(echoes) || fail "the connection stalled in the upgrade: $(tail -5 flow.log)"
 [ "$after" -gt "$before" ] || fail "the connection stalled in the upgrade ($before, $after)"
-vpn_after_move "rolling upgrade" "$VPN_UPGRADE_AT"
+vpn_after_move "rolling upgrade"
 vpn_summary
 log "pair PASS (with a rolling upgrade)"

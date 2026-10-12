@@ -80,3 +80,4 @@ vpn:
       vpnb: { public_key: "@VPNB@", addresses: [10.99.0.11/32] }
       vpnc: { public_key: "@VPNC@", addresses: [10.99.0.12/32] }
       natc: { public_key: "@NATC@", addresses: [10.99.0.13/32] }
+      natk: { public_key: "@NATK@", addresses: [10.99.0.14/32] }

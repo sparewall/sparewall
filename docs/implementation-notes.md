@@ -161,13 +161,17 @@ Where the implementation departs from, or settles open questions in,
   older peer is pushed ungated and confirms at once, as before.
 
 - **Remote-access VPN failover is measured, not assumed.** The pair test
-  connects four clients over the WAN VLAN (an active one with inner TCP
+  connects five clients over the WAN VLAN: an active one with inner TCP
   and UDP flows, an idle one with a session older than 120 s, an idle one
-  with a fresh session, and an active one behind NAT with
-  `PersistentKeepalive`), then records how long each is cut off across
-  master loss and the rolling upgrade, failing beyond 60 s. The results
-  are in the run's step summary, and each client must still have the
-  gateway address as its endpoint. Recovery is the client's: the shared
+  with a fresh session, an active one behind NAT with
+  `PersistentKeepalive`, and an idle one behind NAT sending only
+  keepalives. Probing starts the moment the gateway moves (for the
+  upgrade, when the CLI reports the handover, with the fresh session
+  renewed until then), after checking each idle session's age. Each
+  client must recover within 60 s (180 s for the keepalive-only client,
+  which waits for its session to reach 120 s) and still have the gateway
+  address as its endpoint; the results are in the run's step summary.
+  `tests/vm/vpn-check-test.sh` checks the recovery assertions without VMs. Recovery is the client's: the shared
   static key lets the new master accept a handshake, but sessions are not
   synced. The test found that a node handing the address over replied
   from its own address, so an active client roamed to it and was cut off

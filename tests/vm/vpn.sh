@@ -7,18 +7,27 @@
 # new handshake. These clients measure how long that takes:
 #
 #   vpna    active: pings, plus an inner TCP and an inner UDP flow
-#   vpnb    idle, its session older than 120 s when the master goes
-#   vpnc    idle, its session fresh (made just before)
+#   vpnb    idle, its session older than 120 s when the gateway moves
+#   vpnc    idle, its session fresh (at most 100 s old) when it moves
 #   natc    active, behind NAT (router sw-nat), PersistentKeepalive 25
+#   natk    idle behind NAT, PersistentKeepalive 25: it sends no data
+#           until it has a new handshake, which only rekeying can start
 #
-# All four sit on the WAN VLAN 10 and connect to the gateway address
+# All sit on the WAN VLAN 10 and connect to the gateway address
 # 203.0.113.1:51820. Inner flows go to the echo servers in sw-guests
-# (198.51.100.10: TCP 7000, UDP 7001).
+# (198.51.100.10: TCP 7000, UDP 7001). Probing starts the moment the
+# gateway moves (vpn_moved), so each session is in its intended age
+# bucket; the results are checked later (vpn_after_move).
 
 VPN_SERVER=203.0.113.1
 VPN_TARGET=198.51.100.10
-VPN_RESULTS=$WORK/vpn-results.md
-VPN_CLIENTS="vpna vpnb vpnc natc"
+VPN_RESULTS=${WORK:-.}/vpn-results.md
+VPN_CLIENTS="vpna vpnb vpnc natc natk"
+# The longest any client may be cut off. A keepalive-only client waits
+# for its session to reach REKEY_AFTER_TIME (120 s) and its next
+# keepalive (25 s), plus handshake retries.
+VPN_BOUND=60
+VPN_KEEPALIVE_BOUND=180
 
 # Client keys, before pairing: the document lists their public keys.
 vpn_keys() {
@@ -29,10 +38,13 @@ vpn_keys() {
     done
 }
 
-# Substitute the client public keys into a document on stdin.
+# Substitute the client public keys (@VPNA@...) into a document on stdin.
 vpn_doc() {
-    sed -e "s|@VPNA@|$(cat "$WORK/vpna.pub")|" -e "s|@VPNB@|$(cat "$WORK/vpnb.pub")|" \
-        -e "s|@VPNC@|$(cat "$WORK/vpnc.pub")|" -e "s|@NATC@|$(cat "$WORK/natc.pub")|"
+    local args=() c
+    for c in $VPN_CLIENTS; do
+        args+=(-e "s|@${c^^}@|$(cat "$WORK/$c.pub")|")
+    done
+    sed "${args[@]}"
 }
 
 # A namespace on the WAN VLAN.
@@ -47,12 +59,28 @@ wan_ns() { # name address
     ns "$1" ip link set eth0 up
 }
 
+# A namespace behind the NAT router, on its own inside link.
+nat_ns() { # name inside-link prefix (172.16.0: router .1, client .2)
+    sudo ip netns add "sw-$1"
+    sudo ip -n sw-nat link add "$2" type veth peer name eth0 netns "sw-$1"
+    ns nat ip addr add "$3.1/24" dev "$2"
+    ns nat ip link set "$2" up
+    ns "$1" ip link set lo up
+    ns "$1" ip addr add "$3.2/24" dev eth0
+    ns "$1" ip link set eth0 up
+    ns "$1" ip route add default via "$3.1"
+}
+
+wg_peer() { # name [keepalive]
+    ns "$1" wg set wg0 peer "$VPN_PUB" endpoint "$VPN_SERVER:51820" \
+        allowed-ips 10.99.0.0/24,198.51.100.0/24 ${2:+persistent-keepalive $2}
+}
+
 wg_client() { # name tunnel-address [keepalive]
     local name=$1 addr=$2 ka=${3:-}
     ns "$name" ip link add wg0 type wireguard
-    ns "$name" wg set wg0 private-key "$WORK/$name.key" \
-        peer "$VPN_PUB" endpoint "$VPN_SERVER:51820" \
-        allowed-ips 10.99.0.0/24,198.51.100.0/24 ${ka:+persistent-keepalive $ka}
+    ns "$name" wg set wg0 private-key "$WORK/$name.key"
+    wg_peer "$name" "$ka"
     ns "$name" ip addr add "$addr/32" dev wg0
     ns "$name" ip link set wg0 up
     ns "$name" ip route add 10.99.0.0/24 dev wg0
@@ -62,7 +90,17 @@ wg_client() { # name tunnel-address [keepalive]
 # Time of the client's latest handshake (0 if none).
 handshake() { ns "$1" wg show wg0 latest-handshakes | awk '{print $2}'; }
 
+session_age() { echo $(( $(date +%s) - $(handshake "$1") )); }
+
 reach() { ns "$1" ping -c 1 -W 1 "$VPN_TARGET" >/dev/null 2>&1; }
+
+# Put an idle client on a new session: forget the peer and its keys, then
+# send.
+fresh_session() { # client
+    ns "$1" wg set wg0 peer "$VPN_PUB" remove
+    wg_peer "$1"
+    wait_for 30 "$1 reaches $VPN_TARGET on a new session" reach "$1"
+}
 
 vpn_setup() {
     log "remote-access VPN clients"
@@ -72,25 +110,24 @@ vpn_setup() {
     VPN_PUB=$(server_key fw1)
     wan_ns vpna 203.0.113.50
     wan_ns vpnb 203.0.113.51
-    # natc sits behind a masquerading router.
+    # natc and natk sit behind a masquerading router.
     wan_ns nat 203.0.113.53
-    sudo ip netns add sw-natc
-    sudo ip -n sw-nat link add in0 type veth peer name eth0 netns sw-natc
-    ns nat ip addr add 172.16.0.1/24 dev in0
-    ns nat ip link set in0 up
     ns nat sysctl -qw net.ipv4.ip_forward=1
     ns nat iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-    ns natc ip link set lo up
-    ns natc ip addr add 172.16.0.2/24 dev eth0
-    ns natc ip link set eth0 up
-    ns natc ip route add default via 172.16.0.1
+    nat_ns natc in0 172.16.0
+    nat_ns natk in1 172.16.1
     wg_client vpna 10.99.0.10
     wg_client vpnb 10.99.0.11
     wg_client natc 10.99.0.13 25
+    # natk never sends data: bringing it up sends a keepalive, which
+    # starts its first handshake.
+    wg_client natk 10.99.0.14 25
     # vpnc is set up just before the master goes, for a fresh session.
     for c in vpna vpnb natc; do
         wait_for 30 "$c reaches $VPN_TARGET through the VPN" reach "$c"
     done
+    has_session() { [ "$(handshake "$1")" -gt 0 ]; }
+    wait_for 30 "natk has a session from keepalives alone" has_session natk
     VPNB_SINCE=$(handshake vpnb)
     # Inner flows from vpna (the echo servers run in sw-guests), and
     # timestamped pings from the active clients.
@@ -117,7 +154,47 @@ vpn_before_loss() {
     wan_ns vpnc 203.0.113.52
     wg_client vpnc 10.99.0.12
     wait_for 30 "vpnc reaches $VPN_TARGET through the VPN" reach vpnc
-    VPN_LOSS_AT=$(date +%s.%N)
+}
+
+# Run the rolling upgrade command ($@) in the background, keeping vpnc's
+# session fresh until the handover, and start probing the moment it
+# happens. Returns the command's status.
+vpn_through_upgrade() {
+    "$@" > upgrade.log 2>&1 &
+    local up=$! t0=$SECONDS rc
+    until grep -q '^\[failover\]' upgrade.log; do
+        kill -0 "$up" 2>/dev/null || break
+        [ $((SECONDS - t0)) -lt 1500 ] || fail "no handover in the upgrade: $(tail -5 upgrade.log)"
+        if [ "$(session_age vpnc)" -gt 60 ]; then
+            fresh_session vpnc
+        fi
+        sleep 0.2
+    done
+    if grep -q '^\[failover\]' upgrade.log; then
+        vpn_moved "rolling upgrade"
+    fi
+    wait "$up"
+    rc=$?
+    cat upgrade.log
+    return $rc
+}
+
+# The gateway just moved: check the idle sessions are in their age
+# buckets, then probe the idle clients at once, in parallel.
+vpn_moved() { # event
+    local a
+    VPN_MOVED_AT=$(date +%s.%N)
+    a=$(session_age vpnb)
+    [ "$a" -ge 120 ] || fail "vpnb's session is only $a s old at $1"
+    a=$(session_age vpnc)
+    [ "$a" -le 100 ] || fail "vpnc's session is already $a s old at $1"
+    VPN_PROBES=()
+    idle_recovery vpnb > vpnb.recovery &
+    VPN_PROBES+=($!)
+    idle_recovery vpnc > vpnc.recovery &
+    VPN_PROBES+=($!)
+    keepalive_recovery natk "$VPN_MOVED_AT" > natk.recovery &
+    VPN_PROBES+=($!)
 }
 
 # Seconds until an idle client gets through, probing once a second.
@@ -130,6 +207,21 @@ idle_recovery() { # client
             awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f\n", b - a }'
             return 0
         fi
+    done
+    echo "never"
+}
+
+# Seconds until a client sending only keepalives has a new handshake
+# (whole seconds: wg reports handshake times in seconds).
+keepalive_recovery() { # client since
+    local since=${2%.*} h i
+    for i in $(seq 1 $((VPN_KEEPALIVE_BOUND + 30))); do
+        h=$(handshake "$1")
+        if [ "$h" -gt "$since" ]; then
+            echo $((h - since))
+            return 0
+        fi
+        sleep 1
     done
     echo "never"
 }
@@ -156,31 +248,30 @@ record() { # event client seconds
     echo "  $1: $2 recovered in $3 s"
 }
 
-# Check every client recovers within $bound s after the gateway moved,
-# and the inner flows continue.
-vpn_after_move() { # event since
-    local event=$1 since=$2 bound=60 c s
+# Record a recovery time; fail if there was none or it exceeds the bound.
+check_recovery() { # event client seconds bound
+    record "$1" "$2" "$3"
+    [ "$3" != never ] || fail "$2 never recovered after $1"
+    awk -v s="$3" -v b="$4" 'BEGIN { exit !(s <= b) }' \
+        || fail "$2 was cut off for $3 s after $1 (bound $4 s)"
+}
+
+# Check every client recovered within its bound after vpn_moved, and the
+# inner flows continue.
+vpn_after_move() { # event
+    local event=$1 since=$VPN_MOVED_AT c s
     log "VPN after $event"
-    # Idle clients first, in parallel: probing is what wakes them.
-    # Wait for the probes only: the pings and inner flows keep running.
-    local probes=()
+    wait "${VPN_PROBES[@]}"
+    # Let the active clients' pings show their recovery.
+    s=$(awk -v a="$since" -v b="$(date +%s.%N)" 'BEGIN { printf "%d", 30 - (b - a) }')
+    [ "$s" -le 0 ] || sleep "$s"
     for c in vpnb vpnc; do
-        idle_recovery "$c" > "$c.recovery" &
-        probes+=($!)
+        check_recovery "$event" "$c (idle)" "$(cat "$c.recovery")" "$VPN_BOUND"
     done
-    wait "${probes[@]}"
-    sleep 20   # let the active clients' pings show their recovery
-    for c in vpnb vpnc; do
-        s=$(cat "$c.recovery")
-        record "$event" "$c (idle)" "$s"
-        [ "$s" != never ] || fail "$c never recovered after $event"
-        awk -v s="$s" -v b="$bound" 'BEGIN { exit !(s <= b) }' || fail "$c took $s s after $event"
-    done
+    check_recovery "$event" "natk (idle, keepalives only)" "$(cat natk.recovery)" "$VPN_KEEPALIVE_BOUND"
+    wait_for 30 "natk reaches $VPN_TARGET after $event" reach natk
     for c in vpna natc; do
-        s=$(gap "$c.ping" "$since")
-        record "$event" "$c (active, longest gap)" "$s"
-        [ "$s" != never ] || fail "$c never recovered after $event"
-        awk -v s="$s" -v b="$bound" 'BEGIN { exit !(s <= b) }' || fail "$c's pings stopped for $s s after $event"
+        check_recovery "$event" "$c (active, longest gap)" "$(gap "$c.ping" "$since")" "$VPN_BOUND"
     done
     # Every client still talks to the gateway address: a reply from a
     # node's own address would have made it roam there.
@@ -196,9 +287,7 @@ vpn_after_move() { # event since
     sleep 3
     n2=$(vpn_tcp_count) || fail "the inner TCP connection stalled after $event"
     [ "$n2" -gt "$n1" ] || fail "the inner TCP connection stopped after $event ($n1, $n2)"
-    s=$(gap vpn-udp.log "$since")
-    record "$event" "vpna inner UDP (longest gap)" "$s"
-    [ "$s" != never ] || fail "inner UDP never resumed after $event"
+    check_recovery "$event" "vpna inner UDP (longest gap)" "$(gap vpn-udp.log "$since")" "$VPN_BOUND"
     sleep 2
     tail -5 vpn-udp.log | grep -q reply || fail "inner UDP is not flowing after $event: $(tail -3 vpn-udp.log)"
 }
