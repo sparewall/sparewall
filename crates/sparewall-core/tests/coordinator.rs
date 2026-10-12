@@ -565,16 +565,23 @@ fn pair_push_conflict_and_sync_from() {
 }
 
 /// One background sync pass from `from` towards `to`, as sparewalld does
-/// it: push only when `to` is behind. Returns the state `from` saw.
+/// it: push only when `to` is behind; only the last generation runs there.
+/// Returns the state `from` saw.
 fn sync_pass(from: &mut T, to: &mut T) -> sparewall_core::pair::SyncState {
     use sparewall_core::pair::{SyncState, push_plan, sync_state};
     let (vf, vt) = (from.c.view().unwrap(), to.c.view().unwrap());
     let state = sync_state(&vf, Some(&vt));
     if state == SyncState::PeerBehind {
-        for id in push_plan(&vf, vt.active, &vt.desired).unwrap() {
+        let plan = push_plan(&vf, vt.active, &vt.desired).unwrap();
+        let last = *plan.last().unwrap();
+        for id in plan {
             let g = from.c.generation(id).unwrap();
-            to.c.receive(&g, from.c.document_value(id).unwrap())
-                .unwrap();
+            let v = from.c.document_value(id).unwrap();
+            if id == last {
+                to.c.receive(&g, v).unwrap();
+            } else {
+                to.c.receive_history(&g, v).unwrap();
+            }
         }
     }
     state
@@ -638,6 +645,83 @@ fn pair_rollback_is_not_undone_by_sync() {
             "{roller}"
         );
     }
+}
+
+/// The peer misses a change, then the rollback of it: the content the peer
+/// runs is already right, but its history is not, so it is still behind.
+/// It catches up without ever running the rolled-back generation, and a
+/// later ordinary change on it is no divergence (review of #16).
+#[test]
+fn pair_rollback_of_a_change_the_peer_missed() {
+    use sparewall_core::pair::{SyncState, sync_state};
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    sync_pass(&mut a, &mut b);
+    assert_eq!(b.c.active().unwrap(), 1);
+    // b is away while a makes generation 2 and rolls it back.
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    a.c.rollback(None, "admin").unwrap();
+    assert_eq!(a.c.active().unwrap(), 3);
+    let (va, vb) = (a.c.view().unwrap(), b.c.view().unwrap());
+    assert_eq!(va.desired, vb.desired, "same content");
+    assert_eq!(sync_state(&va, Some(&vb)), SyncState::PeerBehind);
+    assert_eq!(sync_state(&vb, Some(&va)), SyncState::LocalBehind);
+
+    b.c.drain_events();
+    let installed_before = b.c.system().log.len();
+    sync_pass(&mut a, &mut b);
+    assert_eq!(b.c.active().unwrap(), 3);
+    let ids: Vec<u64> = b.c.history(None).unwrap().iter().map(|g| g.id).collect();
+    assert_eq!(ids, [3, 2, 1], "b has the whole history");
+    // Generation 2 was stored, never run.
+    for e in b.c.drain_events() {
+        assert!(!matches!(e, Event::Applied { id: 2, .. }), "{e:?}");
+    }
+    // Generations 1 and 3 have the same content, so going from 1 to 3
+    // reloads nothing; running 2 on the way (an MTU change) would have.
+    assert!(
+        !b.c.system().log[installed_before..]
+            .iter()
+            .any(|l| l.starts_with("networkd")),
+        "b ran the rolled-back generation: {:?}",
+        &b.c.system().log[installed_before..]
+    );
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+
+    // An ordinary change on b afterwards is pushed to a, not divergence.
+    let mut v = b.c.document_value(3).unwrap();
+    v["networks"]["users"]["mtu"] = json!(1300);
+    b.c.apply(v, &opts(3, None)).unwrap();
+    assert_eq!(sync_pass(&mut b, &mut a), SyncState::PeerBehind);
+    assert_eq!(a.c.active().unwrap(), 4);
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+}
+
+/// Nodes that applied the same document independently, with unrelated
+/// histories, stay in sync (how a pair is formed).
+#[test]
+fn same_content_with_unrelated_histories_is_in_sync() {
+    use sparewall_core::pair::{SyncState, sync_state};
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(0, None)).unwrap();
+    a.c.apply(pair_example(), &opts(1, None)).unwrap();
+    b.c.apply(pair_example(), &opts(0, None)).unwrap();
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
 }
 
 /// A rollback made while the peer was away is an ordinary change: it

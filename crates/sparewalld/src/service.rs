@@ -149,6 +149,26 @@ pub async fn with_core<T: Send + 'static>(
     with_core_raw(core, events, f).await.map_err(to_api_error)
 }
 
+/// A rollback under one coordinator lock: whether it only discards an
+/// unconfirmed change (which never left this node, so needs no peer) is
+/// decided in the same critical section that rolls back, so neither the
+/// confirm-window ticker nor a confirmation can change the answer in
+/// between. Any other rollback is a change the peer receives, and must
+/// have passed the divergence `gate`.
+pub fn gated_rollback(
+    c: &mut Coordinator<Box<dyn System>>,
+    target: Option<u64>,
+    author: &str,
+    gate: Result<(), FirewallError>,
+) -> Result<Result<Generation, FirewallError>, Error> {
+    if !c.rollback_is_local(target)?
+        && let Err(e) = gate
+    {
+        return Ok(Err(e));
+    }
+    c.rollback(target, author).map(Ok)
+}
+
 pub fn to_api_error(e: Error) -> FirewallError {
     match e {
         Error::Validation(errors) => FirewallError::ValidationFailed { errors },
@@ -304,23 +324,15 @@ where
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<GenerationReply, FirewallError> {
-        // Discarding an unconfirmed change touches only this node; any
-        // other rollback is a change like any other, which the peer receives.
         let target = id.map(|i| i.max(0) as u64);
-        let local_only = with_core(&self.core, &self.events, move |c| {
-            Ok(c.state()?
-                .pending
-                .is_some_and(|p| target.is_none_or(|t| t == p.revert_to)))
-        })
-        .await?;
-        if !local_only {
-            self.gate(allow_diverge, None)?;
-        }
+        // Evaluated now, applied below only if the rollback reaches the peer.
+        let gate = self.gate(allow_diverge, None);
         let author = author::of(conn).await;
-        let g = with_core(&self.core, &self.events, move |c| {
-            c.rollback(target, &author)
+        let g = with_core_raw(&self.core, &self.events, move |c| {
+            gated_rollback(c, target, &author, gate)
         })
-        .await?;
+        .await
+        .map_err(to_api_error)??;
         self.sync.notify_one();
         Ok(GenerationReply {
             generation: api_generation(&g, true),
@@ -708,4 +720,138 @@ pub fn status(
         tls: json!({"fingerprint": crate::http::FINGERPRINT.get()}),
         health: serde_json::to_value(&health).unwrap_or_default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sparewall_config::identity::{BootstrapPort, Identity};
+    use sparewall_core::Store;
+    use sparewall_core::system::Fake;
+
+    fn node() -> (tempfile::TempDir, Coordinator<Box<dyn System>>) {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Identity {
+            node: "fw1".into(),
+            ssh_keys: vec![],
+            management: BootstrapPort {
+                nic: "52:54:00:aa:00:01".into(),
+                vlan: None,
+                address: None,
+                gateway: None,
+                dns: vec![],
+            },
+        };
+        let mut c = Coordinator::new(
+            Store::open(dir.path()).unwrap(),
+            Box::new(Fake::default()) as Box<dyn System>,
+            id,
+        );
+        c.boot(false).unwrap();
+        (dir, c)
+    }
+
+    fn doc(mtu: u32) -> Value {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/standalone.yaml"
+        ))
+        .unwrap();
+        let mut v = sparewall_config::parse_value(&text, sparewall_config::Format::Yaml).unwrap();
+        v["networks"]["users"]["mtu"] = json!(mtu);
+        v
+    }
+
+    fn apply(c: &mut Coordinator<Box<dyn System>>, mtu: u32, confirm: Option<u32>) {
+        let base = c.active().unwrap();
+        c.apply(
+            doc(mtu),
+            &ApplyOptions {
+                base,
+                confirm_seconds: confirm,
+                author: "test".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    /// Generations 1 and 2 confirmed; 3 waiting for confirmation (revert
+    /// target 2).
+    fn with_pending() -> (tempfile::TempDir, Coordinator<Box<dyn System>>) {
+        let (d, mut c) = node();
+        apply(&mut c, 1400, None);
+        apply(&mut c, 1300, None);
+        apply(&mut c, 1200, Some(600));
+        assert_eq!(c.state().unwrap().pending.as_ref().unwrap().revert_to, 2);
+        (d, c)
+    }
+
+    fn refused() -> Result<(), FirewallError> {
+        Err(FirewallError::PeerUnreachable { peer: "fw2".into() })
+    }
+
+    /// With the peer unreachable, `rollback` of a pending change discards it.
+    #[test]
+    fn pending_discard_needs_no_peer() {
+        let (_d, mut c) = with_pending();
+        let g = gated_rollback(&mut c, None, "admin", refused())
+            .unwrap()
+            .unwrap();
+        assert_eq!((g.id, c.active().unwrap()), (2, 2));
+        assert!(c.state().unwrap().pending.is_none());
+    }
+
+    /// The confirm window expires between the request and the locked
+    /// section: the pending change is already gone, so `rollback` would
+    /// now be a new generation (back to 1), which the gate refuses
+    /// instead of slipping through as a "discard".
+    #[test]
+    fn expiry_in_between_is_gated() {
+        let (_d, mut c) = with_pending();
+        c.tick(i64::MAX).unwrap();
+        assert_eq!(c.active().unwrap(), 2);
+        let r = gated_rollback(&mut c, None, "admin", refused()).unwrap();
+        assert!(
+            matches!(r, Err(FirewallError::PeerUnreachable { .. })),
+            "{r:?}"
+        );
+        assert_eq!(c.active().unwrap(), 2);
+        assert_eq!(c.history(None).unwrap().len(), 3, "no generation was made");
+        // With the gate passed, the same request is an ordinary rollback.
+        let g = gated_rollback(&mut c, None, "admin", Ok(()))
+            .unwrap()
+            .unwrap();
+        assert_eq!((g.id, g.hash), (4, c.generation(1).unwrap().hash));
+    }
+
+    /// A confirmation lands in between: generation 3 is now confirmed and
+    /// may have reached the peer, so rolling back is a new generation and
+    /// is gated.
+    #[test]
+    fn confirmation_in_between_is_gated() {
+        let (_d, mut c) = with_pending();
+        c.confirm(3).unwrap();
+        let r = gated_rollback(&mut c, None, "admin", refused()).unwrap();
+        assert!(
+            matches!(r, Err(FirewallError::PeerUnreachable { .. })),
+            "{r:?}"
+        );
+        assert_eq!(c.active().unwrap(), 3);
+        assert_eq!(c.history(None).unwrap().len(), 3);
+    }
+
+    /// Rolling back past a pending change's revert target goes beyond a
+    /// discard, so it is gated even with the change still pending.
+    #[test]
+    fn rollback_past_the_revert_target_is_gated() {
+        let (_d, mut c) = with_pending();
+        let r = gated_rollback(&mut c, Some(1), "admin", refused()).unwrap();
+        assert!(
+            matches!(r, Err(FirewallError::PeerUnreachable { .. })),
+            "{r:?}"
+        );
+        assert_eq!(c.active().unwrap(), 3, "nothing changed");
+        assert!(c.state().unwrap().pending.is_some());
+    }
 }

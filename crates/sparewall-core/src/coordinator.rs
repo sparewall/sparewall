@@ -497,6 +497,18 @@ impl<S: System> Coordinator<S> {
     ///
     /// Rolling back to bootstrap (generation 0), which has no document,
     /// reactivates it.
+    /// Whether `rollback(id)` would only discard an unconfirmed change,
+    /// which never left this node (so it involves no peer). Decide and
+    /// roll back under the same lock: a confirm window expiring or a
+    /// confirmation in between changes the answer.
+    pub fn rollback_is_local(&self, id: Option<u64>) -> Result<bool, Error> {
+        Ok(self
+            .store
+            .state()?
+            .pending
+            .is_some_and(|p| id.is_none_or(|t| t == p.revert_to)))
+    }
+
     pub fn rollback(&mut self, id: Option<u64>, author: &str) -> Result<Generation, Error> {
         let state = self.store.state()?;
         if let Some(target) = id
@@ -622,9 +634,11 @@ impl<S: System> Coordinator<S> {
         })
     }
 
-    /// Accept a generation pushed by the peer. It keeps the peer's id and
-    /// is refused unless its `base` is this node's active generation, so a
-    /// push never overwrites a change this node has not seen.
+    /// Accept a generation pushed by the peer and run it. It keeps the
+    /// peer's id and is refused unless its `base` is this node's active
+    /// generation, or reaches it through generations received with
+    /// [`Self::receive_history`], so a push never overwrites a change this
+    /// node has not seen.
     pub fn receive(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
         let state = self.store.state()?;
         if self.store.exists(g.id) {
@@ -639,12 +653,58 @@ impl<S: System> Coordinator<S> {
                 current: state.active,
             });
         }
-        if state.pending.is_some() || g.base != Some(state.active) {
+        if state.pending.is_some() || !self.extends_active(g.base)? {
             return Err(Error::Conflict {
                 current: state.active,
             });
         }
         self.install_foreign(g, value, "peer push")
+    }
+
+    /// Store a generation pushed by the peer without running it: one the
+    /// peer has passed through on the way to the generation it runs (a
+    /// change followed by its rollback), so the history matches without
+    /// this node ever running the rolled-back configuration.
+    pub fn receive_history(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
+        let state = self.store.state()?;
+        if self.store.exists(g.id) {
+            if self.store.meta(g.id)?.hash == g.hash {
+                return Ok(());
+            }
+            return Err(Error::Conflict {
+                current: state.active,
+            });
+        }
+        if state.pending.is_some() || !self.extends_active(g.base)? {
+            return Err(Error::Conflict {
+                current: state.active,
+            });
+        }
+        let (doc, _, rendered) = self.check(value)?;
+        if sparewall_config::hash(&doc) != g.hash {
+            return Err(Error::Validation(vec![format!(
+                "generation {} does not match its hash",
+                g.id
+            )]));
+        }
+        self.store.save(g, &doc, &rendered)?;
+        tracing::info!(id = g.id, "stored the peer's generation in history");
+        Ok(())
+    }
+
+    /// Whether `base` is the active generation, or a generation stored
+    /// after it whose bases lead back to it.
+    fn extends_active(&self, base: Option<u64>) -> Result<bool, Error> {
+        let active = self.store.state()?.active;
+        let mut id = base;
+        for _ in 0..10_000 {
+            match id {
+                Some(i) if i == active => return Ok(true),
+                Some(i) if i > active && self.store.exists(i) => id = self.store.meta(i)?.base,
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
     }
 
     /// Take the peer's generation regardless of history (`sync --from`).

@@ -209,10 +209,10 @@ Each node reports a **desired** hash (the confirmed generation it holds) and an 
 
 | State | Condition | Meaning |
 | --- | --- | --- |
-| In sync | All four hashes equal | Both nodes hold and run the same config |
+| In sync | All four hashes equal, and neither node's history is missing the other's generations | Both nodes hold and run the same config |
 | Applying | Desired equal, an applied hash differs, apply in progress | Normal for seconds after a change |
 | Apply failed | Desired ≠ applied on a node after the apply finished | That node runs older config; alert |
-| Behind | The peer's generation is an ancestor of the local one | Push pending; retried automatically |
+| Behind | The peer's generation is an ancestor of the local one (even with equal content: after a change and its rollback, the peer still lacks both) | Push pending; retried automatically. Generations before the last are stored without being run |
 | Diverged | Desired hashes differ and neither descends from the other | Changes were made on both sides; needs a decision |
 
 ### Divergence policy

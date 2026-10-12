@@ -176,13 +176,16 @@ impl PeerService {
         generation: PeerGeneration,
         config: Value,
         force: Option<bool>,
+        activate: Option<bool>,
     ) -> Result<PushReply, PeerError> {
         let g = from_peer(&generation);
         let active = with_core_raw(&self.core, &self.events, move |c| {
             if force.unwrap_or(false) {
                 c.adopt(&g, config)?;
-            } else {
+            } else if activate.unwrap_or(true) {
                 c.receive(&g, config)?;
+            } else {
+                c.receive_history(&g, config)?;
             }
             c.active()
         })
@@ -629,6 +632,9 @@ async fn push_missing(
         return Ok(());
     };
     let mut conn = connect(link).await?;
+    // Only the last generation runs on the peer; the ones before it are
+    // history (after a rollback, one of them is what was rolled back).
+    let last = plan.last().copied();
     for id in plan {
         let (g, config) = with_core_raw(core, events, move |c| {
             Ok((c.generation(id)?, c.document_value(id)?))
@@ -636,7 +642,8 @@ async fn push_missing(
         .await
         .map_err(|e| e.to_string())?;
         tracing::info!(id, peer = %peer.node, "pushing generation to the peer");
-        conn.push(&to_peer(&g), &config, None)
+        let activate = (Some(id) != last).then_some(false);
+        conn.push(&to_peer(&g), &config, None, activate)
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
@@ -694,7 +701,7 @@ pub async fn give_to_peer(
     .await
     .map_err(|e| e.to_string())?;
     let mut conn = connect(link).await?;
-    conn.push(&to_peer(&g), &config, Some(true))
+    conn.push(&to_peer(&g), &config, Some(true), None)
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;

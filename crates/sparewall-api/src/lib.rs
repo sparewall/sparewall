@@ -337,6 +337,9 @@ pub trait PeerProxy {
         generation: &PeerGeneration,
         config: &Value,
         force: Option<bool>,
+        // `false`: store in history without running it (default `true`).
+        // Older peers ignore it and run every generation pushed.
+        activate: Option<bool>,
     ) -> zlink::Result<Result<PushReply, PeerError>>;
     /// Read a generation (default: the active one).
     async fn fetch(&mut self, id: Option<i64>) -> zlink::Result<Result<FetchReply, PeerError>>;

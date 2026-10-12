@@ -77,7 +77,17 @@ Where the implementation departs from, or settles open questions in,
   generation made the node look behind its peer, which pushed the newer
   generation straight back (#4). Discarding an unconfirmed change is the
   exception: it never left the node, so `rollback` (and a missed confirm
-  window) just returns to its revert target, without the peer.
+  window) just returns to its revert target, without the peer. Whether a
+  request is only that discard is decided under the same coordinator lock
+  as the rollback, so a confirm window expiring or a confirmation in
+  between cannot turn it into an ungated new generation.
+- **Catching up pushes history, runs only the newest.** A peer behind by
+  several generations stores the earlier ones (`Push` with
+  `activate: false`) and runs only the last, so after a change and its
+  rollback it never runs the rolled-back configuration. Equal content does
+  not mean in sync when one history contains the other: the peer would
+  otherwise miss those generations and its next change would look like
+  divergence. Older peers ignore `activate` and run each generation.
 - **The peer link** uses Varlink over TCP on the sync-tunnel address,
   spliced onto a root-only Unix socket (zlink has only Unix transports).
   The peer methods trust the connection, not `Hello`'s node name, so the

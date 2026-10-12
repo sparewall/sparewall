@@ -69,6 +69,20 @@ pub fn sync_state(local: &NodeView, peer: Option<&NodeView>) -> SyncState {
         return SyncState::PeerUnreachable;
     };
     if local.desired == peer.desired {
+        // The same content at different generations, where one history
+        // contains the other: a rollback restored what the other node
+        // still runs from before. Its history must still catch up, or the
+        // next change on either side would look like divergence.
+        // Unrelated histories with the same content (each node applied the
+        // pairing document) are in sync.
+        if local.active != peer.active {
+            if descends(local, peer) {
+                return SyncState::PeerBehind;
+            }
+            if descends(peer, local) {
+                return SyncState::LocalBehind;
+            }
+        }
         for n in [local, peer] {
             if n.applied.as_deref() != Some(n.desired.as_str()) {
                 return if n.applying {
