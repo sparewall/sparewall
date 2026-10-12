@@ -78,7 +78,9 @@ Where the implementation departs from, or settles open questions in,
   The peer methods trust the connection, not `Hello`'s node name, so the
   connection is what is authenticated, in three independent layers: the
   listener is bound to `swsync` (`SO_BINDTODEVICE`), so the kernel
-  delivers only connections that arrived through WireGuard; it accepts
+  delivers only connections that arrived through WireGuard (the binding
+  is to an interface index, so the listener rebinds when networkd
+  recreates `swsync`, as it does for a new sync key); it accepts
   only the peer's tunnel address as the source (WireGuard admits that
   address only from the peer's key, and the client binds its own tunnel
   address to match); and the first input rule drops anything for the

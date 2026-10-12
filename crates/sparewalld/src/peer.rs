@@ -312,16 +312,85 @@ pub fn from_peer_addr(link: &Link, from: SocketAddr) -> bool {
     from.ip() == link.peer
 }
 
+/// The peer listener's binding, kept in line with the configuration and
+/// with the tunnel interface itself.
+pub struct PeerListener {
+    device: Option<String>,
+    bound: Option<(Link, TcpListener)>,
+}
+
+impl PeerListener {
+    /// `device` is the tunnel interface (`None` only for `--fake-system`).
+    pub fn new(device: Option<String>) -> PeerListener {
+        PeerListener {
+            device,
+            bound: None,
+        }
+    }
+
+    /// Whether the socket is still bound to the live tunnel interface.
+    /// `SO_BINDTODEVICE` stores an interface index: when networkd deletes
+    /// and recreates `swsync` (a new sync key, a rollback), the old index
+    /// no longer resolves and the socket would never see the peer again.
+    fn attached(&self, l: &TcpListener) -> bool {
+        match &self.device {
+            None => true,
+            Some(d) => {
+                socket2::SockRef::from(l).device().ok().flatten().as_deref() == Some(d.as_bytes())
+            }
+        }
+    }
+
+    /// Bind (or rebind) for `want`: when the tunnel addresses change, when
+    /// the interface was recreated, and until the interface and its
+    /// address exist.
+    pub fn refresh(&mut self, want: Option<Link>) {
+        let current = self.bound.as_ref().map(|b| b.0);
+        let stale = self.bound.as_ref().is_some_and(|(_, l)| !self.attached(l));
+        if current == want && !stale {
+            return;
+        }
+        if stale {
+            tracing::info!(device = ?self.device, "the tunnel interface was recreated: rebinding");
+        }
+        self.bound = None;
+        let Some(link) = want else { return };
+        match bind_peer(link.own, self.device.as_deref()) {
+            Ok(l) => {
+                tracing::info!(addr = %link.own, port = PEER_PORT, device = ?self.device, "listening for the peer");
+                self.bound = Some((link, l));
+            }
+            // The tunnel address appears once networkd brings it up.
+            Err(e) => tracing::debug!(addr = %link.own, error = %e, "peer listener not ready"),
+        }
+    }
+
+    /// Wait up to `wait` for a connection from the peer; connections from
+    /// any other source are refused.
+    pub async fn accept(&self, wait: Duration) -> Option<(tokio::net::TcpStream, SocketAddr)> {
+        let Some((link, l)) = &self.bound else {
+            tokio::time::sleep(wait).await;
+            return None;
+        };
+        let (tcp, from) = tokio::time::timeout(wait, l.accept()).await.ok()?.ok()?;
+        if !from_peer_addr(link, from) {
+            tracing::warn!(%from, expected = %link.peer, "refused a peer connection from another address");
+            return None;
+        }
+        Some((tcp, from))
+    }
+}
+
 /// Accept connections from the peer on the tunnel and splice them onto the
-/// peer socket. Rebinds when the configuration changes. `device` is the
-/// tunnel interface (`None` only for `--fake-system` tests).
+/// peer socket. `device` is the tunnel interface (`None` only for
+/// `--fake-system` tests).
 pub async fn listener(
     core: Core,
     events: broadcast::Sender<Value>,
     socket: std::path::PathBuf,
     device: Option<String>,
 ) {
-    let mut bound: Option<(Link, TcpListener)> = None;
+    let mut pl = PeerListener::new(device);
     loop {
         let want = with_core_raw(&core, &events, |c| {
             Ok(c.active_document()?
@@ -331,44 +400,17 @@ pub async fn listener(
         .await
         .ok()
         .flatten();
-        if bound.as_ref().map(|b| b.0) != want {
-            bound = None;
-            if let Some(link) = want {
-                match bind_peer(link.own, device.as_deref()) {
-                    Ok(l) => {
-                        tracing::info!(addr = %link.own, port = PEER_PORT, device = ?device, "listening for the peer");
-                        bound = Some((link, l));
+        pl.refresh(want);
+        if let Some((mut tcp, from)) = pl.accept(Duration::from_secs(5)).await {
+            let socket = socket.clone();
+            tokio::spawn(async move {
+                match tokio::net::UnixStream::connect(&socket).await {
+                    Ok(mut unix) => {
+                        let _ = tokio::io::copy_bidirectional(&mut tcp, &mut unix).await;
                     }
-                    // The tunnel address appears once networkd brings it up.
-                    Err(e) => {
-                        tracing::debug!(addr = %link.own, error = %e, "peer listener not ready")
-                    }
+                    Err(e) => tracing::warn!(%from, error = %e, "peer socket unavailable"),
                 }
-            }
-        }
-        let Some((link, l)) = &bound else {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            continue;
-        };
-        tokio::select! {
-            r = l.accept() => {
-                if let Ok((mut tcp, from)) = r {
-                    if !from_peer_addr(link, from) {
-                        tracing::warn!(%from, expected = %link.peer, "refused a peer connection from another address");
-                        continue;
-                    }
-                    let socket = socket.clone();
-                    tokio::spawn(async move {
-                        match tokio::net::UnixStream::connect(&socket).await {
-                            Ok(mut unix) => {
-                                let _ = tokio::io::copy_bidirectional(&mut tcp, &mut unix).await;
-                            }
-                            Err(e) => tracing::warn!(%from, error = %e, "peer socket unavailable"),
-                        }
-                    });
-                }
-            }
-            () = tokio::time::sleep(Duration::from_secs(10)) => {}
+            });
         }
     }
 }

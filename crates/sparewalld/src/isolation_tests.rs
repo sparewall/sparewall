@@ -18,7 +18,7 @@ use sparewall_api::PEER_PORT;
 use sparewall_core::System;
 use sparewall_core::linux::Linux;
 
-use crate::peer::{Link, bind_peer, from_peer_addr};
+use crate::peer::{Link, PeerListener, bind_peer, from_peer_addr};
 
 const INSIDE: &str = "SPAREWALL_TEST_IN_NETNS";
 const OWN: Ipv4Addr = Ipv4Addr::new(169, 254, 77, 1);
@@ -239,6 +239,112 @@ impl Ns {
             .status()
             .is_ok_and(|s| s.success())
     }
+}
+
+/// (Re)create the stand-in tunnel interface, as networkd does when the
+/// WireGuard netdev changes: same name, same addresses, a new index.
+fn make_swsync(peer: &Ns) {
+    sh(&format!(
+        "ip link del swsync 2>/dev/null || true
+         ip link add swsync type veth peer name eth0 netns {p}
+         ip addr add {OWN}/30 dev swsync && ip link set swsync up",
+        p = peer.pid()
+    ));
+    peer.run(&format!(
+        "ip link set lo up; ip addr add {PEER}/30 dev eth0; ip link set eth0 up"
+    ));
+}
+
+fn ifindex(name: &str) -> String {
+    let out = Command::new("ip")
+        .args(["-o", "link", "show", name])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The listener follows `swsync` through startup (bound once it appears)
+/// and through recreation with the same name and addresses (re-pairing
+/// with a new key, then reverting it): the peer gets back in by itself,
+/// and the LAN stays out.
+#[test]
+fn listener_follows_a_recreated_tunnel() {
+    if reexec("isolation_tests::listener_follows_a_recreated_tunnel") {
+        return;
+    }
+    let client = Ns::new();
+    let peer = Ns::new();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sh(&format!(
+        "ip link set lo up
+         ip link add users type veth peer name eth0 netns {c}
+         ip addr add {LAN}/24 dev users && ip link set users up",
+        c = client.pid()
+    ));
+    client.run(&format!(
+        "ip link set lo up; ip addr add 192.0.2.10/24 dev eth0; ip link set eth0 up
+         ip route add 169.254.77.0/30 via {LAN}"
+    ));
+    let mut sys = Linux::default();
+    let (body, preserved) = ruleset(json!({"zones": {"users": {"networks": ["users"]}},
+                                           "policy": {"users->self": {"action": "accept"}}}));
+    sys.nft_load(&body, &preserved).unwrap();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let link = Link {
+            own: IpAddr::V4(OWN),
+            peer: IpAddr::V4(PEER),
+        };
+        // The daemon's loop, without the coordinator: refresh, accept.
+        tokio::spawn(async move {
+            let mut pl = PeerListener::new(Some("swsync".into()));
+            loop {
+                pl.refresh(Some(link));
+                let _ = pl.accept(std::time::Duration::from_millis(300)).await;
+            }
+        });
+        let probe = |ns: &Ns, addr: Ipv4Addr| {
+            let pid = ns.pid();
+            async move {
+                tokio::task::spawn_blocking(move || Ns::connects_pid(pid, addr, PEER_PORT))
+                    .await
+                    .unwrap()
+            }
+        };
+        // The listener has nothing to bind to until the tunnel exists.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let mut indexes = Vec::new();
+        for round in ["startup", "re-pairing", "revert"] {
+            make_swsync(&peer);
+            indexes.push(ifindex("swsync"));
+            let mut ok = false;
+            for _ in 0..10 {
+                if probe(&peer, OWN).await {
+                    ok = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            assert!(
+                ok,
+                "{round}: the peer cannot reach the peer API on swsync {indexes:?}"
+            );
+            assert!(
+                !probe(&client, OWN).await,
+                "{round}: the LAN reached the peer API"
+            );
+        }
+        indexes.dedup();
+        assert_eq!(indexes.len(), 3, "swsync was not recreated: {indexes:?}");
+    });
 }
 
 #[test]
