@@ -121,8 +121,15 @@ pub struct Meta {
     pub preserved_sets: Vec<String>,
     /// For each preserved set, the link whose reconfigure refills it.
     pub set_links: BTreeMap<String, String>,
-    /// Interfaces that must be up for the node to be ready.
+    /// Interfaces that carry traffic: if one is down or missing the node
+    /// is not ready (health failed, so VRRP moves the gateway addresses).
     pub required_links: Vec<String>,
+    /// Interfaces that carry only replication: the sync network, and a
+    /// port carrying nothing else. Losing one degrades health (the pair
+    /// stops replicating) but never fails it, so it cannot move the
+    /// gateway addresses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replication_links: Vec<String>,
     /// Interfaces that carry gateway addresses.
     pub vip_links: Vec<String>,
     /// Services this generation runs, by role (`dhcp`, `dns`, `ntp`).

@@ -6,10 +6,11 @@ preserved_sets: []
 set_links: {}
 required_links:
   - mgmt
-  - sync
   - uplink
   - users
   - wan
+replication_links:
+  - sync
 vip_links:
   - users
   - wan

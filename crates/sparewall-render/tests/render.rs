@@ -168,3 +168,44 @@ fn single_gateway_pair_has_no_sync_group() {
     assert!(!ka.contains("vrrp_sync_group"), "{ka}");
     assert!(ka.contains("vrrp_instance VI_users"), "{ka}");
 }
+
+/// Issue #6: links that carry only replication are kept apart from the
+/// ones carrying traffic, so their loss degrades health instead of
+/// failing it.
+#[test]
+fn replication_links_are_separate() {
+    // Sync as a VLAN on the shared uplink: the uplink carries traffic.
+    let r = render(&example("pair.yaml"), "fw1").unwrap();
+    assert_eq!(r.meta.replication_links, ["sync"]);
+    assert!(r.meta.required_links.contains(&"uplink".to_string()));
+    assert!(!r.meta.required_links.contains(&"sync".to_string()));
+
+    // Sync on a dedicated port, tagged or untagged: the port too is
+    // replication-only.
+    let text = std::fs::read_to_string(format!(
+        "{}/../../examples/pair.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    for vlan in [Some(4000), None] {
+        let mut v = sparewall_config::parse_value(&text, Format::Yaml).unwrap();
+        v["ports"]["fw1"]["syncp"] = serde_json::json!({"nic": "52:54:00:aa:00:09"});
+        v["ports"]["fw2"]["syncp"] = serde_json::json!({"nic": "9c:6b:00:00:00:09"});
+        v["networks"]["sync"]["port"] = serde_json::json!("syncp");
+        v["networks"]["sync"]["vlan"] = serde_json::to_value(vlan).unwrap();
+        let doc = sparewall_config::from_value(v).unwrap();
+        let errs = validate::errors(&validate(&doc));
+        assert!(errs.is_empty(), "{errs:#?}");
+        let r = render(&doc, "fw1").unwrap();
+        let want: &[&str] = if vlan.is_some() {
+            &["sync", "syncp"]
+        } else {
+            &["syncp"]
+        };
+        assert_eq!(r.meta.replication_links, want, "vlan {vlan:?}");
+        for l in want {
+            assert!(!r.meta.required_links.contains(&l.to_string()), "{l}");
+        }
+        assert!(r.meta.required_links.contains(&"uplink".to_string()));
+    }
+}

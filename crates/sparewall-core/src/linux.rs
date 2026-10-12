@@ -676,7 +676,14 @@ impl System for Linux {
         let startup = !std::mem::replace(&mut self.started, true);
         // Providers bind to links networkd may still be creating.
         if !startup {
-            self.wait_links(&meta.required_links, std::time::Duration::from_secs(30));
+            // conntrackd and Kea HA use the tunnel over the replication links.
+            let links: Vec<String> = meta
+                .required_links
+                .iter()
+                .chain(&meta.replication_links)
+                .cloned()
+                .collect();
+            self.wait_links(&links, std::time::Duration::from_secs(30));
         }
         let wanted: BTreeSet<&str> = meta.services.values().map(|s| s.unit.as_str()).collect();
         for unit in PROVIDER_UNITS.iter().filter(|u| !wanted.contains(*u)) {

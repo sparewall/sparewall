@@ -1,6 +1,6 @@
 # Two-node test (tests/vm/pair-test.sh). Management on QEMU user networking
-# (one per VM), and a shared VLAN trunk: users on VLAN 20, servers on 30,
-# sync on 4000.
+# (one per VM), a shared VLAN trunk (users on VLAN 20, servers on 30), and
+# a dedicated sync port carrying VLAN 4000.
 # The sync keys are filled in by the test from each node's status.
 schema: 1
 cluster:
@@ -16,9 +16,11 @@ ports:
   fw1:
     uplink: { nic: "52:54:00:12:34:56" }
     trunk: { nic: "52:54:00:12:34:57" }
+    syncp: { nic: "52:54:00:12:34:58" }
   fw2:
     uplink: { nic: "52:54:00:12:35:56" }
     trunk: { nic: "52:54:00:12:35:57" }
+    syncp: { nic: "52:54:00:12:35:58" }
 networks:
   mgmt: { port: uplink, role: management, dhcp_client: true }
   users:
@@ -34,7 +36,7 @@ networks:
     vip: 198.51.100.1/24
     vrid: 30
   sync:
-    port: trunk
+    port: syncp
     vlan: 4000
     role: sync
     addresses: { fw1: 10.255.0.1/30, fw2: 10.255.0.2/30 }

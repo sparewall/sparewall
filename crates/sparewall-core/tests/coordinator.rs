@@ -406,6 +406,82 @@ fn unverifiable_load_fails_closed() {
     }
 }
 
+/// Issue #6: losing a replication-only link degrades health (it never
+/// fails it, which would put keepalived in FAULT and move the gateway
+/// addresses); losing a link that carries traffic still fails it.
+#[test]
+fn replication_link_loss_degrades_health() {
+    let all_up = |t: &mut T| {
+        let r = sparewall_render::render(
+            &sparewall_config::from_value(t.c.document_value(t.c.active().unwrap()).unwrap())
+                .unwrap(),
+            "fw1",
+        )
+        .unwrap();
+        for l in r
+            .meta
+            .required_links
+            .iter()
+            .chain(&r.meta.replication_links)
+        {
+            t.c.system().links.insert(l.clone(), "up".into());
+        }
+    };
+    let levels = |t: &mut T| {
+        let h = t.c.health().unwrap();
+        (
+            h.check("links").unwrap().level,
+            h.check("replication").map(|c| c.level),
+            h.level,
+        )
+    };
+    let mut t = pair_node("fw1");
+    // Sync as a VLAN on the shared uplink.
+    t.c.apply(pair_example(), &opts(0, None)).unwrap();
+    all_up(&mut t);
+    assert_eq!(levels(&mut t), (Level::Ok, Some(Level::Ok), Level::Ok));
+    for (what, state) in [("down", Some("down")), ("deleted", None)] {
+        match state {
+            Some(s) => t.c.system().links.insert("sync".into(), s.into()),
+            None => t.c.system().links.remove("sync"),
+        };
+        assert_eq!(
+            levels(&mut t),
+            (Level::Ok, Some(Level::Degraded), Level::Degraded),
+            "sync VLAN {what}"
+        );
+        all_up(&mut t);
+    }
+    // The shared trunk carries traffic: losing it fails health.
+    t.c.system().links.insert("uplink".into(), "down".into());
+    assert_eq!(levels(&mut t).0, Level::Failed);
+    assert_eq!(levels(&mut t).2, Level::Failed);
+    all_up(&mut t);
+
+    // Sync on a dedicated port: the port's loss degrades too.
+    let mut v = pair_example();
+    v["ports"]["fw1"]["syncp"] = json!({"nic": "52:54:00:aa:00:09"});
+    v["ports"]["fw2"]["syncp"] = json!({"nic": "9c:6b:00:00:00:09"});
+    v["networks"]["sync"]["port"] = json!("syncp");
+    t.c.apply(v, &opts(1, None)).unwrap();
+    all_up(&mut t);
+    assert_eq!(levels(&mut t), (Level::Ok, Some(Level::Ok), Level::Ok));
+    t.c.system().links.insert("syncp".into(), "down".into());
+    t.c.system().links.insert("sync".into(), "down".into());
+    assert_eq!(
+        levels(&mut t),
+        (Level::Ok, Some(Level::Degraded), Level::Degraded)
+    );
+    let msg =
+        t.c.health()
+            .unwrap()
+            .check("replication")
+            .unwrap()
+            .message
+            .clone();
+    assert!(msg.contains("syncp is down"), "{msg}");
+}
+
 #[test]
 fn merge_and_patch() {
     let mut t = setup();
