@@ -163,14 +163,17 @@ log "echo servers behind the servers VLAN"
 # a line every half second on one connection, counting the echoes; the
 # UDP client sends a datagram every 0.3 s, logging each reply.
 cat > echo.py <<'PY'
-import socket, sys, time
+import socket, sys, threading, time
+def serve(c):
+    f = c.makefile("rwb", buffering=0)
+    for line in f:
+        f.write(line)
 if sys.argv[1] == "server":
+    # One thread per connection: the LAN and VPN clients run at once.
     s = socket.create_server(("0.0.0.0", 7000))
     while True:
         c, _ = s.accept()
-        f = c.makefile("rwb", buffering=0)
-        for line in f:
-            f.write(line)
+        threading.Thread(target=serve, args=(c,), daemon=True).start()
 elif sys.argv[1] == "udpserver":
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(("0.0.0.0", 7001))
