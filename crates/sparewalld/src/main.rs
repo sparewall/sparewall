@@ -5,6 +5,8 @@ mod author;
 mod backup;
 mod dhcp_ha;
 mod http;
+#[cfg(test)]
+mod isolation_tests;
 mod peer;
 mod rules;
 mod service;
@@ -329,7 +331,15 @@ fn run(args: Args) -> Result<(), String> {
             () = dhcp_ha::takeover_loop(core.clone(), tx.clone(), pair.clone()) => Ok(()),
             () = https => Ok(()),
             r = peer_server.run() => r.map_err(|e| format!("peer server: {e}")),
-            () = peer::listener(core.clone(), tx.clone(), peer_socket.clone()) => Ok(()),
+            () = peer::listener(
+                core.clone(),
+                tx.clone(),
+                peer_socket.clone(),
+                // A fake system has no tunnel interface (the tests put
+                // both nodes' tunnel addresses on lo).
+                (!args.fake_system)
+                    .then(|| sparewall_config::topology::SYNC_TUNNEL_IFACE.to_string()),
+            ) => Ok(()),
             () = peer::sync_loop(core.clone(), tx.clone(), pair.clone(), wake.clone()) => Ok(()),
             () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone()) => Ok(()),
             () = rules::listener(args.socket.with_file_name("rules.sock")) => Ok(()),

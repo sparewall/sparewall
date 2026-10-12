@@ -1976,6 +1976,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "sparewall-api",
  "sparewall-config",
  "sparewall-core",

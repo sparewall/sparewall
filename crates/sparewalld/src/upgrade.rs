@@ -7,14 +7,13 @@
 //! reboot of downtime. A failed gate stops the upgrade; `bootc rollback`
 //! returns a node.
 
-use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sparewall_api::{PEER_PROTOCOL, PeerProxy, PeerUpgradeProxy};
 use tokio::sync::broadcast;
 
-use crate::peer::{Pair, connect, tunnel_addrs};
+use crate::peer::{Link, Pair, connect, tunnel_addrs};
 use crate::service::{Core, with_core_raw};
 
 pub const IMAGE_REPO: &str = "ghcr.io/sparewall/sparewall";
@@ -101,7 +100,7 @@ pub async fn plan(
     pair: &Pair,
     channel: Option<String>,
     image: Option<String>,
-) -> Result<(String, Option<IpAddr>, Vec<String>), String> {
+) -> Result<(String, Option<Link>, Vec<String>), String> {
     let (doc, node) = with_core_raw(core, events, |c| {
         Ok((c.active_document()?, c.node().to_string()))
     })
@@ -120,7 +119,7 @@ pub async fn plan(
         doc_channel.as_deref(),
         tracked.as_deref(),
     );
-    let Some((_, peer_addr, peer)) = doc.as_ref().and_then(|d| tunnel_addrs(d, &node)) else {
+    let Some((own, peer_addr, peer)) = doc.as_ref().and_then(|d| tunnel_addrs(d, &node)) else {
         return Ok((
             target.clone(),
             None,
@@ -145,7 +144,10 @@ pub async fn plan(
     }
     Ok((
         target.clone(),
-        Some(peer_addr),
+        Some(Link {
+            own,
+            peer: peer_addr,
+        }),
         vec![
             format!("stage {target} on {peer} (standby) and reboot it"),
             format!("wait for {peer} to return healthy and in sync"),
@@ -156,12 +158,7 @@ pub async fn plan(
 }
 
 /// Carry out a planned upgrade.
-pub async fn run(
-    core: Core,
-    events: broadcast::Sender<Value>,
-    target: String,
-    peer: Option<IpAddr>,
-) {
+pub async fn run(core: Core, events: broadcast::Sender<Value>, target: String, peer: Option<Link>) {
     let r = async {
         if let Some(addr) = peer {
             upgrade_peer(&core, &events, addr, &target).await?;
@@ -205,7 +202,7 @@ pub async fn run(
 async fn upgrade_peer(
     core: &Core,
     events: &broadcast::Sender<Value>,
-    addr: IpAddr,
+    addr: Link,
     target: &str,
 ) -> Result<(), String> {
     let node = with_core_raw(core, events, |c| Ok(c.node().to_string()))
@@ -266,7 +263,7 @@ async fn upgrade_peer(
     }
 }
 
-async fn wait_peer_master(addr: IpAddr, node: &str) -> Result<(), String> {
+async fn wait_peer_master(addr: Link, node: &str) -> Result<(), String> {
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(60) {
         if let Ok(mut c) = connect(addr).await
