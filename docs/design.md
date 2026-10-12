@@ -552,8 +552,11 @@ The coordinator renders a WireGuard `.netdev` (`ListenPort=`, `PrivateKeyFile=`,
 ### With HA
 
 - Clients connect to the WAN gateway address. Both nodes run the same interface, key and peer list, but only the gateway holder receives traffic.
-- WireGuard is stateless UDP: after a failover the new master learns each client's endpoint from its next packet. Client configs recommend `PersistentKeepalive = 25` so this happens within seconds.
-- Flows inside the tunnel are tracked and synced by conntrackd like any other traffic.
+- The nodes share the server's static identity (its private key, synced as a cluster secret), not its sessions. A WireGuard session (ephemeral keys, receiver indices, the client's current endpoint) exists only on the node that made the handshake, and none of it is synced. After a failover the new master drops the client's packets, since it does not know their session, until the client makes a new handshake. It learns the client's endpoint from that handshake.
+- Recovery is driven by the client's own timers. A client whose session is older than 2 minutes starts a handshake at its next send, so it recovers at once. Otherwise, a client sending data that gets no reply starts one after about 15 seconds (keepalive timeout plus rekey timeout), whether it was busy or idle before. `PersistentKeepalive` keeps a NAT mapping open while idle; keepalives are not data, so they do not start a handshake and do not speed up recovery. The pair test measures this on every run: about 16 seconds for active and recently connected clients, about 1 second for older sessions.
+- A node sends remote-access packets only from the gateway address. When a node hands the address over (an upgrade, a manual failover) it still holds its clients' sessions for a moment; a reply from its own address would make a client roam there, since WireGuard follows the source of any authenticated packet, and the client would lose the tunnel when that node rebooted. The output chain drops them.
+- The new master cannot start the handshake itself: it knows client endpoints only from handshakes it received. Clients behind NAT therefore have to recover on their own, as above.
+- Flows inside the tunnel are tracked and synced by conntrackd like any other traffic, so an inner TCP connection survives the outage if it outlasts it (its retransmissions carry it across), and inner UDP resumes once the tunnel does.
 - The remote-access interface and the sync tunnel are separate WireGuard interfaces with separate ports and keys.
 
 Standalone nodes run the same configuration. Static-endpoint peers can later cover simple site-to-site tunnels with the same mechanism.

@@ -134,10 +134,11 @@ idle_recovery() { # client
     echo "never"
 }
 
-# The longest gap between replies in a timestamped log since $2.
+# The longest gap between replies in a timestamped log from $2 until
+# now (so replies that stopped for good count too).
 gap() { # file since
     python3 - "$1" "$2" <<'PY'
-import re, sys
+import re, sys, time
 since = float(sys.argv[2])
 ts = [float(m.group(1)) for line in open(sys.argv[1])
       if (m := re.match(r"\[(\d+\.\d+)\].*(bytes from|reply)", line))]
@@ -145,7 +146,7 @@ ts = [t for t in ts if t >= since]
 if not ts:
     print("never")
 else:
-    gaps = [b - a for a, b in zip([since] + ts, ts)]
+    gaps = [b - a for a, b in zip([since] + ts, ts + [time.time()])]
     print(f"{max(gaps):.1f}")
 PY
 }
@@ -180,6 +181,12 @@ vpn_after_move() { # event since
         record "$event" "$c (active, longest gap)" "$s"
         [ "$s" != never ] || fail "$c never recovered after $event"
         awk -v s="$s" -v b="$bound" 'BEGIN { exit !(s <= b) }' || fail "$c's pings stopped for $s s after $event"
+    done
+    # Every client still talks to the gateway address: a reply from a
+    # node's own address would have made it roam there.
+    for c in $VPN_CLIENTS; do
+        s=$(ns "$c" wg show wg0 endpoints | awk '{print $2}')
+        [ "$s" = "$VPN_SERVER:51820" ] || fail "$c roamed to $s after $event"
     done
     # Inner flows, separately from the tunnel: the TCP connection
     # survived (conntrackd) and keeps echoing; UDP replies resumed.

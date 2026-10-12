@@ -66,6 +66,14 @@ sparewall set "vpn.roadwarrior.peers.laptop.public_key=<public key>" \
 sparewall vpn client-config laptop --qr
 ```
 
+After a failover, or the master's restart during an upgrade, each client
+is cut off until it makes a new handshake with the new master: about
+16 seconds, or at its next packet for a client whose session is more than
+two minutes old. Connections inside the tunnel survive this, as the pair syncs
+their state. `PersistentKeepalive` in the client config keeps NAT mappings
+open; lowering it does not shorten the outage. A client that cannot
+tolerate it can reconnect (`wg-quick down`/`up`) to handshake at once.
+
 ## Monitoring
 
 | Endpoint | Purpose |

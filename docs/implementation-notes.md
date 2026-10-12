@@ -160,6 +160,20 @@ Where the implementation departs from, or settles open questions in,
   deadline (`PEER_CONFIRM_SECONDS`, 120 s, in the persisted state). An
   older peer is pushed ungated and confirms at once, as before.
 
+- **Remote-access VPN failover is measured, not assumed.** The pair test
+  connects four clients over the WAN VLAN (an active one with inner TCP
+  and UDP flows, an idle one with a session older than 120 s, an idle one
+  with a fresh session, and an active one behind NAT with
+  `PersistentKeepalive`), then records how long each is cut off across
+  master loss and the rolling upgrade, failing beyond 60 s. The results
+  are in the run's step summary, and each client must still have the
+  gateway address as its endpoint. Recovery is the client's: the shared
+  static key lets the new master accept a handshake, but sessions are not
+  synced. The test found that a node handing the address over replied
+  from its own address, so an active client roamed to it and was cut off
+  for good once it rebooted; the output chain now drops remote-access
+  packets from anything but the gateway address.
+
 ## Not built yet
 
 - ACME `http-01` and lego-based DNS providers (RFC 2136 is built in).
