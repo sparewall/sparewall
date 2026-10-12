@@ -24,11 +24,15 @@ fn bin(name: &str) -> Option<PathBuf> {
 }
 
 fn start() -> Option<Daemon> {
+    start_in(tempfile::tempdir().unwrap())
+}
+
+/// Start a daemon whose state is `<dir>/state`.
+fn start_in(dir: tempfile::TempDir) -> Option<Daemon> {
     let Some(d) = bin("sparewalld") else {
         eprintln!("skipping: build sparewalld first (cargo test --workspace)");
         return None;
     };
-    let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("id.yaml"),
         "node: fw1\nmanagement: { nic: \"52:54:00:aa:00:01\" }\n",
@@ -169,5 +173,92 @@ fn confirm_keeps_change() {
             s["sync"]["confirmed"].as_u64()
         ),
         (Some(2), Some(2))
+    );
+}
+
+fn have(cmd: &str) -> bool {
+    Command::new(cmd)
+        .arg("version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+fn sw_stdin(d: &Daemon, args: &[&str], input: &str) -> Output {
+    use std::io::Write;
+    let mut c = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+        .args(args)
+        .env("SPAREWALL_SOCKET", d.dir.path().join("fw.sock"))
+        .env("XDG_CONFIG_HOME", d.dir.path())
+        .env_remove("SSH_CONNECTION")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    c.wait_with_output().unwrap()
+}
+
+/// Back up to a restic repository, lose the node, restore from the
+/// repository onto a fresh state directory.
+#[test]
+fn backup_to_restic_and_restore() {
+    if !have("restic") {
+        eprintln!("skipping: restic is not installed");
+        return;
+    }
+    let Some(d) = start() else { return };
+    let repo = d.dir.path().join("repo");
+    ok(&d, &["apply", "-f", &example(), "--confirm", "0"]);
+    for (name, value) in [("backup-password", "correct horse"), ("dns-key", "s3cret")] {
+        let o = sw_stdin(&d, &["secret", "set", name], value);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    ok(
+        &d,
+        &[
+            "set",
+            "backup.enabled=true",
+            &format!("backup.repository={}", repo.display()),
+            "networks.users.mtu=1400",
+        ],
+    );
+    let o = sw(&d, &["backup"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("snapshot"), "{err}");
+
+    // The node is gone; a new one restores from the repository.
+    let fresh = tempfile::tempdir().unwrap();
+    let pw = fresh.path().join("pw");
+    std::fs::write(&pw, "wrong\n").unwrap();
+    let restore = |pw: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_sparewall"))
+            .args(["restore", "--fake-system", "--node", "fw1", "--repository"])
+            .arg(&repo)
+            .arg("--password-file")
+            .arg(pw)
+            .arg("--state")
+            .arg(fresh.path().join("state"))
+            .arg("--leases")
+            .arg(fresh.path().join("leases.csv"))
+            .output()
+            .unwrap()
+    };
+    let o = restore(&pw);
+    assert!(!o.status.success());
+    std::fs::write(&pw, "correct horse\n").unwrap();
+    let o = restore(&pw);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("2 secrets"), "{err}");
+    drop(d);
+
+    let d = start_in(fresh).unwrap();
+    assert_eq!(ok(&d, &["get", "networks.users.mtu"]).trim(), "1400");
+    let secrets = ok(&d, &["secret", "list"]);
+    assert!(
+        secrets.contains("backup-password") && secrets.contains("dns-key"),
+        "{secrets}"
     );
 }

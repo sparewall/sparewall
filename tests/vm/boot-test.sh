@@ -54,16 +54,19 @@ cat > identity.json <<JSON
 {"node": "fw1", "ssh_keys": ["$(cat id_ed25519.pub)"], "management": {"nic": "$MAC"}}
 JSON
 CRED=$(base64 -w0 identity.json)
-sudo qemu-system-x86_64 \
-    -machine q35,accel=kvm -cpu host -m 2048 -smp 2 \
-    -drive file=vm.qcow2,if=virtio,format=qcow2 \
-    -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
-    -device "virtio-net-pci,netdev=n0,mac=$MAC" \
-    -netdev tap,id=n1,ifname=swtap0,script=no,downscript=no \
-    -device virtio-net-pci,netdev=n1,mac=52:54:00:12:34:57 \
-    -smbios "type=11,value=io.systemd.credential.binary:sparewall.identity=$CRED" \
-    -display none -serial file:serial.log \
-    -pidfile qemu.pid -daemonize
+start_vm() {
+    sudo qemu-system-x86_64 \
+        -machine q35,accel=kvm -cpu host -m 2048 -smp 2 \
+        -drive file=vm.qcow2,if=virtio,format=qcow2 \
+        -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
+        -device "virtio-net-pci,netdev=n0,mac=$MAC" \
+        -netdev tap,id=n1,ifname=swtap0,script=no,downscript=no \
+        -device virtio-net-pci,netdev=n1,mac=52:54:00:12:34:57 \
+        -smbios "type=11,value=io.systemd.credential.binary:sparewall.identity=$CRED" \
+        -display none -serial file:serial.log \
+        -pidfile qemu.pid -daemonize
+}
+start_vm
 
 cleanup() {
     local rc=$?
@@ -71,6 +74,7 @@ cleanup() {
         vm 'systemctl --failed --no-legend; sudo journalctl -b -u sparewall-early -u sparewalld -u systemd-networkd --no-pager | tail -80' 2>/dev/null || true
     fi
     if [ -f qemu.pid ]; then sudo kill "$(sudo cat qemu.pid)" 2>/dev/null || true; fi
+    if [ -f rest-server.pid ]; then kill "$(cat rest-server.pid)" 2>/dev/null || true; fi
     sudo chmod a+r serial.log 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -164,5 +168,74 @@ grep -q '^node_network_receive_bytes_total{device="uplink"}' metrics.txt || {
 vm 'curl -sk https://localhost/metrics' | grep -q '^node_' && fail "/metrics without a token leaked host metrics"
 
 run_conformance
+
+log "backup to a restic REST server"
+REST_SERVER=${REST_SERVER:-0.14.0}
+REST_SHA256=${REST_SHA256:-4c9c95bc079a0334e81fad379b19dc5c3353c71c2c88d652cafce2081c2b1c66}
+if ! command -v rest-server >/dev/null; then
+    f=rest-server_${REST_SERVER}_linux_amd64.tar.gz
+    curl -fsSLO "https://github.com/restic/rest-server/releases/download/v$REST_SERVER/$f"
+    echo "$REST_SHA256  $f" | sha256sum -c -
+    tar -xzf "$f" --strip-components=1 "rest-server_${REST_SERVER}_linux_amd64/rest-server"
+    PATH=$WORK:$PATH
+fi
+mkdir -p restic
+rest-server --path "$WORK/restic" --listen 127.0.0.1:8000 --no-auth >rest-server.log 2>&1 &
+echo $! > rest-server.pid
+REPO=rest:http://10.0.2.2:8000/fw1
+PASSWORD="ci backup password"
+vm "printf %s '$PASSWORD' | sudo sparewall secret set backup-password"
+printf %s 's3cret' | vm 'sudo sparewall secret set log-token'
+vm "sudo sparewall set backup.enabled=true backup.repository=$REPO 'backup.schedule=*:0/15' --confirm 0"
+vm 'sudo sparewall backup' 2>&1 | tee backup.txt
+grep -q snapshot backup.txt || fail "the bundle was not sent to the repository"
+grep -q 'no cluster secrets' backup.txt && fail "the bundle left out the secrets"
+deadline=$((SECONDS + 120))
+until vm 'systemctl list-timers --all --no-legend sparewall-backup.timer' | grep -q sparewall-backup; do
+    [ $SECONDS -lt $deadline ] || fail "no backup timer"
+    sleep 5
+done
+vm 'systemctl list-timers --all --no-legend sparewall-backup.timer'
+vm 'sudo sparewall status -o json' > before.json
+vm 'sudo sparewall secret list -o json' > secrets-before.json
+vm 'sudo sparewall export' > export-before.yaml
+
+log "restore drill: the node is lost and reinstalled"
+sudo kill "$(sudo cat qemu.pid)"
+sleep 2
+cp output/qcow2/disk.qcow2 vm.qcow2
+start_vm
+wait_ssh 900
+vm 'systemctl is-system-running --wait' || true
+vm 'sudo sparewall status -o json' > status.json
+[ "$(jq -r .role status.json)" = bootstrap ] || fail "the reinstalled node is not in bootstrap mode"
+vm 'sudo systemctl stop sparewalld.socket sparewalld.service'
+vm "printf '%s\n' '$PASSWORD' > /tmp/pw"
+vm "sudo sparewall restore --repository $REPO --password-file /tmp/pw" 2>&1 | tee restore.txt
+grep -q '2 secrets' restore.txt || fail "the secrets were not restored"
+vm 'sudo test -s /var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv' \
+    || fail "the DHCP leases were not restored"
+vm 'sudo systemctl start sparewalld.socket sparewalld.service' || true
+sleep 5
+wait_ssh 120
+vm 'sudo sparewall status -o json' > status.json
+[ "$(jq -r .sync.active status.json)" = "$(jq -r .sync.active before.json)" ] \
+    || fail "restored generation $(jq -r .sync.active status.json), not $(jq -r .sync.active before.json)"
+vm 'sudo sparewall export' > export-after.yaml
+diff -u export-before.yaml export-after.yaml || fail "the restored document differs"
+vm 'sudo sparewall secret list -o json' > secrets-after.json
+[ "$(jq -c '[.[].name]' secrets-after.json)" = "$(jq -c '[.[].name]' secrets-before.json)" ] \
+    || fail "secrets differ: $(jq -c '[.[].name]' secrets-after.json)"
+vm 'ip -br link' | grep -q '^uplink ' || fail "port not named uplink after the restore"
+deadline=$((SECONDS + 180))
+until vm 'sudo sparewall health' >/dev/null 2>&1; do
+    [ $SECONDS -lt $deadline ] || { vm 'sudo sparewall health --verbose' || true; fail "health not ok after the restore"; }
+    sleep 5
+done
+vm 'sudo sparewall health --verbose'
+# The restored lease is honoured, and the policy holds again.
+dhcp_script
+[ "$(lease users)" = 192.0.2.20 ] || fail "users lost its reservation after the restore"
+can users 192.0.2.1 || fail "users cannot ping the gateway after the restore"
 
 log "PASS"

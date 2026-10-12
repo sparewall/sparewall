@@ -107,6 +107,11 @@ pub struct StatusReply {
 pub struct BackupReply {
     pub path: String,
     pub digest: String,
+    /// The restic snapshot, when sent to `backup.repository`.
+    pub snapshot: Option<String>,
+    /// Cluster secrets sealed in the bundle (none without a backup password).
+    #[serde(default)]
+    pub secrets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

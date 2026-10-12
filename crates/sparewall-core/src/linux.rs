@@ -191,6 +191,35 @@ pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, Error> {
     }
 }
 
+/// Encrypt a secret for this node with `systemd-creds` (TPM2-bound where
+/// present).
+pub fn creds_encrypt(name: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    let out = Command::new("systemd-creds")
+        .args([
+            "encrypt",
+            "--with-key=auto",
+            &format!("--name={name}"),
+            "-",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut c| {
+            c.stdin.take().expect("piped").write_all(plaintext)?;
+            c.wait_with_output()
+        })
+        .map_err(|e| Error::Apply(format!("systemd-creds: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Apply(format!(
+            "systemd-creds encrypt {name}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out.stdout)
+}
+
 /// The body of `sparewall-run@<id>.service`: run a spooled command and
 /// record its result.
 pub fn run_spooled(id: &str) -> Result<(), Error> {
@@ -683,30 +712,7 @@ impl System for Linux {
     }
 
     fn encrypt(&mut self, name: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-        let out = Command::new("systemd-creds")
-            .args([
-                "encrypt",
-                "--with-key=auto",
-                &format!("--name={name}"),
-                "-",
-                "-",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .and_then(|mut c| {
-                c.stdin.take().expect("piped").write_all(plaintext)?;
-                c.wait_with_output()
-            })
-            .map_err(|e| Error::Apply(format!("systemd-creds: {e}")))?;
-        if !out.status.success() {
-            return Err(Error::Apply(format!(
-                "systemd-creds encrypt {name}: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
-        }
-        Ok(out.stdout)
+        creds_encrypt(name, plaintext)
     }
 
     fn decrypt(&mut self, name: &str, ciphertext: &[u8]) -> Result<Vec<u8>, Error> {

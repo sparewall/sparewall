@@ -349,6 +349,22 @@ fn backup_and_restore_drill() {
         out_dir: out.path().join("backups"),
         image_digest: Some("ghcr.io/sparewall/sparewall@sha256:abc".into()),
     };
+    use sparewall_core::secrets::SecretClass;
+    t.c.secret_set("vpn-office", b"the vpn key", SecretClass::Cluster)
+        .unwrap();
+    t.c.secret_set("local", b"never leaves", SecretClass::Node)
+        .unwrap();
+    // Without a backup password the secrets stay out of the bundle.
+    let (bundle, _) = t.c.backup(&src, 20).unwrap();
+    assert!(
+        sparewall_core::backup::manifest(&bundle)
+            .unwrap()
+            .secrets
+            .is_empty()
+    );
+    std::fs::remove_file(&bundle).unwrap();
+    t.c.secret_set("backup-password", b"hunter2", SecretClass::Cluster)
+        .unwrap();
     let (bundle, digest) = t.c.backup(&src, 20).unwrap();
     assert_eq!(digest.len(), 64);
     let m = sparewall_core::backup::manifest(&bundle).unwrap();
@@ -356,11 +372,33 @@ fn backup_and_restore_drill() {
         (m.active, m.generations.clone(), m.leases),
         (2, vec![1, 2], true)
     );
+    assert_eq!(m.secrets, ["backup-password", "vpn-office"]);
 
-    // Both nodes lost: restore onto a fresh state directory.
+    // Both nodes lost: restore onto a fresh state directory. A wrong
+    // password changes nothing.
     let fresh = tempfile::tempdir().unwrap();
     let restored_leases = fresh.path().join("kea-leases4.csv");
-    sparewall_core::backup::restore(&bundle, fresh.path(), Some(&restored_leases)).unwrap();
+    let r = sparewall_core::backup::restore(
+        &bundle,
+        fresh.path(),
+        Some(&restored_leases),
+        Some(b"hunter3"),
+    );
+    assert!(r.is_err());
+    assert!(!fresh.path().join("state.json").exists());
+    let (_, secrets) = sparewall_core::backup::restore(
+        &bundle,
+        fresh.path(),
+        Some(&restored_leases),
+        Some(b"hunter2"),
+    )
+    .unwrap();
+    let mut fake = Fake::default();
+    for s in &secrets {
+        use sparewall_core::System;
+        let blob = fake.encrypt(&s.info.name, &s.value).unwrap();
+        sparewall_core::secrets::store_encrypted(fresh.path(), &s.info, &blob).unwrap();
+    }
     assert!(
         std::fs::read_to_string(&restored_leases)
             .unwrap()
@@ -376,6 +414,11 @@ fn backup_and_restore_drill() {
         c.document_value(2).unwrap()["networks"]["users"]["mtu"],
         1400
     );
+    assert_eq!(
+        c.secret_get("vpn-office").unwrap().as_deref(),
+        Some(&b"the vpn key"[..])
+    );
+    assert_eq!(c.secret_get("local").unwrap(), None);
     assert_eq!(
         c.health().unwrap().check("applied").unwrap().level,
         Level::Ok

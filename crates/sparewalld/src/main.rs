@@ -2,6 +2,7 @@
 
 mod acme;
 mod author;
+mod backup;
 mod http;
 mod peer;
 mod rules;
@@ -318,6 +319,12 @@ fn run(args: Args) -> Result<(), String> {
         tokio::select! {
             r = server.run() => r.map_err(|e| format!("varlink server: {e}")),
             () = ticker(core.clone(), tx.clone()) => Ok(()),
+            () = async {
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                backup::schedule_loop(core.clone(), tx.clone()).await
+            } => Ok(()),
             () = https => Ok(()),
             r = peer_server.run() => r.map_err(|e| format!("peer server: {e}")),
             () = peer::listener(core.clone(), tx.clone(), peer_socket.clone()) => Ok(()),

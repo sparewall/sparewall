@@ -26,7 +26,7 @@ use crate::peer::{Pair, PairStatus};
 pub type Core = Arc<Mutex<Coordinator<Box<dyn System>>>>;
 
 /// Kea's lease file in its named volume.
-const KEA_LEASES: &str =
+pub const KEA_LEASES: &str =
     "/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv";
 
 /// The booted image (`name@digest`), looked up once by
@@ -422,24 +422,7 @@ where
     }
 
     async fn backup(&mut self) -> Result<BackupReply, FirewallError> {
-        let (path, digest) = with_core(&self.core, &self.events, |c| {
-            let src = sparewall_core::backup::Sources {
-                leases: KEA_LEASES.into(),
-                out_dir: c.store().root().join("backups"),
-                image_digest: booted_image_digest(),
-            };
-            let keep = c
-                .active_document()?
-                .and_then(|d| d.backup)
-                .and_then(|b| b.generations)
-                .map_or(sparewall_core::backup::DEFAULT_GENERATIONS, |g| g as usize);
-            c.backup(&src, keep)
-        })
-        .await?;
-        Ok(BackupReply {
-            path: path.display().to_string(),
-            digest,
-        })
+        crate::backup::run(&self.core, &self.events).await
     }
 
     #[zlink(more)]

@@ -117,6 +117,22 @@ impl<S: System> Coordinator<S> {
             );
         }
 
+        if let Some(t) = crate::backup::read_last(self.store().root())
+            .and_then(|l| l.success)
+            .and_then(|t| t.parse::<jiff::Timestamp>().ok())
+        {
+            o.help(
+                "sparewall_backup_last_success_timestamp_seconds",
+                "gauge",
+                "When the newest successful backup finished.",
+            );
+            o.sample(
+                "sparewall_backup_last_success_timestamp_seconds",
+                &[],
+                t.as_second(),
+            );
+        }
+
         let health = self.health()?;
         let level = |l: Level| match l {
             Level::Ok => 0,

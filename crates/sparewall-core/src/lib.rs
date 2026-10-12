@@ -7,6 +7,7 @@ pub mod health;
 pub mod linux;
 pub mod metrics;
 pub mod pair;
+pub mod seal;
 pub mod secrets;
 pub mod store;
 pub mod system;

@@ -8,7 +8,7 @@
 //! key.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sparewall_config::Document;
@@ -54,6 +54,18 @@ pub fn name_ok(name: &str) -> bool {
 /// The secret holding a remote-access instance's server private key.
 pub fn vpn_secret(instance: &str) -> String {
     format!("vpn-{instance}")
+}
+
+/// Write an encrypted secret and its metadata into a state directory.
+pub fn store_encrypted(state_dir: &Path, info: &SecretInfo, blob: &[u8]) -> Result<(), Error> {
+    let dir = state_dir.join("secrets");
+    fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    let p = dir.join(format!("{}.cred", info.name));
+    write_atomic(&p, blob).map_err(|e| Error::io(&p, e))?;
+    let m = dir.join(format!("{}.json", info.name));
+    write_atomic(&m, &serde_json::to_vec_pretty(info).expect("json")).map_err(|e| Error::io(&m, e))
 }
 
 impl<S: System> Coordinator<S> {
@@ -111,16 +123,8 @@ impl<S: System> Coordinator<S> {
                 info.name
             )]));
         }
-        let dir = self.secrets_dir();
-        fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
         let blob = self.system().encrypt(&info.name, value)?;
-        let p = dir.join(format!("{}.cred", info.name));
-        write_atomic(&p, &blob).map_err(|e| Error::io(&p, e))?;
-        let m = dir.join(format!("{}.json", info.name));
-        write_atomic(&m, &serde_json::to_vec_pretty(&info).expect("json"))
-            .map_err(|e| Error::io(&m, e))?;
+        store_encrypted(self.store().root(), &info, &blob)?;
         tracing::info!(name = %info.name, version = info.version, "stored secret");
         Ok(info)
     }

@@ -3,7 +3,7 @@
 mod conn;
 
 use std::io::{IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -267,8 +267,25 @@ enum Cmd {
     /// Restore a backup bundle into the state directory (on the node, as
     /// root, with sparewalld stopped).
     Restore {
-        #[arg(short, long)]
-        file: PathBuf,
+        /// The bundle.
+        #[arg(short, long, required_unless_present = "repository")]
+        file: Option<PathBuf>,
+        /// Fetch the newest bundle of `--node` from this restic repository
+        /// (repository credentials come from the environment, as for restic).
+        #[arg(long, conflicts_with = "file")]
+        repository: Option<String>,
+        /// The node whose bundle to fetch (default: this node's name).
+        #[arg(long, requires = "repository")]
+        node: Option<String>,
+        /// A file holding the backup password (default: a prompt).
+        #[arg(long)]
+        password_file: Option<PathBuf>,
+        /// Restore without the cluster secrets.
+        #[arg(long, conflicts_with = "password_file")]
+        no_secrets: bool,
+        /// Encrypt secrets as `sparewalld --fake-system` does (tests).
+        #[arg(long, hide = true)]
+        fake_system: bool,
         #[arg(long, default_value = "/var/lib/sparewall")]
         state: PathBuf,
         /// Where Kea's lease file goes.
@@ -390,6 +407,53 @@ fn read_input(file: &str) -> Result<Value, Fail> {
     };
     let format = Format::detect((file != "-").then_some(file), &text);
     Ok(sparewall_config::parse_value(&text, format)?)
+}
+
+/// This node's name, from the identity sparewalld recorded.
+fn local_node(state: &Path) -> Result<String, Fail> {
+    let p = state.join("identity.json");
+    let v: serde_json::Value = std::fs::read(&p)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or_else(|| Fail::usage(format!("{}: no identity; pass --node", p.display())))?;
+    v["node"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| Fail::usage("the identity names no node; pass --node"))
+}
+
+/// The newest bundle of `node` from a restic repository.
+fn fetch_bundle(
+    repository: &str,
+    node: &str,
+    password: Option<&str>,
+) -> Result<tempfile::NamedTempFile, Fail> {
+    let out = tempfile::NamedTempFile::new().map_err(|e| Fail::other(e.to_string()))?;
+    let mut cmd = std::process::Command::new("restic");
+    cmd.args([
+        "-r",
+        repository,
+        "dump",
+        "--host",
+        node,
+        "--tag",
+        "sparewall",
+        "latest",
+    ])
+    .arg(format!("/sparewall-{node}.tar.gz"))
+    .stdout(out.reopen().map_err(|e| Fail::other(e.to_string()))?);
+    if let Some(pw) = password {
+        cmd.env("RESTIC_PASSWORD", pw);
+    }
+    let st = cmd
+        .status()
+        .map_err(|e| Fail::other(format!("restic: {e}")))?;
+    if !st.success() {
+        return Err(Fail::other(format!(
+            "restic could not fetch the newest bundle of {node} from {repository}"
+        )));
+    }
+    Ok(out)
 }
 
 /// A secret from stdin, or a prompt without echo on a terminal.
@@ -788,7 +852,19 @@ impl App {
             }
             Cmd::Backup => {
                 let r = self.conn().await?.backup().await??;
-                println!("{} {}", r.digest, r.path);
+                if !self.quiet {
+                    println!("{} {}", r.digest, r.path);
+                    if let Some(s) = &r.snapshot {
+                        eprintln!("Sent to the backup repository as snapshot {s}.");
+                    }
+                    if r.secrets.is_empty() {
+                        eprintln!(
+                            "The bundle has no cluster secrets: set a backup password with \
+                             `sparewall secret set {}`.",
+                            sparewall_core::backup::PASSWORD_SECRET
+                        );
+                    }
+                }
             }
             Cmd::Events => {
                 let mut conn = self.conn().await?;
@@ -1107,6 +1183,11 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
         }
         Cmd::Restore {
             file,
+            repository,
+            node,
+            password_file,
+            no_secrets,
+            fake_system,
             state,
             leases,
         } => {
@@ -1114,19 +1195,65 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
                 .args(["is-active", "--quiet", "sparewalld.service"])
                 .status()
                 .is_ok_and(|s| s.success());
-            if active {
+            if active && !fake_system {
                 return Err(Fail::usage(
                     "stop sparewalld first: systemctl stop sparewalld.service sparewalld.socket",
                 ));
             }
-            let m = sparewall_core::backup::restore(file, state, Some(leases))
+            let password = match password_file {
+                _ if *no_secrets => None,
+                Some(p) => {
+                    let s = std::fs::read_to_string(p)
+                        .map_err(|e| Fail::other(format!("{}: {e}", p.display())))?;
+                    Some(s.strip_suffix('\n').unwrap_or(&s).to_string())
+                }
+                None => Some(read_secret("the backup password")?),
+            };
+            let fetched;
+            let file = match (file, repository) {
+                (Some(f), _) => f.as_path(),
+                (None, Some(repo)) => {
+                    let node = match node {
+                        Some(n) => n.clone(),
+                        None => local_node(state)?,
+                    };
+                    fetched = fetch_bundle(repo, &node, password.as_deref())?;
+                    fetched.path()
+                }
+                (None, None) => unreachable!("clap requires one"),
+            };
+            let (m, secrets) = sparewall_core::backup::restore(
+                file,
+                state,
+                Some(leases),
+                password.as_deref().map(str::as_bytes),
+            )
+            .map_err(|e| Fail::other(e.to_string()))?;
+            if !m.secrets.is_empty() && password.is_none() {
+                eprintln!("Skipped the cluster secrets ({}).", m.secrets.join(", "));
+            }
+            for s in &secrets {
+                let blob = if *fake_system {
+                    use sparewall_core::System;
+                    sparewall_core::system::Fake::default().encrypt(&s.info.name, &s.value)
+                } else {
+                    sparewall_core::linux::creds_encrypt(&s.info.name, &s.value)
+                }
                 .map_err(|e| Fail::other(e.to_string()))?;
+                sparewall_core::secrets::store_encrypted(state, &s.info, &blob)
+                    .map_err(|e| Fail::other(e.to_string()))?;
+            }
             eprintln!(
-                "Restored node {} at generation {} ({} generations{}). Start sparewalld to apply it.",
+                "Restored node {} at generation {} ({} generations{}{}). Start sparewalld to apply it.",
                 m.node,
                 m.active,
                 m.generations.len(),
-                if m.leases { ", leases" } else { "" }
+                if m.leases { ", leases" } else { "" },
+                if secrets.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {} secrets", secrets.len())
+                }
             );
             Ok(true)
         }
