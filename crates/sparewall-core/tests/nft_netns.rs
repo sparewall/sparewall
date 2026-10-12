@@ -274,47 +274,11 @@ impl System for RealNft {
 /// changes (networkd's set elements, counters) do not; a reload recovers.
 #[test]
 fn live_rule_drift_fails_readiness() {
-    use sparewall_core::{ApplyOptions, Coordinator, Level, Store};
+    use sparewall_core::{Coordinator, Level};
     if reexec("live_rule_drift_fails_readiness") {
         return;
     }
-    let dir = tempfile::tempdir().unwrap();
-    let mut rest = sparewall_core::system::Fake::default();
-    let doc = sparewall_config::parse_value(&example(), Format::Yaml).unwrap();
-    let r = sparewall_render::render(&sparewall_config::from_value(doc.clone()).unwrap(), "fw1")
-        .unwrap();
-    for l in &r.meta.required_links {
-        rest.links.insert(l.clone(), "up".into());
-    }
-    let id = sparewall_config::identity::Identity {
-        node: "fw1".into(),
-        ssh_keys: vec![],
-        management: sparewall_config::identity::BootstrapPort {
-            nic: "52:54:00:aa:00:01".into(),
-            vlan: None,
-            address: None,
-            gateway: None,
-            dns: vec![],
-        },
-    };
-    let mut c = Coordinator::new(
-        Store::open(dir.path()).unwrap(),
-        RealNft {
-            nft: Linux::default(),
-            rest,
-        },
-        id,
-    );
-    c.boot(false).unwrap();
-    c.apply(
-        doc,
-        &ApplyOptions {
-            base: 0,
-            author: "test".into(),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let (_dir, mut c) = applied(sparewall_config::parse_value(&example(), Format::Yaml).unwrap());
     let ready = |c: &mut Coordinator<RealNft>| {
         let h = c.health().unwrap();
         (h.level, h.check("nft").unwrap().message.clone())
@@ -383,6 +347,95 @@ fn live_rule_drift_fails_readiness() {
             "{what}: not repaired by a reload"
         );
     }
+}
+
+/// A coordinator with real nft (and everything else faked) that has
+/// applied `doc` in this namespace.
+fn applied(doc: serde_json::Value) -> (tempfile::TempDir, sparewall_core::Coordinator<RealNft>) {
+    use sparewall_core::{ApplyOptions, Coordinator, Store};
+    let dir = tempfile::tempdir().unwrap();
+    let mut rest = sparewall_core::system::Fake::default();
+    let r = sparewall_render::render(&sparewall_config::from_value(doc.clone()).unwrap(), "fw1")
+        .unwrap();
+    for l in &r.meta.required_links {
+        rest.links.insert(l.clone(), "up".into());
+    }
+    let id = sparewall_config::identity::Identity {
+        node: "fw1".into(),
+        ssh_keys: vec![],
+        management: sparewall_config::identity::BootstrapPort {
+            nic: "52:54:00:aa:00:01".into(),
+            vlan: None,
+            address: None,
+            gateway: None,
+            dns: vec![],
+        },
+    };
+    let mut c = Coordinator::new(
+        Store::open(dir.path()).unwrap(),
+        RealNft {
+            nft: Linux::default(),
+            rest,
+        },
+        id,
+    );
+    c.boot(false).unwrap();
+    c.apply(
+        doc,
+        &ApplyOptions {
+            base: 0,
+            author: "test".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (dir, c)
+}
+
+/// Traffic using up part of a quota is not drift; changing the quota's
+/// limit is (review of #17).
+#[test]
+fn quota_use_is_not_drift() {
+    use sparewall_core::Level;
+    if reexec("quota_use_is_not_drift") {
+        return;
+    }
+    let mut doc = sparewall_config::parse_value(&example(), Format::Yaml).unwrap();
+    sparewall_config::merge_patch(
+        &mut doc,
+        &serde_json::json!({"raw": {"quota-review": {
+            "at": {"hook": "prerouting-raw"}, "order": 10,
+            "nft": "ip protocol icmp quota 100000 bytes accept"}}}),
+    );
+    let (_dir, mut c) = applied(doc);
+    let nft_check = |c: &mut sparewall_core::Coordinator<RealNft>| {
+        let h = c.health().unwrap();
+        let n = h.check("nft").unwrap().clone();
+        (n.level, n.message)
+    };
+    assert_eq!(nft_check(&mut c).0, Level::Ok);
+    sh("ip link set lo up; ping -c 2 -W 1 127.0.0.1 >/dev/null");
+    let chain = nft(&["list", "chain", "inet", "sparewall", "prerouting_raw"]);
+    assert!(
+        chain.contains("used"),
+        "the quota counted nothing:\n{chain}"
+    );
+    let (level, msg) = nft_check(&mut c);
+    assert_eq!(level, Level::Ok, "quota use counted as drift: {msg}");
+    assert!(c.hashes().unwrap().1.is_some());
+
+    // The configured limit changed in place.
+    sh(
+        "h=$(nft -a list chain inet sparewall prerouting_raw | sed -n 's/.*quota.*# handle //p'); \
+        nft replace rule inet sparewall prerouting_raw handle $h ip protocol icmp quota 200000 bytes accept",
+    );
+    let (level, msg) = nft_check(&mut c);
+    assert_eq!(
+        level,
+        Level::Failed,
+        "a changed quota limit was not detected"
+    );
+    assert!(msg.contains("changed: rules prerouting_raw"), "{msg}");
 }
 
 fn sh(cmd: &str) {

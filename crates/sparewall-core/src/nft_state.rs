@@ -17,14 +17,32 @@ use serde_json::Value;
 /// `rules <chain>` (every rule, in order), `set <name>`, `map <name>`...
 pub type Components = BTreeMap<String, Value>;
 
-/// Remove what changes at runtime: handles, counter values.
+/// Remove a quota's consumption, keeping its configured limit. The kernel
+/// lists `used`/`used_unit` only once something was used.
+fn scrub_quota(q: &mut Value) {
+    if let Some(o) = q.as_object_mut() {
+        o.remove("used");
+        o.remove("used_unit");
+    }
+}
+
+/// Remove what changes at runtime: handles, counter values, quota
+/// consumption, when a `last` statement last matched, and the time left
+/// on set elements with a timeout.
 fn scrub(v: &mut Value) {
     match v {
         Value::Object(m) => {
             m.remove("handle");
+            m.remove("expires");
             if m.contains_key("packets") && m.contains_key("bytes") {
                 m.insert("packets".into(), Value::from(0));
                 m.insert("bytes".into(), Value::from(0));
+            }
+            if let Some(q) = m.get_mut("quota") {
+                scrub_quota(q);
+            }
+            if m.contains_key("last") {
+                m.insert("last".into(), Value::Null);
             }
             for x in m.values_mut() {
                 scrub(x);
@@ -50,6 +68,10 @@ pub fn normalize(live: &Value, preserved: &[String]) -> Components {
         }
         let mut body = body.clone();
         scrub(&mut body);
+        if kind == "quota" {
+            // A named quota object: the item itself is the quota.
+            scrub_quota(&mut body);
+        }
         let name = body["name"].as_str().unwrap_or_default().to_string();
         match kind.as_str() {
             "rule" => {
@@ -149,6 +171,51 @@ mod tests {
         // Traffic, networkd filling its set, and new handles after a reload.
         let mut later = table(ssh(), json!(["10.0.99.0/24"]), json!(["203.0.113.7"]), 1234);
         later["nftables"][6]["rule"]["handle"] = json!(99);
+        assert_eq!(drift(&loaded, &normalize(&later, &p)), None);
+    }
+
+    #[test]
+    fn quota_use_is_not_drift_but_its_limit_is() {
+        let rule = |quota: Value| {
+            json!({"family": "inet", "table": "sparewall", "chain": "input",
+                   "expr": [{"quota": quota}, {"accept": null}]})
+        };
+        let p: [String; 0] = [];
+        let fresh = json!({"val": 100000, "val_unit": "bytes"});
+        let loaded = normalize(&table(rule(fresh), json!([]), json!([]), 0), &p);
+        let used = json!({"val": 100000, "val_unit": "bytes", "used": 336, "used_unit": "bytes"});
+        assert_eq!(
+            drift(
+                &loaded,
+                &normalize(&table(rule(used), json!([]), json!([]), 0), &p)
+            ),
+            None
+        );
+        let bigger = json!({"val": 200000, "val_unit": "bytes"});
+        assert_eq!(
+            drift(
+                &loaded,
+                &normalize(&table(rule(bigger), json!([]), json!([]), 0), &p)
+            )
+            .as_deref(),
+            Some("changed: rules input")
+        );
+        // A named quota object, and other runtime-only fields.
+        let named = |used: Option<u64>| {
+            let mut q = json!({"family": "inet", "table": "sparewall", "name": "q", "bytes": 1000});
+            if let Some(u) = used {
+                q["used"] = json!(u);
+            }
+            json!({"nftables": [{"quota": q},
+                {"rule": {"family": "inet", "table": "sparewall", "chain": "input",
+                          "expr": [{"last": null}]}},
+                {"set": {"family": "inet", "table": "sparewall", "name": "t",
+                         "elem": [{"elem": {"val": "192.0.2.1", "timeout": 60, "expires": 60}}]}}]})
+        };
+        let loaded = normalize(&named(None), &p);
+        let mut later = named(Some(700));
+        later["nftables"][1]["rule"]["expr"][0] = json!({"last": {"used": 1234}});
+        later["nftables"][2]["set"]["elem"][0]["elem"]["expires"] = json!(12);
         assert_eq!(drift(&loaded, &normalize(&later, &p)), None);
     }
 

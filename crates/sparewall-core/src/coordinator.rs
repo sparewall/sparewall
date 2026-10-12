@@ -86,6 +86,19 @@ pub enum Event {
     },
 }
 
+/// What health compares the live firewall with.
+#[derive(Debug, Clone, Default)]
+enum NftBaseline {
+    /// Nothing loaded by this process yet.
+    #[default]
+    None,
+    /// The live table as listed right after the last load.
+    Recorded(crate::nft_state::Components),
+    /// Loaded, but not read back: unverifiable until the next load. Never
+    /// learned later from the live table, which may have drifted by then.
+    Unverified(String),
+}
+
 pub struct Coordinator<S: System> {
     store: Store,
     sys: S,
@@ -99,7 +112,7 @@ pub struct Coordinator<S: System> {
     extra_checks: std::collections::BTreeMap<String, Vec<Check>>,
     /// The live table as it was right after the last load (normalized),
     /// which health compares with the table as it is now.
-    nft_loaded: Option<crate::nft_state::Components>,
+    nft_loaded: NftBaseline,
 }
 
 fn now_unix() -> i64 {
@@ -130,7 +143,7 @@ impl<S: System> Coordinator<S> {
             events: Vec::new(),
             keep: DEFAULT_KEEP,
             extra_checks: Default::default(),
-            nft_loaded: None,
+            nft_loaded: NftBaseline::None,
         }
     }
 
@@ -649,15 +662,24 @@ impl<S: System> Coordinator<S> {
             .map(|v| crate::nft_state::normalize(&v, preserved)))
     }
 
-    /// How the live firewall differs from what was loaded, if it does.
-    /// `None` also when nothing was recorded to compare with.
+    /// Why the live firewall cannot be trusted to be what was loaded: it
+    /// differs, or it could not be verified since the load. `None` when it
+    /// matches (or this process has loaded nothing yet).
     pub fn nft_drift(&mut self) -> Result<Option<String>, Error> {
-        let Some(loaded) = self.nft_loaded.clone() else {
-            return Ok(None);
+        let loaded = match self.nft_loaded.clone() {
+            NftBaseline::None => return Ok(None),
+            NftBaseline::Unverified(why) => {
+                return Ok(Some(format!(
+                    "cannot verify the live firewall ({why}); reloading it (restart sparewalld, or apply a change) verifies it again"
+                )));
+            }
+            NftBaseline::Recorded(c) => c,
         };
-        let preserved = self.rendered_for(self.active()?)?.meta.preserved_sets;
+        let active = self.active()?;
+        let preserved = self.rendered_for(active)?.meta.preserved_sets;
         Ok(match self.nft_live(&preserved) {
-            Ok(Some(live)) => crate::nft_state::drift(&loaded, &live),
+            Ok(Some(live)) => crate::nft_state::drift(&loaded, &live)
+                .map(|d| format!("live ruleset differs from what generation {active} loaded: {d}")),
             Ok(None) => Some("table inet sparewall is not loaded".into()),
             Err(e) => Some(format!("cannot read the ruleset: {e}")),
         })
@@ -818,7 +840,18 @@ impl<S: System> Coordinator<S> {
                     .get(&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT))
                     .ok_or_else(|| Error::Internal("no nft script".into()))?;
                 new_sets = self.sys.nft_load(body, &r.meta.preserved_sets)?;
-                self.nft_loaded = self.nft_live(&r.meta.preserved_sets).ok().flatten();
+                self.nft_loaded = match self.nft_live(&r.meta.preserved_sets) {
+                    Ok(Some(c)) => NftBaseline::Recorded(c),
+                    Ok(None) => NftBaseline::Unverified(
+                        "the table was not listed right after loading it".into(),
+                    ),
+                    Err(e) => {
+                        NftBaseline::Unverified(format!("cannot read back the loaded table: {e}"))
+                    }
+                };
+                if let NftBaseline::Unverified(why) = &self.nft_loaded {
+                    tracing::error!(why, "the loaded firewall cannot be verified");
+                }
             }
             let sysctl = r
                 .subsystem(Subsystem::Sysctl)
@@ -916,7 +949,7 @@ impl<S: System> Coordinator<S> {
             (Some(_), None, Some(_)) => Check::new(
                 "applied",
                 Level::Failed,
-                "the live firewall no longer matches the desired configuration",
+                "the live firewall is not verifiably the desired configuration",
             ),
             (Some(h), None, None) if *h == desired.hash => {
                 Check::new("applied", Level::Ok, "running the desired configuration")
@@ -939,14 +972,7 @@ impl<S: System> Coordinator<S> {
             })
             .unwrap_or_default();
         checks.push(match (&drift, self.sys.nft_chains()) {
-            (Some(d), _) => Check::new(
-                "nft",
-                Level::Failed,
-                format!(
-                    "live ruleset differs from what generation {} loaded: {d}",
-                    state.active
-                ),
-            ),
+            (Some(d), _) => Check::new("nft", Level::Failed, d.clone()),
             (None, Ok(Some(live))) => {
                 let missing: Vec<&String> = expected_chains
                     .iter()

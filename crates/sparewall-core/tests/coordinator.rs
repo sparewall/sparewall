@@ -341,6 +341,71 @@ fn live_firewall_drift_fails_readiness() {
     );
 }
 
+/// The table loads but cannot be read back right after (a listing error,
+/// or no table listed): the node must not claim a verified activation,
+/// and must not later learn a possibly drifted table as its baseline.
+/// Only a reload verifies it again (review of #17).
+#[test]
+fn unverifiable_load_fails_closed() {
+    for mode in ["error", "absent"] {
+        let mut t = setup();
+        t.c.apply(example(), &opts(0, None)).unwrap();
+        let set_broken = |t: &mut T, on: bool| {
+            if mode == "error" {
+                t.c.system().fail_nft_json = on.then(|| "nft: listing failed".to_string());
+            } else {
+                t.c.system().hide_nft_json = on;
+            }
+        };
+        // A later load (here, a firewall change) whose read-back fails.
+        set_broken(&mut t, true);
+        let mut v = example();
+        v["policy"]["wan->self"]["action"] = json!("reject");
+        t.c.apply(v, &opts(1, None)).unwrap();
+        let check = |t: &mut T| {
+            let h = t.c.health().unwrap();
+            // The fake has no links; only these two checks matter here.
+            (
+                h.check("nft").unwrap().level,
+                h.check("nft").unwrap().message.clone(),
+                h.check("applied").unwrap().level,
+            )
+        };
+        let (level, msg, applied) = check(&mut t);
+        assert_eq!(level, Level::Failed, "{mode}");
+        assert_eq!(applied, Level::Failed, "{mode}");
+        assert!(
+            msg.contains("cannot verify the live firewall"),
+            "{mode}: {msg}"
+        );
+        assert_eq!(t.c.hashes().unwrap().1, None, "{mode}");
+
+        // Reads work again: still not verified, nothing learned from the
+        // live table, and tampering now is not mistaken for the baseline.
+        set_broken(&mut t, false);
+        assert_eq!(
+            check(&mut t).0,
+            Level::Failed,
+            "{mode}: blessed on recovery"
+        );
+        t.c.system().nft_body = Some("table inet sparewall {\n}\n".into());
+        let (level, msg, _) = check(&mut t);
+        assert_eq!(level, Level::Failed, "{mode}");
+        assert!(msg.contains("cannot verify"), "{mode}: {msg}");
+        assert_eq!(t.c.hashes().unwrap().1, None, "{mode}");
+
+        // A reload records a trusted baseline; drift is detected from it.
+        t.c.boot(false).unwrap();
+        let (level, msg, applied) = check(&mut t);
+        assert_eq!((level, applied), (Level::Ok, Level::Ok), "{mode}: {msg}");
+        assert!(t.c.hashes().unwrap().1.is_some(), "{mode}");
+        t.c.system().nft_body = Some("table inet sparewall {\n}\n".into());
+        let (level, msg, _) = check(&mut t);
+        assert_eq!(level, Level::Failed, "{mode}");
+        assert!(msg.contains("live ruleset differs"), "{mode}: {msg}");
+    }
+}
+
 #[test]
 fn merge_and_patch() {
     let mut t = setup();

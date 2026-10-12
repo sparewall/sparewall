@@ -124,9 +124,13 @@ Where the implementation departs from, or settles open questions in,
   sandboxed coordinator cannot create on first use.
 
 - **Live firewall verification** records the table right after each load
-  (`nft -j`, normalized: no counters, handles or networkd-filled set
-  elements) and compares it on every health check, so drift is caught even
-  when chain names are unchanged. The baseline is the kernel's own listing
+  (`nft -j`, normalized: no counter values, quota use, `last` timestamps,
+  element timeouts, handles, or networkd-filled set elements) and compares
+  it on every health check, so drift is caught even when chain names are
+  unchanged. It fails closed: if the table cannot be read back right after
+  a load, the node is unverified (health failed, no applied hash) until
+  the next load records a baseline; health never learns one from the live
+  table, which may have drifted by then. The baseline is the kernel's own listing
   after a successful atomic load, not a re-parse of the rendered script,
   because nft canonicalizes expressions. A drifted node reports no applied
   hash, so readiness, VRRP health, pair sync and the upgrade gate all see
