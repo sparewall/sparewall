@@ -177,11 +177,18 @@ if ! command -v rest-server >/dev/null; then
     curl -fsSLO "https://github.com/restic/rest-server/releases/download/v$REST_SERVER/$f"
     echo "$REST_SHA256  $f" | sha256sum -c -
     tar -xzf "$f" --strip-components=1 "rest-server_${REST_SERVER}_linux_amd64/rest-server"
+    # The release archive ships it without the execute bit.
+    chmod +x rest-server
     PATH=$WORK:$PATH
 fi
 mkdir -p restic
 rest-server --path "$WORK/restic" --listen 127.0.0.1:8000 --no-auth >rest-server.log 2>&1 &
 echo $! > rest-server.pid
+deadline=$((SECONDS + 30))
+until curl -s -o /dev/null http://127.0.0.1:8000/; do
+    [ $SECONDS -lt $deadline ] || fail "rest-server did not start: $(cat rest-server.log)"
+    sleep 1
+done
 REPO=rest:http://10.0.2.2:8000/fw1
 PASSWORD="ci backup password"
 vm "printf %s '$PASSWORD' | sudo sparewall secret set backup-password"
