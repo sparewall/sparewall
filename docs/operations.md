@@ -79,6 +79,26 @@ sparewall vpn client-config laptop --qr
 curl -k -H "Authorization: Bearer $TOKEN" https://fw1/metrics
 ```
 
+### What health verifies
+
+Readiness (`/readyz`, the VRRP health check, the applied hash the pair
+compares, `sparewall_config_applied`) reflects these checks of the
+running system, each repeated on every health request:
+
+| Check | Verifies | Does not verify |
+| --- | --- | --- |
+| `applied` | The last activation of the desired generation succeeded, and the live firewall still matches it | Anything the other checks do not |
+| `nft` | The live `inet sparewall` table matches, rule for rule, what was loaded for the generation: chains with their hooks and policies, every rule, static set elements. What traffic changes (counters, quota use, `last` timestamps, element timeouts), handles, and the sets networkd fills at runtime are excluded. If the table cannot be read back right after a load, the node fails this check until the next reload | Tables other software owns |
+| `links` | Every interface the generation needs exists and is up | Addresses, routes or bond membership on them |
+| `services` | Every provider unit the generation needs (Kea, Unbound, keepalived, conntrackd, ulogd, journal-upload) is active in systemd | That a daemon still runs the files installed for it; those passed the daemon's own config test before they were installed |
+| `pair`, `tls`, `backup` | Sync tunnel and peer state, certificate validity, the last backup | |
+
+Any change to the firewall made outside Sparewall (`nft flush`, an extra
+rule, a changed policy) fails `nft` and `applied`, so the node reports
+**failed**: it leaves the VRRP master role and the pair shows
+`apply-failed`. To restore it, reload the generation:
+`systemctl restart sparewalld` (or apply any new change).
+
 ## Backup and restore
 
 A bundle holds the active document, recent generations, the cluster

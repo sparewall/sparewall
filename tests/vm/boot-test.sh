@@ -167,6 +167,21 @@ grep -q '^node_network_receive_bytes_total{device="uplink"}' metrics.txt || {
 }
 vm 'curl -sk https://localhost/metrics' | grep -q '^node_' && fail "/metrics without a token leaked host metrics"
 
+log "live firewall drift fails readiness (issue #5)"
+ready() { vm 'curl -sk -o /dev/null -w "%{http_code}" https://localhost/readyz'; }
+[ "$(ready)" = 200 ] || fail "/readyz is $(ready) before the drift"
+# Rules removed outside Sparewall, the chain kept (anti-lockout keeps SSH).
+vm 'sudo nft flush chain inet sparewall in_mgmt'
+[ "$(ready)" = 503 ] || fail "/readyz is $(ready) with the mgmt rules flushed"
+vm 'sudo sparewall health --verbose' | tee drift.txt || true
+grep -q 'rules in_mgmt' drift.txt || fail "health does not name the drifted chain"
+vm 'sudo systemctl restart sparewalld'
+deadline=$((SECONDS + 60))
+until [ "$(ready)" = 200 ]; do
+    [ $SECONDS -lt $deadline ] || fail "/readyz did not recover after restarting sparewalld"
+    sleep 3
+done
+
 run_conformance
 
 log "backup to a restic REST server"

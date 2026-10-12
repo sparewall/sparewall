@@ -101,8 +101,12 @@ pub struct Fake {
     pub fail_service_check: Option<String>,
     /// Units started by `services_apply`.
     pub running: Vec<String>,
-    /// What `nft_json` returns.
+    /// What `nft_json` returns (default: the loaded script, wrapped).
     pub nft_json: Option<serde_json::Value>,
+    /// Make `nft_json` fail with this message.
+    pub fail_nft_json: Option<String>,
+    /// Make `nft_json` report no table.
+    pub hide_nft_json: bool,
     /// What `proc_sys` returns, by key.
     pub proc: BTreeMap<String, String>,
     /// The sync public key `sync_public_key` reports.
@@ -216,7 +220,22 @@ impl System for Fake {
     }
 
     fn nft_json(&mut self) -> Result<Option<serde_json::Value>, Error> {
-        Ok(self.nft_json.clone())
+        if let Some(m) = &self.fail_nft_json {
+            return Err(Error::Apply(m.clone()));
+        }
+        if self.hide_nft_json {
+            return Ok(None);
+        }
+        // The loaded script stands in for the kernel's listing, so a test
+        // can tamper with `nft_body` to simulate drift.
+        Ok(self.nft_json.clone().or_else(|| {
+            self.nft_body.as_ref().map(|b| {
+                serde_json::json!({"nftables": [
+                    {"table": {"family": "inet", "name": "sparewall"}},
+                    {"script": {"body": b}},
+                ]})
+            })
+        }))
     }
 
     fn proc_sys(&mut self, key: &str) -> Option<String> {
