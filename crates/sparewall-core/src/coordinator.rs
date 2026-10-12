@@ -35,7 +35,7 @@ fn subsystem_files(r: &Rendered, s: Subsystem) -> Files {
 pub const DEFAULT_KEEP: usize = 50;
 
 /// Options common to every mutation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
     /// The generation the change was derived from.
     pub base: u64,
@@ -45,6 +45,8 @@ pub struct ApplyOptions {
     pub author: String,
     /// Validate, render and check only.
     pub dry_run: bool,
+    /// A line put before the diff in the generation's summary.
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -331,7 +333,7 @@ impl<S: System> Coordinator<S> {
         }
         self.dry_run(&rendered, Some(&old_rendered))?;
 
-        let mut summary = diff.clone();
+        let mut summary: Vec<String> = opts.note.iter().cloned().chain(diff.clone()).collect();
         summary.truncate(200);
         let g = Generation {
             id: self.store.next_id()?.max(state.active + 1),
@@ -482,28 +484,84 @@ impl<S: System> Coordinator<S> {
             .map(|p| (p.id, (p.deadline - now_unix()).max(0))))
     }
 
-    /// Return to a generation: the given one, or by default the pending
-    /// change's revert target or the active generation's base.
-    pub fn rollback(&mut self, id: Option<u64>) -> Result<Generation, Error> {
+    /// Return to an earlier configuration: generation `id`, or by default
+    /// the pending change's revert target or the active generation's base.
+    ///
+    /// A pending change is discarded first; it never left this node, so
+    /// returning to its revert target needs no new generation. Any other
+    /// rollback makes the target's document a new generation on top of the
+    /// active one: the rolled-back generation stays in history, and a peer
+    /// receives the rollback as an ordinary change. Reactivating the old
+    /// generation instead would make this node look behind its peer, which
+    /// would push the newer generation straight back.
+    ///
+    /// Rolling back to bootstrap (generation 0), which has no document,
+    /// reactivates it.
+    /// Whether `rollback(id)` would only discard an unconfirmed change,
+    /// which never left this node (so it involves no peer). Decide and
+    /// roll back under the same lock: a confirm window expiring or a
+    /// confirmation in between changes the answer.
+    pub fn rollback_is_local(&self, id: Option<u64>) -> Result<bool, Error> {
+        Ok(self
+            .store
+            .state()?
+            .pending
+            .is_some_and(|p| id.is_none_or(|t| t == p.revert_to)))
+    }
+
+    pub fn rollback(&mut self, id: Option<u64>, author: &str) -> Result<Generation, Error> {
+        let state = self.store.state()?;
+        if let Some(target) = id
+            && target != 0
+            && !self.store.exists(target)
+        {
+            return Err(Error::NotFound(target));
+        }
+        if let Some(p) = &state.pending {
+            let from = state.active;
+            self.switch_to(p.revert_to, "rollback")?;
+            self.events.push(Event::RolledBack {
+                to: p.revert_to,
+                from,
+                reason: "rollback of an unconfirmed change".into(),
+            });
+            if id.is_none_or(|t| t == p.revert_to) {
+                return self.generation(p.revert_to);
+            }
+        }
         let state = self.store.state()?;
         let target = match id {
             Some(t) => t,
-            None => match &state.pending {
-                Some(p) => p.revert_to,
-                None => self.generation(state.active)?.base.unwrap_or(0),
-            },
+            None => self.generation(state.active)?.base.unwrap_or(0),
         };
-        if target != 0 && !self.store.exists(target) {
-            return Err(Error::NotFound(target));
-        }
         let from = state.active;
-        self.switch_to(target, "rollback")?;
-        self.events.push(Event::RolledBack {
-            to: target,
-            from,
-            reason: "rollback".into(),
-        });
-        self.generation(target)
+        if target == 0 {
+            self.switch_to(0, "rollback")?;
+            self.events.push(Event::RolledBack {
+                to: 0,
+                from,
+                reason: "rollback to bootstrap".into(),
+            });
+            return self.generation(0);
+        }
+        let value = self.document_value(target)?;
+        let r = self.apply(
+            value,
+            &ApplyOptions {
+                base: from,
+                author: author.to_string(),
+                note: Some(format!("rollback to generation {target}")),
+                ..Default::default()
+            },
+        )?;
+        if !r.unchanged {
+            self.events.push(Event::RolledBack {
+                to: r.generation.id,
+                from,
+                reason: format!("rollback to generation {target}"),
+            });
+        }
+        Ok(r.generation)
     }
 
     fn switch_to(&mut self, target: u64, why: &str) -> Result<(), Error> {
@@ -576,9 +634,11 @@ impl<S: System> Coordinator<S> {
         })
     }
 
-    /// Accept a generation pushed by the peer. It keeps the peer's id and
-    /// is refused unless its `base` is this node's active generation, so a
-    /// push never overwrites a change this node has not seen.
+    /// Accept a generation pushed by the peer and run it. It keeps the
+    /// peer's id and is refused unless its `base` is this node's active
+    /// generation, or reaches it through generations received with
+    /// [`Self::receive_history`], so a push never overwrites a change this
+    /// node has not seen.
     pub fn receive(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
         let state = self.store.state()?;
         if self.store.exists(g.id) {
@@ -593,12 +653,58 @@ impl<S: System> Coordinator<S> {
                 current: state.active,
             });
         }
-        if state.pending.is_some() || g.base != Some(state.active) {
+        if state.pending.is_some() || !self.extends_active(g.base)? {
             return Err(Error::Conflict {
                 current: state.active,
             });
         }
         self.install_foreign(g, value, "peer push")
+    }
+
+    /// Store a generation pushed by the peer without running it: one the
+    /// peer has passed through on the way to the generation it runs (a
+    /// change followed by its rollback), so the history matches without
+    /// this node ever running the rolled-back configuration.
+    pub fn receive_history(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
+        let state = self.store.state()?;
+        if self.store.exists(g.id) {
+            if self.store.meta(g.id)?.hash == g.hash {
+                return Ok(());
+            }
+            return Err(Error::Conflict {
+                current: state.active,
+            });
+        }
+        if state.pending.is_some() || !self.extends_active(g.base)? {
+            return Err(Error::Conflict {
+                current: state.active,
+            });
+        }
+        let (doc, _, rendered) = self.check(value)?;
+        if sparewall_config::hash(&doc) != g.hash {
+            return Err(Error::Validation(vec![format!(
+                "generation {} does not match its hash",
+                g.id
+            )]));
+        }
+        self.store.save(g, &doc, &rendered)?;
+        tracing::info!(id = g.id, "stored the peer's generation in history");
+        Ok(())
+    }
+
+    /// Whether `base` is the active generation, or a generation stored
+    /// after it whose bases lead back to it.
+    fn extends_active(&self, base: Option<u64>) -> Result<bool, Error> {
+        let active = self.store.state()?.active;
+        let mut id = base;
+        for _ in 0..10_000 {
+            match id {
+                Some(i) if i == active => return Ok(true),
+                Some(i) if i > active && self.store.exists(i) => id = self.store.meta(i)?.base,
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
     }
 
     /// Take the peer's generation regardless of history (`sync --from`).

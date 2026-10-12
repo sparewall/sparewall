@@ -293,4 +293,77 @@ fn pair_pushes_refuses_and_catches_up() {
     assert_eq!(fw2.ok(&["get", "networks.users.mtu"]).trim(), "1200");
     let h: serde_json::Value = serde_json::from_str(&fw2.ok(&["history", "-o", "json"])).unwrap();
     assert_eq!(h[0]["id"], 4);
+
+    // A rollback on either node becomes the pair's configuration, and
+    // background sync does not undo it (#4).
+    fw2.ok(&["rollback"]);
+    fw1.wait("the rollback from fw2", |s| s["sync"]["active"] == 5);
+    // Several sync passes later, both still run it.
+    std::thread::sleep(Duration::from_secs(12));
+    for n in [&fw1, &fw2] {
+        let s = n.wait("in sync on the rollback", |s| {
+            s["sync"]["state"] == "in-sync"
+        });
+        assert_eq!(s["sync"]["active"], 5, "{}", n.name);
+        assert_eq!(
+            n.ok(&["get", "networks.users.mtu"]).trim(),
+            "1300",
+            "{}",
+            n.name
+        );
+    }
+    let h: serde_json::Value = serde_json::from_str(&fw1.ok(&["history", "-o", "json"])).unwrap();
+    assert_eq!(h[0]["summary"][0], "rollback to generation 3");
+    assert_eq!(h[1]["id"], 4, "the rolled-back generation stays in history");
+    fw1.ok(&["rollback", "4"]);
+    fw2.wait("the rollback from fw1", |s| {
+        s["sync"]["active"] == 6 && s["sync"]["state"] == "in-sync"
+    });
+    assert_eq!(fw2.ok(&["get", "networks.users.mtu"]).trim(), "1200");
+
+    // With the peer down, a rollback needs --allow-diverge like any change,
+    // but discarding an unconfirmed change (which never left) does not.
+    fw2.stop();
+    fw1.wait("peer unreachable", |s| {
+        s["sync"]["state"] == "peer-unreachable"
+    });
+    assert_eq!(fw1.sw(&["rollback"]).status.code(), Some(5));
+    fw1.ok(&[
+        "set",
+        "networks.users.mtu=1100",
+        "--confirm",
+        "60",
+        "--no-prompt",
+        "--allow-diverge",
+    ]);
+    fw1.ok(&["rollback"]);
+    assert_eq!(fw1.status()["sync"]["active"], 6);
+    assert_eq!(fw1.ok(&["get", "networks.users.mtu"]).trim(), "1200");
+
+    // Still apart: fw1 makes a change and rolls it back. fw2 already runs
+    // that content, but not that history; on its return it catches up
+    // (storing generation 8 without running it; the discarded pending change
+    // took 7), and a later change on
+    // fw2 is an ordinary push, not divergence.
+    fw1.ok(&[
+        "set",
+        "networks.users.mtu=1000",
+        "--confirm",
+        "0",
+        "--allow-diverge",
+    ]);
+    fw1.ok(&["rollback", "--allow-diverge"]);
+    assert_eq!(fw1.status()["sync"]["active"], 9);
+    fw2.start();
+    fw2.wait("catch-up to the rollback", |s| {
+        s["sync"]["active"] == 9 && s["sync"]["state"] == "in-sync"
+    });
+    let h: serde_json::Value = serde_json::from_str(&fw2.ok(&["history", "-o", "json"])).unwrap();
+    assert_eq!((&h[0]["id"], &h[1]["id"]), (&9.into(), &8.into()));
+    assert_eq!(fw2.ok(&["get", "networks.users.mtu"]).trim(), "1200");
+    fw2.ok(&["set", "networks.users.mtu=900", "--confirm", "0"]);
+    fw1.wait("fw2's change", |s| {
+        s["sync"]["active"] == 10 && s["sync"]["state"] == "in-sync"
+    });
+    assert_eq!(fw1.ok(&["get", "networks.users.mtu"]).trim(), "900");
 }

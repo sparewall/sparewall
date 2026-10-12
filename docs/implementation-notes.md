@@ -71,8 +71,23 @@ Where the implementation departs from, or settles open questions in,
   test listens on all interfaces and keepalived's runs in a private netns
   with dummy links of the same names, because both reject interfaces that
   only appear once the change is applied.
-- **Rollback reactivates an existing generation** rather than creating a
-  new one; `history` shows each generation once.
+- **Rollback creates a generation** holding the target's document, on top
+  of the active one, so the rolled-back generation stays in history and a
+  peer receives the rollback as an ordinary change. Reactivating the old
+  generation made the node look behind its peer, which pushed the newer
+  generation straight back (#4). Discarding an unconfirmed change is the
+  exception: it never left the node, so `rollback` (and a missed confirm
+  window) just returns to its revert target, without the peer. Whether a
+  request is only that discard is decided under the same coordinator lock
+  as the rollback, so a confirm window expiring or a confirmation in
+  between cannot turn it into an ungated new generation.
+- **Catching up pushes history, runs only the newest.** A peer behind by
+  several generations stores the earlier ones (`Push` with
+  `activate: false`) and runs only the last, so after a change and its
+  rollback it never runs the rolled-back configuration. Equal content does
+  not mean in sync when one history contains the other: the peer would
+  otherwise miss those generations and its next change would look like
+  divergence. Older peers ignore `activate` and run each generation.
 - **The peer link** uses Varlink over TCP on the sync-tunnel address,
   spliced onto a root-only Unix socket (zlink has only Unix transports).
   The peer methods trust the connection, not `Hello`'s node name, so the

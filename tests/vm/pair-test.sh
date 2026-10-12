@@ -151,11 +151,16 @@ ns users timeout 3 bash -c 'exec 3<>/dev/tcp/192.0.2.2/22' 2>/dev/null \
 for a in 169.254.77.1 169.254.77.2; do
     ! peer_api "$a" || fail "a LAN client reached the peer API at $a"
 done
-# Back to the original policy (sync would undo a rollback: #4).
-at fw1 "sudo sparewall set 'policy.users->self.action=drop' --confirm 0"
-wait_for 120 "fw1 in sync after reverting users->self" in_sync fw1
-wait_for 120 "fw2 in sync after reverting users->self" in_sync fw2
-! peer_api 169.254.77.1 || fail "a LAN client reached the peer API after the revert"
+# A rollback restores the original policy on both nodes and stays (#4).
+at fw1 'sudo sparewall rollback'
+wait_for 120 "fw1 in sync after the rollback" in_sync fw1
+wait_for 120 "fw2 in sync after the rollback" in_sync fw2
+sleep 15
+for n in fw1 fw2; do
+    [ "$(at "$n" "sudo sparewall get 'policy.users->self.action'")" = drop ] \
+        || fail "$n does not run the rolled-back policy"
+done
+! peer_api 169.254.77.1 || fail "a LAN client reached the peer API after the rollback"
 ns users ip route del 169.254.77.0/24
 
 log "cutting only the sync VLAN"

@@ -194,7 +194,7 @@ Every change, whether a full document or a one-line `set`, becomes a numbered **
 5. **Confirm window:** unless `Confirm(N)` arrives within the requested time, the coordinator re-activates N−1. A change that cuts off management access therefore reverts itself.
 6. **Peer:** after local confirmation, the generation is pushed to the peer through the sync tunnel and goes through the same steps there. During upgrades the BACKUP node is changed first.
 
-Generations are kept on disk with their author, timestamp and diff summary; `sparewall history` lists them and `sparewall rollback N` returns to one.
+Generations are kept on disk with their author, timestamp and diff summary; `sparewall history` lists them and `sparewall rollback N` returns to one. A rollback is itself a new generation carrying generation N's document, so the generation it replaces stays in history and, in a pair, the rollback is pushed to the peer like any other change (a change still in its confirm window is simply discarded, since it was never pushed).
 
 ### What a generation carries
 
@@ -209,10 +209,10 @@ Each node reports a **desired** hash (the confirmed generation it holds) and an 
 
 | State | Condition | Meaning |
 | --- | --- | --- |
-| In sync | All four hashes equal | Both nodes hold and run the same config |
+| In sync | All four hashes equal, and neither node's history is missing the other's generations | Both nodes hold and run the same config |
 | Applying | Desired equal, an applied hash differs, apply in progress | Normal for seconds after a change |
 | Apply failed | Desired ≠ applied on a node after the apply finished | That node runs older config; alert |
-| Behind | The peer's generation is an ancestor of the local one | Push pending; retried automatically |
+| Behind | The peer's generation is an ancestor of the local one (even with equal content: after a change and its rollback, the peer still lacks both) | Push pending; retried automatically. Generations before the last are stored without being run |
 | Diverged | Desired hashes differ and neither descends from the other | Changes were made on both sides; needs a decision |
 
 ### Divergence policy
@@ -267,7 +267,7 @@ method Apply(config: object, base: int, confirm_seconds: ?int) -> (generation: G
 method Merge(patch: object, base: int, confirm_seconds: ?int) -> (generation: Generation, changed: []string)
 method Patch(ops: []object, base: int, confirm_seconds: ?int) -> (generation: Generation, changed: []string)
 method Confirm(id: int) -> ()
-method Rollback(id: ?int) -> (generation: Generation)
+method Rollback(id: ?int, allow_diverge: ?bool) -> (generation: Generation)
 method GetConfig(id: ?int) -> (config: object, generation: Generation)
 method Export(id: ?int) -> (config: object)
 method History(limit: ?int) -> (generations: []Generation)

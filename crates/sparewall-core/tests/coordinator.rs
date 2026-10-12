@@ -47,6 +47,7 @@ fn opts(base: u64, confirm: Option<u32>) -> ApplyOptions {
         confirm_seconds: confirm,
         author: "test".into(),
         dry_run: false,
+        note: None,
     }
 }
 
@@ -194,23 +195,74 @@ fn reboot_during_window_reverts() {
 }
 
 #[test]
-fn rollback_to_base_and_to_id() {
+fn rollback_is_a_new_generation() {
+    let mut t = setup();
+    t.c.apply(example(), &opts(0, None)).unwrap();
+    let h1 = t.c.generation(1).unwrap().hash;
+    let mut v = example();
+    v["policy"]["wan->self"]["action"] = json!("reject");
+    t.c.apply(v, &opts(1, None)).unwrap();
+    let h2 = t.c.generation(2).unwrap().hash;
+
+    // Back to the base: generation 1's document as generation 3, on top
+    // of 2, which stays in history.
+    let g = t.c.rollback(None, "admin").unwrap();
+    assert_eq!((g.id, g.base, &g.hash), (3, Some(2), &h1));
+    assert_eq!(g.author, "admin");
+    assert_eq!(g.summary[0], "rollback to generation 1");
+    assert_eq!(t.c.active().unwrap(), 3);
+    assert_eq!(t.c.state().unwrap().confirmed, 3);
+    assert_eq!(
+        t.c.document_value(3).unwrap()["policy"]["wan->self"]["action"],
+        t.c.document_value(1).unwrap()["policy"]["wan->self"]["action"]
+    );
+    let ids: Vec<u64> = t.c.history(None).unwrap().iter().map(|g| g.id).collect();
+    assert_eq!(ids, [3, 2, 1]);
+    assert!(matches!(
+        t.c.drain_events().last(),
+        Some(Event::RolledBack { to: 3, from: 2, .. })
+    ));
+
+    // To an explicit id, and back again: each is a new generation.
+    let g = t.c.rollback(Some(2), "admin").unwrap();
+    assert_eq!((g.id, g.base, &g.hash), (4, Some(3), &h2));
+    // Rolling back to what is already running changes nothing.
+    let g = t.c.rollback(Some(2), "admin").unwrap();
+    assert_eq!(g.id, 4);
+    assert!(matches!(
+        t.c.rollback(Some(9), "admin"),
+        Err(Error::NotFound(9))
+    ));
+    // A new change after a rollback gets a fresh id and records its base.
+    let mut v = example();
+    v["policy"]["users->wan"]["action"] = json!("reject");
+    let r = t.c.apply(v, &opts(4, None)).unwrap();
+    assert_eq!((r.generation.id, r.generation.base), (5, Some(4)));
+}
+
+#[test]
+fn rollback_discards_a_pending_change() {
     let mut t = setup();
     t.c.apply(example(), &opts(0, None)).unwrap();
     let mut v = example();
     v["policy"]["wan->self"]["action"] = json!("reject");
-    t.c.apply(v, &opts(1, None)).unwrap();
-    let g = t.c.rollback(None).unwrap();
-    assert_eq!(g.id, 1);
-    assert_eq!(t.c.active().unwrap(), 1);
-    let g = t.c.rollback(Some(2)).unwrap();
-    assert_eq!(g.id, 2);
-    assert!(matches!(t.c.rollback(Some(9)), Err(Error::NotFound(9))));
-    // A new change after a rollback gets a fresh id and records its base.
-    let mut v = example();
+    t.c.apply(v.clone(), &opts(1, None)).unwrap();
     v["policy"]["users->wan"]["action"] = json!("reject");
-    let r = t.c.apply(v, &opts(2, None)).unwrap();
-    assert_eq!((r.generation.id, r.generation.base), (3, Some(2)));
+    t.c.apply(v, &opts(2, Some(600))).unwrap();
+    // The unconfirmed change never left this node: returning to its
+    // revert target is no new generation.
+    let g = t.c.rollback(None, "admin").unwrap();
+    assert_eq!(g.id, 2);
+    assert_eq!(t.c.active().unwrap(), 2);
+    assert!(t.c.state().unwrap().pending.is_none());
+    // Past the revert target, the rest is a new generation.
+    let mut v = example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    t.c.apply(v, &opts(2, Some(600))).unwrap();
+    let g = t.c.rollback(Some(1), "admin").unwrap();
+    assert_eq!((g.id, g.base), (5, Some(2)));
+    assert_eq!(g.hash, t.c.generation(1).unwrap().hash);
+    assert!(t.c.state().unwrap().pending.is_none());
 }
 
 #[test]
@@ -328,7 +380,7 @@ fn services_follow_generations() {
     let last = t.c.system().log.last().unwrap().clone();
     assert!(last.ends_with("changed dhcp"), "{last}");
     // Back to bootstrap: the providers stop.
-    t.c.rollback(Some(0)).unwrap();
+    t.c.rollback(Some(0), "admin").unwrap();
     assert_eq!(t.c.system().running, ["chronyd.service"]);
 }
 
@@ -424,9 +476,9 @@ fn backup_and_restore_drill() {
         Level::Ok
     );
     // Older generations come back too, and re-render on demand.
-    let g = c.rollback(None).unwrap();
-    assert_eq!(g.id, 1);
-    assert_eq!(c.history(None).unwrap().len(), 2);
+    let g = c.rollback(None, "admin").unwrap();
+    assert_eq!((g.id, &g.hash), (3, &c.generation(1).unwrap().hash));
+    assert_eq!(c.history(None).unwrap().len(), 3);
 }
 
 fn pair_example() -> Value {
@@ -510,6 +562,211 @@ fn pair_push_conflict_and_sync_from() {
         b.c.receive(&bad, a.c.document_value(3).unwrap()),
         Err(Error::Validation(_))
     ));
+}
+
+/// One background sync pass from `from` towards `to`, as sparewalld does
+/// it: push only when `to` is behind; only the last generation runs there.
+/// Returns the state `from` saw.
+fn sync_pass(from: &mut T, to: &mut T) -> sparewall_core::pair::SyncState {
+    use sparewall_core::pair::{SyncState, push_plan, sync_state};
+    let (vf, vt) = (from.c.view().unwrap(), to.c.view().unwrap());
+    let state = sync_state(&vf, Some(&vt));
+    if state == SyncState::PeerBehind {
+        let plan = push_plan(&vf, vt.active, &vt.desired).unwrap();
+        let last = *plan.last().unwrap();
+        for id in plan {
+            let g = from.c.generation(id).unwrap();
+            let v = from.c.document_value(id).unwrap();
+            if id == last {
+                to.c.receive(&g, v).unwrap();
+            } else {
+                to.c.receive_history(&g, v).unwrap();
+            }
+        }
+    }
+    state
+}
+
+/// Issue #4: both nodes confirm generation 2, one rolls back, and
+/// background sync must carry the rollback to the peer rather than push
+/// generation 2 back. Either node may roll back.
+#[test]
+fn pair_rollback_is_not_undone_by_sync() {
+    use sparewall_core::pair::{SyncState, sync_state};
+    for roller in ["fw1", "fw2"] {
+        let mut a = pair_node("fw1");
+        let mut b = pair_node("fw2");
+        a.c.apply(pair_example(), &opts(0, None)).unwrap();
+        let mut v = pair_example();
+        v["networks"]["users"]["mtu"] = json!(1400);
+        a.c.apply(v, &opts(1, None)).unwrap();
+        sync_pass(&mut a, &mut b);
+        assert_eq!(b.c.active().unwrap(), 2);
+        let h1 = a.c.generation(1).unwrap().hash;
+
+        let (r, other) = if roller == "fw1" {
+            (&mut a, &mut b)
+        } else {
+            (&mut b, &mut a)
+        };
+        let g = r.c.rollback(None, "admin").unwrap();
+        assert_eq!((g.id, &g.hash), (3, &h1), "{roller}");
+        // Both directions of background sync, several times over.
+        for _ in 0..3 {
+            assert_ne!(
+                sync_pass(other, r),
+                SyncState::PeerBehind,
+                "{roller}: the peer pushed"
+            );
+            sync_pass(r, other);
+        }
+        for n in [&*r, &*other] {
+            assert_eq!(n.c.active().unwrap(), 3, "{roller}");
+            assert_eq!(n.c.generation(3).unwrap().hash, h1, "{roller}");
+            assert!(
+                n.c.document_value(3).unwrap()["networks"]["users"]
+                    .get("mtu")
+                    .is_none()
+            );
+            // The rolled-back configuration stays in history.
+            assert_eq!(
+                n.c.history(None)
+                    .unwrap()
+                    .iter()
+                    .map(|g| g.id)
+                    .collect::<Vec<_>>(),
+                [3, 2, 1],
+                "{roller}"
+            );
+        }
+        assert_eq!(
+            sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+            SyncState::InSync,
+            "{roller}"
+        );
+    }
+}
+
+/// The peer misses a change, then the rollback of it: the content the peer
+/// runs is already right, but its history is not, so it is still behind.
+/// It catches up without ever running the rolled-back generation, and a
+/// later ordinary change on it is no divergence (review of #16).
+#[test]
+fn pair_rollback_of_a_change_the_peer_missed() {
+    use sparewall_core::pair::{SyncState, sync_state};
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    sync_pass(&mut a, &mut b);
+    assert_eq!(b.c.active().unwrap(), 1);
+    // b is away while a makes generation 2 and rolls it back.
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    a.c.rollback(None, "admin").unwrap();
+    assert_eq!(a.c.active().unwrap(), 3);
+    let (va, vb) = (a.c.view().unwrap(), b.c.view().unwrap());
+    assert_eq!(va.desired, vb.desired, "same content");
+    assert_eq!(sync_state(&va, Some(&vb)), SyncState::PeerBehind);
+    assert_eq!(sync_state(&vb, Some(&va)), SyncState::LocalBehind);
+
+    b.c.drain_events();
+    let installed_before = b.c.system().log.len();
+    sync_pass(&mut a, &mut b);
+    assert_eq!(b.c.active().unwrap(), 3);
+    let ids: Vec<u64> = b.c.history(None).unwrap().iter().map(|g| g.id).collect();
+    assert_eq!(ids, [3, 2, 1], "b has the whole history");
+    // Generation 2 was stored, never run.
+    for e in b.c.drain_events() {
+        assert!(!matches!(e, Event::Applied { id: 2, .. }), "{e:?}");
+    }
+    // Generations 1 and 3 have the same content, so going from 1 to 3
+    // reloads nothing; running 2 on the way (an MTU change) would have.
+    assert!(
+        !b.c.system().log[installed_before..]
+            .iter()
+            .any(|l| l.starts_with("networkd")),
+        "b ran the rolled-back generation: {:?}",
+        &b.c.system().log[installed_before..]
+    );
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+
+    // An ordinary change on b afterwards is pushed to a, not divergence.
+    let mut v = b.c.document_value(3).unwrap();
+    v["networks"]["users"]["mtu"] = json!(1300);
+    b.c.apply(v, &opts(3, None)).unwrap();
+    assert_eq!(sync_pass(&mut b, &mut a), SyncState::PeerBehind);
+    assert_eq!(a.c.active().unwrap(), 4);
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+}
+
+/// Nodes that applied the same document independently, with unrelated
+/// histories, stay in sync (how a pair is formed).
+#[test]
+fn same_content_with_unrelated_histories_is_in_sync() {
+    use sparewall_core::pair::{SyncState, sync_state};
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(0, None)).unwrap();
+    a.c.apply(pair_example(), &opts(1, None)).unwrap();
+    b.c.apply(pair_example(), &opts(0, None)).unwrap();
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+}
+
+/// A rollback made while the peer was away is an ordinary change: it
+/// reaches the peer when it returns, unless the peer changed too, which
+/// is divergence for `sync --from` to resolve.
+#[test]
+fn pair_rollback_with_the_peer_away() {
+    use sparewall_core::pair::{SyncState, sync_state};
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    sync_pass(&mut a, &mut b);
+
+    // b was away; when it returns it takes the rollback.
+    a.c.rollback(None, "admin").unwrap();
+    assert_eq!(sync_pass(&mut a, &mut b), SyncState::PeerBehind);
+    assert_eq!(b.c.active().unwrap(), 3);
+
+    // Both change while apart: a rolls back, b makes another change.
+    a.c.rollback(Some(2), "admin").unwrap();
+    let mut v = b.c.document_value(3).unwrap();
+    v["networks"]["users"]["mtu"] = json!(1300);
+    b.c.apply(v, &opts(3, None)).unwrap();
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::Diverged
+    );
+    // Nothing merges by itself; an admin picks a side.
+    for _ in 0..2 {
+        sync_pass(&mut a, &mut b);
+        sync_pass(&mut b, &mut a);
+    }
+    assert_ne!(
+        a.c.generation(4).unwrap().hash,
+        b.c.generation(4).unwrap().hash
+    );
+    let g = a.c.generation(4).unwrap();
+    b.c.adopt(&g, a.c.document_value(4).unwrap()).unwrap();
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
 }
 
 #[test]
