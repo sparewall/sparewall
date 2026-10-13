@@ -35,4 +35,23 @@ awk -v s="$since" 'BEGIN { printf "[%.6f] 64 bytes from x\n", s + 2 }' > "$log"
 g=$(gap "$log" "$since")
 awk -v g="$g" 'BEGIN { exit !(g >= 28) }' || { echo "gap after the last reply: $g, expected about 28" >&2; exit 1; }
 [ "$(gap /dev/null "$since")" = never ] || { echo "no replies should be never" >&2; exit 1; }
+# A fast upgrade: vpnb rekeyed 90 s ago (the master-loss probe) and the
+# handover comes at once. vpnb must be aged past 120 s first.
+(
+    cd "$WORK"
+    declare -A HS
+    now=$(date +%s)
+    HS[vpnb]=$((now - 90)) HS[vpnc]=$((now - 30)) HS[natk]=$now
+    SHIFT=0
+    # Sleeping ages every session; renewing one makes it new again.
+    handshake() { echo $((HS[$1] - SHIFT)); }
+    sleep() { SHIFT=$((SHIFT + ${1%.*})); }
+    fresh_session() { HS[$1]=$(($(date +%s) + SHIFT)); }
+    idle_recovery() { echo 1.0; }
+    keepalive_recovery() { echo 1; }
+    upgrade() { echo "[stage-peer] staging"; echo "[failover] stopping keepalived"; echo "[reboot] rebooting"; }
+    vpn_through_upgrade upgrade >/dev/null
+    [ "$(session_age vpnb)" -ge 120 ] || { echo "vpnb not aged before the upgrade" >&2; exit 1; }
+    [ -n "${VPN_MOVED_AT:-}" ] || { echo "no probing at the handover" >&2; exit 1; }
+) || exit 1
 echo "vpn checks ok"

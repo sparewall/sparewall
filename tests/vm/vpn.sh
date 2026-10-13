@@ -92,6 +92,17 @@ handshake() { ns "$1" wg show wg0 latest-handshakes | awk '{print $2}'; }
 
 session_age() { echo $(( $(date +%s) - $(handshake "$1") )); }
 
+# Wait until the client's current session is at least $2 seconds old
+# (each probe that makes it rekey starts a new one).
+age_session() { # client seconds
+    local age
+    age=$(session_age "$1")
+    if [ "$age" -lt "$2" ]; then
+        echo "  letting $1's session age ($age s) past $2 s"
+        sleep $(($2 - age))
+    fi
+}
+
 reach() { ns "$1" ping -c 1 -W 1 "$VPN_TARGET" >/dev/null 2>&1; }
 
 # Put an idle client on a new session: forget the peer and its keys, then
@@ -128,7 +139,6 @@ vpn_setup() {
     done
     has_session() { [ "$(handshake "$1")" -gt 0 ]; }
     wait_for 30 "natk has a session from keepalives alone" has_session natk
-    VPNB_SINCE=$(handshake vpnb)
     # Inner flows from vpna (the echo servers run in sw-guests), and
     # timestamped pings from the active clients.
     ns vpna python3 "$WORK/echo.py" client "$VPN_TARGET" 120 > vpn-tcp.log 2>&1 &
@@ -146,11 +156,7 @@ vpn_tcp_count() { tail -1 vpn-tcp.log | grep -E '^[0-9]+$'; }
 # Make vpnb's session older than WireGuard's REKEY_AFTER_TIME (120 s),
 # and give vpnc a fresh one, just before the master goes.
 vpn_before_loss() {
-    local age=$(( $(date +%s) - VPNB_SINCE ))
-    if [ "$age" -lt 125 ]; then
-        log "letting vpnb's session age ($age s) past 120 s"
-        sleep $((125 - age))
-    fi
+    age_session vpnb 125
     wan_ns vpnc 203.0.113.52
     wg_client vpnc 10.99.0.12
     wait_for 30 "vpnc reaches $VPN_TARGET through the VPN" reach vpnc
@@ -158,8 +164,10 @@ vpn_before_loss() {
 
 # Run the rolling upgrade command ($@) in the background, keeping vpnc's
 # session fresh until the handover, and start probing the moment it
-# happens. Returns the command's status.
+# happens. vpnb's session is renewed by the probes after master loss, so
+# it is aged again first. Returns the command's status.
 vpn_through_upgrade() {
+    age_session vpnb 125
     "$@" > upgrade.log 2>&1 &
     local up=$! t0=$SECONDS rc
     until grep -q '^\[failover\]' upgrade.log; do
