@@ -68,8 +68,8 @@ sparewall vpn client-config laptop --qr
 
 After a failover, or the gateway's handover during an upgrade, each
 client is cut off until it makes a new handshake with the new master. A
-client sending traffic recovers after about 16 seconds, or at its next
-packet if its session is more than two minutes old; an idle client
+client sending traffic recovers after about 16 seconds, or within a few
+seconds if its session is more than two minutes old; an idle client
 recovers the next time it sends. These are the times the pair test
 measures with Linux WireGuard clients; other clients use the same protocol
 timers.
