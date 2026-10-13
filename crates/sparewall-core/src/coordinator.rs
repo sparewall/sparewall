@@ -414,6 +414,15 @@ impl<S: System> Coordinator<S> {
             if let Err(e2) = self.activate(state.active, Some(&rendered), false) {
                 tracing::error!(error = %e2, "restoring the previous generation also failed");
             }
+            // It never ran: keep it out of history and free its id.
+            match self.store.set_aside(g.id, "failed") {
+                Ok(to) => {
+                    tracing::info!(id = g.id, kept = %to.display(), "set aside the failed generation")
+                }
+                Err(e2) => {
+                    tracing::error!(id = g.id, error = %e2, "cannot set aside the failed generation")
+                }
+            }
             return Err(e);
         }
 
@@ -781,10 +790,12 @@ impl<S: System> Coordinator<S> {
                 }
                 return Ok(());
             }
-            return Err(Error::Conflict {
-                current: state.active,
-            });
         }
+        // A local generation with this id and other content is above the
+        // active one if the push extends the active one: it never ran here
+        // (a failed apply, a crash before `state.json` named it, history or
+        // a rejected push from the peer), and `install_foreign` sets it
+        // aside. One that ran fails the check: that is divergence.
         if state.pending.is_some() || !self.extends_active(g.base)? {
             return Err(Error::Conflict {
                 current: state.active,
@@ -799,14 +810,12 @@ impl<S: System> Coordinator<S> {
     /// this node ever running the rolled-back configuration.
     pub fn receive_history(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
         let state = self.store.state()?;
-        if self.store.exists(g.id) {
-            if self.store.meta(g.id)?.hash == g.hash {
-                return Ok(());
-            }
-            return Err(Error::Conflict {
-                current: state.active,
-            });
+        let replace = self.store.exists(g.id);
+        if replace && self.store.meta(g.id)?.hash == g.hash {
+            return Ok(());
         }
+        // As in `receive`: a different local generation that the push
+        // extends past never ran here.
         if state.pending.is_some() || !self.extends_active(g.base)? {
             return Err(Error::Conflict {
                 current: state.active,
@@ -818,6 +827,10 @@ impl<S: System> Coordinator<S> {
                 "generation {} does not match its hash",
                 g.id
             )]));
+        }
+        if replace {
+            let to = self.store.set_aside(g.id, "diverged")?;
+            tracing::warn!(id = g.id, kept = %to.display(), "set aside a generation that never ran");
         }
         self.store.save(g, &doc, &rendered)?;
         tracing::info!(id = g.id, "stored the peer's generation in history");
@@ -881,8 +894,9 @@ impl<S: System> Coordinator<S> {
         let old_rendered = self.rendered_for(from)?;
         self.dry_run(&rendered, Some(&old_rendered))?;
         if self.store.exists(g.id) {
-            // Only `adopt` gets here: keep the diverged generation aside.
-            let to = self.store.set_aside(g.id)?;
+            // `adopt`, or a push replacing one that never ran here: keep
+            // the local generation aside.
+            let to = self.store.set_aside(g.id, "diverged")?;
             tracing::warn!(id = g.id, kept = %to.display(), "set aside a diverged generation");
         }
         self.install_vpn_keys(&doc)?;

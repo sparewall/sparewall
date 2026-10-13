@@ -1608,3 +1608,143 @@ fn legacy_history_does_not_block_catch_up() {
         assert_eq!(b.c.generation(2).unwrap().hash, g2.hash, "{path}");
     }
 }
+
+/// Generations stored here under `<id>.<why>-<hash>`.
+fn set_aside_names(t: &T, why: &str) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(t.c.store().root().join("generations"))
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.contains(&format!(".{why}-")))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Issue #24: a local change that failed to activate never ran, so it
+/// leaves history and its id, and the peer's next change (numbered the
+/// same) is accepted rather than refused as a conflict forever.
+#[test]
+fn failed_apply_does_not_block_the_peer() {
+    use sparewall_core::pair::{SyncState, push_plan, sync_state};
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let g1 = a.c.generation(1).unwrap();
+    b.c.receive(&g1, a.c.document_value(1).unwrap(), PeerGate::Immediate)
+        .unwrap();
+
+    // The same failing change twice on b: both attempts are kept aside.
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    for _ in 0..2 {
+        b.c.system().fail_networkd_apply = Some("networkd says no".into());
+        b.c.system().fail_once = true;
+        assert!(matches!(
+            b.c.apply(v.clone(), &opts(1, None)),
+            Err(Error::Apply(_))
+        ));
+        assert_eq!(b.c.active().unwrap(), 1);
+    }
+    let ids = |t: &T| -> Vec<u64> { t.c.history(None).unwrap().iter().map(|g| g.id).collect() };
+    assert_eq!(ids(&b), [1]);
+    let aside = set_aside_names(&b, "failed");
+    assert_eq!(aside.len(), 2, "{aside:?}");
+    assert!(
+        aside.iter().all(|n| n.starts_with("2.failed-")),
+        "{aside:?}"
+    );
+
+    // a's next change is also generation 2.
+    v["networks"]["users"]["mtu"] = json!(1300);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    let (va, vb) = (a.c.view().unwrap(), b.c.view().unwrap());
+    assert_eq!(sync_state(&va, Some(&vb)), SyncState::PeerBehind);
+    for id in push_plan(&va, vb.active, &vb.desired).unwrap() {
+        b.c.receive(
+            &a.c.generation(id).unwrap(),
+            a.c.document_value(id).unwrap(),
+            PeerGate::Immediate,
+        )
+        .unwrap();
+    }
+    assert_eq!(b.c.active().unwrap(), 2);
+    assert_eq!(
+        b.c.document_value(2).unwrap()["networks"]["users"]["mtu"],
+        1300
+    );
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+}
+
+/// Issue #24: a crash after activating a change but before `state.json`
+/// named it comes back on the previous generation, with the change on
+/// disk. The peer's generations with the same ids replace it, whether
+/// pushed as history or to run.
+#[test]
+fn generation_left_by_a_crash_does_not_block_the_peer() {
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let g1 = a.c.generation(1).unwrap();
+    b.c.receive(&g1, a.c.document_value(1).unwrap(), PeerGate::Immediate)
+        .unwrap();
+
+    // b applies generation 2 and "crashes" before recording it.
+    let state = b.c.store().root().join("state.json");
+    let before = std::fs::read(&state).unwrap();
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    b.c.apply(v.clone(), &opts(1, None)).unwrap();
+    std::fs::write(&state, before).unwrap();
+    let id = b.c.identity().clone();
+    b.c = Coordinator::new(Store::open(b._dir.path()).unwrap(), Fake::default(), id);
+    assert_eq!(b.c.boot(false).unwrap(), 1);
+    assert!(b.c.store().exists(2));
+
+    // a makes generations 2 and 3; b stores 2 as history and runs 3.
+    for mtu in [1300, 1200] {
+        v["networks"]["users"]["mtu"] = json!(mtu);
+        let base = a.c.active().unwrap();
+        a.c.apply(v.clone(), &opts(base, None)).unwrap();
+    }
+    let g2 = a.c.generation(2).unwrap();
+    b.c.receive_history(&g2, a.c.document_value(2).unwrap())
+        .unwrap();
+    let g3 = a.c.generation(3).unwrap();
+    b.c.receive(&g3, a.c.document_value(3).unwrap(), PeerGate::Immediate)
+        .unwrap();
+    assert_eq!(b.c.active().unwrap(), 3);
+    assert_eq!(b.c.generation(2).unwrap().hash, g2.hash);
+    assert_eq!(set_aside_names(&b, "diverged").len(), 1);
+    assert_eq!(b.c.lineage().unwrap(), a.c.lineage().unwrap());
+}
+
+/// A generation this node ran or confirmed is never replaced by a push
+/// with the same id: that is divergence, resolved only by `sync --from`.
+#[test]
+fn a_generation_that_ran_still_conflicts() {
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let g1 = a.c.generation(1).unwrap();
+    b.c.receive(&g1, a.c.document_value(1).unwrap(), PeerGate::Immediate)
+        .unwrap();
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    b.c.apply(v.clone(), &opts(1, None)).unwrap();
+    v["networks"]["users"]["mtu"] = json!(1300);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    let g2 = a.c.generation(2).unwrap();
+    for r in [
+        b.c.receive(&g2, a.c.document_value(2).unwrap(), PeerGate::Immediate),
+        b.c.receive_history(&g2, a.c.document_value(2).unwrap()),
+    ] {
+        assert!(matches!(r, Err(Error::Conflict { current: 2 })), "{r:?}");
+    }
+    assert_eq!(
+        b.c.document_value(2).unwrap()["networks"]["users"]["mtu"],
+        1400
+    );
+}

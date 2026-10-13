@@ -102,6 +102,13 @@ Where the implementation departs from, or settles open questions in,
   tunnel subnet arriving on another interface, ahead of conntrack state,
   zone policy and raw rules, while the forward chain routes nothing into
   or out of the tunnel. No zone-to-self policy can open it.
+- **A generation that never ran gives way.** A local change that fails
+  to activate is moved aside (`generations/<id>.failed-<hash>`), out of
+  history, and its id is reused. One left by a crash before `state.json`
+  named it, or stored as history from the peer, is replaced by the peer's
+  generation with that id when the push extends the active generation
+  (set aside as `<id>.diverged-<hash>`); otherwise every push of that id
+  conflicted until `sync --from` (#24).
 - **Equal-version cluster secrets** made independently by both nodes
   (each applied the pairing document) converge on the one created first.
 - **Health endpoint detail and `/metrics`** need an API token, except

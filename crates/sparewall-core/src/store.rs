@@ -220,13 +220,20 @@ impl Store {
     }
 
     /// Move a generation out of the numbered sequence (kept on disk as
-    /// `generations/<id>.diverged-<hash>`), freeing its id for the peer's.
-    pub fn set_aside(&self, id: u64) -> Result<PathBuf, Error> {
+    /// `generations/<id>.<why>-<hash>`, with a counter if that is taken),
+    /// freeing its id: for the peer's generation (`diverged`), or after
+    /// it failed to run (`failed`).
+    pub fn set_aside(&self, id: u64, why: &str) -> Result<PathBuf, Error> {
         let g = self.meta(id)?;
-        let to = self
-            .root
-            .join("generations")
-            .join(format!("{id}.diverged-{}", &g.hash[..g.hash.len().min(12)]));
+        let base = format!("{id}.{why}-{}", &g.hash[..g.hash.len().min(12)]);
+        let dir = self.root.join("generations");
+        let to = (0..)
+            .map(|n| match n {
+                0 => dir.join(&base),
+                n => dir.join(format!("{base}.{n}")),
+            })
+            .find(|p| !p.exists())
+            .expect("a free name");
         fs::rename(self.gen_dir(id), &to).map_err(|e| Error::io(&to, e))?;
         Ok(to)
     }
