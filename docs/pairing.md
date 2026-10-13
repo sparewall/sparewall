@@ -29,6 +29,21 @@ Private keys never leave their node; only public keys are in the document.
 Cluster secrets (such as the remote-access VPN server key) are sent through
 the tunnel and re-encrypted by the receiving node.
 
+## Changing configuration
+
+Apply a change on either node; it runs there first and is pushed to the
+other node only once confirmed. Make risky changes on the BACKUP, which
+carries no traffic. The full contract, including what happens if a node
+fails or restarts midway, is in
+[design.md](design.md#configuration-lifecycle).
+
+A change to the sync link itself (the `sync` network's addresses, VLAN or
+ports, `cluster.sync_port`, or a sync key) cuts the tunnel the push travels
+through, so it is not yet pushed for you
+([#25](https://github.com/sparewall/sparewall/issues/25)). Apply the same
+document on the other node with `--allow-diverge`, then check
+`sparewall status` and resolve any divergence with `sparewall sync --from`.
+
 ## Sync states
 
 `sparewall status` shows the pair's state:

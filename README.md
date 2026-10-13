@@ -14,8 +14,8 @@ nftables and a small Rust coordinator.
   [bootc](https://bootc-dev.github.io/bootc/) image; an upgrade is a reboot
   into the new image, and a rollback is a reboot into the old one.
 - **One source of truth.** One JSON/YAML document describes the whole
-  deployment. Every change is validated, applied atomically, and reverted
-  automatically unless confirmed.
+  deployment. Every change is validated, then fully applied or reverted,
+  and reverted automatically unless confirmed.
 - **HA when wanted, not required.** The same image and document shape run
   one node or an active/standby pair.
 - **Built from standard parts:** systemd-networkd, nftables, keepalived,
