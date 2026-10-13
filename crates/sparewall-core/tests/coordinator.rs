@@ -537,14 +537,23 @@ fn replication_link_loss_degrades_health() {
             }
         }
 
-        // The trunk carries traffic: losing it fails health.
-        t.c.system().links.insert("uplink".into(), "down".into());
-        let (links, _, overall) = levels(&mut t);
-        assert_eq!((links, overall), (Level::Failed, Level::Failed), "{name}");
-        let msg = message(&mut t, "links");
-        assert!(msg.contains("uplink is down"), "{name}: {msg}");
-        all_up(&mut t);
-        assert_eq!(levels(&mut t), ok, "{name}: uplink restored");
+        // The trunk carries traffic: losing it fails health, and any
+        // separate replication links still report on their own.
+        for (state, said) in [(Some("down"), "is down"), (None, "is missing")] {
+            match state {
+                Some(s) => t.c.system().links.insert("uplink".into(), s.into()),
+                None => t.c.system().links.remove("uplink"),
+            };
+            assert_eq!(
+                levels(&mut t),
+                (Level::Failed, ok.1, Level::Failed),
+                "{name}: uplink {said}"
+            );
+            let msg = message(&mut t, "links");
+            assert!(msg.contains(&format!("uplink {said}")), "{name}: {msg}");
+            all_up(&mut t);
+            assert_eq!(levels(&mut t), ok, "{name}: uplink restored");
+        }
     }
 }
 
