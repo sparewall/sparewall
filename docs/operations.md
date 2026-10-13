@@ -73,11 +73,14 @@ sparewall vpn client-config laptop --qr
 | `/livez` | The coordinator answers |
 | `/readyz`, `/healthz` | 200 when ok or degraded, 503 when failed |
 | `/readyz?verbose`, `/readyz/<check>` | Detail (needs a token) |
-| `/metrics` | Prometheus metrics: the appliance's own and the host's from node\_exporter, which listens only on localhost (needs a token unless `metrics.mode: external`) |
+| `/metrics` | Prometheus metrics: the appliance's own and the host's from node\_exporter, which listens only on localhost (needs a token unless `metrics.mode: external`; `off` disables it) |
 
 ```shell
 curl -k -H "Authorization: Bearer $TOKEN" https://fw1/metrics
 ```
+
+There is no local Prometheus yet: `metrics.mode: local` and
+`metrics.retention` are rejected.
 
 ### What health verifies
 
@@ -170,6 +173,10 @@ return a node to its previous image. The containers signature policy
 rejects images from anywhere but `ghcr.io/sparewall`, whose images must
 carry a valid signature; to upgrade from a mirror, add it to
 `/etc/containers/policy.json` with its own signature requirement.
+
+Upgrades run only when asked for: scheduled upgrades
+(`updates.mode: windowed`, `updates.window`) are not built yet and are
+rejected.
 
 ## Exit codes
 

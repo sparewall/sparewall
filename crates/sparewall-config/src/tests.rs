@@ -381,3 +381,37 @@ fn self_zone_is_reserved() {
     let d = edit(STANDALONE, json!({"zones": {"self": {"networks": []}}}));
     assert!(has_error(&d, "built in"));
 }
+
+#[test]
+fn rejects_settings_not_built_yet() {
+    let d = edit(
+        STANDALONE,
+        json!({"provider_options": {"kea": {"valid-lifetime": 600}}}),
+    );
+    assert!(has_error(
+        &d,
+        "provider_options.kea: provider passthrough options"
+    ));
+    let d = edit(STANDALONE, json!({"metrics": {"mode": "local"}}));
+    assert!(has_error(&d, "metrics.mode: a local Prometheus"));
+    let d = edit(
+        STANDALONE,
+        json!({"metrics": {"mode": "external", "retention": "15d"}}),
+    );
+    assert!(has_error(&d, "metrics.retention:"));
+    let d = edit(STANDALONE, json!({"updates": {"mode": "windowed"}}));
+    assert!(has_error(&d, "updates.mode: scheduled upgrades"));
+    let d = edit(
+        STANDALONE,
+        json!({"updates": {"mode": "manual", "window": "Sun 03:00"}}),
+    );
+    assert!(has_error(&d, "updates.window:"));
+    // What is built stays valid.
+    for metrics in ["external", "off"] {
+        assert_valid(&edit(STANDALONE, json!({"metrics": {"mode": metrics}})));
+    }
+    assert_valid(&edit(
+        STANDALONE,
+        json!({"updates": {"channel": "testing", "mode": "manual"}}),
+    ));
+}

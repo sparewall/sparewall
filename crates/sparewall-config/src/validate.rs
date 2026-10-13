@@ -51,6 +51,7 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
     v.vpn();
     v.tls();
     v.secrets();
+    v.unbuilt();
     v.issues
         .sort_by(|a, b| b.severity.cmp(&a.severity).then(a.path.cmp(&b.path)));
     v.issues
@@ -1018,6 +1019,46 @@ impl Validator<'_> {
                     "the resolver never serves the WAN",
                 ),
                 _ => {}
+            }
+        }
+    }
+
+    /// Settings the schema reserves for features not built yet. Accepting
+    /// them would suggest they take effect.
+    fn unbuilt(&mut self) {
+        let doc = self.doc;
+        for name in doc.provider_options.keys() {
+            self.err(
+                format!("provider_options.{name}"),
+                "provider passthrough options are not supported yet",
+            );
+        }
+        if let Some(m) = &doc.metrics {
+            if m.mode == MetricsMode::Local {
+                self.err(
+                    "metrics.mode",
+                    "a local Prometheus is not supported yet; use external or off",
+                );
+            }
+            if m.retention.is_some() {
+                self.err(
+                    "metrics.retention",
+                    "retention applies to a local Prometheus, which is not supported yet",
+                );
+            }
+        }
+        if let Some(u) = &doc.updates {
+            if u.mode == Some(UpdateMode::Windowed) {
+                self.err(
+                    "updates.mode",
+                    "scheduled upgrades are not supported yet; use manual and run sparewall upgrade",
+                );
+            }
+            if u.window.is_some() {
+                self.err(
+                    "updates.window",
+                    "maintenance windows apply to scheduled upgrades, which are not supported yet",
+                );
             }
         }
     }

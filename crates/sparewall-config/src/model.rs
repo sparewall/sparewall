@@ -74,7 +74,8 @@ pub struct Document {
     /// OS image update policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updates: Option<Updates>,
-    /// Per-provider passthrough settings, keyed by provider name.
+    /// Per-provider passthrough settings, keyed by provider name. Not
+    /// built yet: any entry is rejected.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_options: BTreeMap<String, Value>,
 }
@@ -737,8 +738,13 @@ pub struct RemoteLog {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Metrics {
+    /// `external`: `/metrics` answers the management network without a
+    /// token, for an external Prometheus. `off`: not served. (Without a
+    /// `metrics` section it needs a token.) `local` (a local Prometheus)
+    /// is not built yet and is rejected.
     pub mode: MetricsMode,
-    /// Local Prometheus retention, e.g. `15d`.
+    /// Local Prometheus retention, e.g. `15d`. Not built yet, with the
+    /// local mode: rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<String>,
 }
@@ -775,9 +781,13 @@ pub struct Updates {
     /// `stable` or `testing`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// `manual` (the default): upgrades run when asked for, with
+    /// `sparewall upgrade`. `windowed` (automatic upgrades in `window`) is
+    /// not built yet and is rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<UpdateMode>,
-    /// Maintenance window as a systemd calendar expression.
+    /// Maintenance window as a systemd calendar expression. Not built yet,
+    /// with the windowed mode: rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<String>,
 }

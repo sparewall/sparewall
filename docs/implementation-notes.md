@@ -165,3 +165,8 @@ Where the implementation departs from, or settles open questions in,
 - ACME `http-01` and lego-based DNS providers (RFC 2136 is built in).
 - Schema migrations (only schema 1 exists); the Web UI.
 - The SELinux policy module for the coordinator, benchmarks.
+- A local Prometheus (`metrics.mode: local`, `metrics.retention`),
+  scheduled upgrades (`updates.mode: windowed`, `updates.window`) and
+  provider passthrough (`provider_options`). The schema keeps their
+  fields, and validation rejects them with an error at their path, so a
+  document never shows a setting that has no effect.
