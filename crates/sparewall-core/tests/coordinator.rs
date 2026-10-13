@@ -1428,3 +1428,109 @@ fn tokens_create_check_revoke() {
     assert!(t.c.token_revoke("prom").unwrap());
     assert_eq!(t.c.token_check(&tok).unwrap(), None);
 }
+
+/// Settings earlier versions accepted and this one rejects (issue #9),
+/// as patches to the pair example, with the path each is rejected at.
+fn unbuilt_settings() -> Vec<(Value, &'static str)> {
+    vec![
+        (
+            json!({"provider_options": {"kea": {"valid-lifetime": 600}}}),
+            "provider_options.kea",
+        ),
+        (json!({"metrics": {"mode": "local"}}), "metrics.mode"),
+        (
+            json!({"metrics": {"mode": "external", "retention": "15d"}}),
+            "metrics.retention",
+        ),
+        (json!({"updates": {"mode": "windowed"}}), "updates.mode"),
+        (
+            json!({"updates": {"mode": "manual", "window": "Sun 03:00"}}),
+            "updates.window",
+        ),
+    ]
+}
+
+/// A generation as an earlier version stored it, bypassing validation.
+fn legacy(id: u64, base: u64, patch: &Value) -> (Generation, Value) {
+    let mut v = pair_example();
+    for (k, x) in patch.as_object().unwrap() {
+        v[k] = x.clone();
+    }
+    let doc = sparewall_config::from_value(v.clone()).unwrap();
+    let g = Generation {
+        id,
+        hash: sparewall_config::hash(&doc),
+        base: Some(base),
+        schema: 1,
+        author: "old version".into(),
+        created: "2026-01-01T00:00:00Z".into(),
+        summary: vec![],
+    };
+    (g, v)
+}
+
+fn store_legacy(t: &T, g: &Generation, v: &Value) {
+    let doc = sparewall_config::from_value(v.clone()).unwrap();
+    let rendered = sparewall_render::render(&doc, t.c.node()).unwrap();
+    t.c.store().save(g, &doc, &rendered).unwrap();
+}
+
+/// Issue #9 review: a generation stored before the upgrade (in history,
+/// or pushed and then rolled back) is checked as this version would
+/// before a push or `sync --from` runs it, and nothing changes when it
+/// is refused.
+#[test]
+fn stored_generations_are_checked_before_they_run() {
+    for (patch, path) in unbuilt_settings() {
+        let (_a, mut b, _, _) = peers_with_change();
+        let (g2, v2) = legacy(2, 1, &patch);
+        store_legacy(&b, &g2, &v2);
+        let before = running(&mut b);
+        for gate in [PeerGate::PeerConfirms, PeerGate::Immediate] {
+            let r = b.c.receive(&g2, v2.clone(), gate);
+            assert!(
+                matches!(&r, Err(Error::Validation(e)) if e.iter().any(|m| m.starts_with(path))),
+                "{path}: {r:?}"
+            );
+            let r = b.c.adopt(&g2, v2.clone(), gate);
+            assert!(
+                matches!(&r, Err(Error::Validation(e)) if e.iter().any(|m| m.starts_with(path))),
+                "{path}: {r:?}"
+            );
+            let st = b.c.state().unwrap();
+            assert_eq!(
+                (st.active, st.confirmed, st.pending),
+                (1, 1, None),
+                "{path}"
+            );
+            assert_eq!(running(&mut b), before, "{path}");
+        }
+    }
+}
+
+/// Issue #9 review: a peer behind by a legacy generation the other node
+/// has since repaired catches up through it, keeping it in history
+/// without running it.
+#[test]
+fn legacy_history_does_not_block_catch_up() {
+    for (patch, path) in unbuilt_settings() {
+        let (_a, mut b, _, _) = peers_with_change();
+        let (g2, v2) = legacy(2, 1, &patch);
+        b.c.receive_history(&g2, v2).unwrap();
+        // The repaired descendant runs.
+        let mut v3 = pair_example();
+        v3["networks"]["users"]["mtu"] = json!(1400);
+        let doc3 = sparewall_config::from_value(v3.clone()).unwrap();
+        let g3 = Generation {
+            id: 3,
+            hash: sparewall_config::hash(&doc3),
+            base: Some(2),
+            ..g2.clone()
+        };
+        b.c.receive(&g3, v3, PeerGate::Immediate)
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        let st = b.c.state().unwrap();
+        assert_eq!((st.active, st.confirmed), (3, 3), "{path}");
+        assert_eq!(b.c.generation(2).unwrap().hash, g2.hash, "{path}");
+    }
+}

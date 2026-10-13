@@ -279,8 +279,23 @@ impl<S: System> Coordinator<S> {
         Ok(state.active)
     }
 
-    /// Parse and check a document for this node.
+    /// Parse and check a document for this node, to run it.
     pub fn check(&self, value: Value) -> Result<(Document, Vec<String>, Rendered), Error> {
+        self.check_with(value, validate)
+    }
+
+    /// Parse and check a document only to keep it in history: settings
+    /// earlier versions accepted and this one no longer runs are allowed,
+    /// since it will not run unless checked again.
+    fn check_history(&self, value: Value) -> Result<(Document, Vec<String>, Rendered), Error> {
+        self.check_with(value, validate::validate_history)
+    }
+
+    fn check_with(
+        &self,
+        value: Value,
+        validate: fn(&Document) -> Vec<validate::Issue>,
+    ) -> Result<(Document, Vec<String>, Rendered), Error> {
         let doc = sparewall_config::from_value(value)
             .map_err(|e| Error::Validation(vec![e.to_string()]))?;
         let issues = validate(&doc);
@@ -760,6 +775,7 @@ impl<S: System> Coordinator<S> {
             let have = self.store.meta(g.id)?;
             if have.hash == g.hash {
                 if state.active != g.id {
+                    self.check(self.document_value(g.id)?)?;
                     let old = self.rendered_for(state.active)?;
                     self.run_foreign(g, &old, gate, "peer push")?;
                 }
@@ -796,7 +812,7 @@ impl<S: System> Coordinator<S> {
                 current: state.active,
             });
         }
-        let (doc, _, rendered) = self.check(value)?;
+        let (doc, _, rendered) = self.check_history(value)?;
         if sparewall_config::hash(&doc) != g.hash {
             return Err(Error::Validation(vec![format!(
                 "generation {} does not match its hash",
@@ -837,6 +853,9 @@ impl<S: System> Coordinator<S> {
                 if state.active == g.id {
                     return Ok(());
                 }
+                // Stored as history, or by an earlier version: check it
+                // as this one would before running it.
+                self.check(self.document_value(g.id)?)?;
                 let old = self.rendered_for(state.active)?;
                 return self.run_foreign(g, &old, gate, "sync");
             }

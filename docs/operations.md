@@ -89,11 +89,14 @@ handshake at once.
 | `/livez` | The coordinator answers |
 | `/readyz`, `/healthz` | 200 when ok or degraded, 503 when failed |
 | `/readyz?verbose`, `/readyz/<check>` | Detail (needs a token) |
-| `/metrics` | Prometheus metrics: the appliance's own and the host's from node\_exporter, which listens only on localhost (needs a token unless `metrics.mode: external`) |
+| `/metrics` | Prometheus metrics: the appliance's own and the host's from node\_exporter, which listens only on localhost (needs a token unless `metrics.mode: external`; `off` disables it) |
 
 ```shell
 curl -k -H "Authorization: Bearer $TOKEN" https://fw1/metrics
 ```
+
+There is no local Prometheus yet: `metrics.mode: local` and
+`metrics.retention` are rejected.
 
 ### What health verifies
 
@@ -186,6 +189,33 @@ return a node to its previous image. The containers signature policy
 rejects images from anywhere but `ghcr.io/sparewall`, whose images must
 carry a valid signature; to upgrade from a mirror, add it to
 `/etc/containers/policy.json` with its own signature requirement.
+
+Upgrades run only when asked for: scheduled upgrades
+(`updates.mode: windowed`, `updates.window`) are not built yet and are
+rejected.
+
+## Settings not built yet
+
+`provider_options`, `metrics.mode: local`, `metrics.retention`,
+`updates.mode: windowed` and `updates.window` are rejected with an error
+at their path. Earlier versions accepted them, though nothing acted on
+them. After upgrading:
+
+- A node already running a document with one of them keeps running it,
+  across reboots: the running configuration is not re-checked.
+- Any change, rollback, push or `sync --from` that would run such a
+  document is refused until the settings are gone. Remove the ones
+  present in one change, which runs exactly as the old document did:
+
+  ```shell
+  sparewall unset provider_options metrics updates.mode updates.window
+  ```
+
+  Unsetting `metrics` returns `/metrics` to needing a token, which is
+  what `local` did; to keep `external` or `off`, unset only
+  `metrics.retention`.
+- History may keep such generations: a peer catching up stores them
+  without running them, then runs the newest one, which must be valid.
 
 ## Exit codes
 
