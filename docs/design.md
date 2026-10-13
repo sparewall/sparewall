@@ -11,7 +11,7 @@ Sparewall turns a Linux box or VM into a firewall appliance that is upgraded and
 ### Goals
 
 - **Image-based and rollback-safe.** The OS is a signed, versioned image; an upgrade is a reboot into the new image, and a rollback is a reboot into the old one.
-- **One source of truth.** A single JSON/YAML document describes the whole deployment. Every change is validated, then fully applied or reverted, and reverted automatically unless confirmed.
+- **One source of truth.** A single JSON/YAML document describes the whole deployment. Every change is validated, applied with compensating recovery if a step fails, and reverted automatically unless confirmed.
 - **HA when wanted, not required.** The same image and document shape run one node or an HA pair; growing from one to two nodes is invisible to clients.
 - **Portable.** Runs on VMs and physical hardware, with one NIC or several, VLAN trunks, LACP or active-backup bonds.
 - **Built from standard parts.** systemd (networkd, Varlink), nftables, keepalived, conntrackd, WireGuard, Podman; the only new code is the coordinator and its CLI.
@@ -202,7 +202,7 @@ Generations are kept on disk with their author, timestamp and diff summary; `spa
 Two guarantees differ in strength.
 
 - **The firewall is atomic.** The nft ruleset is replaced in one kernel transaction: packets see either the whole old ruleset or the whole new one, never a mixture, and a load the kernel rejects leaves the old one in place.
-- **A configuration change is all-or-revert, not atomic.** The other layers have no shared transaction, so activation changes them one after another. Each step is skipped if its part of the rendering is unchanged:
+- **A configuration change is sequential, with compensating recovery.** The other layers have no shared transaction, so activation changes them one after another. Each step is skipped if its part of the rendering is unchanged:
   1. the nft ruleset, so new interfaces are filtered as soon as they appear;
   2. sysctls;
   3. links (networkd), then the sysctls again for links that just appeared;
@@ -211,13 +211,22 @@ Two guarantees differ in strength.
 
   Between steps, the node runs a mixture: for example, the new firewall with the old addresses. The firewall goes first so that interfaces a change adds are filtered from the moment they appear. Steps take from milliseconds (nft) to a few seconds (a provider restart).
 
-If a step fails, the coordinator **compensates**: it activates the previous generation again, against what the failed attempt may have changed, and reports the failure (`ApplyFailed`, the `applied` health check). If that also fails, the node is left running a mixture it reports as **apply failed**. Health is then *failed*, so in a pair keepalived moves the gateway addresses to the peer. Nothing retries on its own; the admin applies a fix or rolls back.
+If a step fails, the coordinator **compensates**: it activates the previous generation again, against what the failed attempt may have changed, and reports the failure (`ApplyFailed`, the `applied` health check). If that also fails, the node is left running a mixture it reports as **apply failed**. Health is then *failed*, so in a pair keepalived moves the gateway addresses to the peer. The outcome is therefore not binary: the old configuration, the new one, or a reported mixture.
+
+What happens next depends on what failed:
+
+- **A failed new change** is not retried. The admin applies a fix or rolls back.
+- **A failed revert** of an expired pending change is retried every second until it succeeds. The pending change stays recorded, and health stays *failed*, until it does.
+
+Recording the change (step 5) can fail too, after activation succeeded, if `state.json` cannot be written. That must be treated like a failed step: the coordinator re-activates the recorded generation and reports `ApplyFailed`. Today it returns the error but leaves the node running N with `state.json` still naming the previous generation and nothing pending, until a restart reverts it ([#28](https://github.com/sparewall/sparewall/issues/28)).
 
 ### Durable intent and restarts
 
-`state.json` is the only record of what a node should run. It holds the active generation, the last confirmed one and any pending change with its revert target and deadline, and it is replaced atomically (written aside, then renamed). The order of steps 4 and 5 gives these rules:
+`state.json` is the only record of what a node should run. It holds the active generation, the last confirmed one and any pending change with its revert target and deadline, and it is replaced atomically (written aside, then renamed). The order of steps 4 and 5 gives the rules below.
 
-- **A generation is stored before it runs and becomes active only after it runs.** A crash at any point before step 5 leaves `state.json` naming the previous generation, and at start-up the coordinator activates that from scratch (every layer, not just the changed ones). The new generation stays on disk without ever having been active.
+These rules cover a crash or restart of the coordinator with its storage intact. Surviving a power loss also needs each rename and new generation directory synced to disk (the parent directory fsynced). That is not done yet ([#28](https://github.com/sparewall/sparewall/issues/28)), so after a power cut the last rename may be lost.
+
+- **A generation is stored before it runs and becomes active only after it runs.** A coordinator crash at any point before step 5 leaves `state.json` naming the previous generation, and at start-up the coordinator activates that from scratch (every layer, not just the changed ones). The new generation stays on disk without ever having been active.
 - **A pending change does not survive a restart.** If `state.json` holds a pending change at start-up, the coordinator reverts to its revert target before activating anything. That applies both to the node's own unconfirmed change and to a peer's generation awaiting the peer's confirmation. A crash during a revert (activation done, `state.json` not yet updated) therefore ends the same way.
 - **Start-up re-renders the active generation** with the running image's renderers, so an upgraded image applies its own rendering of the same document.
 - **Early boot** (before udev and networkd start) installs files, sets sysctls and loads the firewall; the coordinator applies links and services once it starts.
