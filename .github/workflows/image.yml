@@ -101,7 +101,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils jq podman busybox bind9-dnsutils iputils-ping
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils jq podman busybox bind9-dnsutils iputils-ping wireguard-tools iptables
           sudo chmod 666 /dev/kvm
           sudo podman --version
 

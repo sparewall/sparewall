@@ -48,6 +48,7 @@ table inet sparewall {
 	}
 	chain output {
 		type filter hook output priority filter; policy accept;
+		oifname "wan" udp sport 51820 ip saddr != 203.0.113.1 drop comment "vpn-roadwarrior:gateway-address-only"
 	}
 	chain postrouting_nat {
 		type nat hook postrouting priority srcnat; policy accept;

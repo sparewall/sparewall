@@ -36,6 +36,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      - name: VM test helpers
+        run: tests/vm/vpn-check-test.sh
 
   deny:
     name: licenses and advisories

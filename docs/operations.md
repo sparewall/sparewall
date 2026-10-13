@@ -66,6 +66,22 @@ sparewall set "vpn.roadwarrior.peers.laptop.public_key=<public key>" \
 sparewall vpn client-config laptop --qr
 ```
 
+After a failover, or the gateway's handover during an upgrade, each
+client is cut off until it makes a new handshake with the new master. A
+client sending traffic recovers after about 16 seconds, or within a few
+seconds if its session is more than two minutes old; an idle client
+recovers the next time it sends. These are the times the pair test
+measures with Linux WireGuard clients; other clients use the same protocol
+timers.
+
+The pair syncs the state of connections inside the tunnel, so a TCP
+connection survives the outage if its retransmissions and the
+application's timeouts outlast it; one with a shorter timeout may give up.
+`PersistentKeepalive` in the client config keeps NAT mappings open; it
+does not start the recovery timer, so lowering it does not shorten the
+outage. A client that cannot wait can reconnect (`wg-quick down`/`up`) to
+handshake at once.
+
 ## Monitoring
 
 | Endpoint | Purpose |

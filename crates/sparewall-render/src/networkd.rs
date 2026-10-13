@@ -338,7 +338,7 @@ fn remote_access(name: &str, vpn: &Vpn, out: &mut Rendered) {
     nd.section("WireGuard")
         .set(
             "PrivateKeyFile",
-            format!("{KEY_DIR}/sparewall-vpn-{name}.key"),
+            format!("{KEY_DIR}/{}", crate::vpn_key_file(name)),
         )
         .set("ListenPort", vpn.listen_port);
     for peer in vpn.peers.values() {
