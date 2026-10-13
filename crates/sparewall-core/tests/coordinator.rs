@@ -410,21 +410,81 @@ fn unverifiable_load_fails_closed() {
 /// Issue #6: losing a replication-only link degrades health (it never
 /// fails it, which would put keepalived in FAULT and move the gateway
 /// addresses); losing a link that carries traffic still fails it.
+/// Sync on its own port, `syncp`, on both nodes.
+fn dedicated_sync_port(v: &mut Value) {
+    v["ports"]["fw1"]["syncp"] = json!({"nic": "52:54:00:aa:00:09"});
+    v["ports"]["fw2"]["syncp"] = json!({"nic": "9c:6b:00:00:00:09"});
+    v["networks"]["sync"]["port"] = json!("syncp");
+}
+
+/// Issue #19: replication-link health across sync topologies. Losing a
+/// link that carries only replication degrades health (the pair stops
+/// replicating, the gateway addresses stay); losing one that carries
+/// traffic fails it; restoring either returns to ok.
 #[test]
 fn replication_link_loss_degrades_health() {
-    let all_up = |t: &mut T| {
-        let r = sparewall_render::render(
+    struct Case {
+        name: &'static str,
+        edit: fn(&mut Value),
+        /// The links classified as replication-only.
+        replication: &'static [&'static str],
+    }
+    let cases = [
+        Case {
+            name: "tagged sync on the shared trunk",
+            edit: |_| {},
+            replication: &["sync"],
+        },
+        Case {
+            name: "tagged sync on a dedicated port",
+            edit: dedicated_sync_port,
+            replication: &["sync", "syncp"],
+        },
+        Case {
+            name: "untagged sync on a dedicated port",
+            edit: |v| {
+                dedicated_sync_port(v);
+                v["networks"]["sync"]["vlan"] = Value::Null;
+            },
+            replication: &["syncp"],
+        },
+        Case {
+            name: "untagged sync on a dedicated active-backup bond",
+            edit: |v| {
+                for (node, macs) in [
+                    ("fw1", ["52:54:00:aa:00:09", "52:54:00:aa:00:0a"]),
+                    ("fw2", ["9c:6b:00:00:00:09", "9c:6b:00:00:00:0a"]),
+                ] {
+                    v["ports"][node]["syncb"] =
+                        json!({"bond": {"members": macs, "mode": "active-backup"}});
+                }
+                v["networks"]["sync"]["port"] = json!("syncb");
+                v["networks"]["sync"]["vlan"] = Value::Null;
+            },
+            replication: &["syncb"],
+        },
+        Case {
+            // The trunk's own interface carries sync and the service VLANs:
+            // it is required, so there is nothing replication-only.
+            name: "untagged sync sharing the service trunk",
+            edit: |v| {
+                v["networks"]["sync"]["vlan"] = Value::Null;
+            },
+            replication: &[],
+        },
+    ];
+    let meta = |t: &mut T| {
+        sparewall_render::render(
             &sparewall_config::from_value(t.c.document_value(t.c.active().unwrap()).unwrap())
                 .unwrap(),
             "fw1",
         )
-        .unwrap();
-        for l in r
-            .meta
-            .required_links
-            .iter()
-            .chain(&r.meta.replication_links)
-        {
+        .unwrap()
+        .meta
+    };
+    let all_up = |t: &mut T| {
+        let m = meta(t);
+        for l in m.required_links.iter().chain(&m.replication_links) {
             t.c.system().links.insert(l.clone(), "up".into());
         }
     };
@@ -436,51 +496,65 @@ fn replication_link_loss_degrades_health() {
             h.level,
         )
     };
-    let mut t = pair_node("fw1");
-    // Sync as a VLAN on the shared uplink.
-    t.c.apply(pair_example(), &opts(0, None)).unwrap();
-    all_up(&mut t);
-    assert_eq!(levels(&mut t), (Level::Ok, Some(Level::Ok), Level::Ok));
-    for (what, state) in [("down", Some("down")), ("deleted", None)] {
-        match state {
-            Some(s) => t.c.system().links.insert("sync".into(), s.into()),
-            None => t.c.system().links.remove("sync"),
-        };
-        assert_eq!(
-            levels(&mut t),
-            (Level::Ok, Some(Level::Degraded), Level::Degraded),
-            "sync VLAN {what}"
+    let message =
+        |t: &mut T, check: &str| t.c.health().unwrap().check(check).unwrap().message.clone();
+    for case in cases {
+        let name = case.name;
+        let mut t = pair_node("fw1");
+        let mut v = pair_example();
+        (case.edit)(&mut v);
+        t.c.apply(v, &opts(0, None))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let m = meta(&mut t);
+        assert_eq!(m.replication_links, case.replication, "{name}");
+        assert!(m.required_links.contains(&"uplink".to_string()), "{name}");
+        for l in case.replication {
+            assert!(!m.required_links.contains(&l.to_string()), "{name}: {l}");
+        }
+        let ok = (
+            Level::Ok,
+            (!case.replication.is_empty()).then_some(Level::Ok),
+            Level::Ok,
         );
         all_up(&mut t);
-    }
-    // The shared trunk carries traffic: losing it fails health.
-    t.c.system().links.insert("uplink".into(), "down".into());
-    assert_eq!(levels(&mut t).0, Level::Failed);
-    assert_eq!(levels(&mut t).2, Level::Failed);
-    all_up(&mut t);
+        assert_eq!(levels(&mut t), ok, "{name}");
 
-    // Sync on a dedicated port: the port's loss degrades too.
-    let mut v = pair_example();
-    v["ports"]["fw1"]["syncp"] = json!({"nic": "52:54:00:aa:00:09"});
-    v["ports"]["fw2"]["syncp"] = json!({"nic": "9c:6b:00:00:00:09"});
-    v["networks"]["sync"]["port"] = json!("syncp");
-    t.c.apply(v, &opts(1, None)).unwrap();
-    all_up(&mut t);
-    assert_eq!(levels(&mut t), (Level::Ok, Some(Level::Ok), Level::Ok));
-    t.c.system().links.insert("syncp".into(), "down".into());
-    t.c.system().links.insert("sync".into(), "down".into());
-    assert_eq!(
-        levels(&mut t),
-        (Level::Ok, Some(Level::Degraded), Level::Degraded)
-    );
-    let msg =
-        t.c.health()
-            .unwrap()
-            .check("replication")
-            .unwrap()
-            .message
-            .clone();
-    assert!(msg.contains("syncp is down"), "{msg}");
+        for l in case.replication {
+            for (state, said) in [(Some("down"), "is down"), (None, "is missing")] {
+                match state {
+                    Some(s) => t.c.system().links.insert(l.to_string(), s.into()),
+                    None => t.c.system().links.remove(*l),
+                };
+                assert_eq!(
+                    levels(&mut t),
+                    (Level::Ok, Some(Level::Degraded), Level::Degraded),
+                    "{name}: {l} {said}"
+                );
+                let msg = message(&mut t, "replication");
+                assert!(msg.contains(&format!("{l} {said}")), "{name}: {msg}");
+                all_up(&mut t);
+                assert_eq!(levels(&mut t), ok, "{name}: {l} restored");
+            }
+        }
+
+        // The trunk carries traffic: losing it fails health, and any
+        // separate replication links still report on their own.
+        for (state, said) in [(Some("down"), "is down"), (None, "is missing")] {
+            match state {
+                Some(s) => t.c.system().links.insert("uplink".into(), s.into()),
+                None => t.c.system().links.remove("uplink"),
+            };
+            assert_eq!(
+                levels(&mut t),
+                (Level::Failed, ok.1, Level::Failed),
+                "{name}: uplink {said}"
+            );
+            let msg = message(&mut t, "links");
+            assert!(msg.contains(&format!("uplink {said}")), "{name}: {msg}");
+            all_up(&mut t);
+            assert_eq!(levels(&mut t), ok, "{name}: uplink restored");
+        }
+    }
 }
 
 #[test]
