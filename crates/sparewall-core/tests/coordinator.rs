@@ -1747,4 +1747,79 @@ fn a_generation_that_ran_still_conflicts() {
         b.c.document_value(2).unwrap()["networks"]["users"]["mtu"],
         1400
     );
+
+    // Review of #27: the metadata is the peer's word. A push numbered as
+    // the active generation and naming it as its own base must not pass
+    // as coming after it, nor any id not above its base.
+    let network = b.c.system().network.clone();
+    let lineage = b.c.lineage().unwrap();
+    for (id, base) in [(2, 2), (3, 3), (3, 4)] {
+        let mut bad = g2.clone();
+        bad.id = id;
+        bad.base = Some(base);
+        let v = a.c.document_value(2).unwrap();
+        for r in [
+            b.c.receive(&bad, v.clone(), PeerGate::PeerConfirms),
+            b.c.receive_history(&bad, v.clone()),
+        ] {
+            assert!(
+                matches!(r, Err(Error::Conflict { current: 2 })),
+                "{id}/{base}: {r:?}"
+            );
+        }
+    }
+    assert_eq!(b.c.state().unwrap().active, 2);
+    assert_eq!(b.c.lineage().unwrap(), lineage);
+    assert_eq!(
+        b.c.document_value(2).unwrap()["networks"]["users"]["mtu"],
+        1400
+    );
+    assert_eq!(b.c.system().network, network);
+    assert!(set_aside_names(&b, "diverged").is_empty());
+}
+
+/// Review of #27: a push to run, gated by the peer, replaces a crash
+/// leftover with its id directly, and stays pending until confirmed. One
+/// that fails validation leaves the leftover where it was.
+#[test]
+fn gated_push_replaces_a_crash_leftover() {
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let g1 = a.c.generation(1).unwrap();
+    b.c.receive(&g1, a.c.document_value(1).unwrap(), PeerGate::Immediate)
+        .unwrap();
+    let state = b.c.store().root().join("state.json");
+    let before = std::fs::read(&state).unwrap();
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    b.c.apply(v.clone(), &opts(1, None)).unwrap();
+    std::fs::write(&state, before).unwrap();
+    let id = b.c.identity().clone();
+    b.c = Coordinator::new(Store::open(b._dir.path()).unwrap(), Fake::default(), id);
+    assert_eq!(b.c.boot(false).unwrap(), 1);
+    let leftover = b.c.generation(2).unwrap().hash;
+
+    v["networks"]["users"]["mtu"] = json!(1300);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    let g2 = a.c.generation(2).unwrap();
+    // Content that does not match the hash: refused, leftover kept.
+    let mut wrong = a.c.document_value(2).unwrap();
+    wrong["networks"]["users"]["mtu"] = json!(1200);
+    assert!(matches!(
+        b.c.receive(&g2, wrong, PeerGate::PeerConfirms),
+        Err(Error::Validation(_))
+    ));
+    assert_eq!(b.c.generation(2).unwrap().hash, leftover);
+    assert!(set_aside_names(&b, "diverged").is_empty());
+
+    b.c.receive(&g2, a.c.document_value(2).unwrap(), PeerGate::PeerConfirms)
+        .unwrap();
+    let st = b.c.state().unwrap();
+    assert_eq!((st.active, st.confirmed), (2, 1));
+    assert!(st.pending.is_some_and(|p| p.from_peer && p.id == 2));
+    assert_eq!(b.c.generation(2).unwrap().hash, g2.hash);
+    assert_eq!(set_aside_names(&b, "diverged").len(), 1);
+    b.c.confirm_received(2).unwrap();
+    assert_eq!(b.c.state().unwrap().confirmed, 2);
 }

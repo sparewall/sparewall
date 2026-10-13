@@ -791,12 +791,11 @@ impl<S: System> Coordinator<S> {
                 return Ok(());
             }
         }
-        // A local generation with this id and other content is above the
-        // active one if the push extends the active one: it never ran here
+        // A local generation with this id and other content never ran here
         // (a failed apply, a crash before `state.json` named it, history or
-        // a rejected push from the peer), and `install_foreign` sets it
-        // aside. One that ran fails the check: that is divergence.
-        if state.pending.is_some() || !self.extends_active(g.base)? {
+        // a rejected push from the peer), so `install_foreign` sets it
+        // aside. One that ran is divergence.
+        if state.pending.is_some() || !self.follows_active(g)? {
             return Err(Error::Conflict {
                 current: state.active,
             });
@@ -814,9 +813,9 @@ impl<S: System> Coordinator<S> {
         if replace && self.store.meta(g.id)?.hash == g.hash {
             return Ok(());
         }
-        // As in `receive`: a different local generation that the push
-        // extends past never ran here.
-        if state.pending.is_some() || !self.extends_active(g.base)? {
+        // As in `receive`: a different local generation with this id
+        // never ran here.
+        if state.pending.is_some() || !self.follows_active(g)? {
             return Err(Error::Conflict {
                 current: state.active,
             });
@@ -835,6 +834,15 @@ impl<S: System> Coordinator<S> {
         self.store.save(g, &doc, &rendered)?;
         tracing::info!(id = g.id, "stored the peer's generation in history");
         Ok(())
+    }
+
+    /// Whether a pushed generation comes after the active one: its base is
+    /// the active generation or leads back to it, and its id is above its
+    /// base, so above the active one too. Only then may it replace a local
+    /// generation with its id; the metadata is the peer's word, not
+    /// covered by the hash.
+    fn follows_active(&self, g: &Generation) -> Result<bool, Error> {
+        Ok(g.base.is_some_and(|b| b < g.id) && self.extends_active(g.base)?)
     }
 
     /// Whether `base` is the active generation, or a generation stored
