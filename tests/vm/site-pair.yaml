@@ -23,6 +23,13 @@ ports:
     syncp: { nic: "52:54:00:12:35:58" }
 networks:
   mgmt: { port: uplink, role: management, dhcp_client: true }
+  wan:
+    port: trunk
+    vlan: 10
+    role: wan
+    addresses: { fw1: 203.0.113.2/24, fw2: 203.0.113.3/24 }
+    vip: 203.0.113.1/24
+    vrid: 10
   users:
     port: trunk
     vlan: 20
@@ -44,6 +51,8 @@ zones:
   mgmt: { networks: [mgmt] }
   users: { networks: [users] }
   servers: { networks: [servers] }
+  wan: { networks: [wan] }
+  vpn: {}
 policy:
   mgmt->self: { action: drop }
   users->servers:
@@ -55,5 +64,20 @@ policy:
     action: drop
     rules:
       ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }
+  vpn->servers: { action: accept }
 dhcp:
   users: { pool: 192.0.2.100-192.0.2.199 }
+# Remote access on the WAN gateway address (tests/vm/vpn.sh). The client
+# keys are filled in by the test.
+vpn:
+  ra:
+    listen_port: 51820
+    endpoint: 203.0.113.1
+    addresses: [10.99.0.1/24]
+    zone: vpn
+    peers:
+      vpna: { public_key: "@VPNA@", addresses: [10.99.0.10/32] }
+      vpnb: { public_key: "@VPNB@", addresses: [10.99.0.11/32] }
+      vpnc: { public_key: "@VPNC@", addresses: [10.99.0.12/32] }
+      natc: { public_key: "@NATC@", addresses: [10.99.0.13/32] }
+      natk: { public_key: "@NATK@", addresses: [10.99.0.14/32] }

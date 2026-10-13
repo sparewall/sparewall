@@ -1378,10 +1378,21 @@ fn status_and_metrics_wait_for_the_peers_confirmation() {
 fn vpn_keys_and_client_config() {
     let mut a = pair_node("fw1");
     a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    // The key is installed exactly where the rendered netdev reads it
+    // (they once disagreed, and networkd never created the interface).
+    let netdev = &a.c.system().network["50-sparewall-roadwarrior.netdev"];
+    let path = netdev
+        .lines()
+        .find_map(|l| l.strip_prefix("PrivateKeyFile="))
+        .unwrap()
+        .to_string();
+    let file = path
+        .strip_prefix(&format!("{}/", sparewall_render::KEY_DIR))
+        .unwrap();
     assert!(
-        a.c.system()
-            .runtime_keys
-            .contains_key("vpn-roadwarrior.key")
+        a.c.system().runtime_keys.contains_key(file),
+        "netdev reads {path}; installed: {:?}",
+        a.c.system().runtime_keys.keys().collect::<Vec<_>>()
     );
     let cfg = a.c.vpn_client_config(None, "alice-laptop").unwrap();
     assert!(cfg.contains("Endpoint = vpn.example.org:51820"), "{cfg}");

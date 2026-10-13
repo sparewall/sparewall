@@ -220,7 +220,7 @@ impl<S: System> Coordinator<S> {
         for name in doc.vpn.keys() {
             match self.secret_get(&vpn_secret(name))? {
                 Some(key) => self.system().install_key(
-                    &format!("vpn-{name}.key"),
+                    &sparewall_render::vpn_key_file(name),
                     &key,
                     "systemd-network",
                 )?,
@@ -299,7 +299,7 @@ impl<S: System> Coordinator<S> {
         }
         s.push_str(&format!(
             "\n[Peer]\nPublicKey = {server}\nEndpoint = {}:{}\nAllowedIPs = {allowed}\n\
-             # Lets a failover be noticed within seconds.\nPersistentKeepalive = 25\n",
+             # Keeps NAT mappings open while idle; it does not shorten the outage\n# after a failover (see the operations guide).\nPersistentKeepalive = 25\n",
             vpn.endpoint, vpn.listen_port
         ));
         Ok(s)

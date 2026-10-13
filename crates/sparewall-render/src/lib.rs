@@ -25,6 +25,13 @@ pub mod unbound;
 pub const KEY_DIR: &str = "/run/systemd/network";
 /// networkd's copy of the sync tunnel key.
 pub const SYNC_KEY_RUNTIME: &str = "/run/systemd/network/sparewall-sync.key";
+/// The file (in [`KEY_DIR`]) networkd reads a remote-access instance's
+/// server key from. The renderer and the coordinator, which installs it,
+/// must agree on it.
+pub fn vpn_key_file(instance: &str) -> String {
+    format!("sparewall-vpn-{instance}.key")
+}
+
 /// The sync tunnel's private key (node secret); the master copy.
 pub const SYNC_KEY_FILE: &str = "/var/lib/sparewall/keys/sync.key";
 

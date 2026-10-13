@@ -496,6 +496,29 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
 
     // --- output ---------------------------------------------------------------
     let mut output = String::from("type filter hook output priority filter; policy accept;\n");
+    if pair {
+        // Remote-access replies only from the gateway address. A node that
+        // just gave it up still holds its clients' sessions; a reply from
+        // its own address would make a client roam to it and lose the
+        // tunnel when that node goes (WireGuard follows the source of any
+        // authenticated packet).
+        for (net, n) in doc.networks_with_role(NetworkRole::Wan) {
+            let (Some(vip), Some(i)) = (n.vip, doc.network_iface(net)) else {
+                continue;
+            };
+            for (name, vpn) in &doc.vpn {
+                writeln!(
+                    output,
+                    "oifname {} udp sport {} ip saddr != {} drop comment {}",
+                    q(i),
+                    vpn.listen_port,
+                    vip.0.addr(),
+                    q(&format!("vpn-{name}:gateway-address-only"))
+                )
+                .unwrap();
+            }
+        }
+    }
     let mut out_map: Vec<String> = Vec::new();
     for (from, to, _, _) in &policies {
         if *from == SELF_ZONE {
