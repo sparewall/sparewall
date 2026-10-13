@@ -194,6 +194,29 @@ Upgrades run only when asked for: scheduled upgrades
 (`updates.mode: windowed`, `updates.window`) are not built yet and are
 rejected.
 
+## Settings not built yet
+
+`provider_options`, `metrics.mode: local`, `metrics.retention`,
+`updates.mode: windowed` and `updates.window` are rejected with an error
+at their path. Earlier versions accepted them, though nothing acted on
+them. After upgrading:
+
+- A node already running a document with one of them keeps running it,
+  across reboots: the running configuration is not re-checked.
+- Any change, rollback, push or `sync --from` that would run such a
+  document is refused until the settings are gone. Remove the ones
+  present in one change, which runs exactly as the old document did:
+
+  ```shell
+  sparewall unset provider_options metrics updates.mode updates.window
+  ```
+
+  Unsetting `metrics` returns `/metrics` to needing a token, which is
+  what `local` did; to keep `external` or `off`, unset only
+  `metrics.retention`.
+- History may keep such generations: a peer catching up stores them
+  without running them, then runs the newest one, which must be valid.
+
 ## Exit codes
 
 0 ok, 1 error, 2 usage, 3 validation failed, 4 conflict, 5 unreachable

@@ -31,6 +31,18 @@ impl std::fmt::Display for Issue {
 /// Run every semantic check. The document is acceptable if no issue has
 /// [`Severity::Error`].
 pub fn validate(doc: &Document) -> Vec<Issue> {
+    run(doc, true)
+}
+
+/// The checks for a generation kept in history but not run: everything
+/// but the rejection of settings not built yet, which earlier versions
+/// accepted. A peer's history may hold such a generation; activating one
+/// still needs [`validate`].
+pub fn validate_history(doc: &Document) -> Vec<Issue> {
+    run(doc, false)
+}
+
+fn run(doc: &Document, activation: bool) -> Vec<Issue> {
     let mut v = Validator {
         doc,
         issues: Vec::new(),
@@ -51,7 +63,9 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
     v.vpn();
     v.tls();
     v.secrets();
-    v.unbuilt();
+    if activation {
+        v.unbuilt();
+    }
     v.issues
         .sort_by(|a, b| b.severity.cmp(&a.severity).then(a.path.cmp(&b.path)));
     v.issues

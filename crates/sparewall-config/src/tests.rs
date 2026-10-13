@@ -414,4 +414,14 @@ fn rejects_settings_not_built_yet() {
         STANDALONE,
         json!({"updates": {"channel": "testing", "mode": "manual"}}),
     ));
+    // History may hold them: earlier versions accepted them.
+    let d = edit(
+        STANDALONE,
+        json!({"metrics": {"mode": "local", "retention": "15d"},
+               "updates": {"mode": "windowed", "window": "Sun 03:00"},
+               "provider_options": {"kea": {}}}),
+    );
+    assert_eq!(error_paths(&d).len(), 5, "{:?}", error_paths(&d));
+    let history = validate::validate_history(&d);
+    assert!(validate::errors(&history).is_empty(), "{history:?}");
 }
