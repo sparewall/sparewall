@@ -523,7 +523,7 @@ async fn sync_once(
         Ok((
             c.active_document()?,
             c.view()?,
-            c.state()?.pending.is_some(),
+            c.state()?.pending,
             c.node().to_string(),
         ))
     })
@@ -561,8 +561,17 @@ async fn sync_once(
                 // Protocol 2 peers run what we push pending until we
                 // confirm it over the tunnel.
                 let gated = h.protocol >= 2;
+                // A sync-link change of ours that the peer already keeps
+                // (its confirmation's reply was lost): keep it here too.
+                if let Some(p) = pending.as_ref().filter(|p| p.peer_gate)
+                    && pv.active == p.id
+                    && !h.pending
+                {
+                    let id = p.id;
+                    let _ = with_core_raw(core, events, move |c| c.peer_confirmed(id)).await;
+                }
                 if state == SyncState::PeerBehind
-                    && !pending
+                    && pending.is_none()
                     && !h.pending
                     && let Err(e) = push_missing(core, events, link, &local, &pv, gated).await
                 {
@@ -571,13 +580,17 @@ async fn sync_once(
                 }
                 // The peer runs our generation, waiting for our confirmation
                 // (a first attempt failed, or this node restarted): confirm.
-                if gated
-                    && h.pending
-                    && pv.active == local.active
-                    && pv.desired == local.desired
-                    && let Err(e) = confirm_pushed(link, local.active).await
-                {
-                    tracing::info!(peer, error = %e, "the peer has not confirmed our generation yet");
+                if gated && h.pending && pv.active == local.active && pv.desired == local.desired {
+                    match confirm_pushed(link, local.active).await {
+                        Ok(()) => {
+                            let id = local.active;
+                            let _ =
+                                with_core_raw(core, events, move |c| c.peer_confirmed(id)).await;
+                        }
+                        Err(e) => {
+                            tracing::info!(peer, error = %e, "the peer has not confirmed our generation yet");
+                        }
+                    }
                 }
                 status.state = Some(state);
                 status.peer_view = Some(pv);
@@ -702,6 +715,46 @@ async fn push_missing(
         // Retried on each sync pass until the peer's deadline.
         tracing::info!(id, error = %e, "the peer has not confirmed generation yet");
     }
+    Ok(())
+}
+
+/// Push a staged change to the sync link ([`sparewall_core::ApplyResult`]
+/// `staged`) through the current link, before it runs here. The peer runs
+/// it pending; once this node runs it too, the sync loop confirms it over
+/// the new link. If the new link never works, both revert to the old one.
+pub async fn push_first(
+    core: &Core,
+    events: &broadcast::Sender<Value>,
+    id: u64,
+) -> Result<(), String> {
+    let (doc, node, g, config) = with_core_raw(core, events, move |c| {
+        Ok((
+            c.active_document()?,
+            c.node().to_string(),
+            c.generation(id)?,
+            c.document_value(id)?,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let (own, peer, name) = doc
+        .as_ref()
+        .and_then(|d| tunnel_addrs(d, &node))
+        .ok_or("this node is not paired")?;
+    let link = Link { own, peer };
+    if hello(link, &node).await?.protocol < 2 {
+        return Err(format!(
+            "{name} cannot take a sync-link change first (an older release); upgrade it, \
+             or apply the change on both nodes with --allow-diverge"
+        ));
+    }
+    tracing::info!(id, peer = %name, "pushing a sync-link change to the peer first");
+    connect(link)
+        .await?
+        .push(&to_peer(&g), &config, None, None, Some(true))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

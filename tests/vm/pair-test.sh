@@ -146,6 +146,23 @@ gen=$(at fw1 'sudo sparewall status -o json' | jq .sync.active)
 fw2_gen() { [ "$(at fw2 'sudo sparewall status -o json' | jq .sync.active)" = "$gen" ]; }
 wait_for 120 "fw2 at generation $gen" fw2_gen
 
+# A change to the sync link goes to the peer first, through the current
+# link; each node keeps it once the peer confirms over the new one (#25).
+settled() { # node generation
+    at "$1" 'sudo sparewall status -o json' \
+        | jq -e --argjson g "$2" '.sync.state == "in-sync" and .sync.active == $g and .sync.pending == null' >/dev/null
+}
+move_sync() { # fw1-address fw2-address
+    log "moving the sync link to $1 and $2"
+    at fw1 "sudo sparewall set networks.sync.addresses.fw1=$1/30 networks.sync.addresses.fw2=$2/30 --confirm 0"
+    gen=$(at fw1 'sudo sparewall status -o json' | jq .sync.active)
+    for n in fw1 fw2; do wait_for 240 "$n settled on generation $gen" settled "$n" "$gen"; done
+    at fw2 "ip -br addr show sync" | grep -q "$2/30" || fail "fw2's sync address is not $2"
+    at fw1 "sudo wg show swsync endpoints" | grep -q "$2:" || fail "fw1's tunnel does not reach $2"
+}
+move_sync 10.255.1.1 10.255.1.2
+move_sync 10.255.0.1 10.255.0.2
+
 log "the gateway address and DHCP"
 . "$HERE/conformance.sh"
 dhcp_script

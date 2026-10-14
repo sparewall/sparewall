@@ -48,6 +48,10 @@ pub struct ApplyOptions {
     pub dry_run: bool,
     /// A line put before the diff in the generation's summary.
     pub note: Option<String>,
+    /// In a pair, store a change that alters the sync link without
+    /// running it ([`ApplyResult::staged`]): it must reach the peer first,
+    /// through the link it changes ([`Coordinator::activate_staged`]).
+    pub stage_sync_link: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +65,9 @@ pub struct ApplyResult {
     /// The document equals the active one; nothing was done.
     pub unchanged: bool,
     pub dry_run: bool,
+    /// Stored but not run: it changes the sync link (see
+    /// [`ApplyOptions::stage_sync_link`]).
+    pub staged: bool,
 }
 
 /// Things that happened, for subscribers and the journal.
@@ -129,6 +136,42 @@ pub struct Coordinator<S: System> {
     /// The live table as it was right after the last load (normalized),
     /// which health compares with the table as it is now.
     nft_loaded: NftBaseline,
+}
+
+/// How much longer than the peer this node waits for the peer to
+/// confirm a sync-link change, so that it sees the peer's outcome before
+/// its own deadline: never kept here while the peer reverted.
+pub const SYNC_LINK_MARGIN_SECONDS: i64 = 30;
+
+/// Whether a document pairs two nodes over a sync tunnel.
+fn paired(doc: &Value) -> bool {
+    let c = &doc["cluster"];
+    c["nodes"].as_array().is_some_and(|n| n.len() > 1)
+        && c["sync_network"].is_string()
+        && c["nodes"].as_array().is_some_and(|n| {
+            n.iter()
+                .all(|n| n.as_str().is_some_and(|n| c["sync_keys"].get(n).is_some()))
+        })
+}
+
+/// What the sync tunnel depends on: the cluster's nodes and sync
+/// settings, the sync network, and the port carrying it.
+fn sync_link(doc: &Value) -> Value {
+    let c = &doc["cluster"];
+    let network = c["sync_network"]
+        .as_str()
+        .map_or(Value::Null, |n| doc["networks"][n].clone());
+    let port = network["port"]
+        .as_str()
+        .map_or(Value::Null, |p| doc["ports"][p].clone());
+    serde_json::json!({
+        "nodes": c["nodes"],
+        "sync_network": c["sync_network"],
+        "sync_port": c["sync_port"],
+        "sync_keys": c["sync_keys"],
+        "network": network,
+        "port": port,
+    })
 }
 
 fn now_unix() -> i64 {
@@ -377,6 +420,7 @@ impl<S: System> Coordinator<S> {
                 warnings,
                 unchanged: true,
                 dry_run: opts.dry_run,
+                staged: false,
             });
         }
         self.dry_run(&rendered, Some(&old_rendered))?;
@@ -400,10 +444,31 @@ impl<S: System> Coordinator<S> {
                 warnings,
                 unchanged: false,
                 dry_run: true,
+                staged: false,
             });
         }
 
         self.ensure_vpn_keys(&doc)?;
+        if opts.stage_sync_link
+            && state.pending.is_none()
+            && paired(&old_value)
+            && sync_link(&old_value) != sync_link(&new_value)
+        {
+            self.store.save(&g, &doc, &rendered)?;
+            tracing::info!(
+                id = g.id,
+                "stored a change to the sync link; the peer takes it first"
+            );
+            return Ok(ApplyResult {
+                generation: g,
+                changed,
+                diff,
+                warnings,
+                unchanged: false,
+                dry_run: false,
+                staged: true,
+            });
+        }
         self.install_vpn_keys(&doc)?;
         self.store.save(&g, &doc, &rendered)?;
         if let Err(e) = self.activate(g.id, Some(&old_rendered), false) {
@@ -460,6 +525,7 @@ impl<S: System> Coordinator<S> {
             warnings,
             unchanged: false,
             dry_run: false,
+            staged: false,
         })
     }
 
@@ -548,9 +614,110 @@ impl<S: System> Coordinator<S> {
         self.apply(v, opts)
     }
 
-    /// Confirm a pending generation.
+    /// Run a change to the sync link that [`Self::apply`] stored
+    /// ([`ApplyResult::staged`]) once the peer runs it, pushed through the
+    /// current link. It runs pending until the peer confirms it over the
+    /// new link ([`Self::peer_confirmed`]) and, with an `admin_window`,
+    /// the admin confirms it too; otherwise it reverts at the deadline,
+    /// which outlasts the peer's own so that both end on the same link.
+    pub fn activate_staged(&mut self, id: u64, admin_window: u32) -> Result<(), Error> {
+        let state = self.store.state()?;
+        let g = self.generation(id)?;
+        if state.pending.is_some() || g.base != Some(state.active) {
+            self.discard_staged(id)?;
+            return Err(Error::Conflict {
+                current: state.active,
+            });
+        }
+        let doc = self.store.document(id)?;
+        let rendered = self.rendered_for(id)?;
+        let old = self.rendered_for(state.active)?;
+        self.install_vpn_keys(&doc)?;
+        if let Err(e) = self.activate(id, Some(&old), false) {
+            return Err(self.undo_apply(id, &rendered, state.active, e));
+        }
+        let mut new_state = state.clone();
+        new_state.active = id;
+        new_state.pending = Some(Pending {
+            id,
+            revert_to: state.confirmed,
+            deadline: now_unix()
+                + i64::from(admin_window).max(PEER_CONFIRM_SECONDS + SYNC_LINK_MARGIN_SECONDS),
+            peer_gate: true,
+            needs_admin: admin_window > 0,
+            ..Default::default()
+        });
+        if let Err(f) = self.store.try_set_state(&new_state) {
+            let (e, unreferenced) = self.reconcile_commit(id, &rendered, &state, f);
+            if unreferenced {
+                self.set_aside_failed(id);
+            }
+            return Err(e);
+        }
+        tracing::info!(id, "running the sync-link change; waiting for the peer");
+        self.events.push(Event::Applied {
+            id,
+            hash: g.hash,
+            author: g.author,
+            pending: true,
+        });
+        Ok(())
+    }
+
+    /// Drop a staged change the peer did not take; it never ran here.
+    pub fn discard_staged(&mut self, id: u64) -> Result<(), Error> {
+        let st = self.store.state()?;
+        let named = id == st.active
+            || id == st.confirmed
+            || st.pending.as_ref().is_some_and(|p| p.revert_to == id);
+        if !named && self.store.exists(id) {
+            let to = self.store.set_aside(id, "unsent")?;
+            tracing::info!(id, kept = %to.display(), "set aside a sync-link change the peer did not take");
+        }
+        Ok(())
+    }
+
+    /// The peer confirmed a sync-link change over the new link. It is
+    /// kept, unless the admin's confirmation is still awaited.
+    pub fn peer_confirmed(&mut self, id: u64) -> Result<(), Error> {
+        let mut state = self.store.state()?;
+        let Some(p) = state.pending.as_mut().filter(|p| p.id == id && p.peer_gate) else {
+            return Ok(());
+        };
+        p.peer_gate = false;
+        if p.needs_admin {
+            self.store.set_state(&state)?;
+            tracing::info!(
+                id,
+                "the peer confirmed the sync-link change; waiting for the admin"
+            );
+            return Ok(());
+        }
+        self.finish_confirm(state, id)
+    }
+
+    fn finish_confirm(&mut self, mut state: State, id: u64) -> Result<(), Error> {
+        state.confirmed = id;
+        state.pending = None;
+        self.store.set_state(&state)?;
+        tracing::info!(id, "confirmed generation");
+        self.events.push(Event::Confirmed { id });
+        Ok(())
+    }
+
+    /// Confirm a pending generation. A sync-link change still waiting for
+    /// the peer is only marked confirmed by the admin.
     pub fn confirm(&mut self, id: u64) -> Result<(), Error> {
         let mut state = self.store.state()?;
+        if let Some(p) = state.pending.as_mut().filter(|p| p.id == id && p.peer_gate) {
+            p.needs_admin = false;
+            self.store.set_state(&state)?;
+            tracing::info!(
+                id,
+                "the admin confirmed the sync-link change; waiting for the peer"
+            );
+            return Ok(());
+        }
         match &state.pending {
             Some(p) if p.id == id => {
                 state.confirmed = id;
@@ -581,7 +748,7 @@ impl<S: System> Coordinator<S> {
             "confirm window expired; reverting"
         );
         let from = state.active;
-        let reason = if p.from_peer {
+        let reason = if p.from_peer || p.peer_gate {
             "the peer did not confirm it in time"
         } else {
             "confirm window expired"
@@ -634,6 +801,17 @@ impl<S: System> Coordinator<S> {
     }
 
     pub fn rollback(&mut self, id: Option<u64>, author: &str) -> Result<Generation, Error> {
+        self.rollback_staging(id, author, false).map(|(g, _)| g)
+    }
+
+    /// [`Self::rollback`], staging it like [`ApplyOptions::stage_sync_link`]
+    /// when it changes the sync link; returns whether it was staged.
+    pub fn rollback_staging(
+        &mut self,
+        id: Option<u64>,
+        author: &str,
+        stage_sync_link: bool,
+    ) -> Result<(Generation, bool), Error> {
         let state = self.store.state()?;
         if let Some(target) = id
             && target != 0
@@ -650,7 +828,7 @@ impl<S: System> Coordinator<S> {
                 reason: "rollback of an unconfirmed change".into(),
             });
             if id.is_none_or(|t| t == p.revert_to) {
-                return self.generation(p.revert_to);
+                return Ok((self.generation(p.revert_to)?, false));
             }
         }
         let state = self.store.state()?;
@@ -666,7 +844,7 @@ impl<S: System> Coordinator<S> {
                 from,
                 reason: "rollback to bootstrap".into(),
             });
-            return self.generation(0);
+            return Ok((self.generation(0)?, false));
         }
         let value = self.document_value(target)?;
         let r = self.apply(
@@ -675,17 +853,18 @@ impl<S: System> Coordinator<S> {
                 base: from,
                 author: author.to_string(),
                 note: Some(format!("rollback to generation {target}")),
+                stage_sync_link,
                 ..Default::default()
             },
         )?;
-        if !r.unchanged {
+        if !r.unchanged && !r.staged {
             self.events.push(Event::RolledBack {
                 to: r.generation.id,
                 from,
                 reason: format!("rollback to generation {target}"),
             });
         }
-        Ok(r.generation)
+        Ok((r.generation, r.staged))
     }
 
     fn switch_to(&mut self, target: u64, why: &str) -> Result<(), Error> {
@@ -1052,6 +1231,7 @@ impl<S: System> Coordinator<S> {
                     deadline: now_unix() + PEER_CONFIRM_SECONDS,
                     from_peer: true,
                     failed_before,
+                    ..Default::default()
                 });
             }
         }
@@ -1270,10 +1450,12 @@ impl<S: System> Coordinator<S> {
                     p.id,
                     if p.from_peer { " from the peer" } else { "" },
                     (p.deadline - now_unix()).max(0),
-                    if p.from_peer {
-                        "the peer confirms it"
-                    } else {
-                        "confirmed"
+                    match (p.from_peer, p.peer_gate, p.needs_admin) {
+                        (true, ..) => "the peer confirms it",
+                        (_, true, true) =>
+                            "the peer confirms it over the new sync link and you confirm it",
+                        (_, true, false) => "the peer confirms it over the new sync link",
+                        _ => "confirmed",
                     }
                 ),
             ));

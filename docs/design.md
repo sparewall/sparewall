@@ -251,7 +251,14 @@ On the peer, a pushed generation goes through the same validation, dry-run and a
 
 Until it is confirmed the peer does not report it as applied, so the pair shows *applying* and an upgrade waits. Changes are serialized: neither node pushes while either has a change pending, and the peer refuses a push that does not extend its active generation.
 
-**Changes to the sync link** (the sync network's addressing, VLAN or ports, `cluster.sync_port`, either node's `cluster.sync_keys` entry) alter the tunnel the push travels through, so they must reverse the order. The accepting node pushes the generation, gated, through the current tunnel, and only then activates it. Both run it pending under the peer's deadline. The accepting node confirms over the new tunnel, and if that never succeeds, both nodes revert to the old tunnel at the deadline. This is not built yet ([#25](https://github.com/sparewall/sparewall/issues/25)). Until then, after changing the sync link on one node, apply the same document on the other with `--allow-diverge`; if `sparewall status` then shows the pair diverged, resolve it with `sparewall sync --from`.
+**Changes to the sync link** reverse the order, because they alter the tunnel the push travels through. That covers the cluster's nodes and sync settings (`sync_network`, `sync_port`, `sync_keys`), the sync network, and the port carrying it, and a rollback across such a change too.
+
+1. The accepting node stores the change without running it.
+2. It pushes the change, gated, through the current tunnel, and the peer runs it pending.
+3. Only then does the accepting node run it. It stays pending until the peer confirms it over the new tunnel and, if a confirm window was asked for, the admin confirms it too, in either order.
+4. If the new tunnel never works, the peer reverts at its deadline. The accepting node reverts 30 seconds after that, so it always learns the peer's outcome first, and both end on the old tunnel.
+
+If the peer cannot take the change first (it is unreachable or an older release), nothing changes on either node. With the peer unreachable, `--allow-diverge` applies the change locally as before, and the other node needs the same change.
 
 OS upgrades are a separate order: the BACKUP is upgraded first, then the MASTER after it fails over (see [Releases, upgrades and versioning](#releases-upgrades-and-versioning)).
 

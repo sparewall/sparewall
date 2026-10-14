@@ -57,6 +57,15 @@ pub struct Pending {
     /// requires that nothing else fails.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_before: Vec<String>,
+    /// A local change to the sync link, pushed to the peer before it ran
+    /// here: kept only once the peer confirms it over the new link
+    /// (`Coordinator::peer_confirmed`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub peer_gate: bool,
+    /// The admin's confirmation is still needed too (a confirm window
+    /// was asked for).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_admin: bool,
 }
 
 /// A generation from the peer that failed to activate, or was reverted

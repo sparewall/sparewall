@@ -49,6 +49,7 @@ fn opts(base: u64, confirm: Option<u32>) -> ApplyOptions {
         author: "test".into(),
         dry_run: false,
         note: None,
+        stage_sync_link: false,
     }
 }
 
@@ -2058,4 +2059,206 @@ fn retried_push_syncs_the_generation_first() {
             assert!(at < state, "{dir}: {} synced after the state", d.display());
         }
     }
+}
+
+/// The pair example, paired: both nodes' sync keys are set.
+fn paired_example() -> Value {
+    let mut v = pair_example();
+    v["cluster"]["sync_keys"] = json!({
+        "fw1": "xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=",
+        "fw2": "M6astOdmoOXA9wbbSh6itjkcHKGdkoDSy01sGZ68FVw=",
+    });
+    v
+}
+
+/// Two nodes in sync at generation 1 of the paired example.
+fn synced_pair() -> (T, T) {
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(paired_example(), &opts(0, None)).unwrap();
+    let g1 = a.c.generation(1).unwrap();
+    b.c.receive(&g1, a.c.document_value(1).unwrap(), PeerGate::Immediate)
+        .unwrap();
+    (a, b)
+}
+
+/// The pair example with the sync tunnel on other addresses.
+fn moved_sync_link() -> Value {
+    let mut v = paired_example();
+    v["networks"]["sync"]["addresses"] = json!({"fw1": "10.255.1.1/30", "fw2": "10.255.1.2/30"});
+    v
+}
+
+fn staging(base: u64, confirm: Option<u32>) -> ApplyOptions {
+    ApplyOptions {
+        stage_sync_link: true,
+        ..opts(base, confirm)
+    }
+}
+
+/// #25: a change to the sync link is stored, not run; other changes,
+/// and any change without a pair, run as before.
+#[test]
+fn sync_link_changes_are_staged() {
+    let (mut a, _b) = synced_pair();
+    let before = running(&mut a);
+    let r = a.c.apply(moved_sync_link(), &staging(1, Some(60))).unwrap();
+    assert!(r.staged);
+    assert_eq!(r.generation.id, 2);
+    assert_eq!(a.c.state().unwrap().active, 1);
+    assert!(a.c.store().exists(2));
+    assert_eq!(running(&mut a), before);
+    a.c.discard_staged(2).unwrap();
+    assert!(!a.c.store().exists(2));
+    assert_eq!(set_aside_names(&a, "unsent").len(), 1);
+
+    // Other changes, and sync-link changes without the flag, just run.
+    for (v, o) in [
+        (
+            {
+                let mut v = paired_example();
+                v["networks"]["users"]["mtu"] = json!(1400);
+                v
+            },
+            staging(1, None),
+        ),
+        (moved_sync_link(), opts(2, None)),
+    ] {
+        let r = a.c.apply(v, &o).unwrap();
+        assert!(!r.staged);
+        assert_eq!(a.c.active().unwrap(), r.generation.id);
+    }
+
+    // Standalone: nothing to stage.
+    let mut t = setup();
+    t.c.apply(example(), &opts(0, None)).unwrap();
+    let mut v = example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    assert!(!t.c.apply(v, &staging(1, None)).unwrap().staged);
+}
+
+/// #25: the peer runs the staged change pending (pushed through the old
+/// link), then this node runs it; the peer's confirmation over the new
+/// link keeps it on both. With a confirm window, the admin's
+/// confirmation is needed too, in either order.
+#[test]
+fn sync_link_change_kept_once_the_peer_confirms() {
+    for admin in [None, Some("first"), Some("last")] {
+        let (mut a, mut b) = synced_pair();
+        let window = if admin.is_some() { 60 } else { 0 };
+        let r =
+            a.c.apply(moved_sync_link(), &staging(1, Some(window)))
+                .unwrap();
+        let g2 = r.generation.clone();
+        b.c.receive(&g2, a.c.document_value(2).unwrap(), PeerGate::PeerConfirms)
+            .unwrap();
+        a.c.activate_staged(2, window).unwrap();
+        let st = a.c.state().unwrap();
+        let p = st.pending.clone().unwrap();
+        assert_eq!((st.active, st.confirmed), (2, 1), "{admin:?}");
+        assert!(p.peer_gate && p.needs_admin == admin.is_some(), "{admin:?}");
+        assert!(
+            p.deadline
+                >= b.c.state().unwrap().pending.unwrap().deadline
+                    + sparewall_core::coordinator::SYNC_LINK_MARGIN_SECONDS
+                    - 1,
+            "the local deadline outlasts the peer's"
+        );
+        let msg =
+            a.c.health()
+                .unwrap()
+                .check("confirm")
+                .unwrap()
+                .message
+                .clone();
+        assert!(msg.contains("over the new sync link"), "{msg}");
+
+        if admin == Some("first") {
+            a.c.confirm(2).unwrap();
+            assert!(
+                a.c.state()
+                    .unwrap()
+                    .pending
+                    .is_some_and(|p| p.peer_gate && !p.needs_admin)
+            );
+        }
+        b.c.confirm_received(2).unwrap();
+        a.c.peer_confirmed(2).unwrap();
+        if admin == Some("last") {
+            assert!(
+                a.c.state()
+                    .unwrap()
+                    .pending
+                    .is_some_and(|p| !p.peer_gate && p.needs_admin)
+            );
+            a.c.confirm(2).unwrap();
+        }
+        for t in [&a, &b] {
+            let st = t.c.state().unwrap();
+            assert_eq!(
+                (st.active, st.confirmed, st.pending),
+                (2, 2, None),
+                "{admin:?}"
+            );
+        }
+        // A repeated confirmation from the sync loop is harmless.
+        a.c.peer_confirmed(2).unwrap();
+    }
+}
+
+/// #25: if the new link never works, the peer reverts at its deadline
+/// and this node at its later one: both are back on the old link.
+#[test]
+fn sync_link_change_reverts_on_both_without_the_peer() {
+    let (mut a, mut b) = synced_pair();
+    a.c.apply(moved_sync_link(), &staging(1, None)).unwrap();
+    let g2 = a.c.generation(2).unwrap();
+    b.c.receive(&g2, a.c.document_value(2).unwrap(), PeerGate::PeerConfirms)
+        .unwrap();
+    a.c.activate_staged(2, 0).unwrap();
+    let peer_deadline = b.c.state().unwrap().pending.unwrap().deadline;
+    let our_deadline = a.c.state().unwrap().pending.unwrap().deadline;
+    assert_eq!(b.c.tick(peer_deadline).unwrap(), Some(1));
+    assert_eq!(a.c.tick(peer_deadline).unwrap(), None);
+    assert_eq!(a.c.tick(our_deadline).unwrap(), Some(1));
+    for t in [&a, &b] {
+        let st = t.c.state().unwrap();
+        assert_eq!((st.active, st.confirmed, st.pending), (1, 1, None));
+    }
+    assert_eq!(
+        a.c.document_value(1).unwrap()["networks"]["sync"],
+        paired_example()["networks"]["sync"]
+    );
+}
+
+/// #25: a change made here between staging and running the sync-link
+/// change wins; the staged one is set aside. A rollback across a
+/// sync-link change is staged like any other.
+#[test]
+fn staged_sync_link_change_yields_and_rollback_stages() {
+    let (mut a, _b) = synced_pair();
+    a.c.apply(moved_sync_link(), &staging(1, None)).unwrap();
+    let mut v = paired_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    let r = a.c.apply(v, &opts(1, None)).unwrap();
+    assert_eq!(r.generation.id, 3);
+    assert!(matches!(
+        a.c.activate_staged(2, 0),
+        Err(Error::Conflict { current: 3 })
+    ));
+    assert!(!a.c.store().exists(2));
+    assert_eq!(a.c.active().unwrap(), 3);
+
+    // Now move the link properly, then roll it back.
+    let (mut a2, mut b2) = synced_pair();
+    a2.c.apply(moved_sync_link(), &staging(1, None)).unwrap();
+    let g2 = a2.c.generation(2).unwrap();
+    b2.c.receive(&g2, a2.c.document_value(2).unwrap(), PeerGate::PeerConfirms)
+        .unwrap();
+    a2.c.activate_staged(2, 0).unwrap();
+    b2.c.confirm_received(2).unwrap();
+    a2.c.peer_confirmed(2).unwrap();
+    let (g, staged) = a2.c.rollback_staging(None, "admin", true).unwrap();
+    assert!(staged);
+    assert_eq!((g.id, a2.c.active().unwrap()), (3, 2));
 }
