@@ -109,6 +109,13 @@ Where the implementation departs from, or settles open questions in,
   generation with that id when the push extends the active generation
   (set aside as `<id>.diverged-<hash>`); otherwise every push of that id
   conflicted until `sync --from` (#24).
+- **A state write that fails after activation undoes the change.**
+  `apply` and a peer push re-activate the generation `state.json` names
+  and report `ApplyFailed`, as for a failed activation. Tests inject
+  the failure by making the temporary file's path a directory (#28).
+- **Store writes sync their directory** after the rename (and the
+  parent of a directory they create), so the store's ordering holds
+  across a power loss, not only a process crash (#28).
 - **Equal-version cluster secrets** made independently by both nodes
   (each applied the pairing document) converge on the one created first.
 - **Health endpoint detail and `/metrics`** need an API token, except

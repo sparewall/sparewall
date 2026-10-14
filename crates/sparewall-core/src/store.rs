@@ -84,10 +84,16 @@ pub struct Store {
     root: PathBuf,
 }
 
-/// Write a file atomically: temp file, fsync, rename.
+/// Write a file atomically and durably: temp file, fsync, rename, then
+/// fsync the directory so the rename survives a power loss (and its
+/// parent too if the directory is new).
 pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().expect("absolute path");
+    let created = !dir.exists();
     fs::create_dir_all(dir)?;
+    if created && let Some(parent) = dir.parent() {
+        sync_dir(parent)?;
+    }
     let tmp = dir.join(format!(
         ".{}.tmp",
         path.file_name().unwrap().to_string_lossy()
@@ -97,7 +103,14 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
         f.write_all(data)?;
         f.sync_all()?;
     }
-    fs::rename(&tmp, path)
+    fs::rename(&tmp, path)?;
+    sync_dir(dir)
+}
+
+/// fsync a directory, making the entries just created, renamed or
+/// removed in it durable.
+pub fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    fs::File::open(dir)?.sync_all()
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, Error> {
@@ -235,6 +248,7 @@ impl Store {
             .find(|p| !p.exists())
             .expect("a free name");
         fs::rename(self.gen_dir(id), &to).map_err(|e| Error::io(&to, e))?;
+        sync_dir(&dir).map_err(|e| Error::io(&dir, e))?;
         Ok(to)
     }
 

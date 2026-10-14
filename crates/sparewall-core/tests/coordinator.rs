@@ -1823,3 +1823,82 @@ fn gated_push_replaces_a_crash_leftover() {
     b.c.confirm_received(2).unwrap();
     assert_eq!(b.c.state().unwrap().confirmed, 2);
 }
+
+/// Make every `state.json` write fail (its temporary file is a
+/// directory) until the returned guard is dropped.
+fn break_state_writes(t: &T) -> impl Drop + use<> {
+    struct Guard(std::path::PathBuf);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+    let p = t.c.store().root().join(".state.json.tmp");
+    std::fs::create_dir(&p).unwrap();
+    Guard(p)
+}
+
+/// Issue #28: a local change that ran but could not be recorded in
+/// `state.json` is undone like a failed activation, so the node runs
+/// what `state.json` says and no change outlives it unrecorded.
+#[test]
+fn failed_state_commit_restores_the_recorded_generation() {
+    let (mut a, _b, _, v2) = peers_with_change();
+    // a runs 2; make 3 on top of it, which cannot be recorded.
+    let before = running(&mut a);
+    let applied = a.c.applied().unwrap();
+    let mut v3 = v2.clone();
+    v3["networks"]["users"]["mtu"] = json!(1300);
+    v3["policy"]["wan->self"]["action"] = json!("drop");
+    a.c.drain_events();
+    {
+        let _broken = break_state_writes(&a);
+        let r = a.c.apply(v3.clone(), &opts(2, Some(60)));
+        assert!(matches!(r, Err(Error::Io { .. })), "{r:?}");
+    }
+    let st = a.c.state().unwrap();
+    assert_eq!((st.active, st.confirmed, st.pending), (2, 2, None));
+    assert_eq!(running(&mut a), before);
+    assert_eq!(a.c.applied().unwrap(), applied);
+    assert!(matches!(
+        a.c.drain_events().last(),
+        Some(Event::ApplyFailed { id: 3, .. })
+    ));
+    assert_eq!(set_aside_names(&a, "failed").len(), 1);
+    assert!(!a.c.store().exists(3));
+    // Once writes work again, the same change goes through.
+    let r = a.c.apply(v3, &opts(2, Some(60))).unwrap();
+    assert_eq!(r.generation.id, 3);
+    assert_eq!(a.c.state().unwrap().pending.map(|p| p.id), Some(3));
+}
+
+/// Issue #28: the peer's generation, run but not recorded, is undone
+/// and the push fails, so the peer pushes it again later; it is not
+/// left running behind a `state.json` naming the previous one.
+#[test]
+fn failed_state_commit_undoes_the_peers_generation() {
+    for gate in [PeerGate::Immediate, PeerGate::PeerConfirms] {
+        let (_a, mut b, g2, v2) = peers_with_change();
+        let before = running(&mut b);
+        b.c.drain_events();
+        {
+            let _broken = break_state_writes(&b);
+            let r = b.c.receive(&g2, v2.clone(), gate);
+            assert!(matches!(r, Err(Error::Io { .. })), "{gate:?}: {r:?}");
+        }
+        let st = b.c.state().unwrap();
+        // The rejection could not be recorded either: nothing blocks a retry.
+        assert_eq!(
+            (st.active, st.pending, st.rejected),
+            (1, None, None),
+            "{gate:?}"
+        );
+        assert_eq!(running(&mut b), before, "{gate:?}");
+        assert!(matches!(
+            b.c.drain_events().last(),
+            Some(Event::ApplyFailed { id: 2, .. })
+        ));
+        b.c.receive(&g2, v2, gate).unwrap();
+        assert_eq!(b.c.active().unwrap(), 2, "{gate:?}");
+    }
+}

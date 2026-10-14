@@ -218,13 +218,13 @@ What happens next depends on what failed:
 - **A failed new change** is not retried. The admin applies a fix or rolls back.
 - **A failed revert** of an expired pending change is retried every second until it succeeds. The pending change stays recorded, and health stays *failed*, until it does.
 
-Recording the change (step 5) can fail too, after activation succeeded, if `state.json` cannot be written. That must be treated like a failed step: the coordinator re-activates the recorded generation and reports `ApplyFailed`. Today it returns the error but leaves the node running N with `state.json` still naming the previous generation and nothing pending, until a restart reverts it ([#28](https://github.com/sparewall/sparewall/issues/28)).
+Recording the change (step 5) can fail too, after activation succeeded, if `state.json` cannot be written. That is treated like a failed step: the coordinator re-activates the generation `state.json` still names and reports `ApplyFailed`, so the node never runs a configuration its state does not record. A local change is then set aside; a peer's generation is rejected if that can still be recorded, and is otherwise pushed again on the next sync pass.
 
 ### Durable intent and restarts
 
 `state.json` is the only record of what a node should run. It holds the active generation, the last confirmed one and any pending change with its revert target and deadline, and it is replaced atomically (written aside, then renamed). The order of steps 4 and 5 gives the rules below.
 
-These rules cover a crash or restart of the coordinator with its storage intact. Surviving a power loss also needs each rename and new generation directory synced to disk (the parent directory fsynced). That is not done yet ([#28](https://github.com/sparewall/sparewall/issues/28)), so after a power cut the last rename may be lost.
+The rules hold across a power loss as well as a coordinator crash: every file is written to a temporary name, fsynced and renamed, and the directory is fsynced after the rename (and its parent after a new generation directory is created), so the on-disk order is the order of the steps.
 
 - **A generation is stored before it runs and becomes active only after it runs.** A coordinator crash at any point before step 5 leaves `state.json` naming the previous generation, and at start-up the coordinator activates that from scratch (every layer, not just the changed ones). The new generation stays on disk without ever having been active.
 - **A pending change does not survive a restart.** If `state.json` holds a pending change at start-up, the coordinator reverts to its revert target before activating anything. That applies both to the node's own unconfirmed change and to a peer's generation awaiting the peer's confirmation. A crash during a revert (activation done, `state.json` not yet updated) therefore ends the same way.
