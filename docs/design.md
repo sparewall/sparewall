@@ -258,8 +258,8 @@ Until it is confirmed the peer does not report it as applied, so the pair shows 
 3. Only then does the accepting node run it, pending.
 4. **Prepare:** it confirms the change to the peer over the new tunnel. The peer checks that nothing new fails, as for any gated push. Instead of keeping the change, it holds it **in doubt**.
 5. **Decide:** the accepting node keeps the change once the peer has prepared it and, if a confirm window was asked for, the admin has confirmed it, in either order. Otherwise it reverts: at its deadline, which is 30 seconds after the peer's, at a restart, or on a rollback. The decision is recorded in its state, and that record stays until the peer is seen to have followed it.
-   - No other change is accepted while the decision is pending.
-   - A kept decision is shown to the peer only once it is on disk. If writing it fails, the node shows the change as still pending until the write is durable.
+   - No other change is accepted while the decision is pending, on either node. On the peer, `sparewall sync --from` is the explicit way out.
+   - A kept decision is shown to the peer only once it is on disk. If writing it fails, the node shows the change as still pending until the write is durable. That includes after a restart: the node syncs its state record at boot first.
 6. **Follow:** the in-doubt peer reads the decision record from the accepting node's status and does the same. History may have been pruned since, so the peer never takes a missing generation as a revert.
    - In doubt, the peer never reverts on its own deadline or at a restart.
    - While the accepting node cannot be reached, the peer switches between the old and the new link every 30 seconds to find it. Only the sync link differs between the two, and health stays degraded, not failed, so the gateway addresses do not move.

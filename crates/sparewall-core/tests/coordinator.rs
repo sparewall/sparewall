@@ -2718,3 +2718,84 @@ fn restart_after_a_mixture_activates_the_record_in_full() {
     }
     assert_eq!(c.system().network, at_2);
 }
+
+/// Review of #34: on the receiving node the peer's sync-link change is
+/// the peer's to decide: ordinary changes, a confirmation and a rollback
+/// are refused there, before and after it prepared the change.
+#[test]
+fn receiver_refuses_changes_during_a_link_change() {
+    for prepared in [false, true] {
+        let (mut a, mut b) = moving_link(60);
+        if prepared {
+            b.c.confirm_received(2).unwrap();
+            a.c.peer_confirmed(2).unwrap();
+        }
+        let mut v = moved_sync_link();
+        v["networks"]["users"]["mtu"] = json!(1400);
+        let e = b.c.apply(v, &staging(2, None)).unwrap_err();
+        assert!(
+            e.to_string().contains("the peer decides"),
+            "{prepared}: {e}"
+        );
+        assert!(b.c.confirm(2).is_err(), "{prepared}");
+        assert!(b.c.rollback(None, "admin").is_err(), "{prepared}");
+        assert_eq!(at(&b), (2, 1, true), "{prepared}");
+        assert_eq!(b.c.in_doubt().unwrap().is_some(), prepared);
+        // The admin never confirms on a: both end on the old link.
+        let d = a.c.state().unwrap().pending.unwrap().deadline;
+        a.c.tick(d).unwrap();
+        if prepared {
+            follow(&mut b, &mut a);
+        } else {
+            let d = b.c.state().unwrap().pending.unwrap().deadline;
+            b.c.tick(d).unwrap();
+        }
+        assert_eq!(
+            (at(&a), at(&b)),
+            ((1, 1, false), (1, 1, false)),
+            "{prepared}"
+        );
+    }
+}
+
+/// Review of #34: a decider that restarts while its kept decision is not
+/// known to be on disk syncs the state record before publishing it, and
+/// withholds it while that fails.
+#[test]
+fn restarted_decider_withholds_an_unsynced_decision() {
+    let (mut a, mut b) = moving_link(0);
+    b.c.confirm_received(2).unwrap();
+    let root = a.c.store().root().to_path_buf();
+    let tmp = root.join(".state.json.tmp");
+    fail_syncs(&a, root.clone(), &[1], move || {
+        std::fs::create_dir(&tmp).unwrap();
+    });
+    assert!(a.c.peer_confirmed(2).is_err());
+    let _ = std::fs::remove_dir(root.join(".state.json.tmp"));
+    assert!(a.c.publishes_pending().unwrap());
+
+    // The process restarts; its state directory still cannot sync.
+    let id = a.c.identity().clone();
+    a.c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+    let tries = fail_syncs(&a, root.clone(), &[1, 2, 3, 4, 5, 6, 7, 8], || {});
+    a.c.boot(false).unwrap();
+    assert!(
+        tries.lock().unwrap().iter().any(|d| *d == root),
+        "boot tried to sync"
+    );
+    assert!(a.c.publishes_pending().unwrap());
+    assert_eq!(a.c.published_link_decision().unwrap(), None);
+    follow(&mut b, &mut a);
+    assert!(b.c.in_doubt().unwrap().is_some());
+
+    // The disk recovers: the decision shows, and the peer follows.
+    a.c.store().inject_sync_faults(|_| false);
+    a.c.tick(0).unwrap();
+    assert!(
+        a.c.published_link_decision()
+            .unwrap()
+            .is_some_and(|d| d.kept)
+    );
+    follow(&mut b, &mut a);
+    assert_eq!((at(&a), at(&b)), ((2, 2, false), (2, 2, false)));
+}

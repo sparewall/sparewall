@@ -321,6 +321,12 @@ impl<S: System> Coordinator<S> {
     /// With `early`, only files are installed and nft loaded (before udev
     /// and networkd start).
     pub fn boot(&mut self, early: bool) -> Result<u64, Error> {
+        // A restart is no proof that a failed sync of the state record
+        // completed: sync it before telling the peer any decision.
+        if let Err(e) = self.store.sync_state() {
+            tracing::error!(error = %e, "cannot sync the state record; withholding decisions");
+            self.decision_unsure = true;
+        }
         let mut state = self.store.state()?;
         if state.pending.as_ref().is_some_and(|p| p.prepared) {
             // In doubt: kept until the peer's decision is known.
@@ -459,12 +465,7 @@ impl<S: System> Coordinator<S> {
     /// Replace the whole document.
     pub fn apply(&mut self, value: Value, opts: &ApplyOptions) -> Result<ApplyResult, Error> {
         let state = self.check_base(opts.base)?;
-        if let Some(p) = state.pending.as_ref().filter(|p| p.decides_link) {
-            return Err(Error::Validation(vec![format!(
-                "the sync-link change {} is waiting for the peer; confirm it or roll it back first",
-                p.id
-            )]));
-        }
+        self.link_change_in_progress(&state)?;
         let (doc, warnings, rendered) = self.check(value)?;
         let hash = sparewall_config::hash(&doc);
         let active_gen = self.generation(state.active)?;
@@ -804,6 +805,25 @@ impl<S: System> Coordinator<S> {
         Ok(Some(self.store.document(id)?))
     }
 
+    /// Refuse an ordinary change while a sync-link change is in progress:
+    /// this node's, waiting for the peer and the admin (they confirm or
+    /// roll it back), or the peer's, which only the peer decides (`sync
+    /// --from` is the explicit way out).
+    fn link_change_in_progress(&self, state: &State) -> Result<(), Error> {
+        match &state.pending {
+            Some(p) if p.decides_link => Err(Error::Validation(vec![format!(
+                "the sync-link change {} is waiting for the peer; confirm it or roll it back first",
+                p.id
+            )])),
+            Some(p) if p.link_change => Err(Error::Validation(vec![format!(
+                "the peer's sync-link change {} is in progress; the peer decides it (or take \
+                 the peer's configuration with sparewall sync --from <peer>)",
+                p.id
+            )])),
+            _ => Ok(()),
+        }
+    }
+
     /// Whether the peer is told a change is pending here: one is, or a
     /// kept sync-link change is not yet known to be on disk.
     pub fn publishes_pending(&self) -> Result<bool, Error> {
@@ -923,6 +943,9 @@ impl<S: System> Coordinator<S> {
     /// the peer is only marked confirmed by the admin.
     pub fn confirm(&mut self, id: u64) -> Result<(), Error> {
         let mut state = self.store.state()?;
+        if state.pending.as_ref().is_some_and(|p| p.link_change) {
+            self.link_change_in_progress(&state)?;
+        }
         if let Some(p) = state.pending.as_mut().filter(|p| p.id == id && p.peer_gate) {
             p.needs_admin = false;
             self.store.set_state(&state)?;
@@ -1024,6 +1047,9 @@ impl<S: System> Coordinator<S> {
         stage_sync_link: bool,
     ) -> Result<(Generation, bool), Error> {
         let state = self.store.state()?;
+        if state.pending.as_ref().is_some_and(|p| p.link_change) {
+            self.link_change_in_progress(&state)?;
+        }
         if let Some(target) = id
             && target != 0
             && !self.store.exists(target)
