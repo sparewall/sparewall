@@ -192,9 +192,11 @@ Where the implementation departs from, or settles open questions in,
     `finish_confirm`; reverted at the deadline, at boot or by a
     rollback) writes `State::link_decision` in the same state write.
     Hello shows the record until the peer is seen with nothing pending
-    (`peer_followed`). Ordinary apply, merge, patch, confirm and
-    rollback are refused while a sync-link change is pending on either
-    node; on the receiver, `sync --from` stays available.
+    (`peer_followed`). While a sync-link change is pending, apply,
+    merge and patch are refused on both nodes. On the decider, confirm
+    and rollback stay available (they are how the admin keeps or drops
+    the change). On the receiver they are refused too, and `sync --from`
+    is the explicit way out.
   - **Durability:** a kept decision whose write fails after the rename
     is written back as pending. If that fails too, `decision_unsure`
     makes Hello report pending with no decision until `tick` manages
