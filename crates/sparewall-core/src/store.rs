@@ -66,6 +66,19 @@ pub struct Pending {
     /// was asked for).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub needs_admin: bool,
+    /// From the peer, and it changes the sync link: the peer decides
+    /// whether both keep it (two-phase; see `Coordinator::resolve_in_doubt`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub link_change: bool,
+    /// A `link_change` this node confirmed to the peer: from then on it is
+    /// in doubt, reverted or kept only as the peer decides, never by its
+    /// deadline or a restart.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prepared: bool,
+    /// In doubt and unable to reach the peer: running `revert_to` (the old
+    /// link) to look for it there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trying_old: bool,
 }
 
 /// A generation from the peer that failed to activate, or was reverted

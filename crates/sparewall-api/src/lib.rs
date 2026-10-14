@@ -247,8 +247,11 @@ pub const PEER_SOCKET: &str = "/run/sparewall/org.sparewall.Peer";
 /// TCP port of the peer listener on the sync tunnel address.
 pub const PEER_PORT: u16 = 8649;
 /// Peer protocol version, negotiated in `Hello`. 2: pushed generations
-/// can be gated on the pusher's `Confirm`.
-pub const PEER_PROTOCOL: i64 = 2;
+/// can be gated on the pusher's `Confirm`. 3: a gated generation that
+/// changes the sync link stays in doubt after `Confirm` until the pusher's
+/// decision shows in its `Hello` (so it can be pushed before it runs on
+/// the pusher).
+pub const PEER_PROTOCOL: i64 = 3;
 
 /// A generation as it travels between nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]

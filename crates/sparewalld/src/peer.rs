@@ -41,7 +41,14 @@ pub struct PairStatus {
     /// Cluster secret versions last delivered to the peer.
     #[serde(skip)]
     pub secrets_sent: Vec<(String, u64)>,
+    /// While a sync-link change is in doubt: when the peer was last
+    /// reached, or this node last switched links to look for it.
+    #[serde(skip)]
+    pub doubt_since: Option<std::time::Instant>,
 }
+
+/// How long an in-doubt node tries one sync link before the other.
+const IN_DOUBT_SWITCH: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub type Pair = Arc<Mutex<PairStatus>>;
 
@@ -519,12 +526,14 @@ async fn sync_once(
     events: &broadcast::Sender<Value>,
     pair: &Pair,
 ) -> Result<(), String> {
-    let (doc, local, pending, node) = with_core_raw(core, events, |c| {
+    let (doc, local, pending, node, doubt) = with_core_raw(core, events, |c| {
         Ok((
-            c.active_document()?,
+            // The tunnel as it runs: an in-doubt node may be on the old link.
+            c.live_document()?,
             c.view()?,
             c.state()?.pending,
             c.node().to_string(),
+            c.in_doubt()?,
         ))
     })
     .await
@@ -538,6 +547,7 @@ async fn sync_once(
         let p = pair.lock().unwrap_or_else(|p| p.into_inner());
         PairStatus {
             secrets_sent: p.secrets_sent.clone(),
+            doubt_since: p.doubt_since.filter(|_| doubt.is_some()),
             ..Default::default()
         }
     };
@@ -561,14 +571,18 @@ async fn sync_once(
                 // Protocol 2 peers run what we push pending until we
                 // confirm it over the tunnel.
                 let gated = h.protocol >= 2;
-                // A sync-link change of ours that the peer already keeps
-                // (its confirmation's reply was lost): keep it here too.
-                if let Some(p) = pending.as_ref().filter(|p| p.peer_gate)
-                    && pv.active == p.id
-                    && !h.pending
-                {
-                    let id = p.id;
-                    let _ = with_core_raw(core, events, move |c| c.peer_confirmed(id)).await;
+                // The peer's sync-link change, in doubt here: once the
+                // peer has decided (nothing pending there), do as it did.
+                if let Some((id, hash, _)) = &doubt {
+                    status.doubt_since = Some(std::time::Instant::now());
+                    if !h.pending {
+                        let kept = h.lineage.iter().any(|e| e.id == *id as i64 && e.hash == *hash);
+                        if let Err(e) =
+                            with_core_raw(core, events, move |c| c.resolve_in_doubt(kept)).await
+                        {
+                            tracing::error!(error = %e, "cannot follow the peer's decision");
+                        }
+                    }
                 }
                 if state == SyncState::PeerBehind
                     && pending.is_none()
@@ -596,6 +610,19 @@ async fn sync_once(
                 status.peer_view = Some(pv);
             }
             Err(e) => {
+                // In doubt and the peer is not on this link: after a while,
+                // look for it on the other one.
+                if doubt.is_some() {
+                    let since = *status.doubt_since.get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed() >= IN_DOUBT_SWITCH {
+                        if let Err(e) =
+                            with_core_raw(core, events, |c| c.alternate_in_doubt()).await
+                        {
+                            tracing::error!(error = %e, "cannot switch sync links");
+                        }
+                        status.doubt_since = Some(std::time::Instant::now());
+                    }
+                }
                 // Resend everything once it is back (it may be a new node).
                 status.secrets_sent.clear();
                 status.state = Some(SyncState::PeerUnreachable);
@@ -742,7 +769,7 @@ pub async fn push_first(
         .and_then(|d| tunnel_addrs(d, &node))
         .ok_or("this node is not paired")?;
     let link = Link { own, peer };
-    if hello(link, &node).await?.protocol < 2 {
+    if hello(link, &node).await?.protocol < 3 {
         return Err(format!(
             "{name} cannot take a sync-link change first (an older release); upgrade it, \
              or apply the change on both nodes with --allow-diverge"
