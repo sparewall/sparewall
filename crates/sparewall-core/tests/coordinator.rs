@@ -1823,3 +1823,239 @@ fn gated_push_replaces_a_crash_leftover() {
     b.c.confirm_received(2).unwrap();
     assert_eq!(b.c.state().unwrap().confirmed, 2);
 }
+
+/// Make every `state.json` write fail (its temporary file is a
+/// directory) until the returned guard is dropped.
+fn break_state_writes(t: &T) -> impl Drop + use<> {
+    struct Guard(std::path::PathBuf);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+    let p = t.c.store().root().join(".state.json.tmp");
+    std::fs::create_dir(&p).unwrap();
+    Guard(p)
+}
+
+/// Issue #28: a local change that ran but could not be recorded in
+/// `state.json` is undone like a failed activation, so the node runs
+/// what `state.json` says and no change outlives it unrecorded.
+#[test]
+fn failed_state_commit_restores_the_recorded_generation() {
+    let (mut a, _b, _, v2) = peers_with_change();
+    // a runs 2; make 3 on top of it, which cannot be recorded.
+    let before = running(&mut a);
+    let applied = a.c.applied().unwrap();
+    let mut v3 = v2.clone();
+    v3["networks"]["users"]["mtu"] = json!(1300);
+    v3["policy"]["wan->self"]["action"] = json!("drop");
+    a.c.drain_events();
+    {
+        let _broken = break_state_writes(&a);
+        let r = a.c.apply(v3.clone(), &opts(2, Some(60)));
+        assert!(matches!(r, Err(Error::Io { .. })), "{r:?}");
+    }
+    let st = a.c.state().unwrap();
+    assert_eq!((st.active, st.confirmed, st.pending), (2, 2, None));
+    assert_eq!(running(&mut a), before);
+    assert_eq!(a.c.applied().unwrap(), applied);
+    assert!(matches!(
+        a.c.drain_events().last(),
+        Some(Event::ApplyFailed { id: 3, .. })
+    ));
+    assert_eq!(set_aside_names(&a, "failed").len(), 1);
+    assert!(!a.c.store().exists(3));
+    // Once writes work again, the same change goes through.
+    let r = a.c.apply(v3, &opts(2, Some(60))).unwrap();
+    assert_eq!(r.generation.id, 3);
+    assert_eq!(a.c.state().unwrap().pending.map(|p| p.id), Some(3));
+}
+
+/// Issue #28: the peer's generation, run but not recorded, is undone
+/// and the push fails, so the peer pushes it again later; it is not
+/// left running behind a `state.json` naming the previous one.
+#[test]
+fn failed_state_commit_undoes_the_peers_generation() {
+    for gate in [PeerGate::Immediate, PeerGate::PeerConfirms] {
+        let (_a, mut b, g2, v2) = peers_with_change();
+        let before = running(&mut b);
+        b.c.drain_events();
+        {
+            let _broken = break_state_writes(&b);
+            let r = b.c.receive(&g2, v2.clone(), gate);
+            assert!(matches!(r, Err(Error::Io { .. })), "{gate:?}: {r:?}");
+        }
+        let st = b.c.state().unwrap();
+        // The rejection could not be recorded either: nothing blocks a retry.
+        assert_eq!(
+            (st.active, st.pending, st.rejected),
+            (1, None, None),
+            "{gate:?}"
+        );
+        assert_eq!(running(&mut b), before, "{gate:?}");
+        assert!(matches!(
+            b.c.drain_events().last(),
+            Some(Event::ApplyFailed { id: 2, .. })
+        ));
+        b.c.receive(&g2, v2, gate).unwrap();
+        assert_eq!(b.c.active().unwrap(), 2, "{gate:?}");
+    }
+}
+
+/// Fail the syncs of `dir` numbered in `calls` (1 = its first sync from
+/// now), calling `then` on each failure; every sync is logged.
+fn fail_syncs(
+    t: &T,
+    dir: std::path::PathBuf,
+    calls: &'static [usize],
+    then: impl Fn() + Send + 'static,
+) -> std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>> {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = log.clone();
+    let mut n = 0;
+    t.c.store().inject_sync_faults(move |d| {
+        seen.lock().unwrap().push(d.to_path_buf());
+        if d != dir {
+            return false;
+        }
+        n += 1;
+        let fail = calls.contains(&n);
+        if fail {
+            then();
+        }
+        fail
+    });
+    log
+}
+
+/// Review of #30: syncing the state directory can fail after the rename
+/// put the new record in place. The node must end up running what the
+/// readable record names, and keep every generation a record may name.
+#[test]
+fn state_sync_failure_after_the_rename() {
+    // (failed syncs of the state directory, re-record fails before its
+    // rename, expected active, generation 3 kept)
+    let cases: [(&'static [usize], bool, u64, bool); 3] = [
+        // The previous record is written back: 3 is unreferenced.
+        (&[1], false, 2, false),
+        // Written back, but its sync fails too: 3 may still be on disk.
+        (&[1, 2], false, 2, true),
+        // Not written back: the new record stands and keeps running.
+        (&[1], true, 3, true),
+    ];
+    for (calls, block_rerecord, active, kept) in cases {
+        let (mut a, _b, _, v2) = peers_with_change();
+        let at_2 = running(&mut a);
+        let mut v3 = v2.clone();
+        v3["networks"]["users"]["mtu"] = json!(1300);
+        v3["policy"]["wan->self"]["action"] = json!("drop");
+        let root = a.c.store().root().to_path_buf();
+        let tmp = root.join(".state.json.tmp");
+        fail_syncs(&a, root.clone(), calls, move || {
+            if block_rerecord {
+                std::fs::create_dir(&tmp).unwrap();
+            }
+        });
+        let case = format!("{calls:?} {block_rerecord}");
+        let r = a.c.apply(v3, &opts(2, Some(60)));
+        assert!(matches!(r, Err(Error::Io { .. })), "{case}: {r:?}");
+        a.c.store().inject_sync_faults(|_| false);
+        let _ = std::fs::remove_dir(root.join(".state.json.tmp"));
+
+        let st = a.c.state().unwrap();
+        assert_eq!(st.active, active, "{case}");
+        assert_eq!(a.c.store().exists(3), kept, "{case}");
+        assert!(a.c.health().is_ok(), "{case}");
+        if active == 2 {
+            assert_eq!(running(&mut a), at_2, "{case}");
+            assert_eq!(
+                a.c.applied().unwrap(),
+                Some(a.c.generation(2).unwrap().hash)
+            );
+        } else {
+            assert_eq!(st.pending.map(|p| p.id), Some(3), "{case}");
+            assert_ne!(running(&mut a), at_2, "{case}");
+        }
+        // A restart comes back on 2 (a pending 3 reverts), never bootstrap.
+        let id = a.c.identity().clone();
+        let mut c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+        assert_eq!(c.boot(false).unwrap(), 2, "{case}");
+    }
+}
+
+/// Review of #30: the same for the peer's generation, under both gates.
+/// Rejected only once the previous record is back.
+#[test]
+fn peer_state_sync_failure_after_the_rename() {
+    for gate in [PeerGate::Immediate, PeerGate::PeerConfirms] {
+        for (block_rerecord, active) in [(false, 1), (true, 2)] {
+            let case = format!("{gate:?} {block_rerecord}");
+            let (_a, mut b, g2, v2) = peers_with_change();
+            let at_1 = running(&mut b);
+            let root = b.c.store().root().to_path_buf();
+            let tmp = root.join(".state.json.tmp");
+            fail_syncs(&b, root.clone(), &[1], move || {
+                if block_rerecord {
+                    std::fs::create_dir(&tmp).unwrap();
+                }
+            });
+            let r = b.c.receive(&g2, v2.clone(), gate);
+            assert!(matches!(r, Err(Error::Io { .. })), "{case}: {r:?}");
+            b.c.store().inject_sync_faults(|_| false);
+            let _ = std::fs::remove_dir(root.join(".state.json.tmp"));
+
+            let st = b.c.state().unwrap();
+            assert_eq!(st.active, active, "{case}");
+            assert!(b.c.store().exists(2), "{case}");
+            assert!(b.c.health().is_ok(), "{case}");
+            if active == 1 {
+                assert_eq!(running(&mut b), at_1, "{case}");
+                assert_eq!(st.rejected.map(|r| r.id), Some(2), "{case}");
+            } else {
+                assert_ne!(running(&mut b), at_1, "{case}");
+                assert_eq!(st.rejected, None, "{case}");
+            }
+            let id = b.c.identity().clone();
+            let mut c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+            let expect = if gate == PeerGate::PeerConfirms {
+                1
+            } else {
+                active
+            };
+            assert_eq!(c.boot(false).unwrap(), expect, "{case}");
+        }
+    }
+}
+
+/// Review of #30: a generation whose sync failed is synced again before
+/// a state record names it, on whichever path the retry takes: a fresh
+/// save over the empty directory left behind, or the cached generation.
+#[test]
+fn retried_push_syncs_the_generation_first() {
+    // (directory whose sync fails, which of its syncs)
+    for (dir, call) in [("generations", 1), ("generations/2", 3)] {
+        let (_a, mut b, g2, v2) = peers_with_change();
+        let root = b.c.store().root().to_path_buf();
+        fail_syncs(
+            &b,
+            root.join(dir),
+            if call == 1 { &[1] } else { &[3] },
+            || {},
+        );
+        let r = b.c.receive(&g2, v2.clone(), PeerGate::Immediate);
+        assert!(matches!(r, Err(Error::Io { .. })), "{dir}: {r:?}");
+        assert_eq!(b.c.active().unwrap(), 1, "{dir}");
+
+        let log = fail_syncs(&b, root.join("none"), &[], || {});
+        b.c.receive(&g2, v2, PeerGate::Immediate).unwrap();
+        assert_eq!(b.c.active().unwrap(), 2, "{dir}");
+        let log = log.lock().unwrap();
+        let first = |p: &std::path::Path| log.iter().position(|d| d == p);
+        let state = first(&root).expect("the state was recorded");
+        for d in [root.join("generations/2"), root.join("generations")] {
+            let at = first(&d).unwrap_or_else(|| panic!("{dir}: {} not synced", d.display()));
+            assert!(at < state, "{dir}: {} synced after the state", d.display());
+        }
+    }
+}

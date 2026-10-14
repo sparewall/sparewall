@@ -109,6 +109,20 @@ Where the implementation departs from, or settles open questions in,
   generation with that id when the push extends the active generation
   (set aside as `<id>.diverged-<hash>`); otherwise every push of that id
   conflicted until `sync --from` (#24).
+- **A state write that fails after activation is reconciled.** The store
+  reports whether the new record had replaced the old one before the
+  failure. Before the rename, `apply` and a peer push re-activate the
+  previous generation, then set the change aside or reject it. After the
+  rename (a failed directory sync), they write the previous record back
+  and run what is then readable. They keep the generation unless the
+  old record was written back cleanly. Tests inject failures with a
+  directory at the temporary path and with `Store::inject_sync_faults`
+  (#28).
+- **Generations are synced before they can be named.**
+  `Store::sync_generation` fsyncs a generation's directory and
+  `generations/`. It runs after every save, and again before running the
+  peer's generation, so a retry over a leftover whose sync failed redoes
+  it. Every store write fsyncs its directory after the rename (#28).
 - **Equal-version cluster secrets** made independently by both nodes
   (each applied the pairing document) converge on the one created first.
 - **Health endpoint detail and `/metrics`** need an API token, except
