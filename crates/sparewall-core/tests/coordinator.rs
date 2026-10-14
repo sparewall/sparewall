@@ -2779,10 +2779,7 @@ fn restarted_decider_withholds_an_unsynced_decision() {
     a.c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
     let tries = fail_syncs(&a, root.clone(), &[1, 2, 3, 4, 5, 6, 7, 8], || {});
     a.c.boot(false).unwrap();
-    assert!(
-        tries.lock().unwrap().iter().any(|d| *d == root),
-        "boot tried to sync"
-    );
+    assert!(tries.lock().unwrap().contains(&root), "boot tried to sync");
     assert!(a.c.publishes_pending().unwrap());
     assert_eq!(a.c.published_link_decision().unwrap(), None);
     follow(&mut b, &mut a);
