@@ -184,12 +184,17 @@ Where the implementation departs from, or settles open questions in,
     tunnel (peer protocol 3), then `activate_staged` runs it pending
     with `peer_gate`, plus `needs_admin` if a confirm window was asked
     for.
-  - **Lost push replies:** the receiver switches links while it answers
-    the push, which can cut its reply off (the pair VM test hung there).
-    A push that was sent but got no reply within 30 s is run anyway: if
-    the peer took it, it confirms over the new link; if not, nothing
-    confirms it and this node reverts at its deadline. Only a refusal,
-    or a failure before sending, sets the change aside.
+  - **Reply first:** running the change switches the tunnel the push's
+    reply goes through (the pair VM test hung there). So the receiver
+    validates a gated sync-link push, replies, and then runs it. A
+    failure after the reply is never confirmed, so the pusher reverts.
+    The pusher's wait stays short, which matters: zlink serves one call
+    at a time, and keepalived's health check waits behind it.
+  - **Lost push replies:** a push that was sent but got no reply within
+    15 s runs anyway. If the peer took it, it confirms over the new
+    link; if not, nothing confirms it and this node reverts at its
+    deadline. Only a refusal, or a failure before sending, sets the
+    change aside.
   - **Prepare:** the receiver marks a gated push that changes its sync
     link `link_change`. Its `confirm_received` only sets `prepared`:
     from then on the change is in doubt. The pusher's `peer_confirmed`

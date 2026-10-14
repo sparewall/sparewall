@@ -200,6 +200,38 @@ impl PeerService {
         } else {
             PeerGate::Immediate
         };
+        // A gated change to the sync link: running it switches the tunnel
+        // this reply goes through, so validate it now (a refusal is the
+        // reply) and run it once the reply is out. A failure after that
+        // is never confirmed, so the pusher reverts at its deadline.
+        if gate == PeerGate::PeerConfirms && !force.unwrap_or(false) && activate.unwrap_or(true) {
+            let (g2, cfg2) = (g.clone(), config.clone());
+            let link = with_core_raw(&self.core, &self.events, move |c| {
+                if !c.changes_sync_link(&cfg2)? {
+                    return Ok(None);
+                }
+                c.check(cfg2)?;
+                Ok(Some(c.active()?))
+            })
+            .await
+            .map_err(peer_error)?;
+            if let Some(active) = link {
+                let (core, events, sync) =
+                    (self.core.clone(), self.events.clone(), self.sync.clone());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if let Err(e) =
+                        with_core_raw(&core, &events, move |c| c.receive(&g2, config, gate)).await
+                    {
+                        tracing::warn!(error = %e, "the peer's sync-link change did not run here");
+                    }
+                    sync.notify_one();
+                });
+                return Ok(PushReply {
+                    active: active as i64,
+                });
+            }
+        }
         let active = with_core_raw(&self.core, &self.events, move |c| {
             if force.unwrap_or(false) {
                 c.adopt(&g, config, gate)?;
@@ -793,7 +825,9 @@ pub enum PushFirst {
 
 /// How long to wait for the peer's reply to the push: it validates and
 /// checks the change with the providers' own checkers first.
-const PUSH_FIRST_REPLY: Duration = Duration::from_secs(30);
+/// The peer answers before running the change, so this is only for a
+/// reply lost anyway.
+const PUSH_FIRST_REPLY: Duration = Duration::from_secs(15);
 
 pub async fn push_first(
     core: &Core,

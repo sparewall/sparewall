@@ -824,6 +824,16 @@ impl<S: System> Coordinator<S> {
         }
     }
 
+    /// Whether running a document pushed by the peer would change this
+    /// node's sync link (it then answers the push before running it).
+    pub fn changes_sync_link(&self, value: &Value) -> Result<bool, Error> {
+        let active = self.store.state()?.active;
+        if active == 0 {
+            return Ok(false);
+        }
+        Ok(link_change(&self.document_value(active)?, value))
+    }
+
     /// Whether the peer is told a change is pending here: one is, or a
     /// kept sync-link change is not yet known to be on disk.
     pub fn publishes_pending(&self) -> Result<bool, Error> {
