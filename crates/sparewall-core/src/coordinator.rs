@@ -11,6 +11,7 @@ use sparewall_render::{Rendered, Subsystem, nft};
 
 use crate::Error;
 use crate::health::{Check, Health, Level};
+use crate::store::WriteFailure;
 use crate::store::{Generation, Pending, State, Store};
 use crate::system::{Files, System};
 
@@ -427,8 +428,12 @@ impl<S: System> Coordinator<S> {
             new_state.confirmed = g.id;
             new_state.pending = None;
         }
-        if let Err(e) = self.store.set_state(&new_state) {
-            return Err(self.undo_apply(g.id, &rendered, state.active, e));
+        if let Err(f) = self.store.try_set_state(&new_state) {
+            let (e, unreferenced) = self.reconcile_commit(g.id, &rendered, &state, f);
+            if unreferenced {
+                self.set_aside_failed(g.id);
+            }
+            return Err(e);
         }
         let protect: Vec<u64> = [new_state.active, new_state.confirmed]
             .into_iter()
@@ -477,11 +482,53 @@ impl<S: System> Coordinator<S> {
     /// out of history and free its id.
     fn undo_apply(&mut self, id: u64, new: &Rendered, to: u64, e: Error) -> Error {
         let e = self.restore(id, new, to, e);
+        self.set_aside_failed(id);
+        e
+    }
+
+    fn set_aside_failed(&mut self, id: u64) {
         match self.store.set_aside(id, "failed") {
             Ok(to) => tracing::info!(id, kept = %to.display(), "set aside the failed generation"),
             Err(e2) => tracing::error!(id, error = %e2, "cannot set aside the failed generation"),
         }
-        e
+    }
+
+    /// Writing the state record that makes `id` active failed after `id`
+    /// was activated. Before the rename, the previous record stands:
+    /// restore what it names, and `id` was never referenced. After it
+    /// (syncing the directory failed), the new record is visible and may
+    /// or may not reach the disk: record `prev` again, then run what the
+    /// visible record names. Returns the error, and whether `id` is
+    /// unreferenced, so it may be set aside or rejected: not while a
+    /// record naming it may still reach the disk.
+    fn reconcile_commit(
+        &mut self,
+        id: u64,
+        new: &Rendered,
+        prev: &State,
+        failure: WriteFailure<Error>,
+    ) -> (Error, bool) {
+        let e = failure.error;
+        if !failure.replaced {
+            return (self.restore(id, new, prev.active, e), true);
+        }
+        let recorded = match self.store.set_state(prev) {
+            Ok(()) => true,
+            Err(e2) => {
+                tracing::error!(id, error = %e2, "cannot record the previous state again");
+                false
+            }
+        };
+        // Run what the readable record names: the previous generation,
+        // or `id` itself if the record naming it could not be replaced
+        // (its confirm window or the peer's confirmation still applies).
+        match self.store.state() {
+            Ok(v) => (self.restore(id, new, v.active, e), recorded),
+            Err(e2) => {
+                tracing::error!(error = %e2, "cannot read the state record back");
+                (self.restore(id, new, prev.active, e), false)
+            }
+        }
     }
 
     /// Merge a partial document (RFC 7386) into the active one.
@@ -978,6 +1025,9 @@ impl<S: System> Coordinator<S> {
         gate: PeerGate,
         why: &str,
     ) -> Result<(), Error> {
+        // Durable before any state record names it, even if stored by an
+        // earlier attempt whose sync failed.
+        self.store.sync_generation(g.id)?;
         let state = self.store.state()?;
         let from = state.active;
         let failed_before = match gate {
@@ -1005,8 +1055,13 @@ impl<S: System> Coordinator<S> {
                 });
             }
         }
-        if let Err(e) = self.store.set_state(&st) {
-            return Err(self.undo_foreign(g, from, "recording it failed", e));
+        if let Err(f) = self.store.try_set_state(&st) {
+            let new = self.rendered_for(g.id)?;
+            let (e, unreferenced) = self.reconcile_commit(g.id, &new, &state, f);
+            if unreferenced && let Err(e2) = self.reject(g, &format!("recording it failed: {e}")) {
+                tracing::error!(id = g.id, error = %e2, "cannot record the rejection");
+            }
+            return Err(e);
         }
         self.events.push(Event::Applied {
             id: g.id,

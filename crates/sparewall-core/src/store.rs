@@ -14,6 +14,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use sparewall_config::Document;
@@ -82,12 +83,51 @@ pub struct State {
 
 pub struct Store {
     root: PathBuf,
+    /// Tests: decides, per directory about to be synced, whether that
+    /// sync fails (`EIO`), to inject faults at each durability boundary.
+    sync_faults: Mutex<Option<SyncFaults>>,
 }
+
+type SyncFaults = Box<dyn FnMut(&Path) -> bool + Send>;
 
 /// Write a file atomically and durably: temp file, fsync, rename, then
 /// fsync the directory so the rename survives a power loss (and its
 /// parent too if the directory is new).
 pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    write_atomic_with(path, data, &mut sync_dir).map_err(|f| f.error)
+}
+
+/// A failed [`write_atomic`]: `replaced` once the rename put the new
+/// content in place (only syncing the directory failed), so readers see
+/// it, though it may not survive a power loss.
+pub struct WriteFailure<E = std::io::Error> {
+    pub replaced: bool,
+    pub error: E,
+}
+
+fn write_atomic_with(
+    path: &Path,
+    data: &[u8],
+    sync_dir: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(), WriteFailure> {
+    let before = |error| WriteFailure {
+        replaced: false,
+        error,
+    };
+    write_new(path, data, sync_dir).map_err(before)?;
+    let dir = path.parent().expect("absolute path");
+    sync_dir(dir).map_err(|error| WriteFailure {
+        replaced: true,
+        error,
+    })
+}
+
+/// [`write_atomic_with`] up to the rename.
+fn write_new(
+    path: &Path,
+    data: &[u8],
+    sync_dir: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let dir = path.parent().expect("absolute path");
     let created = !dir.exists();
     fs::create_dir_all(dir)?;
@@ -103,8 +143,7 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
         f.write_all(data)?;
         f.sync_all()?;
     }
-    fs::rename(&tmp, path)?;
-    sync_dir(dir)
+    fs::rename(&tmp, path)
 }
 
 /// fsync a directory, making the entries just created, renamed or
@@ -118,17 +157,53 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, Error> {
     serde_json::from_slice(&text).map_err(|e| Error::Internal(format!("{}: {e}", path.display())))
 }
 
-fn write_json<T: Serialize>(path: &Path, v: &T) -> Result<(), Error> {
+fn to_json<T: Serialize>(v: &T) -> Vec<u8> {
     let mut data = serde_json::to_vec_pretty(v).expect("serializable");
     data.push(b'\n');
-    write_atomic(path, &data).map_err(|e| Error::io(path, e))
+    data
 }
 
 impl Store {
     pub fn open(root: impl Into<PathBuf>) -> Result<Store, Error> {
         let root = root.into();
         fs::create_dir_all(root.join("generations")).map_err(|e| Error::io(&root, e))?;
-        Ok(Store { root })
+        Ok(Store {
+            root,
+            sync_faults: Mutex::new(None),
+        })
+    }
+
+    /// Tests: make the directory syncs `fail` picks return `EIO`.
+    pub fn inject_sync_faults(&self, fail: impl FnMut(&Path) -> bool + Send + 'static) {
+        *self.sync_faults.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(fail));
+    }
+
+    fn sync(&self, dir: &Path) -> std::io::Result<()> {
+        if let Some(fail) = self
+            .sync_faults
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            && fail(dir)
+        {
+            return Err(std::io::Error::from_raw_os_error(5));
+        }
+        sync_dir(dir)
+    }
+
+    fn write(&self, path: &Path, data: &[u8]) -> Result<(), Error> {
+        self.try_write(path, data).map_err(|f| f.error)
+    }
+
+    fn try_write(&self, path: &Path, data: &[u8]) -> Result<(), WriteFailure<Error>> {
+        write_atomic_with(path, data, &mut |d| self.sync(d)).map_err(|f| WriteFailure {
+            replaced: f.replaced,
+            error: Error::io(path, f.error),
+        })
+    }
+
+    fn write_json<T: Serialize>(&self, path: &Path, v: &T) -> Result<(), Error> {
+        self.write(path, &to_json(v))
     }
 
     pub fn root(&self) -> &Path {
@@ -149,7 +224,13 @@ impl Store {
     }
 
     pub fn set_state(&self, s: &State) -> Result<(), Error> {
-        write_json(&self.root.join("state.json"), s)
+        self.try_set_state(s).map_err(|f| f.error)
+    }
+
+    /// [`Self::set_state`], telling a failure that left the previous
+    /// record in place from one after the new record replaced it.
+    pub fn try_set_state(&self, s: &State) -> Result<(), WriteFailure<Error>> {
+        self.try_write(&self.root.join("state.json"), &to_json(s))
     }
 
     pub fn identity(&self) -> Result<Option<Identity>, Error> {
@@ -162,7 +243,7 @@ impl Store {
     }
 
     pub fn set_identity(&self, id: &Identity) -> Result<(), Error> {
-        write_json(&self.root.join("identity.json"), id)
+        self.write_json(&self.root.join("identity.json"), id)
     }
 
     /// All stored generation ids, ascending (bootstrap excluded).
@@ -196,10 +277,21 @@ impl Store {
             )));
         }
         let canonical = sparewall_config::export(doc, sparewall_config::Format::Json);
-        write_atomic(&dir.join("document.json"), canonical.as_bytes())
-            .map_err(|e| Error::io(&dir, e))?;
-        write_json(&dir.join("rendered.json"), rendered)?;
-        write_json(&dir.join("meta.json"), g)
+        self.write(&dir.join("document.json"), canonical.as_bytes())?;
+        self.write_json(&dir.join("rendered.json"), rendered)?;
+        self.write_json(&dir.join("meta.json"), g)?;
+        self.sync_generation(g.id)
+    }
+
+    /// Make a stored generation durable: its directory's entries and its
+    /// own entry in `generations/`. Done whether or not an earlier sync
+    /// succeeded (a file that exists may not have reached the disk), so
+    /// a generation is durable before any state record names it.
+    pub fn sync_generation(&self, id: u64) -> Result<(), Error> {
+        for dir in [self.gen_dir(id), self.root.join("generations")] {
+            self.sync(&dir).map_err(|e| Error::io(&dir, e))?;
+        }
+        Ok(())
     }
 
     pub fn meta(&self, id: u64) -> Result<Generation, Error> {
@@ -229,7 +321,7 @@ impl Store {
     /// Replace a generation's rendering (after an image upgrade changes
     /// what the renderers produce for the same document).
     pub fn set_rendered(&self, id: u64, r: &Rendered) -> Result<(), Error> {
-        write_json(&self.gen_dir(id).join("rendered.json"), r)
+        self.write_json(&self.gen_dir(id).join("rendered.json"), r)
     }
 
     /// Move a generation out of the numbered sequence (kept on disk as
@@ -248,7 +340,7 @@ impl Store {
             .find(|p| !p.exists())
             .expect("a free name");
         fs::rename(self.gen_dir(id), &to).map_err(|e| Error::io(&to, e))?;
-        sync_dir(&dir).map_err(|e| Error::io(&dir, e))?;
+        self.sync(&dir).map_err(|e| Error::io(&dir, e))?;
         Ok(to)
     }
 

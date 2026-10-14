@@ -218,13 +218,16 @@ What happens next depends on what failed:
 - **A failed new change** is not retried. The admin applies a fix or rolls back.
 - **A failed revert** of an expired pending change is retried every second until it succeeds. The pending change stays recorded, and health stays *failed*, until it does.
 
-Recording the change (step 5) can fail too, after activation succeeded, if `state.json` cannot be written. That is treated like a failed step: the coordinator re-activates the generation `state.json` still names and reports `ApplyFailed`, so the node never runs a configuration its state does not record. A local change is then set aside; a peer's generation is rejected if that can still be recorded, and is otherwise pushed again on the next sync pass.
+Recording the change (step 5) can fail too, after activation succeeded, if `state.json` cannot be written. The node must then run whatever the readable record names:
+
+- **The write failed before its rename.** The previous record still stands, and no record ever named the change. The coordinator re-activates the previous generation and reports `ApplyFailed`. A local change is set aside. A peer's generation is rejected, or pushed again on the next sync pass if the rejection cannot be recorded either.
+- **The rename happened but syncing the directory failed.** The new record is readable but may not survive a power loss. The coordinator writes the previous record back and runs what is then readable: the previous generation, or the change itself if the old record could not be written back. In that case the change's confirm window, or the peer's confirmation, still applies. The change is set aside or rejected only if the previous record was written back cleanly. Otherwise a record naming it may still reach the disk, so it is kept.
 
 ### Durable intent and restarts
 
 `state.json` is the only record of what a node should run. It holds the active generation, the last confirmed one and any pending change with its revert target and deadline, and it is replaced atomically (written aside, then renamed). The order of steps 4 and 5 gives the rules below.
 
-The rules hold across a power loss as well as a coordinator crash: every file is written to a temporary name, fsynced and renamed, and the directory is fsynced after the rename (and its parent after a new generation directory is created), so the on-disk order is the order of the steps.
+The rules hold across a power loss as well as a coordinator crash. Every file is written to a temporary name, fsynced and renamed, and then the directory is fsynced. A generation's directory and its entry in `generations/` are fsynced before any state record may name it. That happens on every attempt, including a retried push of a generation already stored, because a file that exists may not have reached the disk. So the on-disk order is the order of the steps.
 
 - **A generation is stored before it runs and becomes active only after it runs.** A coordinator crash at any point before step 5 leaves `state.json` naming the previous generation, and at start-up the coordinator activates that from scratch (every layer, not just the changed ones). The new generation stays on disk without ever having been active.
 - **A pending change does not survive a restart.** If `state.json` holds a pending change at start-up, the coordinator reverts to its revert target before activating anything. That applies both to the node's own unconfirmed change and to a peer's generation awaiting the peer's confirmation. A crash during a revert (activation done, `state.json` not yet updated) therefore ends the same way.
