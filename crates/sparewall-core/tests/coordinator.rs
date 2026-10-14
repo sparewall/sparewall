@@ -2070,13 +2070,29 @@ fn live(t: &mut T) -> String {
     )
 }
 
+/// A change to every layer activation touches: the firewall, sysctls,
+/// links and a provider.
+fn change_every_layer(v: &Value) -> Value {
+    let mut v = v.clone();
+    v["policy"]["wan->self"]["action"] = json!("drop");
+    v["networks"]["users"]["mtu"] = json!(1300);
+    v["dhcp"]["lease_time"] = json!(3600);
+    v["cluster"]["conntrack"] = json!({"max": 131072});
+    v
+}
+
 /// Which step of activation an injected failure hits.
 fn fail_at(t: &mut T, step: &str, msg: Option<String>, once: bool) {
     let s = t.c.system();
     s.fail_once = once;
+    s.fail_sysctl_skip = 0;
     match step {
         "nft" => s.fail_nft_load = msg,
-        "sysctl" => s.fail_sysctl_apply = msg,
+        "sysctl before links" => s.fail_sysctl_apply = msg,
+        "sysctl after links" => {
+            s.fail_sysctl_skip = 1;
+            s.fail_sysctl_apply = msg;
+        }
         "links" => s.fail_networkd_apply = msg,
         "provider files" => s.fail_install_files = msg,
         "services" => s.fail_services_apply = msg,
@@ -2090,7 +2106,14 @@ fn applied_level(t: &mut T) -> Level {
     t.c.health().unwrap().check("applied").unwrap().level
 }
 
-const STEPS: [&str; 5] = ["nft", "sysctl", "links", "provider files", "services"];
+const STEPS: [&str; 6] = [
+    "nft",
+    "sysctl before links",
+    "links",
+    "sysctl after links",
+    "provider files",
+    "services",
+];
 
 /// #14: a local change failing at any step of activation is compensated:
 /// the node runs exactly what it ran before, reports `ApplyFailed`, its
@@ -2099,10 +2122,7 @@ const STEPS: [&str; 5] = ["nft", "sysctl", "links", "provider files", "services"
 fn local_apply_fails_at_each_step() {
     for step in STEPS {
         let (mut a, _b, _, v2) = peers_with_change();
-        let mut v3 = v2.clone();
-        v3["policy"]["wan->self"]["action"] = json!("drop");
-        v3["networks"]["users"]["mtu"] = json!(1300);
-        v3["dhcp"]["lease_time"] = json!(3600);
+        let v3 = change_every_layer(&v2);
         let before = live(&mut a);
         let applied = a.c.applied().unwrap();
         a.c.drain_events();
@@ -2136,12 +2156,11 @@ fn local_apply_fails_at_each_step() {
 fn failed_compensation_reports_apply_failed() {
     for step in STEPS {
         let (mut a, _b, _, v2) = peers_with_change();
-        let mut v3 = v2.clone();
-        v3["policy"]["wan->self"]["action"] = json!("drop");
-        v3["networks"]["users"]["mtu"] = json!(1300);
-        v3["dhcp"]["lease_time"] = json!(3600);
+        let sysctl_at_2 = a.c.system().sysctl.clone();
+        let v3 = change_every_layer(&v2);
         fail_at(&mut a, step, Some(format!("injected at {step}")), false);
         assert!(a.c.apply(v3.clone(), &opts(2, None)).is_err(), "{step}");
+        assert_eq!(applied_level(&mut a), Level::Failed, "{step}");
         let h = a.c.health().unwrap();
         assert!(
             h.check("applied").unwrap().message.contains("injected"),
@@ -2154,6 +2173,7 @@ fn failed_compensation_reports_apply_failed() {
         let r = a.c.apply(v3, &opts(2, None)).unwrap();
         assert_eq!(a.c.active().unwrap(), r.generation.id, "{step}");
         assert_eq!(applied_level(&mut a), Level::Ok, "{step}");
+        assert_ne!(a.c.system().sysctl, sysctl_at_2, "the change sets sysctls");
     }
 }
 
@@ -2165,10 +2185,7 @@ fn failed_revert_is_retried_until_it_succeeds() {
     for step in STEPS {
         let (mut a, _b, _, v2) = peers_with_change();
         let at_2 = live(&mut a);
-        let mut v3 = v2.clone();
-        v3["policy"]["wan->self"]["action"] = json!("drop");
-        v3["networks"]["users"]["mtu"] = json!(1300);
-        v3["dhcp"]["lease_time"] = json!(3600);
+        let v3 = change_every_layer(&v2);
         a.c.apply(v3, &opts(2, Some(60))).unwrap();
         let deadline = a.c.state().unwrap().pending.unwrap().deadline;
         fail_at(&mut a, step, Some(format!("injected at {step}")), false);

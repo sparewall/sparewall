@@ -106,6 +106,9 @@ pub struct Fake {
     pub fail_services_apply: Option<String>,
     /// Make `sysctl_apply` fail with this message.
     pub fail_sysctl_apply: Option<String>,
+    /// Calls of `sysctl_apply` that succeed before `fail_sysctl_apply`
+    /// fires (activation sets sysctls before and after the links).
+    pub fail_sysctl_skip: usize,
     /// Make `install_files` (a provider's configuration) fail.
     pub fail_install_files: Option<String>,
     /// Injected failures (`fail_nft_load`, `fail_sysctl_apply`,
@@ -191,7 +194,9 @@ impl System for Fake {
 
     fn sysctl_apply(&mut self, content: &str) -> Result<(), Error> {
         self.log.push("sysctl".into());
-        if let Some(m) = injected(&mut self.fail_sysctl_apply, self.fail_once) {
+        if self.fail_sysctl_apply.is_some() && self.fail_sysctl_skip > 0 {
+            self.fail_sysctl_skip -= 1;
+        } else if let Some(m) = injected(&mut self.fail_sysctl_apply, self.fail_once) {
             return Err(Error::Apply(m));
         }
         self.sysctl = Some(content.to_string());
