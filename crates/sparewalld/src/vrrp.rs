@@ -2,15 +2,24 @@
 //! "conntrackd" and "Failover sequence").
 
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
+use sparewall_core::host::{ConntrackStep, Conntrackd, HostConntrackd};
 use tokio::sync::broadcast;
 
 use crate::peer::Pair;
 
 /// conntrackd's configuration as rendered by the coordinator.
 const CONNTRACKD_CONF: &str = "/run/sparewall/conntrackd/conntrackd.conf";
+
+/// conntrackd on this host.
+pub fn host_conntrackd() -> Arc<dyn Conntrackd> {
+    Arc::new(HostConntrackd {
+        conf: CONNTRACKD_CONF.into(),
+    })
+}
 
 /// Parse a notify line: `GROUP SPAREWALL MASTER` or
 /// `INSTANCE VI_users BACKUP 100`.
@@ -24,41 +33,45 @@ pub fn parse(line: &str) -> Option<(&str, &str, &str)> {
 
 /// The conntrackd commands for a new state (the standard primary-backup
 /// sequence shipped with conntrack-tools).
-pub fn conntrackd_steps(state: &str) -> &'static [&'static str] {
+pub fn conntrackd_steps(state: &str) -> &'static [ConntrackStep] {
+    use ConntrackStep::*;
     match state {
         // Commit the external cache into the kernel, flush both caches,
         // resync with the kernel table, and send a bulk update.
-        "MASTER" => &["-c", "-f", "-R", "-B"],
+        "MASTER" => &[Commit, Flush, Resync, BulkSend],
         // Ask the new master for a full resync.
-        "BACKUP" => &["-n"],
+        "BACKUP" => &[RequestResync],
         // Shorten kernel timers so stale entries go away.
-        "FAULT" => &["-t"],
+        "FAULT" => &[ShortenTimers],
         _ => &[],
     }
 }
 
-fn run_conntrackd(state: &str) {
-    if !Path::new(CONNTRACKD_CONF).exists() {
-        return;
+/// Run the steps for `state`. Like conntrack-tools' script, a failed
+/// step does not stop the ones after it: on becoming master, committing
+/// the peer's state may fail, but this node must still resync with its
+/// own kernel table and advertise it. Returns the failed steps.
+pub fn conntrackd_transition(c: &dyn Conntrackd, state: &str) -> Vec<(ConntrackStep, String)> {
+    if !c.configured() {
+        return vec![];
     }
-    for step in conntrackd_steps(state) {
-        match std::process::Command::new("conntrackd")
-            .args(["-C", CONNTRACKD_CONF, step])
-            .output()
-        {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => tracing::warn!(
-                step,
-                stderr = %String::from_utf8_lossy(&o.stderr).trim(),
-                "conntrackd step failed"
-            ),
-            Err(e) => tracing::warn!(step, error = %e, "cannot run conntrackd"),
+    let mut failed = Vec::new();
+    for &step in conntrackd_steps(state) {
+        if let Err(e) = c.run(step) {
+            tracing::warn!(step = step.flag(), error = %e, "conntrackd step failed");
+            failed.push((step, e));
         }
     }
+    failed
 }
 
 /// Read keepalived's FIFO forever, serializing transitions in one place.
-pub async fn fifo_reader(pair: Pair, events: broadcast::Sender<Value>, path: PathBuf) {
+pub async fn fifo_reader(
+    pair: Pair,
+    events: broadcast::Sender<Value>,
+    path: PathBuf,
+    conntrackd: Arc<dyn Conntrackd>,
+) {
     // The notify script writes into this FIFO (keepalived itself may not).
     if !path.exists() {
         let ok = std::process::Command::new("mkfifo")
@@ -133,8 +146,18 @@ pub async fn fifo_reader(pair: Pair, events: broadcast::Sender<Value>, path: Pat
         };
         if changed {
             let _ = events.send(json!({"type": "vrrp", "source": name, "state": state}));
-            let st = state.to_string();
-            let _ = tokio::task::spawn_blocking(move || run_conntrackd(&st)).await;
+            let (st, c) = (state.to_string(), conntrackd.clone());
+            if let Ok(failed) =
+                tokio::task::spawn_blocking(move || conntrackd_transition(&*c, &st)).await
+                && !failed.is_empty()
+            {
+                let failed: Vec<Value> = failed
+                    .iter()
+                    .map(|(s, e)| json!({"step": s.flag(), "error": e}))
+                    .collect();
+                let _ =
+                    events.send(json!({"type": "conntrackd", "state": state, "failed": failed}));
+            }
         }
     }
 }
@@ -154,6 +177,64 @@ mod tests {
             Some(("INSTANCE", "VI_users", "BACKUP"))
         );
         assert_eq!(parse("garbage"), None);
-        assert_eq!(conntrackd_steps("MASTER"), ["-c", "-f", "-R", "-B"]);
+    }
+
+    /// Records the steps run and fails the ones listed.
+    struct FakeConntrackd {
+        configured: bool,
+        fail: Vec<ConntrackStep>,
+        ran: std::sync::Mutex<Vec<ConntrackStep>>,
+    }
+
+    impl Conntrackd for FakeConntrackd {
+        fn configured(&self) -> bool {
+            self.configured
+        }
+        fn run(&self, step: ConntrackStep) -> Result<(), String> {
+            self.ran.lock().unwrap().push(step);
+            if self.fail.contains(&step) {
+                Err(format!("{} failed", step.flag()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn fake(configured: bool, fail: &[ConntrackStep]) -> FakeConntrackd {
+        FakeConntrackd {
+            configured,
+            fail: fail.to_vec(),
+            ran: Default::default(),
+        }
+    }
+
+    /// #12: a failed conntrackd step is reported, and the steps after it
+    /// still run, so a new master resyncs with its own table even if it
+    /// could not commit the peer's.
+    #[test]
+    fn conntrackd_steps_continue_past_a_failure() {
+        use ConntrackStep::*;
+        let c = fake(true, &[Commit]);
+        let failed = conntrackd_transition(&c, "MASTER");
+        assert_eq!(*c.ran.lock().unwrap(), [Commit, Flush, Resync, BulkSend]);
+        assert_eq!(failed, [(Commit, "-c failed".to_string())]);
+
+        let c = fake(true, &[Flush, BulkSend]);
+        let failed: Vec<_> = conntrackd_transition(&c, "MASTER")
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect();
+        assert_eq!(failed, [Flush, BulkSend]);
+
+        let c = fake(true, &[]);
+        assert!(conntrackd_transition(&c, "BACKUP").is_empty());
+        assert!(conntrackd_transition(&c, "FAULT").is_empty());
+        assert!(conntrackd_transition(&c, "STOP").is_empty());
+        assert_eq!(*c.ran.lock().unwrap(), [RequestResync, ShortenTimers]);
+
+        // Standalone: no conntrackd, nothing runs.
+        let c = fake(false, &[]);
+        assert!(conntrackd_transition(&c, "MASTER").is_empty());
+        assert!(c.ran.lock().unwrap().is_empty());
     }
 }

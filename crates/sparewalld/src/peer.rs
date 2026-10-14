@@ -252,7 +252,8 @@ impl PeerService {
     }
 
     async fn upgrade(&mut self, image: String) -> Result<UpgradeReply, PeerError> {
-        let staged = tokio::task::spawn_blocking(move || crate::upgrade::stage(&image))
+        use sparewall_core::host::{HostUpgrade, UpgradeHost};
+        let staged = tokio::task::spawn_blocking(move || HostUpgrade.stage(&image))
             .await
             .map_err(|e| PeerError::Rejected {
                 message: e.to_string(),
@@ -263,7 +264,9 @@ impl PeerService {
                 message: "already running the newest image".into(),
             });
         };
-        crate::upgrade::reboot_soon().map_err(|message| PeerError::Rejected { message })?;
+        HostUpgrade
+            .reboot_soon()
+            .map_err(|message| PeerError::Rejected { message })?;
         Ok(UpgradeReply { staged })
     }
 
