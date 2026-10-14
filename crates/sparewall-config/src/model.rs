@@ -530,7 +530,7 @@ pub enum RawHook {
 /// DHCPv4: service-wide settings plus one entry per served network.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Dhcp {
-    /// Implementation. Default `kea`.
+    /// Implementation: `kea` (the default). `networkd` is not built yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// HA mode for a pair. Default `hot-standby`.
@@ -594,7 +594,7 @@ pub struct DhcpOptions {
 #[serde(deny_unknown_fields)]
 pub struct Dns {
     pub enabled: bool,
-    /// Implementation. Default `unbound`.
+    /// Implementation: `unbound` (the default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// Networks to serve; default every network with DHCP.
@@ -690,7 +690,7 @@ pub struct Acme {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AcmeDns {
-    /// `rfc2136` (built in) or a lego provider name.
+    /// `rfc2136` (built in). Lego provider names are not built yet.
     pub provider: String,
     /// Secret reference, `secret:<name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -723,7 +723,7 @@ pub struct Logging {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteLog {
-    /// `journal-upload` (default) or `syslog`.
+    /// `journal-upload` (the default). `syslog` is not built yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// URL or `host:port`.

@@ -9,6 +9,7 @@ use std::net::Ipv4Addr;
 
 use serde_json::{Value, json};
 use sparewall_config::model::{DhcpHa, Document};
+use sparewall_config::providers::{self, Role};
 
 use crate::networkd::sync_tunnel_addr;
 use crate::{CheckSpec, Error, Rendered, Service, Subsystem};
@@ -62,7 +63,7 @@ fn dns_served(doc: &Document, network: &str) -> bool {
 
 pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(), Error> {
     let Some(dhcp) = &doc.dhcp else { return Ok(()) };
-    if dhcp.networks.is_empty() || dhcp.provider.as_deref().unwrap_or("kea") != "kea" {
+    if dhcp.networks.is_empty() || providers::chosen(doc, Role::Dhcp) != Some("kea") {
         return Ok(());
     }
     let pair = doc.is_pair();

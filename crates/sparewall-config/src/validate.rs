@@ -6,6 +6,7 @@ use std::net::Ipv4Addr;
 use ipnet::Ipv4Net;
 
 use crate::model::*;
+use crate::providers::{self, Role};
 use crate::topology::{RESERVED_IFACES, SELF_ZONE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -59,6 +60,7 @@ fn run(doc: &Document, activation: bool) -> Vec<Issue> {
     v.raw();
     v.dhcp();
     v.dns();
+    v.logging();
     v.ntp();
     v.vpn();
     v.tls();
@@ -937,19 +939,7 @@ impl Validator<'_> {
     fn dhcp(&mut self) {
         let doc = self.doc;
         let Some(d) = &doc.dhcp else { return };
-        let provider = d.provider.as_deref().unwrap_or("kea");
-        match provider {
-            "kea" => {}
-            "networkd" if doc.is_pair() => self.err(
-                "dhcp.provider",
-                "the networkd DHCP server has no HA; use kea for a pair",
-            ),
-            "networkd" => {}
-            other => self.err(
-                "dhcp.provider",
-                format!("unknown DHCP provider {other:?}; use kea or networkd"),
-            ),
-        }
+        self.provider(Role::Dhcp, "dhcp.provider".into(), d.provider.as_deref());
         for (name, dn) in &d.networks {
             let p = format!("dhcp.{name}");
             let Some(net) = doc.networks.get(name) else {
@@ -1014,14 +1004,7 @@ impl Validator<'_> {
     fn dns(&mut self) {
         let doc = self.doc;
         let Some(d) = &doc.dns else { return };
-        if let Some(pv) = &d.provider
-            && pv != "unbound"
-        {
-            self.err(
-                "dns.provider",
-                format!("unknown DNS provider {pv:?}; use unbound"),
-            );
-        }
+        self.provider(Role::Dns, "dns.provider".into(), d.provider.as_deref());
         for (i, n) in d.networks.iter().enumerate() {
             match doc.networks.get(n) {
                 None => self.err(
@@ -1039,8 +1022,78 @@ impl Validator<'_> {
 
     /// Settings the schema reserves for features not built yet. Accepting
     /// them would suggest they take effect.
+    /// Check a role's provider against the table: it must exist, and in a
+    /// pair be able to run in one. One not built yet is left to
+    /// [`Self::unbuilt`], so history that names it stays readable.
+    fn provider(&mut self, role: Role, path: String, name: Option<&str>) {
+        let Some(name) = name else { return };
+        let built = providers::names(role)
+            .into_iter()
+            .filter(|n| providers::find(role, n).is_some_and(|p| p.built))
+            .collect::<Vec<_>>()
+            .join(", ");
+        match providers::find(role, name) {
+            // Any other name is a lego provider: not built yet (unbuilt).
+            None if role == Role::AcmeDns => {}
+            None => self.err(path, format!("unknown provider {name:?}; use {built}")),
+            Some(p) if !p.ha && self.doc.is_pair() => self.err(
+                path,
+                format!("{name} cannot run in an HA pair; use {built}"),
+            ),
+            Some(_) => {}
+        }
+    }
+
+    fn logging(&mut self) {
+        let Some(r) = self.doc.logging.as_ref().and_then(|l| l.remote.as_ref()) else {
+            return;
+        };
+        self.provider(
+            Role::LogForwarding,
+            "logging.remote.provider".into(),
+            r.provider.as_deref(),
+        );
+    }
+
     fn unbuilt(&mut self) {
         let doc = self.doc;
+        let mut chosen: Vec<(Role, String, &str)> = Vec::new();
+        if let Some(n) = doc.dhcp.as_ref().and_then(|d| d.provider.as_deref()) {
+            chosen.push((Role::Dhcp, "dhcp.provider".into(), n));
+        }
+        if let Some(n) = doc.dns.as_ref().and_then(|d| d.provider.as_deref()) {
+            chosen.push((Role::Dns, "dns.provider".into(), n));
+        }
+        if let Some(n) = doc
+            .logging
+            .as_ref()
+            .and_then(|l| l.remote.as_ref())
+            .and_then(|r| r.provider.as_deref())
+        {
+            chosen.push((Role::LogForwarding, "logging.remote.provider".into(), n));
+        }
+        for (name, c) in doc.tls.iter().flat_map(|t| &t.certificates) {
+            if let Some(d) = c.acme.as_ref().and_then(|a| a.dns.as_ref()) {
+                chosen.push((
+                    Role::AcmeDns,
+                    format!("tls.certificates.{name}.acme.dns.provider"),
+                    &d.provider,
+                ));
+            }
+        }
+        for (role, path, name) in chosen {
+            let unbuilt = match providers::find(role, name) {
+                Some(p) => !p.built,
+                None => role == Role::AcmeDns,
+            };
+            if unbuilt {
+                let default = providers::chosen_default(role);
+                self.err(
+                    path,
+                    format!("the {name} provider is not built yet; use {default}"),
+                );
+            }
+        }
         for name in doc.provider_options.keys() {
             self.err(
                 format!("provider_options.{name}"),
@@ -1174,6 +1227,11 @@ impl Validator<'_> {
                 "dns-01" => match &a.dns {
                     None => self.err(format!("{p}.acme.dns"), "dns-01 needs a DNS provider"),
                     Some(d) => {
+                        self.provider(
+                            Role::AcmeDns,
+                            format!("{p}.acme.dns.provider"),
+                            Some(&d.provider),
+                        );
                         if d.credentials.is_none() {
                             self.err(
                                 format!("{p}.acme.dns.credentials"),

@@ -208,9 +208,28 @@ Where the implementation departs from, or settles open questions in,
   for good once it rebooted; the output chain now drops remote-access
   packets from anything but the gateway address.
 
+## Providers
+
+- **One table of providers** (`sparewall_config::providers`), per role:
+  name, default, built or not, whether it runs in an HA pair, and the
+  state it keeps (Kea's lease database), with where it lives and which
+  providers can import it. Validation rejects an unknown provider, one
+  that cannot run in a pair, and one not built yet. The renderers choose
+  by it. Backups take the lease file from the chosen DHCP provider.
+  `apply` warns when a change of provider leaves state behind. With one
+  built provider per role, provider-specific status and state
+  export/import are not abstracted yet. The VM conformance suite covers
+  the built providers (Kea, Unbound).
+
 ## Not built yet
 
 - ACME `http-01` and lego-based DNS providers (RFC 2136 is built in).
+- Alternative providers: networkd's DHCP server (`dhcp.provider:
+  networkd`) and syslog forwarding (`logging.remote.provider: syslog`).
+  Earlier versions accepted them and then rendered nothing, silently
+  turning DHCP or log forwarding off; validation now rejects them as
+  not built yet (#10), and an ACME DNS provider other than `rfc2136` the
+  same way.
 - Schema migrations (only schema 1 exists); the Web UI.
 - The SELinux policy module for the coordinator, benchmarks.
 - A local Prometheus (`metrics.mode: local`, `metrics.retention`),
