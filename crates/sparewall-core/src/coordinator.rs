@@ -414,6 +414,15 @@ impl<S: System> Coordinator<S> {
             if let Err(e2) = self.activate(state.active, Some(&rendered), false) {
                 tracing::error!(error = %e2, "restoring the previous generation also failed");
             }
+            // It never ran: keep it out of history and free its id.
+            match self.store.set_aside(g.id, "failed") {
+                Ok(to) => {
+                    tracing::info!(id = g.id, kept = %to.display(), "set aside the failed generation")
+                }
+                Err(e2) => {
+                    tracing::error!(id = g.id, error = %e2, "cannot set aside the failed generation")
+                }
+            }
             return Err(e);
         }
 
@@ -781,11 +790,12 @@ impl<S: System> Coordinator<S> {
                 }
                 return Ok(());
             }
-            return Err(Error::Conflict {
-                current: state.active,
-            });
         }
-        if state.pending.is_some() || !self.extends_active(g.base)? {
+        // A local generation with this id and other content never ran here
+        // (a failed apply, a crash before `state.json` named it, history or
+        // a rejected push from the peer), so `install_foreign` sets it
+        // aside. One that ran is divergence.
+        if state.pending.is_some() || !self.follows_active(g)? {
             return Err(Error::Conflict {
                 current: state.active,
             });
@@ -799,15 +809,13 @@ impl<S: System> Coordinator<S> {
     /// this node ever running the rolled-back configuration.
     pub fn receive_history(&mut self, g: &Generation, value: Value) -> Result<(), Error> {
         let state = self.store.state()?;
-        if self.store.exists(g.id) {
-            if self.store.meta(g.id)?.hash == g.hash {
-                return Ok(());
-            }
-            return Err(Error::Conflict {
-                current: state.active,
-            });
+        let replace = self.store.exists(g.id);
+        if replace && self.store.meta(g.id)?.hash == g.hash {
+            return Ok(());
         }
-        if state.pending.is_some() || !self.extends_active(g.base)? {
+        // As in `receive`: a different local generation with this id
+        // never ran here.
+        if state.pending.is_some() || !self.follows_active(g)? {
             return Err(Error::Conflict {
                 current: state.active,
             });
@@ -819,9 +827,22 @@ impl<S: System> Coordinator<S> {
                 g.id
             )]));
         }
+        if replace {
+            let to = self.store.set_aside(g.id, "diverged")?;
+            tracing::warn!(id = g.id, kept = %to.display(), "set aside a generation that never ran");
+        }
         self.store.save(g, &doc, &rendered)?;
         tracing::info!(id = g.id, "stored the peer's generation in history");
         Ok(())
+    }
+
+    /// Whether a pushed generation comes after the active one: its base is
+    /// the active generation or leads back to it, and its id is above its
+    /// base, so above the active one too. Only then may it replace a local
+    /// generation with its id; the metadata is the peer's word, not
+    /// covered by the hash.
+    fn follows_active(&self, g: &Generation) -> Result<bool, Error> {
+        Ok(g.base.is_some_and(|b| b < g.id) && self.extends_active(g.base)?)
     }
 
     /// Whether `base` is the active generation, or a generation stored
@@ -881,8 +902,9 @@ impl<S: System> Coordinator<S> {
         let old_rendered = self.rendered_for(from)?;
         self.dry_run(&rendered, Some(&old_rendered))?;
         if self.store.exists(g.id) {
-            // Only `adopt` gets here: keep the diverged generation aside.
-            let to = self.store.set_aside(g.id)?;
+            // `adopt`, or a push replacing one that never ran here: keep
+            // the local generation aside.
+            let to = self.store.set_aside(g.id, "diverged")?;
             tracing::warn!(id = g.id, kept = %to.display(), "set aside a diverged generation");
         }
         self.install_vpn_keys(&doc)?;
