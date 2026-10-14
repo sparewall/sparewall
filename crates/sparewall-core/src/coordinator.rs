@@ -320,7 +320,11 @@ impl<S: System> Coordinator<S> {
         if state.pending.as_ref().is_some_and(|p| p.prepared) {
             // In doubt: kept until the peer's decision is known.
             let live = self.live_id(&state);
-            tracing::warn!(id = state.active, live, "a sync-link change is in doubt at boot");
+            tracing::warn!(
+                id = state.active,
+                live,
+                "a sync-link change is in doubt at boot"
+            );
             self.activate(live, None, early)?;
             return Ok(state.active);
         }
@@ -503,7 +507,8 @@ impl<S: System> Coordinator<S> {
                     p.id
                 )]));
             }
-            if without_sync_link(&old_value, &new_value) != without_sync_link(&new_value, &old_value)
+            if without_sync_link(&old_value, &new_value)
+                != without_sync_link(&new_value, &old_value)
             {
                 return Err(Error::Validation(vec![
                     "a change to the sync link must change nothing else (the peer may switch \

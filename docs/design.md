@@ -251,12 +251,18 @@ On the peer, a pushed generation goes through the same validation, dry-run and a
 
 Until it is confirmed the peer does not report it as applied, so the pair shows *applying* and an upgrade waits. Changes are serialized: neither node pushes while either has a change pending, and the peer refuses a push that does not extend its active generation.
 
-**Changes to the sync link** reverse the order, because they alter the tunnel the push travels through. That covers the cluster's nodes and sync settings (`sync_network`, `sync_port`, `sync_keys`), the sync network, and the port carrying it, and a rollback across such a change too.
+**Changes to the sync link** reverse the order, because they alter the tunnel the push travels through. That covers the cluster's nodes and sync settings (`sync_network`, `sync_port`, `sync_keys`), the sync network, and each node's port carrying it, and a rollback across such a change too. Such a change must change nothing else, and it cannot be made while another change is pending. The accepting node decides; the peer only follows:
 
 1. The accepting node stores the change without running it.
 2. It pushes the change, gated, through the current tunnel, and the peer runs it pending.
-3. Only then does the accepting node run it. It stays pending until the peer confirms it over the new tunnel and, if a confirm window was asked for, the admin confirms it too, in either order.
-4. If the new tunnel never works, the peer reverts at its deadline. The accepting node reverts 30 seconds after that, so it always learns the peer's outcome first, and both end on the old tunnel.
+3. Only then does the accepting node run it, pending.
+4. **Prepare:** it confirms the change to the peer over the new tunnel. The peer checks that nothing new fails, as for any gated push. Instead of keeping the change, it holds it **in doubt**.
+5. **Decide:** the accepting node keeps the change once the peer has prepared it and, if a confirm window was asked for, the admin has confirmed it, in either order. Otherwise it reverts: at its deadline, which is 30 seconds after the peer's, or at a restart. The decision is recorded before anything else happens.
+6. **Follow:** the in-doubt peer learns the decision from the accepting node's status (its lineage, with nothing pending) and does the same.
+   - In doubt, the peer never reverts on its own deadline or at a restart.
+   - While the accepting node cannot be reached, the peer switches between the old and the new link every 30 seconds to find it. Only the sync link differs between the two, and health stays degraded, not failed, so the gateway addresses do not move.
+
+A peer that never prepared the change cannot have been counted on, so it reverts at its own deadline as usual.
 
 If the peer cannot take the change first (it is unreachable or an older release), nothing changes on either node. With the peer unreachable, `--allow-diverge` applies the change locally as before, and the other node needs the same change.
 

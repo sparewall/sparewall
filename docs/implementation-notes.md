@@ -174,18 +174,27 @@ Where the implementation departs from, or settles open questions in,
   moving the gateway addresses, as a cut sync link affects both nodes
   equally. A shared trunk carrying service networks still fails health.
 
-- **Sync-link changes go to the peer first** (#25). In a pair with the
-  peer reachable, `apply` (and a rollback) only stores a change whose
-  cluster sync settings, sync network or sync port differ
-  (`ApplyResult::staged`). The daemon pushes it gated through the
-  current tunnel, then `activate_staged` runs it pending, with
-  `peer_gate` set and `needs_admin` if a confirm window was asked for.
-  The sync loop's confirmation over the new tunnel calls
-  `peer_confirmed`. It also does so if the peer already runs the change
-  confirmed, in case the confirmation's reply was lost. The local
-  deadline is the peer's plus `SYNC_LINK_MARGIN_SECONDS`. A staged
-  change the peer does not take, or one overtaken by another local
-  change, is set aside as `unsent`.
+- **Sync-link changes go to the peer first, in two phases** (#25).
+  - **Staging:** in a pair with the peer reachable, `apply` (and a
+    rollback) only stores a change whose cluster sync settings, sync
+    network or per-node sync port differ (`ApplyResult::staged`). It
+    refuses one made while a change is pending, or one that changes
+    anything else.
+  - **Push and run:** the daemon pushes it gated through the current
+    tunnel (peer protocol 3), then `activate_staged` runs it pending
+    with `peer_gate`, plus `needs_admin` if a confirm window was asked
+    for.
+  - **Prepare:** the receiver marks a gated push that changes its sync
+    link `link_change`. Its `confirm_received` only sets `prepared`:
+    from then on the change is in doubt. The pusher's `peer_confirmed`
+    and the admin's `confirm` together keep it there.
+  - **Follow:** the in-doubt receiver's sync loop calls
+    `resolve_in_doubt`, keeping the change if the pusher's lineage has
+    it and nothing is pending there. Neither `tick` nor `boot` reverts a
+    prepared change. Without contact for 30 s, `alternate_in_doubt`
+    runs the other link, and the tunnel follows `live_document`.
+  - **Not taken:** a staged change the peer does not take, or one
+    overtaken by another local change, is set aside as `unsent`.
 - **Pushed generations are gated by the pusher's confirmation** (peer
   protocol 2: `Push` with `gated`, then `Confirm` on a new connection).
   The receiver records what already fails before it runs the generation,

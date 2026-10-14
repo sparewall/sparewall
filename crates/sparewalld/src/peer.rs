@@ -579,7 +579,10 @@ async fn sync_once(
                 if let Some((id, hash, _)) = &doubt {
                     status.doubt_since = Some(std::time::Instant::now());
                     if !h.pending {
-                        let kept = h.lineage.iter().any(|e| e.id == *id as i64 && e.hash == *hash);
+                        let kept = h
+                            .lineage
+                            .iter()
+                            .any(|e| e.id == *id as i64 && e.hash == *hash);
                         if let Err(e) =
                             with_core_raw(core, events, move |c| c.resolve_in_doubt(kept)).await
                         {
@@ -616,7 +619,9 @@ async fn sync_once(
                 // In doubt and the peer is not on this link: after a while,
                 // look for it on the other one.
                 if doubt.is_some() {
-                    let since = *status.doubt_since.get_or_insert_with(std::time::Instant::now);
+                    let since = *status
+                        .doubt_since
+                        .get_or_insert_with(std::time::Instant::now);
                     if since.elapsed() >= IN_DOUBT_SWITCH {
                         if let Err(e) =
                             with_core_raw(core, events, |c| c.alternate_in_doubt()).await

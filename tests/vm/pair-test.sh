@@ -163,6 +163,17 @@ move_sync() { # fw1-address fw2-address
 move_sync 10.255.1.1 10.255.1.2
 move_sync 10.255.0.1 10.255.0.2
 
+# The admin never confirms: fw1 reverts at its deadline; fw2 confirmed the
+# change over the new link but stays in doubt, finds fw1 again on the old
+# link, and follows it back (review of #34).
+log "an unconfirmed sync-link move reverts on both nodes"
+before=$(at fw1 'sudo sparewall status -o json' | jq .sync.active)
+at fw1 "sudo sparewall set networks.sync.addresses.fw1=10.255.1.1/30 networks.sync.addresses.fw2=10.255.1.2/30 --confirm 30 --no-prompt"
+in_doubt() { at fw2 'sudo sparewall status -o json' | jq -e '.health.checks[] | select(.name == "applied") | .message | test("in doubt")' >/dev/null; }
+wait_for 120 "fw2 holds the move in doubt" in_doubt
+for n in fw1 fw2; do wait_for 420 "$n back on generation $before" settled "$n" "$before"; done
+at fw2 "ip -br addr show sync" | grep -q "10.255.0.2/30" || fail "fw2 is not back on the old sync address"
+
 log "the gateway address and DHCP"
 . "$HERE/conformance.sh"
 dhcp_script

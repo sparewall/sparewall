@@ -39,10 +39,11 @@ fails or restarts midway, is in
 
 A change to the sync link itself (the `sync` network's addresses, VLAN or
 port, `cluster.sync_port`, or a sync key) goes to the other node first,
-through the current tunnel. Both nodes then run it pending, and keep it
-once the other node confirms it over the new tunnel. If the new tunnel
-never comes up, both nodes return to the old one within about two and a
-half minutes.
+through the current tunnel. The node you made it on decides whether both
+keep it, once the other node has confirmed it over the new tunnel (and
+you have, if you asked for a confirm window). If the new tunnel never
+comes up, or you don't confirm, both return to the old tunnel within a
+few minutes. Make such a change on its own, with nothing else pending.
 
 ## Sync states
 
