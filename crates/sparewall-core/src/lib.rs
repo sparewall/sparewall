@@ -4,6 +4,7 @@
 pub mod backup;
 pub mod coordinator;
 pub mod health;
+pub mod host;
 pub mod linux;
 pub mod metrics;
 pub mod nft_state;

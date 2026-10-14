@@ -341,7 +341,7 @@ fn run(args: Args) -> Result<(), String> {
                     .then(|| sparewall_config::topology::SYNC_TUNNEL_IFACE.to_string()),
             ) => Ok(()),
             () = peer::sync_loop(core.clone(), tx.clone(), pair.clone(), wake.clone()) => Ok(()),
-            () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone()) => Ok(()),
+            () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone(), vrrp::host_conntrackd()) => Ok(()),
             () = rules::listener(args.socket.with_file_name("rules.sock")) => Ok(()),
             _ = term.recv() => {
                 tracing::info!("terminating");

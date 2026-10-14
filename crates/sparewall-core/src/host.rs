@@ -1,0 +1,329 @@
+//! Host operations the daemon's orchestration needs beyond [`System`]:
+//! conntrackd transitions, restic, systemd timers and RFC 2136 DNS
+//! updates. Each is a narrow trait at the level of the operation, with
+//! its failure model in the signature, so the orchestration around it
+//! (failover, backup, certificate challenges) is tested against fakes.
+//! The implementations here run the real commands.
+//!
+//! [`System`]: crate::System
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+use crate::linux::host_run;
+
+/// One conntrackd command in a VRRP transition (the primary-backup
+/// sequence shipped with conntrack-tools).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConntrackStep {
+    /// `-c`: commit the external cache (the peer's state) to the kernel.
+    Commit,
+    /// `-f`: flush the internal and external caches.
+    Flush,
+    /// `-R`: resync the internal cache with the kernel table.
+    Resync,
+    /// `-B`: send a bulk update to the peer.
+    BulkSend,
+    /// `-n`: ask the peer for a full resync.
+    RequestResync,
+    /// `-t`: shorten kernel timers so stale entries expire.
+    ShortenTimers,
+}
+
+impl ConntrackStep {
+    pub fn flag(self) -> &'static str {
+        match self {
+            ConntrackStep::Commit => "-c",
+            ConntrackStep::Flush => "-f",
+            ConntrackStep::Resync => "-R",
+            ConntrackStep::BulkSend => "-B",
+            ConntrackStep::RequestResync => "-n",
+            ConntrackStep::ShortenTimers => "-t",
+        }
+    }
+}
+
+/// conntrackd, the connection-state sync daemon.
+pub trait Conntrackd: Send + Sync {
+    /// Whether conntrackd is configured on this node (a pair).
+    fn configured(&self) -> bool;
+    /// Run one step; an error says why it failed.
+    fn run(&self, step: ConntrackStep) -> Result<(), String>;
+}
+
+/// conntrackd through its command line, with the rendered configuration.
+pub struct HostConntrackd {
+    pub conf: PathBuf,
+}
+
+impl Conntrackd for HostConntrackd {
+    fn configured(&self) -> bool {
+        self.conf.exists()
+    }
+
+    fn run(&self, step: ConntrackStep) -> Result<(), String> {
+        let out = Command::new("conntrackd")
+            .arg("-C")
+            .arg(&self.conf)
+            .arg(step.flag())
+            .output()
+            .map_err(|e| format!("cannot run conntrackd: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+    }
+}
+
+/// A backup repository.
+pub trait BackupRepository: Send + Sync {
+    /// Whether the repository has been initialised.
+    fn exists(&self) -> Result<bool, String>;
+    fn init(&self) -> Result<(), String>;
+    /// Store `bundle` as `filename` for `host`; returns the snapshot ID.
+    fn backup(&self, bundle: &Path, filename: &str, host: &str) -> Result<String, String>;
+}
+
+/// A restic repository.
+pub struct Restic {
+    pub repository: String,
+    pub password: Vec<u8>,
+    /// Repository credentials (`AWS_ACCESS_KEY_ID` and the like).
+    pub env: Vec<(String, String)>,
+    pub cache: PathBuf,
+}
+
+impl Restic {
+    fn run(&self, args: &[&str], stdin: Option<&Path>) -> Result<(i32, String), String> {
+        let mut cmd = Command::new("restic");
+        cmd.arg("--cache-dir")
+            .arg(&self.cache)
+            .args(args)
+            .env("RESTIC_REPOSITORY", &self.repository)
+            .env(
+                "RESTIC_PASSWORD",
+                String::from_utf8_lossy(&self.password).as_ref(),
+            )
+            .envs(self.env.iter().map(|(k, v)| (k, v)))
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| format!("restic: {e}"))?;
+        if let Some(p) = stdin {
+            let data = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let mut w = child.stdin.take().expect("piped");
+            // A writer thread, so a full stdout pipe cannot deadlock us.
+            let t = std::thread::spawn(move || w.write_all(&data));
+            let out = child
+                .wait_with_output()
+                .map_err(|e| format!("restic: {e}"))?;
+            let _ = t.join();
+            return Ok(outcome(out));
+        }
+        Ok(outcome(
+            child
+                .wait_with_output()
+                .map_err(|e| format!("restic: {e}"))?,
+        ))
+    }
+}
+
+fn outcome(out: Output) -> (i32, String) {
+    let code = out.status.code().unwrap_or(-1);
+    let text = if code == 0 { out.stdout } else { out.stderr };
+    (code, String::from_utf8_lossy(&text).trim().to_string())
+}
+
+impl BackupRepository for Restic {
+    fn exists(&self) -> Result<bool, String> {
+        // A missing repository: exit code 10 since restic 0.17, only the
+        // message before.
+        match self.run(&["cat", "config"], None)? {
+            (0, _) => Ok(true),
+            (c, e) if c == 10 || e.contains("Is there a repository at the following location") => {
+                Ok(false)
+            }
+            (_, e) => Err(format!("restic: {e}")),
+        }
+    }
+
+    fn init(&self) -> Result<(), String> {
+        match self.run(&["init"], None)? {
+            (0, _) => Ok(()),
+            (_, e) => Err(format!("restic init: {e}")),
+        }
+    }
+
+    fn backup(&self, bundle: &Path, filename: &str, host: &str) -> Result<String, String> {
+        match self.run(
+            &[
+                "backup",
+                "--json",
+                "--host",
+                host,
+                "--tag",
+                "sparewall",
+                "--stdin",
+                "--stdin-filename",
+                filename,
+            ],
+            Some(bundle),
+        )? {
+            (0, out) => Ok(out
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .find(|v| v["message_type"] == "summary")
+                .and_then(|v| v["snapshot_id"].as_str().map(str::to_string))
+                .unwrap_or_default()),
+            (_, e) => Err(format!("restic backup: {e}")),
+        }
+    }
+}
+
+/// A calendar timer that runs a command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimerSpec {
+    /// The unit name, without `.timer`.
+    pub unit: String,
+    pub description: String,
+    /// A systemd calendar expression (`hourly`, `*-*-* 03:00`).
+    pub calendar: String,
+    pub command: Vec<String>,
+}
+
+/// Transient systemd timers.
+pub trait Timers: Send + Sync {
+    /// Stop and forget the timer and its service, if they exist.
+    fn remove(&self, unit: &str);
+    fn create(&self, timer: &TimerSpec) -> Result<(), String>;
+}
+
+/// Timers made with `systemd-run`, outside the daemon's sandbox.
+pub struct SystemdTimers;
+
+impl Timers for SystemdTimers {
+    fn remove(&self, unit: &str) {
+        let _ = host_run("systemctl", &["stop", &format!("{unit}.timer")]);
+        let _ = host_run(
+            "systemctl",
+            &[
+                "reset-failed",
+                &format!("{unit}.timer"),
+                &format!("{unit}.service"),
+            ],
+        );
+    }
+
+    fn create(&self, t: &TimerSpec) -> Result<(), String> {
+        let mut args = vec![
+            format!("--unit={}", t.unit),
+            format!("--description={}", t.description),
+            format!("--on-calendar={}", t.calendar),
+            "--timer-property=Persistent=yes".into(),
+            "--timer-property=RandomizedDelaySec=5min".into(),
+        ];
+        args.extend(t.command.iter().cloned());
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        host_run("systemd-run", &args)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// A DNS zone that takes TXT updates, for ACME dns-01 challenges.
+pub trait DnsZone: Send + Sync {
+    /// Replace the TXT records at `record` with `value`.
+    fn set_txt(&self, record: &str, value: &str) -> Result<(), String>;
+    /// Remove the TXT records at `record`.
+    fn delete_txt(&self, record: &str) -> Result<(), String>;
+    /// The TXT values the authoritative server answers for `record`.
+    fn txt(&self, record: &str) -> Result<Vec<String>, String>;
+    /// The server, for messages.
+    fn server(&self) -> &str;
+}
+
+/// RFC 2136 dynamic updates with `nsupdate`, read back with `dig`.
+pub struct Rfc2136 {
+    /// `host` or `host:port`.
+    pub server: String,
+    pub zone: Option<String>,
+    /// `algorithm:name:secret`, as `nsupdate -y` takes it.
+    pub tsig: String,
+}
+
+impl Rfc2136 {
+    fn update(&self, record: &str, value: Option<&str>) -> Result<(), String> {
+        let mut script = format!("server {}\n", self.server.replace(':', " "));
+        if let Some(z) = &self.zone {
+            script.push_str(&format!("zone {z}\n"));
+        }
+        script.push_str(&format!("update delete {record}. TXT\n"));
+        if let Some(v) = value {
+            script.push_str(&format!("update add {record}. 60 TXT \"{v}\"\n"));
+        }
+        script.push_str("send\n");
+        let mut child = Command::new("nsupdate")
+            .args(["-y", &self.tsig])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("nsupdate: {e}"))?;
+        child
+            .stdin
+            .take()
+            .expect("piped")
+            .write_all(script.as_bytes())
+            .map_err(|e| format!("nsupdate: {e}"))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| format!("nsupdate: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "nsupdate: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+    }
+}
+
+impl DnsZone for Rfc2136 {
+    fn set_txt(&self, record: &str, value: &str) -> Result<(), String> {
+        self.update(record, Some(value))
+    }
+
+    fn delete_txt(&self, record: &str) -> Result<(), String> {
+        self.update(record, None)
+    }
+
+    fn txt(&self, record: &str) -> Result<Vec<String>, String> {
+        let (host, port) = self.server.split_once(':').unwrap_or((&self.server, "53"));
+        let out = Command::new("dig")
+            .args(["+short", "-p", port, &format!("@{host}"), "TXT", record])
+            .output()
+            .map_err(|e| format!("dig: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "dig: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().trim_matches('"').to_string())
+            .filter(|l| !l.is_empty())
+            .collect())
+    }
+
+    fn server(&self) -> &str {
+        &self.server
+    }
+}
