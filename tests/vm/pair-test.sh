@@ -98,7 +98,7 @@ cleanup() {
                 sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -s 2>&1 | head -30
                 sudo journalctl -b -u sparewalld --no-pager | grep -iE "vrrp|conntrackd" | tail -15
                 for u in keepalived conntrackd sparewall-kea; do echo "-- $u"; sudo journalctl -b -u $u --no-pager | tail -15; done
-                echo "-- systemd and D-Bus"; sudo journalctl -b _PID=1 -u dbus-broker --no-pager | grep -vE "sparewall-run@" | tail -30
+                echo "-- systemd and D-Bus"; sudo journalctl -b _PID=1 + _SYSTEMD_UNIT=dbus-broker.service --no-pager | grep -vE "sparewall-run@" | tail -30
                 echo "-- helper jobs"; sudo journalctl -b -u "sparewall-run@*" --no-pager | tail -20
                 echo "-- networkd"; sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "swsync|wireguard|key" | tail -15
                 echo "-- AVC"; sudo journalctl -b -k --no-pager | grep -oE "avc: +denied.*" | sed -E "s/pid=[0-9]+ //; s/ino=[0-9]+ //" | sort | uniq -c | tail -25
