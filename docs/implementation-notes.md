@@ -188,9 +188,20 @@ Where the implementation departs from, or settles open questions in,
     link `link_change`. Its `confirm_received` only sets `prepared`:
     from then on the change is in doubt. The pusher's `peer_confirmed`
     and the admin's `confirm` together keep it there.
+  - **Record:** every way a `decides_link` change ends (kept by
+    `finish_confirm`; reverted at the deadline, at boot or by a
+    rollback) writes `State::link_decision` in the same state write.
+    Hello shows the record until the peer is seen with nothing pending
+    (`peer_followed`). Other changes are refused while such a change is
+    pending.
+  - **Durability:** a kept decision whose write fails after the rename
+    is written back as pending. If that fails too, `decision_unsure`
+    makes Hello report pending with no decision until `tick` manages
+    to sync the state directory.
   - **Follow:** the in-doubt receiver's sync loop calls
-    `resolve_in_doubt`, keeping the change if the pusher's lineage has
-    it and nothing is pending there. Neither `tick` nor `boot` reverts a
+    `resolve_in_doubt` from the record. Without one, it only keeps the
+    change if the pusher's lineage has it, and never infers a revert
+    from history that may be pruned. Neither `tick` nor `boot` reverts a
     prepared change. Without contact for 30 s, `alternate_in_doubt`
     runs the other link, and the tunnel follows `live_document`.
   - **Not taken:** a staged change the peer does not take, or one

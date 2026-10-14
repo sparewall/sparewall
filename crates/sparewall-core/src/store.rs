@@ -66,6 +66,11 @@ pub struct Pending {
     /// was asked for).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub needs_admin: bool,
+    /// A sync-link change this node decides for both (run by
+    /// `Coordinator::activate_staged`): however it ends is recorded in
+    /// `State::link_decision`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub decides_link: bool,
     /// From the peer, and it changes the sync link: the peer decides
     /// whether both keep it (two-phase; see `Coordinator::resolve_in_doubt`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -101,6 +106,18 @@ pub struct State {
     pub pending: Option<Pending>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejected: Option<Rejected>,
+    /// How this node decided its last sync-link change, kept (and shown
+    /// to the peer) until the peer is seen to have followed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_decision: Option<LinkDecision>,
+}
+
+/// The outcome of a sync-link change, as its accepting node decided it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkDecision {
+    pub id: u64,
+    pub hash: String,
+    pub kept: bool,
 }
 
 pub struct Store {
@@ -251,6 +268,12 @@ impl Store {
 
     /// [`Self::set_state`], telling a failure that left the previous
     /// record in place from one after the new record replaced it.
+    /// fsync the directory holding `state.json`: whatever record is
+    /// readable is then durable.
+    pub fn sync_state(&self) -> Result<(), Error> {
+        self.sync(&self.root).map_err(|e| Error::io(&self.root, e))
+    }
+
     pub fn try_set_state(&self, s: &State) -> Result<(), WriteFailure<Error>> {
         self.try_write(&self.root.join("state.json"), &to_json(s))
     }

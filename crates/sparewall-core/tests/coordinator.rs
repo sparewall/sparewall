@@ -2143,11 +2143,21 @@ fn follow(b: &mut T, a: &mut T) {
     let Some((id, hash, _)) = b.c.in_doubt().unwrap() else {
         return;
     };
-    if a.c.state().unwrap().pending.is_some() {
-        return;
+    let decided =
+        a.c.published_link_decision()
+            .unwrap()
+            .filter(|d| d.id == id && d.hash == hash)
+            .map(|d| d.kept)
+            .or_else(|| {
+                (!a.c.publishes_pending().unwrap() && a.c.lineage().unwrap().contains(&(id, hash)))
+                    .then_some(true)
+            });
+    if let Some(kept) = decided {
+        b.c.resolve_in_doubt(kept).unwrap();
     }
-    let kept = a.c.lineage().unwrap().contains(&(id, hash));
-    b.c.resolve_in_doubt(kept).unwrap();
+    if !b.c.publishes_pending().unwrap() {
+        a.c.peer_followed().unwrap();
+    }
 }
 
 /// `a` stages the sync-link move, `b` runs it pending (pushed through the
@@ -2414,4 +2424,114 @@ fn staged_sync_link_change_yields_and_rollback_stages() {
     let (g, staged) = a2.c.rollback_staging(None, "admin", true).unwrap();
     assert!(staged);
     assert_eq!((g.id, a2.c.active().unwrap()), (3, 2));
+}
+
+/// Review of #34: keeping a sync-link change is final for both nodes once
+/// the peer sees it, so it shows only once it is on disk. If recording
+/// it fails after the rename, the pending record is written back; if
+/// that fails too, the peer is told it is still pending until the state
+/// directory syncs.
+#[test]
+fn a_kept_decision_shows_only_once_durable() {
+    // (failed syncs of the state directory, write-back fails before its
+    // rename, still pending after, unsure after)
+    let cases: [(&'static [usize], bool, bool, bool); 3] = [
+        (&[1], false, true, false),
+        (&[1, 2], false, true, true),
+        (&[1], true, false, true),
+    ];
+    for ((calls, block, pending_after, unsure), path) in
+        cases.into_iter().flat_map(|c| [(c, "peer"), (c, "admin")])
+    {
+        let case = format!("{path} {calls:?} {block}");
+        let (mut a, mut b) = moving_link(if path == "admin" { 60 } else { 0 });
+        b.c.confirm_received(2).unwrap();
+        if path == "admin" {
+            a.c.peer_confirmed(2).unwrap();
+        }
+        let decide = |a: &mut T| {
+            if path == "admin" {
+                a.c.confirm(2)
+            } else {
+                a.c.peer_confirmed(2)
+            }
+        };
+        let root = a.c.store().root().to_path_buf();
+        let tmp = root.join(".state.json.tmp");
+        fail_syncs(&a, root.clone(), calls, move || {
+            if block {
+                std::fs::create_dir(&tmp).unwrap();
+            }
+        });
+        assert!(decide(&mut a).is_err(), "{case}");
+        a.c.store().inject_sync_faults(|_| false);
+        let _ = std::fs::remove_dir(root.join(".state.json.tmp"));
+        assert_eq!(
+            a.c.state().unwrap().pending.is_some(),
+            pending_after,
+            "{case}"
+        );
+        // Whatever is readable, the peer is not released.
+        assert!(a.c.publishes_pending().unwrap(), "{case}");
+        assert_eq!(a.c.published_link_decision().unwrap(), None, "{case}");
+        follow(&mut b, &mut a);
+        assert!(b.c.in_doubt().unwrap().is_some(), "{case}");
+        // The next tick syncs the directory; the sync loop retries.
+        let now = a.c.state().unwrap().pending.map_or(0, |p| p.deadline - 1);
+        a.c.tick(now).unwrap();
+        assert_eq!(
+            a.c.publishes_pending().unwrap(),
+            pending_after,
+            "{case}: {unsure}"
+        );
+        decide(&mut a).unwrap();
+        follow(&mut b, &mut a);
+        assert_eq!((at(&a), at(&b)), ((2, 2, false), (2, 2, false)), "{case}");
+    }
+}
+
+/// Review of #34: the peer follows the recorded decision, not the
+/// lineage, which pruning shortens: after many later changes it still
+/// keeps the change, and the record goes only once it has.
+#[test]
+fn a_late_peer_follows_the_record_past_pruning() {
+    let (mut a, mut b) = moving_link(0);
+    b.c.confirm_received(2).unwrap();
+    a.c.peer_confirmed(2).unwrap();
+    let mut v = moved_sync_link();
+    for i in 0..55 {
+        v["dhcp"]["lease_time"] = json!(3600 + i);
+        let base = a.c.active().unwrap();
+        a.c.apply(v.clone(), &opts(base, None)).unwrap();
+    }
+    assert!(!a.c.store().exists(2), "generation 2 was pruned");
+    assert!(!a.c.lineage().unwrap().iter().any(|(id, _)| *id == 2));
+    assert!(
+        a.c.published_link_decision()
+            .unwrap()
+            .is_some_and(|d| d.id == 2 && d.kept)
+    );
+    follow(&mut b, &mut a);
+    assert_eq!(at(&b), (2, 2, false));
+    assert!(
+        format!("{:?}", b.c.system().network).contains("10.255.1.2/30"),
+        "b stays on the new link"
+    );
+    assert_eq!(a.c.published_link_decision().unwrap(), None, "followed");
+}
+
+/// Review of #34: a node restarting in doubt installs its remote-access
+/// keys like any boot.
+#[test]
+fn in_doubt_boot_installs_vpn_keys() {
+    let (mut a, mut b) = moving_link(0);
+    let shared = a.c.cluster_secrets().unwrap();
+    b.c.receive_secrets(shared).unwrap();
+    b.c.confirm_received(2).unwrap();
+    let id = b.c.identity().clone();
+    let root = b.c.store().root().to_path_buf();
+    b.c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+    assert_eq!(b.c.boot(false).unwrap(), 2);
+    assert!(b.c.in_doubt().unwrap().is_some());
+    assert!(!b.c.system().runtime_keys.is_empty());
 }

@@ -11,8 +11,8 @@ use sparewall_render::{Rendered, Subsystem, nft};
 
 use crate::Error;
 use crate::health::{Check, Health, Level};
-use crate::store::WriteFailure;
 use crate::store::{Generation, Pending, State, Store};
+use crate::store::{LinkDecision, WriteFailure};
 use crate::system::{Files, System};
 
 /// Subsystems whose files a provider service reads from /run/sparewall.
@@ -136,6 +136,10 @@ pub struct Coordinator<S: System> {
     /// The live table as it was right after the last load (normalized),
     /// which health compares with the table as it is now.
     nft_loaded: NftBaseline,
+    /// The state record may say a sync-link change was kept, but writing
+    /// it did not complete: until it is known to be on disk, the peer is
+    /// told the decision is still pending.
+    decision_unsure: bool,
 }
 
 /// How much longer than the peer this node waits for the peer to
@@ -243,6 +247,7 @@ impl<S: System> Coordinator<S> {
             keep: DEFAULT_KEEP,
             extra_checks: Default::default(),
             nft_loaded: NftBaseline::None,
+            decision_unsure: false,
         }
     }
 
@@ -319,16 +324,12 @@ impl<S: System> Coordinator<S> {
         let mut state = self.store.state()?;
         if state.pending.as_ref().is_some_and(|p| p.prepared) {
             // In doubt: kept until the peer's decision is known.
-            let live = self.live_id(&state);
             tracing::warn!(
                 id = state.active,
-                live,
+                live = self.live_id(&state),
                 "a sync-link change is in doubt at boot"
             );
-            self.activate(live, None, early)?;
-            return Ok(state.active);
-        }
-        if let Some(p) = state.pending.take() {
+        } else if let Some(p) = state.pending.take() {
             tracing::warn!(
                 pending = p.id,
                 revert_to = p.revert_to,
@@ -339,6 +340,9 @@ impl<S: System> Coordinator<S> {
                 from: p.id,
                 reason: "unconfirmed at boot".into(),
             });
+            let mut with = state.clone();
+            with.pending = Some(p.clone());
+            state.link_decision = self.decision(&with, false)?;
             state.active = p.revert_to;
             self.store.set_state(&state)?;
         }
@@ -351,26 +355,31 @@ impl<S: System> Coordinator<S> {
             state.confirmed = 0;
             self.store.set_state(&state)?;
         }
+        // What runs: the active generation, or the one before an in-doubt
+        // sync-link change while it looks for the peer on the old link.
+        let live = self.live_id(&state);
         // Re-render with this image's renderers: an upgraded image may
         // render the same document differently.
-        if state.active != 0 {
-            let doc = self.store.document(state.active)?;
+        let mut ids = vec![state.active, live];
+        ids.dedup();
+        for id in ids.into_iter().filter(|&i| i != 0) {
+            let doc = self.store.document(id)?;
             match sparewall_render::render(&doc, self.node()) {
                 Ok(r) => {
-                    if self.store.rendered(state.active).ok().as_ref() != Some(&r) {
-                        tracing::info!(id = state.active, "renderers changed; re-rendering");
-                        self.store.set_rendered(state.active, &r)?;
+                    if self.store.rendered(id).ok().as_ref() != Some(&r) {
+                        tracing::info!(id, "renderers changed; re-rendering");
+                        self.store.set_rendered(id, &r)?;
                     }
                 }
-                Err(e) => tracing::error!(error = %e, "cannot re-render active generation"),
+                Err(e) => tracing::error!(id, error = %e, "cannot re-render a generation"),
             }
         }
-        if let Ok(Some(doc)) = self.active_document()
+        if let Ok(Some(doc)) = self.live_document()
             && let Err(e) = self.install_vpn_keys(&doc)
         {
             tracing::error!(error = %e, "cannot install remote-access keys");
         }
-        self.activate(state.active, None, early)?;
+        self.activate(live, None, early)?;
         Ok(state.active)
     }
 
@@ -450,6 +459,12 @@ impl<S: System> Coordinator<S> {
     /// Replace the whole document.
     pub fn apply(&mut self, value: Value, opts: &ApplyOptions) -> Result<ApplyResult, Error> {
         let state = self.check_base(opts.base)?;
+        if let Some(p) = state.pending.as_ref().filter(|p| p.decides_link) {
+            return Err(Error::Validation(vec![format!(
+                "the sync-link change {} is waiting for the peer; confirm it or roll it back first",
+                p.id
+            )]));
+        }
         let (doc, warnings, rendered) = self.check(value)?;
         let hash = sparewall_config::hash(&doc);
         let active_gen = self.generation(state.active)?;
@@ -708,6 +723,7 @@ impl<S: System> Coordinator<S> {
                 + i64::from(admin_window).max(PEER_CONFIRM_SECONDS + SYNC_LINK_MARGIN_SECONDS),
             peer_gate: true,
             needs_admin: admin_window > 0,
+            decides_link: true,
             ..Default::default()
         });
         if let Err(f) = self.store.try_set_state(&new_state) {
@@ -744,9 +760,18 @@ impl<S: System> Coordinator<S> {
     /// kept, unless the admin's confirmation is still awaited.
     pub fn peer_confirmed(&mut self, id: u64) -> Result<(), Error> {
         let mut state = self.store.state()?;
-        let Some(p) = state.pending.as_mut().filter(|p| p.id == id && p.peer_gate) else {
+        // Also once the peer's part is done: a decision whose recording
+        // failed is retried this way.
+        let Some(p) = state
+            .pending
+            .as_mut()
+            .filter(|p| p.id == id && p.decides_link)
+        else {
             return Ok(());
         };
+        if !p.peer_gate && p.needs_admin {
+            return Ok(());
+        }
         p.peer_gate = false;
         if p.needs_admin {
             self.store.set_state(&state)?;
@@ -777,6 +802,31 @@ impl<S: System> Coordinator<S> {
             return Ok(None);
         }
         Ok(Some(self.store.document(id)?))
+    }
+
+    /// Whether the peer is told a change is pending here: one is, or a
+    /// kept sync-link change is not yet known to be on disk.
+    pub fn publishes_pending(&self) -> Result<bool, Error> {
+        Ok(self.decision_unsure || self.store.state()?.pending.is_some())
+    }
+
+    /// The sync-link decision the peer is told, once it is on disk.
+    pub fn published_link_decision(&self) -> Result<Option<LinkDecision>, Error> {
+        if self.decision_unsure {
+            return Ok(None);
+        }
+        Ok(self.store.state()?.link_decision)
+    }
+
+    /// The peer has nothing pending: it followed the last sync-link
+    /// decision (or never held the change), so the record can go.
+    pub fn peer_followed(&mut self) -> Result<(), Error> {
+        let mut state = self.store.state()?;
+        if self.decision_unsure || state.pending.is_some() || state.link_decision.is_none() {
+            return Ok(());
+        }
+        state.link_decision = None;
+        self.store.set_state(&state)
     }
 
     /// The peer's sync-link change this node runs in doubt: its id and
@@ -833,10 +883,37 @@ impl<S: System> Coordinator<S> {
         Ok(())
     }
 
-    fn finish_confirm(&mut self, mut state: State, id: u64) -> Result<(), Error> {
+    /// The record of how a sync-link change this node decides ended, if
+    /// `state`'s pending change is one; else the record it already has.
+    fn decision(&self, state: &State, kept: bool) -> Result<Option<LinkDecision>, Error> {
+        Ok(match state.pending.as_ref().filter(|p| p.decides_link) {
+            Some(p) => Some(LinkDecision {
+                id: p.id,
+                hash: self.generation(p.id)?.hash,
+                kept,
+            }),
+            None => state.link_decision.clone(),
+        })
+    }
+
+    fn finish_confirm(&mut self, state: State, id: u64) -> Result<(), Error> {
+        let before = state.clone();
+        let mut state = state;
+        state.link_decision = self.decision(&before, true)?;
         state.confirmed = id;
         state.pending = None;
-        self.store.set_state(&state)?;
+        if let Err(f) = self.store.try_set_state(&state) {
+            // Keeping a sync-link change is final for both nodes once the
+            // peer sees it, so it must not be seen before it is on disk.
+            if f.replaced
+                && before.pending.as_ref().is_some_and(|p| p.decides_link)
+                && let Err(e2) = self.store.set_state(&before)
+            {
+                tracing::error!(id, error = %e2, "cannot record the pending change again");
+                self.decision_unsure = true;
+            }
+            return Err(f.error);
+        }
         tracing::info!(id, "confirmed generation");
         self.events.push(Event::Confirmed { id });
         Ok(())
@@ -856,14 +933,7 @@ impl<S: System> Coordinator<S> {
             return Ok(());
         }
         match &state.pending {
-            Some(p) if p.id == id => {
-                state.confirmed = id;
-                state.pending = None;
-                self.store.set_state(&state)?;
-                tracing::info!(id, "confirmed generation");
-                self.events.push(Event::Confirmed { id });
-                Ok(())
-            }
+            Some(p) if p.id == id => self.finish_confirm(state, id),
             None if state.active == id => Ok(()),
             _ => Err(Error::NotPending(id)),
         }
@@ -872,6 +942,10 @@ impl<S: System> Coordinator<S> {
     /// Revert an expired pending generation. Returns the generation it
     /// returned to.
     pub fn tick(&mut self, now: i64) -> Result<Option<u64>, Error> {
+        if self.decision_unsure && self.store.sync_state().is_ok() {
+            tracing::info!("the sync-link decision is on disk");
+            self.decision_unsure = false;
+        }
         let state = self.store.state()?;
         let Some(p) = state.pending.clone() else {
             return Ok(None);
@@ -1018,6 +1092,7 @@ impl<S: System> Coordinator<S> {
             confirmed: target,
             pending: None,
             rejected: state.rejected.clone(),
+            link_decision: self.decision(&state, false)?,
         };
         self.store.set_state(&new_state)?;
         tracing::info!(to = target, from = state.active, why, "switched generation");

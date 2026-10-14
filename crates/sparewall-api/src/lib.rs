@@ -265,6 +265,15 @@ pub struct PeerGeneration {
     pub summary: Vec<String>,
 }
 
+/// How a node decided a sync-link change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct LinkDecisionReply {
+    pub id: i64,
+    pub hash: String,
+    /// Kept on both nodes, or reverted on both.
+    pub kept: bool,
+}
+
 /// One step of a node's lineage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
 pub struct LineageEntry {
@@ -289,6 +298,10 @@ pub struct HelloReply {
     pub health: Option<String>,
     /// The callee's VRRP role, if known.
     pub role: Option<String>,
+    /// How the callee decided its last sync-link change (protocol 3),
+    /// until it sees the caller follow it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_decision: Option<LinkDecisionReply>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

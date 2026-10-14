@@ -13,8 +13,9 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 use sparewall_api::{
-    FetchReply, HelloReply, LineageEntry, PEER_PORT, PEER_PROTOCOL, PeerError, PeerGeneration,
-    PeerProxy, PeerSecret, PeerSecretsProxy, PushReply, PutSecretsReply, UpgradeReply,
+    FetchReply, HelloReply, LineageEntry, LinkDecisionReply, PEER_PORT, PEER_PROTOCOL, PeerError,
+    PeerGeneration, PeerProxy, PeerSecret, PeerSecretsProxy, PushReply, PutSecretsReply,
+    UpgradeReply,
 };
 use sparewall_core::pair::{NodeView, SyncState, push_plan, sync_state};
 use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
@@ -132,7 +133,7 @@ impl PeerService {
     }
 }
 
-#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, PeerSecret])]
+#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, LinkDecisionReply, PeerSecret])]
 impl PeerService {
     async fn hello(&mut self, node: String, protocol: i64) -> Result<HelloReply, PeerError> {
         let role = self
@@ -151,7 +152,13 @@ impl PeerService {
                 }));
             }
             let v = c.view()?;
-            let pending = c.state()?.pending.is_some();
+            // A kept sync-link change shows only once it is on disk.
+            let pending = c.publishes_pending()?;
+            let link_decision = c.published_link_decision()?.map(|d| LinkDecisionReply {
+                id: d.id as i64,
+                hash: d.hash,
+                kept: d.kept,
+            });
             let health = c.health()?.level.as_str().to_string();
             Ok(Ok(HelloReply {
                 node: v.node,
@@ -172,6 +179,7 @@ impl PeerService {
                 image: crate::service::booted_image_digest(),
                 health: Some(health),
                 role,
+                link_decision,
             }))
         })
         .await
@@ -574,21 +582,35 @@ async fn sync_once(
                 // Protocol 2 peers run what we push pending until we
                 // confirm it over the tunnel.
                 let gated = h.protocol >= 2;
-                // The peer's sync-link change, in doubt here: once the
-                // peer has decided (nothing pending there), do as it did.
+                // The peer's sync-link change, in doubt here: do as the
+                // peer decided. Its decision record says so; without one,
+                // only a lineage that still holds the change proves it was
+                // kept (history may be pruned: absence proves nothing).
                 if let Some((id, hash, _)) = &doubt {
                     status.doubt_since = Some(std::time::Instant::now());
-                    if !h.pending {
-                        let kept = h
-                            .lineage
-                            .iter()
-                            .any(|e| e.id == *id as i64 && e.hash == *hash);
-                        if let Err(e) =
+                    let decided = h
+                        .link_decision
+                        .as_ref()
+                        .filter(|d| d.id == *id as i64 && d.hash == *hash)
+                        .map(|d| d.kept)
+                        .or_else(|| {
+                            (!h.pending
+                                && h.lineage
+                                    .iter()
+                                    .any(|e| e.id == *id as i64 && e.hash == *hash))
+                            .then_some(true)
+                        });
+                    if let Some(kept) = decided
+                        && let Err(e) =
                             with_core_raw(core, events, move |c| c.resolve_in_doubt(kept)).await
-                        {
-                            tracing::error!(error = %e, "cannot follow the peer's decision");
-                        }
+                    {
+                        tracing::error!(error = %e, "cannot follow the peer's decision");
                     }
+                }
+                // Nothing pending there: it followed our last sync-link
+                // decision, if we made one.
+                if !h.pending {
+                    let _ = with_core_raw(core, events, |c| c.peer_followed()).await;
                 }
                 if state == SyncState::PeerBehind
                     && pending.is_none()
