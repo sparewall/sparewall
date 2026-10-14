@@ -104,8 +104,13 @@ pub struct Fake {
     pub fail_networkd_apply: Option<String>,
     /// Make `services_apply` fail with this message (a provider reload).
     pub fail_services_apply: Option<String>,
-    /// Injected failures (`fail_nft_load`, `fail_networkd_apply`,
-    /// `fail_services_apply`) fire once, then clear.
+    /// Make `sysctl_apply` fail with this message.
+    pub fail_sysctl_apply: Option<String>,
+    /// Make `install_files` (a provider's configuration) fail.
+    pub fail_install_files: Option<String>,
+    /// Injected failures (`fail_nft_load`, `fail_sysctl_apply`,
+    /// `fail_networkd_apply`, `fail_install_files`, `fail_services_apply`)
+    /// fire once, then clear.
     pub fail_once: bool,
     pub existing_sets: Vec<String>,
     /// Provider files installed, by subsystem.
@@ -186,6 +191,9 @@ impl System for Fake {
 
     fn sysctl_apply(&mut self, content: &str) -> Result<(), Error> {
         self.log.push("sysctl".into());
+        if let Some(m) = injected(&mut self.fail_sysctl_apply, self.fail_once) {
+            return Err(Error::Apply(m));
+        }
         self.sysctl = Some(content.to_string());
         Ok(())
     }
@@ -196,6 +204,9 @@ impl System for Fake {
 
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
         self.log.push(format!("install {}", sub.dir()));
+        if let Some(m) = injected(&mut self.fail_install_files, self.fail_once) {
+            return Err(Error::Apply(m));
+        }
         self.installed.insert(sub, files.clone());
         Ok(())
     }

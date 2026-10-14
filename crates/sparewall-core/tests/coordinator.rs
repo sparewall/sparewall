@@ -2059,3 +2059,169 @@ fn retried_push_syncs_the_generation_first() {
         }
     }
 }
+
+/// Everything activation changes on the fake: firewall, sysctls, links,
+/// provider files and running services.
+fn live(t: &mut T) -> String {
+    let s = t.c.system();
+    format!(
+        "{:?}",
+        (&s.nft_body, &s.sysctl, &s.network, &s.installed, &s.running)
+    )
+}
+
+/// Which step of activation an injected failure hits.
+fn fail_at(t: &mut T, step: &str, msg: Option<String>, once: bool) {
+    let s = t.c.system();
+    s.fail_once = once;
+    match step {
+        "nft" => s.fail_nft_load = msg,
+        "sysctl" => s.fail_sysctl_apply = msg,
+        "links" => s.fail_networkd_apply = msg,
+        "provider files" => s.fail_install_files = msg,
+        "services" => s.fail_services_apply = msg,
+        _ => unreachable!("{step}"),
+    }
+}
+
+/// The `applied` check: whether the node verifiably runs its record.
+/// (These fixtures fail health anyway: the fake's links are not up.)
+fn applied_level(t: &mut T) -> Level {
+    t.c.health().unwrap().check("applied").unwrap().level
+}
+
+const STEPS: [&str; 5] = ["nft", "sysctl", "links", "provider files", "services"];
+
+/// #14: a local change failing at any step of activation is compensated:
+/// the node runs exactly what it ran before, reports `ApplyFailed`, its
+/// health is ok again, and the change is set aside.
+#[test]
+fn local_apply_fails_at_each_step() {
+    for step in STEPS {
+        let (mut a, _b, _, v2) = peers_with_change();
+        let mut v3 = v2.clone();
+        v3["policy"]["wan->self"]["action"] = json!("drop");
+        v3["networks"]["users"]["mtu"] = json!(1300);
+        v3["dhcp"]["lease_time"] = json!(3600);
+        let before = live(&mut a);
+        let applied = a.c.applied().unwrap();
+        a.c.drain_events();
+        fail_at(&mut a, step, Some(format!("injected at {step}")), true);
+        let r = a.c.apply(v3, &opts(2, None));
+        assert!(
+            matches!(&r, Err(Error::Apply(m)) if m.contains("injected")),
+            "{step}: {r:?}"
+        );
+        assert_eq!(live(&mut a), before, "{step}");
+        assert_eq!(a.c.applied().unwrap(), applied, "{step}");
+        let st = a.c.state().unwrap();
+        assert_eq!(
+            (st.active, st.confirmed, st.pending),
+            (2, 2, None),
+            "{step}"
+        );
+        assert!(matches!(
+            a.c.drain_events().last(),
+            Some(Event::ApplyFailed { id: 3, .. })
+        ));
+        assert_eq!(applied_level(&mut a), Level::Ok, "{step}");
+        assert!(!a.c.store().exists(3), "{step}");
+    }
+}
+
+/// #14: if compensating fails too, the node runs a mixture: it reports
+/// apply failed (failed health, no applied hash), `state.json` still
+/// names the previous generation, and the next change goes through.
+#[test]
+fn failed_compensation_reports_apply_failed() {
+    for step in STEPS {
+        let (mut a, _b, _, v2) = peers_with_change();
+        let mut v3 = v2.clone();
+        v3["policy"]["wan->self"]["action"] = json!("drop");
+        v3["networks"]["users"]["mtu"] = json!(1300);
+        v3["dhcp"]["lease_time"] = json!(3600);
+        fail_at(&mut a, step, Some(format!("injected at {step}")), false);
+        assert!(a.c.apply(v3.clone(), &opts(2, None)).is_err(), "{step}");
+        let h = a.c.health().unwrap();
+        assert!(
+            h.check("applied").unwrap().message.contains("injected"),
+            "{step}"
+        );
+        assert_eq!(a.c.applied().unwrap(), None, "{step}");
+        assert_eq!(a.c.state().unwrap().active, 2, "{step}");
+        // The fault clears; the admin applies the change again.
+        fail_at(&mut a, step, None, false);
+        let r = a.c.apply(v3, &opts(2, None)).unwrap();
+        assert_eq!(a.c.active().unwrap(), r.generation.id, "{step}");
+        assert_eq!(applied_level(&mut a), Level::Ok, "{step}");
+    }
+}
+
+/// #14: a failed revert of an expired change is retried on every tick:
+/// the change stays pending and health failed until the revert succeeds.
+/// (A failed new change, by contrast, is not retried.)
+#[test]
+fn failed_revert_is_retried_until_it_succeeds() {
+    for step in STEPS {
+        let (mut a, _b, _, v2) = peers_with_change();
+        let at_2 = live(&mut a);
+        let mut v3 = v2.clone();
+        v3["policy"]["wan->self"]["action"] = json!("drop");
+        v3["networks"]["users"]["mtu"] = json!(1300);
+        v3["dhcp"]["lease_time"] = json!(3600);
+        a.c.apply(v3, &opts(2, Some(60))).unwrap();
+        let deadline = a.c.state().unwrap().pending.unwrap().deadline;
+        fail_at(&mut a, step, Some(format!("injected at {step}")), false);
+        for n in 0..3 {
+            assert!(a.c.tick(deadline + n).is_err(), "{step}");
+            let st = a.c.state().unwrap();
+            assert_eq!(
+                (st.active, st.pending.map(|p| p.id)),
+                (3, Some(3)),
+                "{step}"
+            );
+            assert_eq!(applied_level(&mut a), Level::Failed, "{step}");
+        }
+        fail_at(&mut a, step, None, false);
+        assert_eq!(a.c.tick(deadline + 3).unwrap(), Some(2), "{step}");
+        let st = a.c.state().unwrap();
+        assert_eq!(
+            (st.active, st.confirmed, st.pending),
+            (2, 2, None),
+            "{step}"
+        );
+        assert_eq!(live(&mut a), at_2, "{step}");
+        assert_eq!(applied_level(&mut a), Level::Ok, "{step}");
+    }
+}
+
+/// #14: a restart while the node runs a mixture (activation and its
+/// compensation both failed) activates the recorded generation from
+/// scratch: every layer, not only what differs.
+#[test]
+fn restart_after_a_mixture_activates_the_record_in_full() {
+    let (mut a, _b, _, v2) = peers_with_change();
+    let at_2 = a.c.system().network.clone();
+    let mut v3 = v2.clone();
+    v3["networks"]["users"]["mtu"] = json!(1300);
+    fail_at(&mut a, "links", Some("injected".into()), false);
+    assert!(a.c.apply(v3, &opts(2, None)).is_err());
+    assert_eq!(a.c.applied().unwrap(), None);
+
+    let id = a.c.identity().clone();
+    let root = a.c.store().root().to_path_buf();
+    let mut c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+    assert_eq!(c.boot(false).unwrap(), 2);
+    assert_eq!(c.applied().unwrap(), Some(c.generation(2).unwrap().hash));
+    let log = c.system().log.join(" ");
+    for step in [
+        "nft-load",
+        "sysctl",
+        "networkd-apply",
+        "install",
+        "services",
+    ] {
+        assert!(log.contains(step), "{step} missing from {log}");
+    }
+    assert_eq!(c.system().network, at_2);
+}
