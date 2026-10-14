@@ -779,11 +779,27 @@ async fn push_missing(
 /// `staged`) through the current link, before it runs here. The peer runs
 /// it pending; once this node runs it too, the sync loop confirms it over
 /// the new link. If the new link never works, both revert to the old one.
+/// How a push of a sync-link change ended.
+#[derive(Debug)]
+pub enum PushFirst {
+    /// The peer took it.
+    Taken,
+    /// Sent, but the reply never came: the peer switches to the new link
+    /// as it runs the change, which can cut the reply off. Whether it took
+    /// it is settled by its confirmation over the new link (or, without
+    /// one, by this node reverting at its deadline).
+    Unknown(String),
+}
+
+/// How long to wait for the peer's reply to the push: it validates and
+/// checks the change with the providers' own checkers first.
+const PUSH_FIRST_REPLY: Duration = Duration::from_secs(30);
+
 pub async fn push_first(
     core: &Core,
     events: &broadcast::Sender<Value>,
     id: u64,
-) -> Result<(), String> {
+) -> Result<PushFirst, String> {
     let (doc, node, g, config) = with_core_raw(core, events, move |c| {
         Ok((
             c.active_document()?,
@@ -806,13 +822,19 @@ pub async fn push_first(
         ));
     }
     tracing::info!(id, peer = %name, "pushing a sync-link change to the peer first");
-    connect(link)
-        .await?
-        .push(&to_peer(&g), &config, None, None, Some(true))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let mut conn = connect(link).await?;
+    let reply = tokio::time::timeout(
+        PUSH_FIRST_REPLY,
+        conn.push(&to_peer(&g), &config, None, None, Some(true)),
+    )
+    .await;
+    match reply {
+        Ok(Ok(Ok(_))) => Ok(PushFirst::Taken),
+        // The peer answered: it refused the change.
+        Ok(Ok(Err(e))) => Err(e.to_string()),
+        Ok(Err(e)) => Ok(PushFirst::Unknown(e.to_string())),
+        Err(_) => Ok(PushFirst::Unknown("no reply".into())),
+    }
 }
 
 /// `sync --from <node>`: take the peer's active generation.

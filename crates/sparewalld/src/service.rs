@@ -135,14 +135,20 @@ impl Firewall {
     }
 
     async fn run_staged(&self, id: u64, window: Option<i64>) -> Result<(), FirewallError> {
-        if let Err(e) = crate::peer::push_first(&self.core, &self.events, id).await {
-            let _ = with_core(&self.core, &self.events, move |c| c.discard_staged(id)).await;
-            return Err(FirewallError::ApplyFailed {
-                message: format!(
-                    "the change alters the sync link, so the peer takes it first, \
-                     but it did not: {e}. Nothing changed"
-                ),
-            });
+        match crate::peer::push_first(&self.core, &self.events, id).await {
+            Ok(crate::peer::PushFirst::Taken) => {}
+            Ok(crate::peer::PushFirst::Unknown(e)) => {
+                tracing::warn!(id, error = %e, "no reply to the sync-link push; running it, the peer's confirmation decides");
+            }
+            Err(e) => {
+                let _ = with_core(&self.core, &self.events, move |c| c.discard_staged(id)).await;
+                return Err(FirewallError::ApplyFailed {
+                    message: format!(
+                        "the change alters the sync link, so the peer takes it first, \
+                         but it did not: {e}. Nothing changed"
+                    ),
+                });
+            }
         }
         let w = window.unwrap_or(0).clamp(0, 24 * 3600) as u32;
         with_core(&self.core, &self.events, move |c| c.activate_staged(id, w)).await
