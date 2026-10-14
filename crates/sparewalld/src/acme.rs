@@ -131,6 +131,19 @@ impl Challenges {
     }
 }
 
+/// Run `f` with an order's challenges; afterwards every record it
+/// published is removed, however `f` ended.
+async fn with_challenges<T>(
+    dns: Arc<dyn DnsZone>,
+    wait: Propagation,
+    f: impl AsyncFnOnce(&mut Challenges) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut challenges = Challenges::new(dns, wait);
+    let result = f(&mut challenges).await;
+    challenges.remove_all().await;
+    result
+}
+
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -267,8 +280,7 @@ pub async fn issue(
         .new_order(&NewOrder::new(&ids))
         .await
         .map_err(|e| e.to_string())?;
-    let mut challenges = Challenges::new(dns, PROPAGATION);
-    let result = async {
+    with_challenges(dns, PROPAGATION, async |challenges| {
         {
             let mut authzs = order.authorizations();
             while let Some(a) = authzs.next().await {
@@ -310,10 +322,8 @@ pub async fn issue(
             not_before,
             not_after,
         })
-    }
-    .await;
-    challenges.remove_all().await;
-    result
+    })
+    .await
 }
 
 async fn stored(core: &Core, events: &broadcast::Sender<Value>, name: &str) -> Option<Issued> {
@@ -581,12 +591,15 @@ mod tests {
             visible_after: [(a, 2)].into(),
             ..Default::default()
         });
-        let mut ch = Challenges::new(dns.clone(), FAST);
-        ch.publish(a, "va").await.unwrap();
-        let e = ch.publish(b, "vb").await.unwrap_err();
+        let e = with_challenges(dns.clone(), FAST, async |ch| {
+            ch.publish(a, "va").await?;
+            ch.publish(b, "vb").await?;
+            Ok(())
+        })
+        .await
+        .unwrap_err();
         assert_eq!(e, format!("{b} did not appear on ns.example:53"));
         assert_eq!(dns.reads.lock().unwrap()[b], 5);
-        ch.remove_all().await;
         assert_eq!(
             log(&dns)[2..],
             [format!("delete {a}"), format!("delete {b}")]
@@ -598,9 +611,8 @@ mod tests {
             set_fails: vec![a],
             ..Default::default()
         });
-        let mut ch = Challenges::new(dns.clone(), FAST);
-        assert_eq!(ch.publish(a, "va").await, Err("nsupdate: SERVFAIL".into()));
-        ch.remove_all().await;
+        let r = with_challenges(dns.clone(), FAST, async |ch| ch.publish(a, "va").await).await;
+        assert_eq!(r, Err("nsupdate: SERVFAIL".into()));
         assert_eq!(log(&dns), [format!("set {a}"), format!("delete {a}")]);
         assert!(dns.values.lock().unwrap().is_empty());
 
@@ -610,10 +622,14 @@ mod tests {
             visible_after: [(a, 0), (b, 0)].into(),
             ..Default::default()
         });
-        let mut ch = Challenges::new(dns.clone(), FAST);
-        ch.publish(a, "va").await.unwrap();
-        ch.publish(b, "vb").await.unwrap();
-        ch.remove_all().await;
+        // A later step of the order fails (the CA rejects it).
+        let r: Result<(), String> = with_challenges(dns.clone(), FAST, async |ch| {
+            ch.publish(a, "va").await?;
+            ch.publish(b, "vb").await?;
+            Err("order is Invalid".into())
+        })
+        .await;
+        assert_eq!(r, Err("order is Invalid".into()));
         assert_eq!(
             log(&dns)[2..],
             [format!("delete {a}"), format!("delete {b}")]

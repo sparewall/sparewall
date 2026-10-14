@@ -199,8 +199,9 @@ pub struct TimerSpec {
 
 /// Transient systemd timers.
 pub trait Timers: Send + Sync {
-    /// Stop and forget the timer and its service, if they exist.
-    fn remove(&self, unit: &str);
+    /// Stop and forget the timer and its service. A timer that does not
+    /// exist is already removed; any other failure is returned.
+    fn remove(&self, unit: &str) -> Result<(), String>;
     fn create(&self, timer: &TimerSpec) -> Result<(), String>;
 }
 
@@ -208,8 +209,12 @@ pub trait Timers: Send + Sync {
 pub struct SystemdTimers;
 
 impl Timers for SystemdTimers {
-    fn remove(&self, unit: &str) {
-        let _ = host_run("systemctl", &["stop", &format!("{unit}.timer")]);
+    fn remove(&self, unit: &str) -> Result<(), String> {
+        match host_run("systemctl", &["stop", &format!("{unit}.timer")]) {
+            Err(e) if !e.to_string().contains("not loaded") => return Err(e.to_string()),
+            _ => {}
+        }
+        // Only clears a failed state; nothing to report if there is none.
         let _ = host_run(
             "systemctl",
             &[
@@ -218,6 +223,7 @@ impl Timers for SystemdTimers {
                 &format!("{unit}.service"),
             ],
         );
+        Ok(())
     }
 
     fn create(&self, t: &TimerSpec) -> Result<(), String> {

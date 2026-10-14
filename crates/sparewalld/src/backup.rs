@@ -226,7 +226,9 @@ pub async fn schedule_loop(core: Core, events: broadcast::Sender<Value>) {
 
 /// Replace the backup timer with one on `calendar`, or none.
 fn set_timer(timers: &dyn Timers, calendar: Option<&str>) -> Result<(), String> {
-    timers.remove(TIMER);
+    timers
+        .remove(TIMER)
+        .map_err(|e| format!("cannot remove the old timer: {e}"))?;
     let Some(cal) = calendar else { return Ok(()) };
     timers.create(&TimerSpec {
         unit: TIMER.into(),
@@ -345,12 +347,14 @@ mod tests {
     #[derive(Default)]
     struct FakeTimers {
         fail: Option<String>,
+        remove_fails: Option<String>,
         calls: Mutex<Vec<String>>,
     }
 
     impl Timers for FakeTimers {
-        fn remove(&self, unit: &str) {
+        fn remove(&self, unit: &str) -> Result<(), String> {
             self.calls.lock().unwrap().push(format!("remove {unit}"));
+            self.remove_fails.clone().map_or(Ok(()), Err)
         }
         fn create(&self, t: &TimerSpec) -> Result<(), String> {
             self.calls.lock().unwrap().push(format!(
@@ -383,5 +387,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(set_timer(&t, Some("never")), Err("bad calendar".into()));
+
+        // The old timer cannot be stopped: reported, nothing new created
+        // (also when turning backups off).
+        let t = FakeTimers {
+            remove_fails: Some("Access denied".into()),
+            ..Default::default()
+        };
+        for cal in [Some("daily"), None] {
+            assert_eq!(
+                set_timer(&t, cal),
+                Err("cannot remove the old timer: Access denied".into())
+            );
+        }
+        assert!(
+            t.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| c.starts_with("remove"))
+        );
     }
 }
