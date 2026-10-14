@@ -86,6 +86,63 @@ pub fn reboot_soon() -> Result<(), String> {
     .map(|_| ())
 }
 
+/// Stop keepalived to hand over the gateway addresses. The job is queued
+/// without waiting on it (`--no-block`) and its state polled: waiting
+/// holds a D-Bus call open across the transition, and losing it ("D-Bus
+/// connection terminated while waiting for jobs") stopped upgrades whose
+/// keepalived had in fact stopped (#29).
+async fn stop_keepalived() -> Result<(), String> {
+    let queued = host_run("systemctl", &["stop", "--no-block", "keepalived.service"])
+        .map(|_| ())
+        .map_err(|e| e.to_string());
+    let state = || {
+        host_run(
+            "systemctl",
+            &[
+                "show",
+                "--property=ActiveState",
+                "--value",
+                "keepalived.service",
+            ],
+        )
+        .map_err(|e| e.to_string())
+    };
+    wait_inactive(
+        queued,
+        state,
+        Duration::from_secs(30),
+        Duration::from_millis(500),
+    )
+    .await
+}
+
+/// Poll `state` (a unit's `ActiveState`) until it is inactive or failed.
+/// Even if queueing the stop reported an error, the unit may have
+/// stopped; only a unit still running at `timeout` fails.
+async fn wait_inactive(
+    queued: Result<(), String>,
+    mut state: impl FnMut() -> Result<String, String>,
+    timeout: Duration,
+    every: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let last = match state() {
+            Ok(s) if matches!(s.trim(), "inactive" | "failed") => return Ok(()),
+            Ok(s) => s.trim().to_string(),
+            Err(e) => e,
+        };
+        if Instant::now() >= deadline {
+            let why = match queued {
+                Err(e) => format!("stopping it failed ({e}) and it is still {last}"),
+                Ok(()) => format!("it is still {last} after {}s", timeout.as_secs()),
+            };
+            return Err(format!("keepalived did not stop: {why}"));
+        }
+        tokio::time::sleep(every).await;
+    }
+}
+
 fn event(events: &broadcast::Sender<Value>, step: &str, detail: impl Into<String>) {
     let detail = detail.into();
     tracing::info!(step, %detail, "upgrade");
@@ -167,7 +224,7 @@ pub async fn run(core: Core, events: broadcast::Sender<Value>, target: String, p
                 "failover",
                 "stopping keepalived to hand over the gateway addresses",
             );
-            host_run("systemctl", &["stop", "keepalived.service"])?;
+            stop_keepalived().await?;
             let node = with_core_raw(&core, &events, |c| Ok(c.node().to_string()))
                 .await
                 .map_err(|e| e.to_string())?;
@@ -312,5 +369,50 @@ mod tests {
             target_ref(Some("r/x:1"), Some("stable"), None, ghcr),
             "r/x:1"
         );
+    }
+
+    /// #29: a stop whose wait was cut off still counts once the unit is
+    /// inactive; one still running at the deadline fails, naming why.
+    #[tokio::test]
+    async fn keepalived_stop_is_judged_by_its_state() {
+        let ms = Duration::from_millis;
+        let states = |seq: &'static [&'static str]| {
+            let mut i = 0;
+            move || {
+                let s = seq[i.min(seq.len() - 1)];
+                i += 1;
+                if s == "error" {
+                    Err("show failed".to_string())
+                } else {
+                    Ok(format!("{s}\n"))
+                }
+            }
+        };
+        let lost = || Err("D-Bus connection terminated while waiting for jobs".to_string());
+        // Stopped despite the lost wait, after a few polls.
+        let r = wait_inactive(
+            lost(),
+            states(&["active", "deactivating", "error", "inactive"]),
+            ms(500),
+            ms(1),
+        )
+        .await;
+        assert_eq!(r, Ok(()));
+        assert_eq!(
+            wait_inactive(Ok(()), states(&["failed"]), ms(500), ms(1)).await,
+            Ok(())
+        );
+        // Still running: fails, with the stop's error if there was one.
+        let e = wait_inactive(lost(), states(&["active"]), ms(20), ms(1))
+            .await
+            .unwrap_err();
+        assert!(
+            e.contains("D-Bus connection terminated") && e.contains("still active"),
+            "{e}"
+        );
+        let e = wait_inactive(Ok(()), states(&["deactivating"]), ms(20), ms(1))
+            .await
+            .unwrap_err();
+        assert!(e.contains("still deactivating"), "{e}");
     }
 }
