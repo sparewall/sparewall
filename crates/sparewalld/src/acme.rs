@@ -1,7 +1,7 @@
 //! ACME certificates (design: "TLS and ACME").
 //!
 //! DNS-01 is the primary challenge; RFC 2136 dynamic updates with TSIG are
-//! built in (through `nsupdate`). The ACME account and issued certificates
+//! built in (through `nsupdate`, behind [`DnsZone`]). The ACME account and issued certificates
 //! are cluster secrets, so in a pair only the active node orders a
 //! certificate and the peer receives it through the sync tunnel. Renewal
 //! happens at two-thirds of the lifetime. Without a usable certificate the
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sparewall_config::model::{Acme, Certificate};
+use sparewall_core::host::{DnsZone, Rfc2136};
 use sparewall_core::secrets::SecretClass;
 use sparewall_core::{Check, Level};
 use tokio::sync::broadcast;
@@ -71,64 +72,84 @@ pub fn validity(chain_pem: &str) -> Result<(i64, i64), String> {
     ))
 }
 
-/// What the DNS-01 provider needs.
-struct Rfc2136 {
-    server: String,
-    zone: Option<String>,
-    /// `algorithm:name:secret`, as `nsupdate -y` takes it.
-    tsig: String,
+/// How long to wait for a challenge record to reach the server.
+#[derive(Clone, Copy)]
+struct Propagation {
+    attempts: u32,
+    every: Duration,
 }
 
-async fn nsupdate(p: &Rfc2136, record: &str, value: Option<&str>) -> Result<(), String> {
-    let mut script = format!("server {}\n", p.server.replace(':', " "));
-    if let Some(z) = &p.zone {
-        script.push_str(&format!("zone {z}\n"));
-    }
-    script.push_str(&format!("update delete {record}. TXT\n"));
-    if let Some(v) = value {
-        script.push_str(&format!("update add {record}. 60 TXT \"{v}\"\n"));
-    }
-    script.push_str("send\n");
-    let mut child = tokio::process::Command::new("nsupdate")
-        .args(["-y", &p.tsig])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("nsupdate: {e}"))?;
-    use tokio::io::AsyncWriteExt;
-    child
-        .stdin
-        .take()
-        .expect("piped")
-        .write_all(script.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "nsupdate: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
-    }
+const PROPAGATION: Propagation = Propagation {
+    attempts: 24,
+    every: Duration::from_secs(5),
+};
+
+/// The dns-01 challenge records of one order. Every record is removed at
+/// the end, whatever happened: one whose update failed may have been
+/// applied, and an order that fails partway leaves the earlier ones.
+struct Challenges {
+    dns: Arc<dyn DnsZone>,
+    published: Vec<String>,
+    wait: Propagation,
 }
 
-/// Wait until the authoritative server answers with the TXT value.
-async fn propagated(p: &Rfc2136, record: &str, value: &str) -> bool {
-    let (host, port) = p.server.split_once(':').unwrap_or((&p.server, "53"));
-    for _ in 0..24 {
-        let out = tokio::process::Command::new("dig")
-            .args(["+short", "-p", port, &format!("@{host}"), "TXT", record])
-            .output()
-            .await;
-        if out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(value)) {
-            return true;
+impl Challenges {
+    fn new(dns: Arc<dyn DnsZone>, wait: Propagation) -> Self {
+        Challenges {
+            dns,
+            published: Vec::new(),
+            wait,
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
     }
-    false
+
+    /// Publish `value` at `record` and wait until the server answers it.
+    async fn publish(&mut self, record: &str, value: &str) -> Result<(), String> {
+        self.published.push(record.to_string());
+        let (dns, r, v) = (self.dns.clone(), record.to_string(), value.to_string());
+        blocking(move || dns.set_txt(&r, &v)).await?;
+        for _ in 0..self.wait.attempts {
+            let (dns, r) = (self.dns.clone(), record.to_string());
+            if blocking(move || dns.txt(&r))
+                .await
+                .is_ok_and(|vals| vals.iter().any(|x| x == value))
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(self.wait.every).await;
+        }
+        Err(format!("{record} did not appear on {}", self.dns.server()))
+    }
+
+    /// Remove every record published; a failure is logged, not fatal.
+    async fn remove_all(self) {
+        for r in self.published {
+            let (dns, rr) = (self.dns.clone(), r.clone());
+            if let Err(e) = blocking(move || dns.delete_txt(&rr)).await {
+                tracing::warn!(record = %r, error = %e, "cannot remove the challenge record");
+            }
+        }
+    }
+}
+
+/// Run `f` with an order's challenges; afterwards every record it
+/// published is removed, however `f` ended.
+async fn with_challenges<T>(
+    dns: Arc<dyn DnsZone>,
+    wait: Propagation,
+    f: impl AsyncFnOnce(&mut Challenges) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut challenges = Challenges::new(dns, wait);
+    let result = f(&mut challenges).await;
+    challenges.remove_all().await;
+    result
+}
+
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 async fn secret(
@@ -151,7 +172,7 @@ async fn provider(
     core: &Core,
     events: &broadcast::Sender<Value>,
     acme: &Acme,
-) -> Result<Rfc2136, String> {
+) -> Result<Arc<dyn DnsZone>, String> {
     let dns = acme.dns.as_ref().ok_or("acme.dns is required for dns-01")?;
     if dns.provider != "rfc2136" {
         return Err(format!(
@@ -166,7 +187,7 @@ async fn provider(
     let tsig = secret(core, events, secret_ref(cred)?)
         .await?
         .ok_or_else(|| format!("secret {cred} is not set"))?;
-    Ok(Rfc2136 {
+    Ok(Arc::new(Rfc2136 {
         server: dns
             .options
             .get("server")
@@ -174,7 +195,7 @@ async fn provider(
             .ok_or("acme.dns.options.server is required")?,
         zone: dns.options.get("zone").cloned(),
         tsig: String::from_utf8_lossy(&tsig).trim().to_string(),
-    })
+    }))
 }
 
 async fn account(
@@ -259,32 +280,28 @@ pub async fn issue(
         .new_order(&NewOrder::new(&ids))
         .await
         .map_err(|e| e.to_string())?;
-    let mut records = Vec::new();
-    {
-        let mut authzs = order.authorizations();
-        while let Some(a) = authzs.next().await {
-            let mut authz = a.map_err(|e| e.to_string())?;
-            if authz.status == AuthorizationStatus::Valid {
-                continue;
+    with_challenges(dns, PROPAGATION, async |challenges| {
+        {
+            let mut authzs = order.authorizations();
+            while let Some(a) = authzs.next().await {
+                let mut authz = a.map_err(|e| e.to_string())?;
+                if authz.status == AuthorizationStatus::Valid {
+                    continue;
+                }
+                let mut ch = authz
+                    .challenge(ChallengeType::Dns01)
+                    .ok_or("the CA offered no dns-01 challenge")?;
+                let name = match ch.identifier().identifier {
+                    Identifier::Dns(d) => d.trim_start_matches("*.").to_string(),
+                    other => return Err(format!("unsupported identifier {other:?}")),
+                };
+                let value = ch.key_authorization().dns_value();
+                challenges
+                    .publish(&format!("_acme-challenge.{name}"), &value)
+                    .await?;
+                ch.set_ready().await.map_err(|e| e.to_string())?;
             }
-            let mut ch = authz
-                .challenge(ChallengeType::Dns01)
-                .ok_or("the CA offered no dns-01 challenge")?;
-            let name = match ch.identifier().identifier {
-                Identifier::Dns(d) => d.trim_start_matches("*.").to_string(),
-                other => return Err(format!("unsupported identifier {other:?}")),
-            };
-            let record = format!("_acme-challenge.{name}");
-            let value = ch.key_authorization().dns_value();
-            nsupdate(&dns, &record, Some(&value)).await?;
-            records.push(record.clone());
-            if !propagated(&dns, &record, &value).await {
-                return Err(format!("{record} did not appear on {}", dns.server));
-            }
-            ch.set_ready().await.map_err(|e| e.to_string())?;
         }
-    }
-    let result = async {
         let status = order
             .poll_ready(&RetryPolicy::default())
             .await
@@ -305,14 +322,8 @@ pub async fn issue(
             not_before,
             not_after,
         })
-    }
-    .await;
-    for r in records {
-        if let Err(e) = nsupdate(&dns, &r, None).await {
-            tracing::warn!(record = %r, error = %e, "cannot remove the challenge record");
-        }
-    }
-    result
+    })
+    .await
 }
 
 async fn stored(core: &Core, events: &broadcast::Sender<Value>, name: &str) -> Option<Issued> {
@@ -502,5 +513,127 @@ mod tests {
         let pem = p.self_signed(&key).unwrap().pem();
         let (a, b) = validity(&pem).unwrap();
         assert_eq!(b - a, 90 * 86_400);
+    }
+
+    /// A zone that records every operation. `set_fails`/`delete_fails`
+    /// name records whose update errors; a record appears to `txt` only
+    /// after `visible_after` reads (never if absent).
+    #[derive(Default)]
+    struct FakeDns {
+        set_fails: Vec<&'static str>,
+        delete_fails: Vec<&'static str>,
+        visible_after: std::collections::HashMap<&'static str, usize>,
+        values: std::sync::Mutex<std::collections::HashMap<String, String>>,
+        reads: std::sync::Mutex<std::collections::HashMap<String, usize>>,
+        log: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl DnsZone for FakeDns {
+        fn set_txt(&self, record: &str, value: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(format!("set {record}"));
+            // A failed update may still have been applied.
+            self.values
+                .lock()
+                .unwrap()
+                .insert(record.into(), value.into());
+            if self.set_fails.contains(&record) {
+                return Err("nsupdate: SERVFAIL".into());
+            }
+            Ok(())
+        }
+        fn delete_txt(&self, record: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(format!("delete {record}"));
+            if self.delete_fails.contains(&record) {
+                return Err("nsupdate: REFUSED".into());
+            }
+            self.values.lock().unwrap().remove(record);
+            Ok(())
+        }
+        fn txt(&self, record: &str) -> Result<Vec<String>, String> {
+            let mut reads = self.reads.lock().unwrap();
+            let n = reads.entry(record.into()).or_default();
+            *n += 1;
+            match self.visible_after.get(record) {
+                Some(after) if *n > *after => Ok(self
+                    .values
+                    .lock()
+                    .unwrap()
+                    .get(record)
+                    .cloned()
+                    .into_iter()
+                    .collect()),
+                _ => Ok(vec![]),
+            }
+        }
+        fn server(&self) -> &str {
+            "ns.example:53"
+        }
+    }
+
+    const FAST: Propagation = Propagation {
+        attempts: 5,
+        every: Duration::from_millis(1),
+    };
+
+    fn log(d: &FakeDns) -> Vec<String> {
+        d.log.lock().unwrap().clone()
+    }
+
+    /// #12: every challenge record published is removed afterwards, also
+    /// when a later one fails to appear or its update fails, and one
+    /// failed removal does not stop the others.
+    #[tokio::test]
+    async fn challenge_records_are_always_removed() {
+        let (a, b) = ("_acme-challenge.a.example", "_acme-challenge.b.example");
+
+        // a appears after two reads; b never does.
+        let dns = Arc::new(FakeDns {
+            visible_after: [(a, 2)].into(),
+            ..Default::default()
+        });
+        let e = with_challenges(dns.clone(), FAST, async |ch| {
+            ch.publish(a, "va").await?;
+            ch.publish(b, "vb").await?;
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(e, format!("{b} did not appear on ns.example:53"));
+        assert_eq!(dns.reads.lock().unwrap()[b], 5);
+        assert_eq!(
+            log(&dns)[2..],
+            [format!("delete {a}"), format!("delete {b}")]
+        );
+        assert!(dns.values.lock().unwrap().is_empty());
+
+        // An update that reports failure is removed too.
+        let dns = Arc::new(FakeDns {
+            set_fails: vec![a],
+            ..Default::default()
+        });
+        let r = with_challenges(dns.clone(), FAST, async |ch| ch.publish(a, "va").await).await;
+        assert_eq!(r, Err("nsupdate: SERVFAIL".into()));
+        assert_eq!(log(&dns), [format!("set {a}"), format!("delete {a}")]);
+        assert!(dns.values.lock().unwrap().is_empty());
+
+        // A removal that fails does not stop the next.
+        let dns = Arc::new(FakeDns {
+            delete_fails: vec![a],
+            visible_after: [(a, 0), (b, 0)].into(),
+            ..Default::default()
+        });
+        // A later step of the order fails (the CA rejects it).
+        let r: Result<(), String> = with_challenges(dns.clone(), FAST, async |ch| {
+            ch.publish(a, "va").await?;
+            ch.publish(b, "vb").await?;
+            Err("order is Invalid".into())
+        })
+        .await;
+        assert_eq!(r, Err("order is Invalid".into()));
+        assert_eq!(
+            log(&dns)[2..],
+            [format!("delete {a}"), format!("delete {b}")]
+        );
+        assert_eq!(dns.values.lock().unwrap().keys().collect::<Vec<_>>(), [a]);
     }
 }

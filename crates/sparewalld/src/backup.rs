@@ -8,31 +8,20 @@
 //! `backup.credentials` names. The timer is a transient systemd timer,
 //! recreated whenever the schedule changes and at every start.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
 use sparewall_api::{BackupReply, FirewallError};
 use sparewall_core::backup::{PASSWORD_SECRET, Sources};
+use sparewall_core::host::{BackupRepository, Restic, SystemdTimers, TimerSpec, Timers};
 use sparewall_core::{Check, Level};
 use tokio::sync::broadcast;
 
 use crate::service::{Core, KEA_LEASES, booted_image_digest, with_core, with_core_raw};
-use crate::upgrade::host_run;
 
 const TIMER: &str = "sparewall-backup";
 const DEFAULT_SCHEDULE: &str = "hourly";
-
-/// Where and how to send a bundle.
-struct Upload {
-    repository: String,
-    password: Vec<u8>,
-    env: Vec<(String, String)>,
-    node: String,
-    cache: PathBuf,
-}
 
 fn credentials_env(text: &str) -> Result<Vec<(String, String)>, String> {
     text.lines()
@@ -79,13 +68,13 @@ pub async fn run(
                     }
                     None => vec![],
                 };
-                Some(Upload {
+                let repo = Restic {
                     repository: b.repository.clone().expect("matched"),
                     password,
                     env,
-                    node: c.node().to_string(),
                     cache: c.store().root().join("restic-cache"),
-                })
+                };
+                Some((repo, c.node().to_string()))
             }
             _ => None,
         };
@@ -110,9 +99,9 @@ pub async fn run(
         }
     };
     let snapshot = match upload {
-        Some(u) => {
+        Some((repo, node)) => {
             let p = path.clone();
-            match tokio::task::spawn_blocking(move || send(&u, &p)).await {
+            match tokio::task::spawn_blocking(move || send(&repo, &p, &node)).await {
                 Ok(Ok(id)) => Some(id),
                 Ok(Err(e)) => {
                     finish(core, events, Some(&path), None, Some(e.clone())).await;
@@ -170,92 +159,16 @@ fn check(last: &sparewall_core::backup::Last) -> Check {
     }
 }
 
-fn restic(u: &Upload, args: &[&str], stdin: Option<&Path>) -> Result<(i32, String), String> {
-    let mut cmd = Command::new("restic");
-    cmd.arg("--cache-dir")
-        .arg(&u.cache)
-        .args(args)
-        .env("RESTIC_REPOSITORY", &u.repository)
-        .env(
-            "RESTIC_PASSWORD",
-            String::from_utf8_lossy(&u.password).as_ref(),
-        )
-        .envs(u.env.iter().map(|(k, v)| (k, v)))
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("restic: {e}"))?;
-    if let Some(p) = stdin {
-        let data = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
-        let mut w = child.stdin.take().expect("piped");
-        // A writer thread, so a full stdout pipe cannot deadlock us.
-        let t = std::thread::spawn(move || w.write_all(&data));
-        let out = child
-            .wait_with_output()
-            .map_err(|e| format!("restic: {e}"))?;
-        let _ = t.join();
-        return Ok(outcome(out));
+/// Send a bundle, initialising the repository on first use; returns the
+/// snapshot ID.
+fn send(repo: &dyn BackupRepository, bundle: &Path, node: &str) -> Result<String, String> {
+    if !repo.exists()? {
+        tracing::info!("initialising the backup repository");
+        repo.init()?;
     }
-    Ok(outcome(
-        child
-            .wait_with_output()
-            .map_err(|e| format!("restic: {e}"))?,
-    ))
-}
-
-fn outcome(out: std::process::Output) -> (i32, String) {
-    let code = out.status.code().unwrap_or(-1);
-    let text = if code == 0 { out.stdout } else { out.stderr };
-    (code, String::from_utf8_lossy(&text).trim().to_string())
-}
-
-/// Send a bundle; returns the snapshot ID.
-fn send(u: &Upload, bundle: &Path) -> Result<String, String> {
-    // The repository does not exist yet: exit code 10 since restic 0.17,
-    // only the message before.
-    match restic(u, &["cat", "config"], None)? {
-        (0, _) => {}
-        (c, e) if c == 10 || e.contains("Is there a repository at the following location") => {
-            tracing::info!(repository = %u.repository, "initialising the backup repository");
-            match restic(u, &["init"], None)? {
-                (0, _) => {}
-                (_, e) => return Err(format!("restic init: {e}")),
-            }
-        }
-        (_, e) => return Err(format!("restic: {e}")),
-    }
-    let name = format!("sparewall-{}.tar.gz", u.node);
-    match restic(
-        u,
-        &[
-            "backup",
-            "--json",
-            "--host",
-            &u.node,
-            "--tag",
-            "sparewall",
-            "--stdin",
-            "--stdin-filename",
-            &name,
-        ],
-        Some(bundle),
-    )? {
-        (0, out) => {
-            let id = out
-                .lines()
-                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-                .find(|v| v["message_type"] == "summary")
-                .and_then(|v| v["snapshot_id"].as_str().map(str::to_string))
-                .unwrap_or_default();
-            tracing::info!(snapshot = %id, repository = %u.repository, "sent the backup bundle");
-            Ok(id)
-        }
-        (_, e) => Err(format!("restic backup: {e}")),
-    }
+    let id = repo.backup(bundle, &format!("sparewall-{node}.tar.gz"), node)?;
+    tracing::info!(snapshot = %id, "sent the backup bundle");
+    Ok(id)
 }
 
 /// Keep the backup timer in line with `backup.schedule`.
@@ -281,7 +194,8 @@ pub async fn schedule_loop(core: Core, events: broadcast::Sender<Value>) {
             && current.as_ref() != Some(&want)
         {
             let w = want.clone();
-            match tokio::task::spawn_blocking(move || set_timer(w.as_deref())).await {
+            match tokio::task::spawn_blocking(move || set_timer(&SystemdTimers, w.as_deref())).await
+            {
                 Ok(Ok(())) => {
                     tracing::info!(schedule = ?want, "backup timer");
                     current = Some(want);
@@ -310,31 +224,20 @@ pub async fn schedule_loop(core: Core, events: broadcast::Sender<Value>) {
     }
 }
 
-fn set_timer(calendar: Option<&str>) -> Result<(), String> {
-    let _ = host_run("systemctl", &["stop", &format!("{TIMER}.timer")]);
-    let _ = host_run(
-        "systemctl",
-        &[
-            "reset-failed",
-            &format!("{TIMER}.timer"),
-            &format!("{TIMER}.service"),
-        ],
-    );
+/// Replace the backup timer with one on `calendar`, or none.
+fn set_timer(timers: &dyn Timers, calendar: Option<&str>) -> Result<(), String> {
+    timers
+        .remove(TIMER)
+        .map_err(|e| format!("cannot remove the old timer: {e}"))?;
     let Some(cal) = calendar else { return Ok(()) };
-    host_run(
-        "systemd-run",
-        &[
-            &format!("--unit={TIMER}"),
-            "--description=Sparewall backup",
-            &format!("--on-calendar={cal}"),
-            "--timer-property=Persistent=yes",
-            "--timer-property=RandomizedDelaySec=5min",
-            "/usr/bin/sparewall",
-            "backup",
-            "--quiet",
-        ],
-    )
-    .map(|_| ())
+    timers.create(&TimerSpec {
+        unit: TIMER.into(),
+        description: "Sparewall backup".into(),
+        calendar: cal.into(),
+        command: ["/usr/bin/sparewall", "backup", "--quiet"]
+            .map(String::from)
+            .to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -353,5 +256,156 @@ mod tests {
         );
         assert!(credentials_env("no equals sign").is_err());
         assert!(credentials_env("BAD-NAME=1").is_err());
+    }
+
+    use std::sync::Mutex;
+
+    /// A repository whose operations fail as told; records the calls.
+    #[derive(Default)]
+    struct FakeRepo {
+        exists: Option<Result<bool, String>>,
+        init: Option<String>,
+        backup: Option<String>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl BackupRepository for FakeRepo {
+        fn exists(&self) -> Result<bool, String> {
+            self.calls.lock().unwrap().push("exists".into());
+            self.exists.clone().unwrap_or(Ok(true))
+        }
+        fn init(&self) -> Result<(), String> {
+            self.calls.lock().unwrap().push("init".into());
+            self.init.clone().map_or(Ok(()), Err)
+        }
+        fn backup(&self, bundle: &Path, name: &str, host: &str) -> Result<String, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("backup {} {name} {host}", bundle.display()));
+            self.backup.clone().map_or(Ok("snap1".into()), Err)
+        }
+    }
+
+    /// #12: each restic failure stops the send with its own error, and a
+    /// new repository is initialised once before the first backup.
+    #[test]
+    fn backup_send_failures() {
+        let b = Path::new("/b.tar.gz");
+        let calls = |r: &FakeRepo| r.calls.lock().unwrap().clone();
+        let r = FakeRepo::default();
+        assert_eq!(send(&r, b, "fw1"), Ok("snap1".into()));
+        assert_eq!(
+            calls(&r),
+            ["exists", "backup /b.tar.gz sparewall-fw1.tar.gz fw1"]
+        );
+
+        let r = FakeRepo {
+            exists: Some(Ok(false)),
+            ..Default::default()
+        };
+        assert_eq!(send(&r, b, "fw1"), Ok("snap1".into()));
+        assert_eq!(calls(&r)[..2], ["exists", "init"]);
+
+        let r = FakeRepo {
+            exists: Some(Err("restic: wrong password".into())),
+            ..Default::default()
+        };
+        assert_eq!(send(&r, b, "fw1"), Err("restic: wrong password".into()));
+        assert_eq!(calls(&r), ["exists"]);
+
+        let r = FakeRepo {
+            exists: Some(Ok(false)),
+            init: Some("restic init: no space".into()),
+            ..Default::default()
+        };
+        assert_eq!(send(&r, b, "fw1"), Err("restic init: no space".into()));
+        assert_eq!(calls(&r), ["exists", "init"]);
+
+        let r = FakeRepo {
+            backup: Some("restic backup: timeout".into()),
+            ..Default::default()
+        };
+        assert_eq!(send(&r, b, "fw1"), Err("restic backup: timeout".into()));
+
+        // A failed run is reported in health as degraded, naming the error.
+        let c = check(&sparewall_core::backup::Last {
+            time: "t".into(),
+            bundle: None,
+            snapshot: None,
+            error: Some("restic backup: timeout".into()),
+            success: None,
+        });
+        assert_eq!(c.level, Level::Degraded);
+        assert!(
+            c.message.contains("restic backup: timeout"),
+            "{}",
+            c.message
+        );
+    }
+
+    #[derive(Default)]
+    struct FakeTimers {
+        fail: Option<String>,
+        remove_fails: Option<String>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Timers for FakeTimers {
+        fn remove(&self, unit: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!("remove {unit}"));
+            self.remove_fails.clone().map_or(Ok(()), Err)
+        }
+        fn create(&self, t: &TimerSpec) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!(
+                "create {} {} {}",
+                t.unit,
+                t.calendar,
+                t.command.join(" ")
+            ));
+            self.fail.clone().map_or(Ok(()), Err)
+        }
+    }
+
+    /// The timer is replaced, removed when backups are off, and a bad
+    /// schedule's error is returned.
+    #[test]
+    fn backup_timer() {
+        let t = FakeTimers::default();
+        set_timer(&t, Some("daily")).unwrap();
+        set_timer(&t, None).unwrap();
+        assert_eq!(
+            *t.calls.lock().unwrap(),
+            [
+                "remove sparewall-backup",
+                "create sparewall-backup daily /usr/bin/sparewall backup --quiet",
+                "remove sparewall-backup",
+            ]
+        );
+        let t = FakeTimers {
+            fail: Some("bad calendar".into()),
+            ..Default::default()
+        };
+        assert_eq!(set_timer(&t, Some("never")), Err("bad calendar".into()));
+
+        // The old timer cannot be stopped: reported, nothing new created
+        // (also when turning backups off).
+        let t = FakeTimers {
+            remove_fails: Some("Access denied".into()),
+            ..Default::default()
+        };
+        for cal in [Some("daily"), None] {
+            assert_eq!(
+                set_timer(&t, cal),
+                Err("cannot remove the old timer: Access denied".into())
+            );
+        }
+        assert!(
+            t.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| c.starts_with("remove"))
+        );
     }
 }
