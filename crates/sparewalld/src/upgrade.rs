@@ -7,10 +7,12 @@
 //! reboot of downtime. A failed gate stops the upgrade; `bootc rollback`
 //! returns a node.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use sparewall_api::{PEER_PROTOCOL, PeerProxy, PeerUpgradeProxy};
+use sparewall_api::{HelloReply, PEER_PROTOCOL, PeerProxy, PeerUpgradeProxy};
+use sparewall_core::host::{HostUpgrade, UpgradeHost, bootc_status};
 use tokio::sync::broadcast;
 
 use crate::peer::{Link, Pair, connect, tunnel_addrs};
@@ -22,10 +24,6 @@ pub const DEFAULT_CHANNEL: &str = "testing";
 /// Run a host command outside this service's sandbox.
 pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, String> {
     sparewall_core::linux::host_run(cmd, args).map_err(|e| e.to_string())
-}
-
-fn bootc_status() -> Option<Value> {
-    serde_json::from_str(&host_run("bootc", &["status", "--format=json"]).ok()?).ok()
 }
 
 /// The image reference the node tracks, e.g. `ghcr.io/sparewall/sparewall:testing`.
@@ -66,68 +64,17 @@ pub fn target_ref(
     format!("{repo}:{tag}")
 }
 
-/// Stage `image` for the next boot. Returns the staged image, or `None`
-/// when the node already runs the newest one.
-pub fn stage(image: &str) -> Result<Option<String>, String> {
-    host_run("bootc", &["switch", "--enforce-container-sigpolicy", image])?;
-    let st = bootc_status().ok_or("cannot read bootc status")?;
-    let staged = &st["status"]["staged"]["image"];
-    Ok(staged["imageDigest"]
-        .as_str()
-        .map(|d| format!("{}@{d}", staged["image"]["image"].as_str().unwrap_or(image))))
-}
-
-/// Reboot in a few seconds, after the reply has gone out.
-pub fn reboot_soon() -> Result<(), String> {
-    host_run(
-        "systemd-run",
-        &["--on-active=5s", "--", "systemctl", "reboot"],
-    )
-    .map(|_| ())
-}
-
-/// Stop keepalived to hand over the gateway addresses. The job is queued
-/// without waiting on it (`--no-block`) and its state polled: waiting
-/// holds a D-Bus call open across the transition, and losing it ("D-Bus
-/// connection terminated while waiting for jobs") stopped upgrades whose
-/// keepalived had in fact stopped (#29).
-async fn stop_keepalived() -> Result<(), String> {
-    let queued = host_run("systemctl", &["stop", "--no-block", "keepalived.service"])
-        .map(|_| ())
-        .map_err(|e| e.to_string());
-    let state = || {
-        host_run(
-            "systemctl",
-            &[
-                "show",
-                "--property=ActiveState",
-                "--value",
-                "keepalived.service",
-            ],
-        )
-        .map_err(|e| e.to_string())
-    };
-    wait_inactive(
-        queued,
-        state,
-        Duration::from_secs(30),
-        Duration::from_millis(500),
-    )
-    .await
-}
-
-/// Poll `state` (a unit's `ActiveState`) until it is inactive or failed.
+/// Wait for keepalived's stop. The job is queued without waiting on it
+/// and its state polled: waiting holds a D-Bus call open across the
+/// transition, and losing it ("D-Bus connection terminated while waiting
+/// for jobs") stopped upgrades whose keepalived had in fact stopped (#29).
 /// Even if queueing the stop reported an error, the unit may have
-/// stopped; only a unit still running at `timeout` fails.
-async fn wait_inactive(
-    queued: Result<(), String>,
-    mut state: impl FnMut() -> Result<String, String>,
-    timeout: Duration,
-    every: Duration,
-) -> Result<(), String> {
-    let deadline = Instant::now() + timeout;
+/// stopped; only a unit still running at the deadline fails.
+async fn stop_keepalived(host: &Arc<dyn UpgradeHost>, t: &Timing) -> Result<(), String> {
+    let queued = blocking(host, |h| h.stop_keepalived()).await;
+    let deadline = Instant::now() + t.stop_timeout;
     loop {
-        let last = match state() {
+        let last = match blocking(host, |h| h.keepalived_state()).await {
             Ok(s) if matches!(s.trim(), "inactive" | "failed") => return Ok(()),
             Ok(s) => s.trim().to_string(),
             Err(e) => e,
@@ -135,13 +82,84 @@ async fn wait_inactive(
         if Instant::now() >= deadline {
             let why = match queued {
                 Err(e) => format!("stopping it failed ({e}) and it is still {last}"),
-                Ok(()) => format!("it is still {last} after {}s", timeout.as_secs()),
+                Ok(()) => format!("it is still {last} after {}s", t.stop_timeout.as_secs()),
             };
             return Err(format!("keepalived did not stop: {why}"));
         }
-        tokio::time::sleep(every).await;
+        tokio::time::sleep(t.stop_poll).await;
     }
 }
+
+async fn blocking<T: Send + 'static>(
+    host: &Arc<dyn UpgradeHost>,
+    f: impl FnOnce(&dyn UpgradeHost) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let h = host.clone();
+    tokio::task::spawn_blocking(move || f(&*h))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The peer, as the upgrade sees it through the sync tunnel.
+#[allow(async_fn_in_trait)]
+pub trait UpgradePeer {
+    async fn hello(&self) -> Result<HelloReply, String>;
+    /// Ask the peer to stage `image` and reboot.
+    async fn upgrade(&self, image: &str) -> Result<(), String>;
+}
+
+/// The peer over the sync tunnel.
+pub struct LinkPeer {
+    pub link: Link,
+    /// This node's name, which `Hello` carries.
+    pub node: String,
+}
+
+impl UpgradePeer for LinkPeer {
+    async fn hello(&self) -> Result<HelloReply, String> {
+        connect(self.link)
+            .await?
+            .hello(&self.node, PEER_PROTOCOL)
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    async fn upgrade(&self, image: &str) -> Result<(), String> {
+        connect(self.link)
+            .await?
+            .upgrade(image)
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+            .map(|_| ())
+    }
+}
+
+/// How long each gate waits.
+#[derive(Debug, Clone, Copy)]
+pub struct Timing {
+    /// Before asking the rebooting peer at all.
+    pub peer_settle: Duration,
+    /// For the peer to come back healthy and in sync on the new image.
+    pub peer_timeout: Duration,
+    pub peer_poll: Duration,
+    pub stop_timeout: Duration,
+    pub stop_poll: Duration,
+    /// For the peer to take over the gateway addresses.
+    pub master_timeout: Duration,
+    pub master_poll: Duration,
+}
+
+pub const TIMING: Timing = Timing {
+    peer_settle: Duration::from_secs(30),
+    peer_timeout: Duration::from_secs(20 * 60),
+    peer_poll: Duration::from_secs(10),
+    stop_timeout: Duration::from_secs(30),
+    stop_poll: Duration::from_millis(500),
+    master_timeout: Duration::from_secs(60),
+    master_poll: Duration::from_secs(2),
+};
 
 fn event(events: &broadcast::Sender<Value>, step: &str, detail: impl Into<String>) {
     let detail = detail.into();
@@ -216,61 +234,79 @@ pub async fn plan(
 
 /// Carry out a planned upgrade.
 pub async fn run(core: Core, events: broadcast::Sender<Value>, target: String, peer: Option<Link>) {
+    let ids = with_core_raw(&core, &events, |c| {
+        Ok((c.node().to_string(), c.view()?.desired))
+    })
+    .await;
+    let (node, ours) = match ids {
+        Ok(v) => v,
+        Err(e) => {
+            event(&events, "failed", format!("upgrade stopped: {e}"));
+            return;
+        }
+    };
+    let peer = peer.map(|link| LinkPeer { link, node });
+    let host: Arc<dyn UpgradeHost> = Arc::new(HostUpgrade);
+    let _ = run_with(&host, peer.as_ref(), &ours, &target, &events, &TIMING).await;
+}
+
+/// The upgrade, against any host and peer. `ours` is this node's desired
+/// configuration hash, which the peer must be running when it returns.
+/// Every gate that fails stops the upgrade; if this node had stopped
+/// keepalived, it starts it again to take the addresses back.
+pub async fn run_with<P: UpgradePeer>(
+    host: &Arc<dyn UpgradeHost>,
+    peer: Option<&P>,
+    ours: &str,
+    target: &str,
+    events: &broadcast::Sender<Value>,
+    t: &Timing,
+) -> Result<(), String> {
+    let mut handed_over = false;
     let r = async {
-        if let Some(addr) = peer {
-            upgrade_peer(&core, &events, addr, &target).await?;
+        if let Some(p) = peer {
+            upgrade_peer(p, ours, target, events, t).await?;
             event(
-                &events,
+                events,
                 "failover",
                 "stopping keepalived to hand over the gateway addresses",
             );
-            stop_keepalived().await?;
-            let node = with_core_raw(&core, &events, |c| Ok(c.node().to_string()))
-                .await
-                .map_err(|e| e.to_string())?;
-            wait_peer_master(addr, &node).await?;
+            handed_over = true;
+            stop_keepalived(host, t).await?;
+            wait_peer_master(p, t).await?;
         }
-        event(&events, "stage", format!("staging {target} on this node"));
-        let staged = tokio::task::spawn_blocking({
-            let t = target.clone();
-            move || stage(&t)
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        event(events, "stage", format!("staging {target} on this node"));
+        let image = target.to_string();
+        let staged = blocking(host, move |h| h.stage(&image)).await?;
         match staged {
             None if peer.is_none() => {
-                event(&events, "done", "already running the newest image");
+                event(events, "done", "already running the newest image");
                 Ok(())
             }
             _ => {
-                event(&events, "reboot", "rebooting into the new image");
-                reboot_soon()
+                event(events, "reboot", "rebooting into the new image");
+                blocking(host, |h| h.reboot_soon()).await
             }
         }
     }
     .await;
-    if let Err(e) = r {
-        event(&events, "failed", format!("upgrade stopped: {e}"));
-        // Take the addresses back if we gave them up.
-        let _ = host_run("systemctl", &["start", "keepalived.service"]);
+    if let Err(e) = &r {
+        event(events, "failed", format!("upgrade stopped: {e}"));
+        if handed_over && let Err(e2) = blocking(host, |h| h.start_keepalived()).await {
+            tracing::error!(error = %e2, "cannot start keepalived again");
+        }
     }
+    r
 }
 
-async fn upgrade_peer(
-    core: &Core,
-    events: &broadcast::Sender<Value>,
-    addr: Link,
+async fn upgrade_peer<P: UpgradePeer>(
+    peer: &P,
+    ours: &str,
     target: &str,
+    events: &broadcast::Sender<Value>,
+    t: &Timing,
 ) -> Result<(), String> {
-    let node = with_core_raw(core, events, |c| Ok(c.node().to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
-    let before = connect(addr)
-        .await?
-        .hello(&node, PEER_PROTOCOL)
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+    let before = peer.hello().await?;
     if before.image.is_none() {
         return Err(format!("{} does not report its image yet", before.node));
     }
@@ -279,34 +315,27 @@ async fn upgrade_peer(
         "stage-peer",
         format!("staging {target} on {}", before.node),
     );
-    connect(addr)
-        .await?
-        .upgrade(target)
+    peer.upgrade(target)
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{} rejected the upgrade: {e}", before.node))?;
     // Gate: the peer comes back on a different image, healthy, in sync.
-    let ours = with_core_raw(core, events, |c| Ok(c.view()?.desired))
-        .await
-        .map_err(|e| e.to_string())?;
     let t0 = Instant::now();
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    tokio::time::sleep(t.peer_settle).await;
     loop {
-        if t0.elapsed() > Duration::from_secs(20 * 60) {
+        if t0.elapsed() > t.peer_timeout {
             return Err(format!(
-                "{} did not come back healthy within 20 minutes; run bootc rollback there",
-                before.node
+                "{} did not come back healthy within {} minutes; run bootc rollback there",
+                before.node,
+                t.peer_timeout.as_secs() / 60
             ));
         }
-        if let Ok(mut c) = connect(addr).await
-            && let Ok(Ok(h)) = c.hello(&node, PEER_PROTOCOL).await
-        {
+        if let Ok(h) = peer.hello().await {
             let healthy = h.health.as_deref() != Some("failed");
             if h.image.is_some()
                 && h.image != before.image
                 && healthy
                 && h.desired == ours
-                && h.applied.as_deref() == Some(ours.as_str())
+                && h.applied.as_deref() == Some(ours)
             {
                 event(
                     events,
@@ -316,20 +345,19 @@ async fn upgrade_peer(
                 return Ok(());
             }
         }
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(t.peer_poll).await;
     }
 }
 
-async fn wait_peer_master(addr: Link, node: &str) -> Result<(), String> {
+async fn wait_peer_master<P: UpgradePeer>(peer: &P, t: &Timing) -> Result<(), String> {
     let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(60) {
-        if let Ok(mut c) = connect(addr).await
-            && let Ok(Ok(h)) = c.hello(node, PEER_PROTOCOL).await
+    while t0.elapsed() < t.master_timeout {
+        if let Ok(h) = peer.hello().await
             && h.role.as_deref() == Some("MASTER")
         {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(t.master_poll).await;
     }
     Err("the peer did not become master".into())
 }
@@ -371,48 +399,325 @@ mod tests {
         );
     }
 
-    /// #29: a stop whose wait was cut off still counts once the unit is
-    /// inactive; one still running at the deadline fails, naming why.
-    #[tokio::test]
-    async fn keepalived_stop_is_judged_by_its_state() {
-        let ms = Duration::from_millis;
-        let states = |seq: &'static [&'static str]| {
-            let mut i = 0;
-            move || {
-                let s = seq[i.min(seq.len() - 1)];
-                i += 1;
-                if s == "error" {
-                    Err("show failed".to_string())
-                } else {
-                    Ok(format!("{s}\n"))
-                }
+    use std::sync::Mutex;
+
+    /// A host whose steps fail as told; logs what ran.
+    #[derive(Default)]
+    struct FakeHost {
+        stage: Option<Result<Option<String>, String>>,
+        reboot_fails: bool,
+        stop_fails: bool,
+        /// `keepalived_state` answers, the last repeating.
+        states: Vec<&'static str>,
+        reads: Mutex<usize>,
+        log: Mutex<Vec<String>>,
+    }
+
+    impl FakeHost {
+        fn note(&self, s: &str) {
+            self.log.lock().unwrap().push(s.into());
+        }
+    }
+
+    impl UpgradeHost for FakeHost {
+        fn stage(&self, image: &str) -> Result<Option<String>, String> {
+            self.note(&format!("stage {image}"));
+            self.stage
+                .clone()
+                .unwrap_or_else(|| Ok(Some(format!("{image}@sha256:new"))))
+        }
+        fn reboot_soon(&self) -> Result<(), String> {
+            self.note("reboot");
+            if self.reboot_fails {
+                return Err("systemd-run failed".into());
             }
-        };
-        let lost = || Err("D-Bus connection terminated while waiting for jobs".to_string());
-        // Stopped despite the lost wait, after a few polls.
-        let r = wait_inactive(
-            lost(),
-            states(&["active", "deactivating", "error", "inactive"]),
-            ms(500),
-            ms(1),
+            Ok(())
+        }
+        fn stop_keepalived(&self) -> Result<(), String> {
+            self.note("stop keepalived");
+            if self.stop_fails {
+                return Err("D-Bus connection terminated while waiting for jobs".into());
+            }
+            Ok(())
+        }
+        fn keepalived_state(&self) -> Result<String, String> {
+            let mut n = self.reads.lock().unwrap();
+            let states = if self.states.is_empty() {
+                &["inactive"][..]
+            } else {
+                &self.states[..]
+            };
+            let s = states[(*n).min(states.len() - 1)];
+            *n += 1;
+            if s == "error" {
+                return Err("show failed".into());
+            }
+            Ok(s.into())
+        }
+        fn start_keepalived(&self) -> Result<(), String> {
+            self.note("start keepalived");
+            Ok(())
+        }
+    }
+
+    fn hello(image: &str, health: &str, desired: &str, role: &str) -> HelloReply {
+        HelloReply {
+            node: "fw1".into(),
+            protocol: PEER_PROTOCOL,
+            active: 5,
+            desired: desired.into(),
+            applied: Some(desired.into()),
+            applying: false,
+            lineage: vec![],
+            pending: false,
+            image: (!image.is_empty()).then(|| image.into()),
+            health: Some(health.into()),
+            role: Some(role.into()),
+        }
+    }
+
+    /// A peer answering `hellos` in order (the last repeating).
+    struct FakePeer {
+        hellos: Vec<HelloReply>,
+        upgrade: Result<(), String>,
+        calls: Mutex<usize>,
+        log: Mutex<Vec<String>>,
+    }
+
+    impl UpgradePeer for FakePeer {
+        async fn hello(&self) -> Result<HelloReply, String> {
+            let mut n = self.calls.lock().unwrap();
+            let h = self.hellos[(*n).min(self.hellos.len() - 1)].clone();
+            *n += 1;
+            Ok(h)
+        }
+        async fn upgrade(&self, image: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(format!("upgrade {image}"));
+            self.upgrade.clone()
+        }
+    }
+
+    fn peer(hellos: Vec<HelloReply>, upgrade: Result<(), String>) -> FakePeer {
+        FakePeer {
+            hellos,
+            upgrade,
+            calls: Mutex::new(0),
+            log: Mutex::new(vec![]),
+        }
+    }
+
+    const FAST: Timing = Timing {
+        peer_settle: Duration::from_millis(1),
+        peer_timeout: Duration::from_millis(50),
+        peer_poll: Duration::from_millis(1),
+        stop_timeout: Duration::from_millis(20),
+        stop_poll: Duration::from_millis(1),
+        master_timeout: Duration::from_millis(20),
+        master_poll: Duration::from_millis(1),
+    };
+
+    async fn upgrade(host: FakeHost, p: Option<&FakePeer>) -> (Result<(), String>, Vec<String>) {
+        let host = Arc::new(host);
+        let h: Arc<dyn UpgradeHost> = host.clone();
+        let (tx, _) = broadcast::channel(64);
+        let r = run_with(&h, p, "cfg", "reg/sw:next", &tx, &FAST).await;
+        let log = host.log.lock().unwrap().clone();
+        (r, log)
+    }
+
+    /// The peer: still rebooting on the old image, then back on the new
+    /// one, healthy and in sync, then master once this node lets go.
+    fn good_peer() -> FakePeer {
+        peer(
+            vec![
+                hello("old", "ok", "cfg", "BACKUP"),
+                hello("old", "ok", "cfg", "BACKUP"),
+                hello("new", "ok", "cfg", "BACKUP"),
+                hello("new", "ok", "cfg", "MASTER"),
+            ],
+            Ok(()),
+        )
+    }
+
+    /// #12: a standalone node stages and reboots, or stops with the
+    /// staging error; nothing touches keepalived.
+    #[tokio::test]
+    async fn standalone_upgrade_gates() {
+        let none: Option<&FakePeer> = None;
+        let (r, log) = upgrade(FakeHost::default(), none).await;
+        assert_eq!(r, Ok(()));
+        assert_eq!(log, ["stage reg/sw:next", "reboot"]);
+
+        let (r, log) = upgrade(
+            FakeHost {
+                stage: Some(Ok(None)),
+                ..Default::default()
+            },
+            none,
         )
         .await;
         assert_eq!(r, Ok(()));
-        assert_eq!(
-            wait_inactive(Ok(()), states(&["failed"]), ms(500), ms(1)).await,
-            Ok(())
-        );
-        // Still running: fails, with the stop's error if there was one.
-        let e = wait_inactive(lost(), states(&["active"]), ms(20), ms(1))
-            .await
-            .unwrap_err();
+        assert_eq!(log, ["stage reg/sw:next"]);
+
+        let (r, log) = upgrade(
+            FakeHost {
+                stage: Some(Err("rejected by policy".into())),
+                ..Default::default()
+            },
+            none,
+        )
+        .await;
+        assert_eq!(r, Err("rejected by policy".into()));
+        assert_eq!(log, ["stage reg/sw:next"]);
+
+        let (r, _) = upgrade(
+            FakeHost {
+                reboot_fails: true,
+                ..Default::default()
+            },
+            none,
+        )
+        .await;
+        assert_eq!(r, Err("systemd-run failed".into()));
+    }
+
+    /// #12: in a pair, the master hands over only once the peer is back
+    /// healthy and in sync on the new image, stages only once the peer is
+    /// master, and takes the addresses back if a later gate fails.
+    #[tokio::test]
+    async fn pair_upgrade_gates() {
+        // All gates pass. A lost wait on the stop does not matter (#29).
+        let p = good_peer();
+        let (r, log) = upgrade(
+            FakeHost {
+                stop_fails: true,
+                states: vec!["active", "deactivating", "error", "inactive"],
+                ..Default::default()
+            },
+            Some(&p),
+        )
+        .await;
+        assert_eq!(r, Ok(()));
+        assert_eq!(log, ["stop keepalived", "stage reg/sw:next", "reboot"]);
+        assert_eq!(*p.log.lock().unwrap(), ["upgrade reg/sw:next"]);
+
+        // Gates before the handover: nothing happens here.
+        for (case, p) in [
+            (
+                "no image",
+                peer(vec![hello("", "ok", "cfg", "BACKUP")], Ok(())),
+            ),
+            (
+                "peer rejects",
+                peer(
+                    vec![hello("old", "ok", "cfg", "BACKUP")],
+                    Err("rejected by policy".into()),
+                ),
+            ),
+            (
+                "never back",
+                peer(vec![hello("old", "ok", "cfg", "BACKUP")], Ok(())),
+            ),
+            (
+                "failed health",
+                peer(
+                    vec![
+                        hello("old", "ok", "cfg", "BACKUP"),
+                        hello("new", "failed", "cfg", "BACKUP"),
+                    ],
+                    Ok(()),
+                ),
+            ),
+            (
+                "other config",
+                peer(
+                    vec![hello("old", "ok", "cfg", "BACKUP"), {
+                        let mut h = hello("new", "ok", "other", "BACKUP");
+                        h.applied = Some("cfg".into());
+                        h
+                    }],
+                    Ok(()),
+                ),
+            ),
+            (
+                "still applying",
+                peer(
+                    vec![hello("old", "ok", "cfg", "BACKUP"), {
+                        let mut h = hello("new", "ok", "cfg", "BACKUP");
+                        h.applied = None;
+                        h
+                    }],
+                    Ok(()),
+                ),
+            ),
+        ] {
+            let (r, log) = upgrade(FakeHost::default(), Some(&p)).await;
+            let e = r.expect_err(case);
+            assert!(log.is_empty(), "{case}: {log:?}");
+            match case {
+                "no image" => assert!(e.contains("does not report its image"), "{e}"),
+                "peer rejects" => assert!(
+                    e.contains("fw1 rejected the upgrade: rejected by policy"),
+                    "{e}"
+                ),
+                _ => assert!(e.contains("did not come back healthy"), "{case}: {e}"),
+            }
+        }
+
+        // keepalived will not stop: take the addresses back, no staging.
+        let (r, log) = upgrade(
+            FakeHost {
+                stop_fails: true,
+                states: vec!["active"],
+                ..Default::default()
+            },
+            Some(&good_peer()),
+        )
+        .await;
+        let e = r.unwrap_err();
         assert!(
-            e.contains("D-Bus connection terminated") && e.contains("still active"),
+            e.contains("keepalived did not stop") && e.contains("D-Bus"),
             "{e}"
         );
-        let e = wait_inactive(Ok(()), states(&["deactivating"]), ms(20), ms(1))
-            .await
-            .unwrap_err();
-        assert!(e.contains("still deactivating"), "{e}");
+        assert_eq!(log, ["stop keepalived", "start keepalived"]);
+
+        // The peer never becomes master.
+        let p = peer(
+            vec![
+                hello("old", "ok", "cfg", "BACKUP"),
+                hello("new", "ok", "cfg", "BACKUP"),
+            ],
+            Ok(()),
+        );
+        let (r, log) = upgrade(FakeHost::default(), Some(&p)).await;
+        assert_eq!(r, Err("the peer did not become master".into()));
+        assert_eq!(log, ["stop keepalived", "start keepalived"]);
+
+        // Staging here fails after the handover: take the addresses back.
+        let (r, log) = upgrade(
+            FakeHost {
+                stage: Some(Err("no space".into())),
+                ..Default::default()
+            },
+            Some(&good_peer()),
+        )
+        .await;
+        assert_eq!(r, Err("no space".into()));
+        assert_eq!(
+            log,
+            ["stop keepalived", "stage reg/sw:next", "start keepalived"]
+        );
+
+        // In a pair, an image already staged still reboots to finish.
+        let (r, log) = upgrade(
+            FakeHost {
+                stage: Some(Ok(None)),
+                ..Default::default()
+            },
+            Some(&good_peer()),
+        )
+        .await;
+        assert_eq!(r, Ok(()));
+        assert_eq!(log, ["stop keepalived", "stage reg/sw:next", "reboot"]);
     }
 }

@@ -58,6 +58,15 @@ Where the implementation departs from, or settles open questions in,
 
 ## Coordinator
 
+- **Host operations beyond `System` are narrow adapters** in
+  `sparewall_core::host`: `Conntrackd`, `BackupRepository` (restic),
+  `Timers` (transient systemd timers), `DnsZone` (RFC 2136) and
+  `UpgradeHost` (bootc, reboot, keepalived), plus the daemon's
+  `UpgradePeer`. Each method is one operation with its own error, not a
+  general command runner, and the orchestration (failover, backup, ACME
+  challenges, the rolling upgrade) is tested against fakes (#12).
+  Reading status (`bootc status`, `bootc upgrade --check`) still calls
+  the host directly.
 - **networkd is driven with `networkctl`** (`reload`, `reconfigure`,
   `delete`) and `udevadm` rather than the Varlink link methods; the
   behaviour is the same and the Varlink calls can replace them later.

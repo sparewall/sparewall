@@ -327,3 +327,70 @@ impl DnsZone for Rfc2136 {
         &self.server
     }
 }
+
+/// What an OS upgrade does on this node: stage an image, reboot, and hand
+/// the gateway addresses over by stopping keepalived.
+pub trait UpgradeHost: Send + Sync {
+    /// Stage `image` for the next boot. Returns the staged image, or
+    /// `None` when the node already runs the newest one.
+    fn stage(&self, image: &str) -> Result<Option<String>, String>;
+    /// Reboot in a few seconds, after the caller's reply has gone out.
+    fn reboot_soon(&self) -> Result<(), String>;
+    /// Queue keepalived's stop without waiting for the job.
+    fn stop_keepalived(&self) -> Result<(), String>;
+    /// keepalived's `ActiveState` (`active`, `deactivating`, `inactive`…).
+    fn keepalived_state(&self) -> Result<String, String>;
+    fn start_keepalived(&self) -> Result<(), String>;
+}
+
+/// bootc and systemctl, outside the daemon's sandbox.
+pub struct HostUpgrade;
+
+fn host(cmd: &str, args: &[&str]) -> Result<String, String> {
+    host_run(cmd, args).map_err(|e| e.to_string())
+}
+
+/// `bootc status` as JSON.
+pub fn bootc_status() -> Option<serde_json::Value> {
+    serde_json::from_str(&host("bootc", &["status", "--format=json"]).ok()?).ok()
+}
+
+impl UpgradeHost for HostUpgrade {
+    fn stage(&self, image: &str) -> Result<Option<String>, String> {
+        host("bootc", &["switch", "--enforce-container-sigpolicy", image])?;
+        let st = bootc_status().ok_or("cannot read bootc status")?;
+        let staged = &st["status"]["staged"]["image"];
+        Ok(staged["imageDigest"]
+            .as_str()
+            .map(|d| format!("{}@{d}", staged["image"]["image"].as_str().unwrap_or(image))))
+    }
+
+    fn reboot_soon(&self) -> Result<(), String> {
+        host(
+            "systemd-run",
+            &["--on-active=5s", "--", "systemctl", "reboot"],
+        )
+        .map(|_| ())
+    }
+
+    fn stop_keepalived(&self) -> Result<(), String> {
+        host("systemctl", &["stop", "--no-block", "keepalived.service"]).map(|_| ())
+    }
+
+    fn keepalived_state(&self) -> Result<String, String> {
+        host(
+            "systemctl",
+            &[
+                "show",
+                "--property=ActiveState",
+                "--value",
+                "keepalived.service",
+            ],
+        )
+        .map(|s| s.trim().to_string())
+    }
+
+    fn start_keepalived(&self) -> Result<(), String> {
+        host("systemctl", &["start", "keepalived.service"]).map(|_| ())
+    }
+}
