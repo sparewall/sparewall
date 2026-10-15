@@ -35,6 +35,7 @@ cleanup() {
         done
         dump_nodes
     fi
+    selinux_reports
     sudo pkill -f "$HERE/echo.py" 2>/dev/null || true
     [ -f rest-server.pid ] && kill "$(cat rest-server.pid)" 2>/dev/null || true
     stop_pair
