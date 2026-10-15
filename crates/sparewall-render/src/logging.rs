@@ -8,6 +8,7 @@
 use std::fmt::Write;
 
 use sparewall_config::model::Document;
+use sparewall_config::providers::{self, Role};
 
 use crate::{Rendered, Service, Subsystem};
 
@@ -56,7 +57,7 @@ pub(crate) fn render(doc: &Document, out: &mut Rendered) {
         );
     }
     if let Some(remote) = doc.logging.as_ref().and_then(|l| l.remote.as_ref())
-        && remote.provider.as_deref().unwrap_or("journal-upload") == "journal-upload"
+        && providers::chosen(doc, Role::LogForwarding) == Some("journal-upload")
     {
         let url = if remote.destination.contains("://") {
             remote.destination.clone()

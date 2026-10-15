@@ -197,8 +197,9 @@ rejected.
 ## Settings not built yet
 
 `provider_options`, `metrics.mode: local`, `metrics.retention`,
-`updates.mode: windowed` and `updates.window` are rejected with an error
-at their path. Earlier versions accepted them, though nothing acted on
+`updates.mode: windowed`, `updates.window`, `dhcp.provider: networkd`,
+`logging.remote.provider: syslog` and ACME DNS providers other than
+`rfc2136` are rejected with an error at their path. Earlier versions accepted them, though nothing acted on
 them. After upgrading:
 
 - A node already running a document with one of them keeps running it,
@@ -210,6 +211,10 @@ them. After upgrading:
   ```shell
   sparewall unset provider_options metrics updates.mode updates.window
   ```
+
+  For a provider, unset it to use the built-in default (`sparewall unset
+  dhcp.provider`, which means Kea). With networkd's DHCP server, nothing
+  served DHCP before; Kea starts with an empty lease database.
 
   Unsetting `metrics` returns `/metrics` to needing a token, which is
   what `local` did; to keep `external` or `off`, unset only

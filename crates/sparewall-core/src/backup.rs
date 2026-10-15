@@ -108,8 +108,9 @@ pub struct Manifest {
 
 /// Where the bundle sources live on a node.
 pub struct Sources {
-    /// Kea's lease file.
-    pub leases: PathBuf,
+    /// The DHCP provider's lease file, if it keeps one the coordinator
+    /// can read (`providers::State::path`).
+    pub leases: Option<PathBuf>,
     pub out_dir: PathBuf,
     pub image_digest: Option<String>,
 }
@@ -139,7 +140,7 @@ impl<S: System> Coordinator<S> {
             ids.push(state.active);
         }
         ids.sort_unstable();
-        let leases = fs::read(&src.leases).ok();
+        let leases = src.leases.as_ref().and_then(|p| fs::read(p).ok());
         let password = self.secret_get(PASSWORD_SECRET)?;
         let secrets = match &password {
             Some(_) => self.cluster_secrets()?,

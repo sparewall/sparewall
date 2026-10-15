@@ -689,7 +689,7 @@ fn backup_and_restore_drill() {
     let leases = out.path().join("leases.csv");
     std::fs::write(&leases, "address,hwaddr\n192.0.2.100,52:54:00:00:00:01\n").unwrap();
     let src = sparewall_core::backup::Sources {
-        leases: leases.clone(),
+        leases: Some(leases.clone()),
         out_dir: out.path().join("backups"),
         image_digest: Some("ghcr.io/sparewall/sparewall@sha256:abc".into()),
     };

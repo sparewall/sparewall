@@ -18,7 +18,7 @@ use sparewall_core::host::{BackupRepository, Restic, SystemdTimers, TimerSpec, T
 use sparewall_core::{Check, Level};
 use tokio::sync::broadcast;
 
-use crate::service::{Core, KEA_LEASES, booted_image_digest, with_core, with_core_raw};
+use crate::service::{Core, booted_image_digest, with_core, with_core_raw};
 
 const TIMER: &str = "sparewall-backup";
 const DEFAULT_SCHEDULE: &str = "hourly";
@@ -40,13 +40,22 @@ fn credentials_env(text: &str) -> Result<Vec<(String, String)>, String> {
         .collect()
 }
 
+/// The lease file of the DHCP provider a document chooses, if it keeps
+/// one the coordinator reads.
+fn lease_file(doc: Option<&sparewall_config::Document>) -> Option<std::path::PathBuf> {
+    use sparewall_config::providers::{Role, chosen, find};
+    let name = chosen(doc?, Role::Dhcp)?;
+    find(Role::Dhcp, name)?.state?.path.map(Into::into)
+}
+
 /// Write a bundle and send it to the repository, if one is configured.
 pub async fn run(
     core: &Core,
     events: &broadcast::Sender<Value>,
 ) -> Result<BackupReply, FirewallError> {
     let made = with_core(core, events, |c| {
-        let cfg = c.active_document()?.and_then(|d| d.backup);
+        let doc = c.active_document()?;
+        let cfg = doc.as_ref().and_then(|d| d.backup.clone());
         let upload = match cfg.as_ref().filter(|b| b.enabled) {
             Some(b) if b.repository.is_some() => {
                 let password = c.secret_get(PASSWORD_SECRET)?.ok_or_else(|| {
@@ -79,7 +88,7 @@ pub async fn run(
             _ => None,
         };
         let src = Sources {
-            leases: KEA_LEASES.into(),
+            leases: lease_file(doc.as_ref()),
             out_dir: c.store().root().join("backups"),
             image_digest: booted_image_digest(),
         };

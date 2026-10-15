@@ -5,6 +5,7 @@
 pub mod identity;
 pub mod model;
 pub mod path;
+pub mod providers;
 pub mod schema;
 pub mod topology;
 pub mod validate;
