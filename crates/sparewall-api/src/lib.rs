@@ -11,6 +11,11 @@ use zlink::introspect::{CustomType, ReplyError, Type};
 pub const INTERFACE: &str = "org.sparewall.Firewall";
 /// The root-only admin socket.
 pub const SOCKET: &str = "/run/sparewall/org.sparewall.Firewall";
+/// A second root-only socket serving the same interface, for keepalived's
+/// health check. The server answers one call at a time, so a call on the
+/// admin socket that waits on the peer would otherwise hold the check up
+/// past its timeout and hand the gateway addresses over.
+pub const HEALTH_SOCKET: &str = "/run/sparewall/org.sparewall.Health";
 
 /// One configuration generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
@@ -247,8 +252,11 @@ pub const PEER_SOCKET: &str = "/run/sparewall/org.sparewall.Peer";
 /// TCP port of the peer listener on the sync tunnel address.
 pub const PEER_PORT: u16 = 8649;
 /// Peer protocol version, negotiated in `Hello`. 2: pushed generations
-/// can be gated on the pusher's `Confirm`.
-pub const PEER_PROTOCOL: i64 = 2;
+/// can be gated on the pusher's `Confirm`. 3: a gated generation that
+/// changes the sync link stays in doubt after `Confirm` until the pusher's
+/// decision shows in its `Hello` (so it can be pushed before it runs on
+/// the pusher).
+pub const PEER_PROTOCOL: i64 = 3;
 
 /// A generation as it travels between nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
@@ -260,6 +268,15 @@ pub struct PeerGeneration {
     pub author: String,
     pub created: String,
     pub summary: Vec<String>,
+}
+
+/// How a node decided a sync-link change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct LinkDecisionReply {
+    pub id: i64,
+    pub hash: String,
+    /// Kept on both nodes, or reverted on both.
+    pub kept: bool,
 }
 
 /// One step of a node's lineage.
@@ -286,6 +303,10 @@ pub struct HelloReply {
     pub health: Option<String>,
     /// The callee's VRRP role, if known.
     pub role: Option<String>,
+    /// How the callee decided its last sync-link change (protocol 3),
+    /// until it sees the caller follow it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_decision: Option<LinkDecisionReply>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

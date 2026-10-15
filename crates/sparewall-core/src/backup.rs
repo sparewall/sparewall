@@ -320,6 +320,7 @@ pub fn restore(
         active: m.active,
         confirmed: m.active,
         pending: None,
+        link_decision: None,
     };
     let mut data = serde_json::to_vec_pretty(&st).expect("json");
     data.push(b'\n');

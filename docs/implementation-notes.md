@@ -45,6 +45,12 @@ Where the implementation departs from, or settles open questions in,
   check and notify scripts live in `/usr/libexec/keepalived` (where they run
   unconfined), and transitions reach the coordinator through a FIFO the
   notify script writes, since keepalived itself may not use notify_fifo.
+- **keepalived's health check has a socket of its own**,
+  `/run/sparewall/org.sparewall.Health`, served by a second instance of
+  the same service. zlink answers one call at a time per server, and some
+  admin calls wait on the peer (a sync-link change waits up to 15 s for
+  the push reply); behind one of those, the check would time out (5 s,
+  three in a row) and keepalived would hand the gateway addresses over.
 - **Commands the coordinator's sandbox forbids** (podman config checks,
   the keepalived netns check, bootc) run as the oneshot unit
   `sparewall-run@<id>.service`; `systemd-run` from inside the sandbox fails.
@@ -174,6 +180,53 @@ Where the implementation departs from, or settles open questions in,
   moving the gateway addresses, as a cut sync link affects both nodes
   equally. A shared trunk carrying service networks still fails health.
 
+- **Sync-link changes go to the peer first, in two phases** (#25).
+  - **Staging:** in a pair with the peer reachable, `apply` (and a
+    rollback) only stores a change whose cluster sync settings, sync
+    network or per-node sync port differ (`ApplyResult::staged`). It
+    refuses one made while a change is pending, or one that changes
+    anything else.
+  - **Push and run:** the daemon pushes it gated through the current
+    tunnel (peer protocol 3), then `activate_staged` runs it pending
+    with `peer_gate`, plus `needs_admin` if a confirm window was asked
+    for.
+  - **Reply first:** running the change switches the tunnel the push's
+    reply goes through (the pair VM test hung there). So the receiver
+    validates a gated sync-link push, replies, and then runs it. A
+    failure after the reply is never confirmed, so the pusher reverts.
+    That keeps the pusher's wait short on the normal path.
+  - **Lost push replies:** a push that was sent but got no reply within
+    15 s runs anyway. If the peer took it, it confirms over the new
+    link; if not, nothing confirms it and this node reverts at its
+    deadline. Only a refusal, or a failure before sending, sets the
+    change aside.
+  - **Prepare:** the receiver marks a gated push that changes its sync
+    link `link_change`. Its `confirm_received` only sets `prepared`:
+    from then on the change is in doubt. The pusher's `peer_confirmed`
+    and the admin's `confirm` together keep it there.
+  - **Record:** every way a `decides_link` change ends (kept by
+    `finish_confirm`; reverted at the deadline, at boot or by a
+    rollback) writes `State::link_decision` in the same state write.
+    Hello shows the record until the peer is seen with nothing pending
+    (`peer_followed`). While a sync-link change is pending, apply,
+    merge and patch are refused on both nodes. On the decider, confirm
+    and rollback stay available (they are how the admin keeps or drops
+    the change). On the receiver they are refused too, and `sync --from`
+    is the explicit way out.
+  - **Durability:** a kept decision whose write fails after the rename
+    is written back as pending. If that fails too, `decision_unsure`
+    makes Hello report pending with no decision until `tick` manages
+    to sync the state directory. Boot syncs it first and sets
+    `decision_unsure` if that fails, so a restart does not publish an
+    unsynced decision.
+  - **Follow:** the in-doubt receiver's sync loop calls
+    `resolve_in_doubt` from the record. Without one, it only keeps the
+    change if the pusher's lineage has it, and never infers a revert
+    from history that may be pruned. Neither `tick` nor `boot` reverts a
+    prepared change. Without contact for 30 s, `alternate_in_doubt`
+    runs the other link, and the tunnel follows `live_document`.
+  - **Not taken:** a staged change the peer does not take, or one
+    overtaken by another local change, is set aside as `unsent`.
 - **Pushed generations are gated by the pusher's confirmation** (peer
   protocol 2: `Push` with `gated`, then `Confirm` on a new connection).
   The receiver records what already fails before it runs the generation,

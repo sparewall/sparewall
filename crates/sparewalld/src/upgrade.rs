@@ -473,6 +473,7 @@ mod tests {
             image: (!image.is_empty()).then(|| image.into()),
             health: Some(health.into()),
             role: Some(role.into()),
+            link_decision: None,
         }
     }
 

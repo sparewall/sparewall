@@ -49,6 +49,7 @@ fn opts(base: u64, confirm: Option<u32>) -> ApplyOptions {
         author: "test".into(),
         dry_run: false,
         note: None,
+        stage_sync_link: false,
     }
 }
 
@@ -2060,6 +2061,481 @@ fn retried_push_syncs_the_generation_first() {
     }
 }
 
+/// The pair example, paired: both nodes' sync keys are set.
+fn paired_example() -> Value {
+    let mut v = pair_example();
+    v["cluster"]["sync_keys"] = json!({
+        "fw1": "xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=",
+        "fw2": "M6astOdmoOXA9wbbSh6itjkcHKGdkoDSy01sGZ68FVw=",
+    });
+    v
+}
+
+/// Two nodes in sync at generation 1 of the paired example.
+fn synced_pair() -> (T, T) {
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(paired_example(), &opts(0, None)).unwrap();
+    let g1 = a.c.generation(1).unwrap();
+    b.c.receive(&g1, a.c.document_value(1).unwrap(), PeerGate::Immediate)
+        .unwrap();
+    (a, b)
+}
+
+/// The pair example with the sync tunnel on other addresses.
+fn moved_sync_link() -> Value {
+    let mut v = paired_example();
+    v["networks"]["sync"]["addresses"] = json!({"fw1": "10.255.1.1/30", "fw2": "10.255.1.2/30"});
+    v
+}
+
+fn staging(base: u64, confirm: Option<u32>) -> ApplyOptions {
+    ApplyOptions {
+        stage_sync_link: true,
+        ..opts(base, confirm)
+    }
+}
+
+/// #25: a change to the sync link is stored, not run; other changes,
+/// and any change without a pair, run as before.
+#[test]
+fn sync_link_changes_are_staged() {
+    let (mut a, _b) = synced_pair();
+    let before = running(&mut a);
+    let r = a.c.apply(moved_sync_link(), &staging(1, Some(60))).unwrap();
+    assert!(r.staged);
+    assert_eq!(r.generation.id, 2);
+    assert_eq!(a.c.state().unwrap().active, 1);
+    assert!(a.c.store().exists(2));
+    assert_eq!(running(&mut a), before);
+    a.c.discard_staged(2).unwrap();
+    assert!(!a.c.store().exists(2));
+    assert_eq!(set_aside_names(&a, "unsent").len(), 1);
+
+    // Other changes, and sync-link changes without the flag, just run.
+    for (v, o) in [
+        (
+            {
+                let mut v = paired_example();
+                v["networks"]["users"]["mtu"] = json!(1400);
+                v
+            },
+            staging(1, None),
+        ),
+        (moved_sync_link(), opts(2, None)),
+    ] {
+        let r = a.c.apply(v, &o).unwrap();
+        assert!(!r.staged);
+        assert_eq!(a.c.active().unwrap(), r.generation.id);
+    }
+
+    // Standalone: nothing to stage.
+    let mut t = setup();
+    t.c.apply(example(), &opts(0, None)).unwrap();
+    let mut v = example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    assert!(!t.c.apply(v, &staging(1, None)).unwrap().staged);
+}
+
+/// What the daemon's sync loop does on an in-doubt node `b` once it
+/// reaches `a`: if `a` has decided (nothing pending), do as it did.
+fn follow(b: &mut T, a: &mut T) {
+    let Some((id, hash, _)) = b.c.in_doubt().unwrap() else {
+        return;
+    };
+    let decided =
+        a.c.published_link_decision()
+            .unwrap()
+            .filter(|d| d.id == id && d.hash == hash)
+            .map(|d| d.kept)
+            .or_else(|| {
+                (!a.c.publishes_pending().unwrap() && a.c.lineage().unwrap().contains(&(id, hash)))
+                    .then_some(true)
+            });
+    if let Some(kept) = decided {
+        b.c.resolve_in_doubt(kept).unwrap();
+    }
+    if !b.c.publishes_pending().unwrap() {
+        a.c.peer_followed().unwrap();
+    }
+}
+
+/// `a` stages the sync-link move, `b` runs it pending (pushed through the
+/// old link), then `a` runs it with `window`.
+fn moving_link(window: u32) -> (T, T) {
+    let (mut a, mut b) = synced_pair();
+    let r =
+        a.c.apply(moved_sync_link(), &staging(1, Some(window)))
+            .unwrap();
+    assert!(r.staged);
+    b.c.receive(
+        &r.generation,
+        a.c.document_value(2).unwrap(),
+        PeerGate::PeerConfirms,
+    )
+    .unwrap();
+    a.c.activate_staged(2, window).unwrap();
+    (a, b)
+}
+
+fn at(t: &T) -> (u64, u64, bool) {
+    let st = t.c.state().unwrap();
+    (st.active, st.confirmed, st.pending.is_some())
+}
+
+/// #25: the peer confirms the change over the new link but stays in
+/// doubt; this node decides once the peer has and (with a window) the
+/// admin has, in either order, and the peer follows.
+#[test]
+fn sync_link_change_kept_once_both_agree() {
+    for admin in [None, Some("first"), Some("last")] {
+        let window = if admin.is_some() { 60 } else { 0 };
+        let (mut a, mut b) = moving_link(window);
+        let p = a.c.state().unwrap().pending.unwrap();
+        assert!(p.peer_gate && p.needs_admin == admin.is_some(), "{admin:?}");
+        let msg =
+            a.c.health()
+                .unwrap()
+                .check("confirm")
+                .unwrap()
+                .message
+                .clone();
+        assert!(msg.contains("over the new sync link"), "{msg}");
+
+        if admin == Some("first") {
+            a.c.confirm(2).unwrap();
+            assert_eq!(at(&a), (2, 1, true), "{admin:?}");
+        }
+        // The peer's confirmation prepares it; it does not decide.
+        b.c.confirm_received(2).unwrap();
+        b.c.confirm_received(2).unwrap();
+        assert_eq!(at(&b), (2, 1, true), "{admin:?}");
+        assert!(b.c.in_doubt().unwrap().is_some());
+        follow(&mut b, &mut a);
+        assert_eq!(at(&b), (2, 1, true), "{admin:?}: a has not decided");
+
+        a.c.peer_confirmed(2).unwrap();
+        if admin == Some("last") {
+            assert_eq!(at(&a), (2, 1, true));
+            follow(&mut b, &mut a);
+            assert_eq!(at(&b), (2, 1, true), "the admin can still veto");
+            a.c.confirm(2).unwrap();
+        }
+        assert_eq!(at(&a), (2, 2, false), "{admin:?}");
+        follow(&mut b, &mut a);
+        assert_eq!(at(&b), (2, 2, false), "{admin:?}");
+        assert!(b.c.in_doubt().unwrap().is_none());
+        a.c.peer_confirmed(2).unwrap();
+    }
+}
+
+/// Review of #34: the peer confirmed first but the admin never does.
+/// This node reverts at its deadline; the peer, in doubt, never reverts
+/// on its own deadline but follows: both end on the old link.
+#[test]
+fn admin_veto_reverts_both_nodes() {
+    let (mut a, mut b) = moving_link(60);
+    b.c.confirm_received(2).unwrap();
+    a.c.peer_confirmed(2).unwrap();
+    let a_deadline = a.c.state().unwrap().pending.unwrap().deadline;
+    let b_deadline = b.c.state().unwrap().pending.unwrap().deadline;
+    assert_eq!(b.c.tick(b_deadline.max(a_deadline) + 600).unwrap(), None);
+    assert_eq!(a.c.tick(a_deadline).unwrap(), Some(1));
+    follow(&mut b, &mut a);
+    assert_eq!((at(&a), at(&b)), ((1, 1, false), (1, 1, false)));
+}
+
+/// Review of #34: the peer prepared but its reply was lost, or this node
+/// restarted before deciding: this node reverts (at its deadline, or at
+/// boot) and the in-doubt peer follows instead of keeping the change.
+#[test]
+fn lost_reply_or_restart_reverts_both_nodes() {
+    for restart in [false, true] {
+        let (mut a, mut b) = moving_link(0);
+        b.c.confirm_received(2).unwrap();
+        // a never learns: no peer_confirmed.
+        if restart {
+            let id = a.c.identity().clone();
+            let root = a.c.store().root().to_path_buf();
+            a.c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+            assert_eq!(a.c.boot(false).unwrap(), 1);
+        } else {
+            let d = a.c.state().unwrap().pending.unwrap().deadline;
+            assert_eq!(a.c.tick(d).unwrap(), Some(1));
+        }
+        follow(&mut b, &mut a);
+        assert_eq!(
+            (at(&a), at(&b)),
+            ((1, 1, false), (1, 1, false)),
+            "{restart}"
+        );
+    }
+}
+
+/// Review of #34: an in-doubt node keeps its doubt across a restart,
+/// looks for the peer on the other link (only the sync link differs, and
+/// health is degraded, not failed), and still follows the decision.
+#[test]
+fn in_doubt_survives_restart_and_switches_links() {
+    let (mut a, mut b) = moving_link(0);
+    b.c.confirm_received(2).unwrap();
+    let id = b.c.identity().clone();
+    let root = b.c.store().root().to_path_buf();
+    b.c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+    assert_eq!(b.c.boot(false).unwrap(), 2);
+    assert!(
+        b.c.in_doubt()
+            .unwrap()
+            .is_some_and(|(id, _, old)| id == 2 && !old)
+    );
+    let new_link = b.c.live_document().unwrap().unwrap();
+
+    b.c.alternate_in_doubt().unwrap();
+    assert!(b.c.in_doubt().unwrap().is_some_and(|(_, _, old)| old));
+    assert_eq!(
+        sparewall_config::to_value(&b.c.live_document().unwrap().unwrap()),
+        a.c.document_value(1).unwrap()
+    );
+    let h = b.c.health().unwrap().check("applied").unwrap().clone();
+    assert_eq!(h.level, Level::Degraded, "{}", h.message);
+    assert!(h.message.contains("old link"), "{}", h.message);
+    b.c.alternate_in_doubt().unwrap();
+    assert_eq!(b.c.live_document().unwrap().unwrap(), new_link);
+    b.c.alternate_in_doubt().unwrap();
+
+    // a keeps it; b, on the old link, switches back and keeps it too.
+    let sync_address = |t: &mut T| {
+        let net = format!("{:?}", t.c.system().network);
+        (net.contains("10.255.0.2/30"), net.contains("10.255.1.2/30"))
+    };
+    assert_eq!(sync_address(&mut b), (true, false), "on the old link");
+    a.c.peer_confirmed(2).unwrap();
+    follow(&mut b, &mut a);
+    assert_eq!(sync_address(&mut b), (false, true), "back on the new link");
+    assert_eq!(
+        b.c.applied().unwrap(),
+        Some(a.c.generation(2).unwrap().hash)
+    );
+    assert_eq!((at(&a), at(&b)), ((2, 2, false), (2, 2, false)));
+    assert_eq!(
+        sparewall_config::to_value(&b.c.live_document().unwrap().unwrap()),
+        a.c.document_value(2).unwrap()
+    );
+}
+
+/// Review of #34: a change only to a node's port carrying the sync
+/// network (its NIC, a bond member) is a sync-link change; a pending
+/// change blocks one; and one must change nothing else.
+#[test]
+fn sync_link_detection_and_limits() {
+    let (mut a, _b) = synced_pair();
+    for (what, edit) in [
+        (
+            "nic",
+            Box::new(|v: &mut Value| {
+                v["ports"]["fw1"]["uplink"]["nic"] = json!("52:54:00:aa:00:99");
+            }) as Box<dyn Fn(&mut Value)>,
+        ),
+        (
+            "bond member",
+            Box::new(|v: &mut Value| {
+                v["ports"]["fw2"]["uplink"]["bond"]["members"][1] = json!("9c:6b:00:00:00:09");
+            }),
+        ),
+    ] {
+        let mut v = paired_example();
+        edit(&mut v);
+        let r = a.c.apply(v, &staging(1, None)).unwrap();
+        assert!(r.staged, "{what}");
+        a.c.discard_staged(r.generation.id).unwrap();
+    }
+
+    let mut mixed = moved_sync_link();
+    mixed["networks"]["users"]["mtu"] = json!(1400);
+    let e = a.c.apply(mixed, &staging(1, None)).unwrap_err();
+    assert!(e.to_string().contains("must change nothing else"), "{e}");
+
+    let mut v = paired_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    let r = a.c.apply(v, &staging(1, Some(60))).unwrap();
+    let e =
+        a.c.apply(moved_sync_link(), &staging(r.generation.id, None))
+            .unwrap_err();
+    assert!(e.to_string().contains("is pending"), "{e}");
+    let st = a.c.state().unwrap();
+    assert_eq!(
+        (st.active, st.pending.map(|p| p.id)),
+        (r.generation.id, Some(r.generation.id))
+    );
+}
+
+/// #25: if the new link never works, the peer reverts at its deadline
+/// and this node at its later one: both are back on the old link.
+#[test]
+fn sync_link_change_reverts_on_both_without_the_peer() {
+    let (mut a, mut b) = synced_pair();
+    a.c.apply(moved_sync_link(), &staging(1, None)).unwrap();
+    let g2 = a.c.generation(2).unwrap();
+    b.c.receive(&g2, a.c.document_value(2).unwrap(), PeerGate::PeerConfirms)
+        .unwrap();
+    a.c.activate_staged(2, 0).unwrap();
+    let peer_deadline = b.c.state().unwrap().pending.unwrap().deadline;
+    let our_deadline = a.c.state().unwrap().pending.unwrap().deadline;
+    assert_eq!(b.c.tick(peer_deadline).unwrap(), Some(1));
+    assert_eq!(a.c.tick(peer_deadline).unwrap(), None);
+    assert_eq!(a.c.tick(our_deadline).unwrap(), Some(1));
+    for t in [&a, &b] {
+        let st = t.c.state().unwrap();
+        assert_eq!((st.active, st.confirmed, st.pending), (1, 1, None));
+    }
+    assert_eq!(
+        a.c.document_value(1).unwrap()["networks"]["sync"],
+        paired_example()["networks"]["sync"]
+    );
+}
+
+/// #25: a change made here between staging and running the sync-link
+/// change wins; the staged one is set aside. A rollback across a
+/// sync-link change is staged like any other.
+#[test]
+fn staged_sync_link_change_yields_and_rollback_stages() {
+    let (mut a, _b) = synced_pair();
+    a.c.apply(moved_sync_link(), &staging(1, None)).unwrap();
+    let mut v = paired_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    let r = a.c.apply(v, &opts(1, None)).unwrap();
+    assert_eq!(r.generation.id, 3);
+    assert!(matches!(
+        a.c.activate_staged(2, 0),
+        Err(Error::Conflict { current: 3 })
+    ));
+    assert!(!a.c.store().exists(2));
+    assert_eq!(a.c.active().unwrap(), 3);
+
+    // Now move the link properly, then roll it back.
+    let (mut a2, mut b2) = synced_pair();
+    a2.c.apply(moved_sync_link(), &staging(1, None)).unwrap();
+    let g2 = a2.c.generation(2).unwrap();
+    b2.c.receive(&g2, a2.c.document_value(2).unwrap(), PeerGate::PeerConfirms)
+        .unwrap();
+    a2.c.activate_staged(2, 0).unwrap();
+    b2.c.confirm_received(2).unwrap();
+    a2.c.peer_confirmed(2).unwrap();
+    let (g, staged) = a2.c.rollback_staging(None, "admin", true).unwrap();
+    assert!(staged);
+    assert_eq!((g.id, a2.c.active().unwrap()), (3, 2));
+}
+
+/// Review of #34: keeping a sync-link change is final for both nodes once
+/// the peer sees it, so it shows only once it is on disk. If recording
+/// it fails after the rename, the pending record is written back; if
+/// that fails too, the peer is told it is still pending until the state
+/// directory syncs.
+#[test]
+fn a_kept_decision_shows_only_once_durable() {
+    // (failed syncs of the state directory, write-back fails before its
+    // rename, still pending after, unsure after)
+    let cases: [(&'static [usize], bool, bool, bool); 3] = [
+        (&[1], false, true, false),
+        (&[1, 2], false, true, true),
+        (&[1], true, false, true),
+    ];
+    for ((calls, block, pending_after, unsure), path) in
+        cases.into_iter().flat_map(|c| [(c, "peer"), (c, "admin")])
+    {
+        let case = format!("{path} {calls:?} {block}");
+        let (mut a, mut b) = moving_link(if path == "admin" { 60 } else { 0 });
+        b.c.confirm_received(2).unwrap();
+        if path == "admin" {
+            a.c.peer_confirmed(2).unwrap();
+        }
+        let decide = |a: &mut T| {
+            if path == "admin" {
+                a.c.confirm(2)
+            } else {
+                a.c.peer_confirmed(2)
+            }
+        };
+        let root = a.c.store().root().to_path_buf();
+        let tmp = root.join(".state.json.tmp");
+        fail_syncs(&a, root.clone(), calls, move || {
+            if block {
+                std::fs::create_dir(&tmp).unwrap();
+            }
+        });
+        assert!(decide(&mut a).is_err(), "{case}");
+        a.c.store().inject_sync_faults(|_| false);
+        let _ = std::fs::remove_dir(root.join(".state.json.tmp"));
+        assert_eq!(
+            a.c.state().unwrap().pending.is_some(),
+            pending_after,
+            "{case}"
+        );
+        // Whatever is readable, the peer is not released.
+        assert!(a.c.publishes_pending().unwrap(), "{case}");
+        assert_eq!(a.c.published_link_decision().unwrap(), None, "{case}");
+        follow(&mut b, &mut a);
+        assert!(b.c.in_doubt().unwrap().is_some(), "{case}");
+        // The next tick syncs the directory; the sync loop retries.
+        let now = a.c.state().unwrap().pending.map_or(0, |p| p.deadline - 1);
+        a.c.tick(now).unwrap();
+        assert_eq!(
+            a.c.publishes_pending().unwrap(),
+            pending_after,
+            "{case}: {unsure}"
+        );
+        decide(&mut a).unwrap();
+        follow(&mut b, &mut a);
+        assert_eq!((at(&a), at(&b)), ((2, 2, false), (2, 2, false)), "{case}");
+    }
+}
+
+/// Review of #34: the peer follows the recorded decision, not the
+/// lineage, which pruning shortens: after many later changes it still
+/// keeps the change, and the record goes only once it has.
+#[test]
+fn a_late_peer_follows_the_record_past_pruning() {
+    let (mut a, mut b) = moving_link(0);
+    b.c.confirm_received(2).unwrap();
+    a.c.peer_confirmed(2).unwrap();
+    let mut v = moved_sync_link();
+    for i in 0..55 {
+        v["dhcp"]["lease_time"] = json!(3600 + i);
+        let base = a.c.active().unwrap();
+        a.c.apply(v.clone(), &opts(base, None)).unwrap();
+    }
+    assert!(!a.c.store().exists(2), "generation 2 was pruned");
+    assert!(!a.c.lineage().unwrap().iter().any(|(id, _)| *id == 2));
+    assert!(
+        a.c.published_link_decision()
+            .unwrap()
+            .is_some_and(|d| d.id == 2 && d.kept)
+    );
+    follow(&mut b, &mut a);
+    assert_eq!(at(&b), (2, 2, false));
+    assert!(
+        format!("{:?}", b.c.system().network).contains("10.255.1.2/30"),
+        "b stays on the new link"
+    );
+    assert_eq!(a.c.published_link_decision().unwrap(), None, "followed");
+}
+
+/// Review of #34: a node restarting in doubt installs its remote-access
+/// keys like any boot.
+#[test]
+fn in_doubt_boot_installs_vpn_keys() {
+    let (mut a, mut b) = moving_link(0);
+    let shared = a.c.cluster_secrets().unwrap();
+    b.c.receive_secrets(shared).unwrap();
+    b.c.confirm_received(2).unwrap();
+    let id = b.c.identity().clone();
+    let root = b.c.store().root().to_path_buf();
+    b.c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+    assert_eq!(b.c.boot(false).unwrap(), 2);
+    assert!(b.c.in_doubt().unwrap().is_some());
+    assert!(!b.c.system().runtime_keys.is_empty());
+}
+
 /// Everything activation changes on the fake: firewall, sysctls, links,
 /// provider files and running services.
 fn live(t: &mut T) -> String {
@@ -2241,4 +2717,82 @@ fn restart_after_a_mixture_activates_the_record_in_full() {
         assert!(log.contains(step), "{step} missing from {log}");
     }
     assert_eq!(c.system().network, at_2);
+}
+
+/// Review of #34: on the receiving node the peer's sync-link change is
+/// the peer's to decide: ordinary changes, a confirmation and a rollback
+/// are refused there, before and after it prepared the change.
+#[test]
+fn receiver_refuses_changes_during_a_link_change() {
+    for prepared in [false, true] {
+        let (mut a, mut b) = moving_link(60);
+        if prepared {
+            b.c.confirm_received(2).unwrap();
+            a.c.peer_confirmed(2).unwrap();
+        }
+        let mut v = moved_sync_link();
+        v["networks"]["users"]["mtu"] = json!(1400);
+        let e = b.c.apply(v, &staging(2, None)).unwrap_err();
+        assert!(
+            e.to_string().contains("the peer decides"),
+            "{prepared}: {e}"
+        );
+        assert!(b.c.confirm(2).is_err(), "{prepared}");
+        assert!(b.c.rollback(None, "admin").is_err(), "{prepared}");
+        assert_eq!(at(&b), (2, 1, true), "{prepared}");
+        assert_eq!(b.c.in_doubt().unwrap().is_some(), prepared);
+        // The admin never confirms on a: both end on the old link.
+        let d = a.c.state().unwrap().pending.unwrap().deadline;
+        a.c.tick(d).unwrap();
+        if prepared {
+            follow(&mut b, &mut a);
+        } else {
+            let d = b.c.state().unwrap().pending.unwrap().deadline;
+            b.c.tick(d).unwrap();
+        }
+        assert_eq!(
+            (at(&a), at(&b)),
+            ((1, 1, false), (1, 1, false)),
+            "{prepared}"
+        );
+    }
+}
+
+/// Review of #34: a decider that restarts while its kept decision is not
+/// known to be on disk syncs the state record before publishing it, and
+/// withholds it while that fails.
+#[test]
+fn restarted_decider_withholds_an_unsynced_decision() {
+    let (mut a, mut b) = moving_link(0);
+    b.c.confirm_received(2).unwrap();
+    let root = a.c.store().root().to_path_buf();
+    let tmp = root.join(".state.json.tmp");
+    fail_syncs(&a, root.clone(), &[1], move || {
+        std::fs::create_dir(&tmp).unwrap();
+    });
+    assert!(a.c.peer_confirmed(2).is_err());
+    let _ = std::fs::remove_dir(root.join(".state.json.tmp"));
+    assert!(a.c.publishes_pending().unwrap());
+
+    // The process restarts; its state directory still cannot sync.
+    let id = a.c.identity().clone();
+    a.c = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+    let tries = fail_syncs(&a, root.clone(), &[1, 2, 3, 4, 5, 6, 7, 8], || {});
+    a.c.boot(false).unwrap();
+    assert!(tries.lock().unwrap().contains(&root), "boot tried to sync");
+    assert!(a.c.publishes_pending().unwrap());
+    assert_eq!(a.c.published_link_decision().unwrap(), None);
+    follow(&mut b, &mut a);
+    assert!(b.c.in_doubt().unwrap().is_some());
+
+    // The disk recovers: the decision shows, and the peer follows.
+    a.c.store().inject_sync_faults(|_| false);
+    a.c.tick(0).unwrap();
+    assert!(
+        a.c.published_link_decision()
+            .unwrap()
+            .is_some_and(|d| d.kept)
+    );
+    follow(&mut b, &mut a);
+    assert_eq!((at(&a), at(&b)), ((2, 2, false), (2, 2, false)));
 }

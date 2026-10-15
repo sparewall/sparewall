@@ -147,6 +147,18 @@ fn install_ssh_keys(home: &Path, id: &Identity) {
     }
 }
 
+/// Bind a root-only Unix socket, replacing a stale one.
+fn root_only(socket: &Path) -> Result<std::os::unix::net::UnixListener, String> {
+    let _ = std::fs::remove_file(socket);
+    std::os::unix::net::UnixListener::bind(socket)
+        .and_then(|l| {
+            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+            l.set_nonblocking(true)?;
+            Ok(l)
+        })
+        .map_err(|e| format!("{}: {e}", socket.display()))
+}
+
 fn listener(socket: &Path) -> std::io::Result<zlink::tokio::unix::Listener> {
     let mut fds = listenfd::ListenFd::from_env();
     let std_listener = match fds.take_unix_listener(0)? {
@@ -262,19 +274,22 @@ fn run(args: Args) -> Result<(), String> {
             l,
             Firewall::new(core.clone(), tx.clone(), pair.clone(), wake.clone()),
         );
+        // keepalived's health check, on a server of its own (see
+        // HEALTH_SOCKET).
+        let health_socket = args.socket.with_file_name("org.sparewall.Health");
+        let health_server = zlink::Server::new(
+            zlink::tokio::unix::Listener::from(
+                tokio::net::UnixListener::from_std(root_only(&health_socket)?)
+                    .map_err(|e| e.to_string())?,
+            ),
+            Firewall::new(core.clone(), tx.clone(), pair.clone(), wake.clone()),
+        );
         // The peer service, reached only through the sync-tunnel listener.
         let peer_socket = args.socket.with_file_name("org.sparewall.Peer");
-        let _ = std::fs::remove_file(&peer_socket);
-        let peer_listener = std::os::unix::net::UnixListener::bind(&peer_socket)
-            .and_then(|l| {
-                std::fs::set_permissions(&peer_socket, std::fs::Permissions::from_mode(0o600))?;
-                l.set_nonblocking(true)?;
-                Ok(l)
-            })
-            .map_err(|e| format!("{}: {e}", peer_socket.display()))?;
         let peer_server = zlink::Server::new(
             zlink::tokio::unix::Listener::from(
-                tokio::net::UnixListener::from_std(peer_listener).map_err(|e| e.to_string())?,
+                tokio::net::UnixListener::from_std(root_only(&peer_socket)?)
+                    .map_err(|e| e.to_string())?,
             ),
             peer::PeerService::new(core.clone(), tx.clone(), wake.clone(), pair.clone()),
         );
@@ -331,6 +346,7 @@ fn run(args: Args) -> Result<(), String> {
             () = dhcp_ha::takeover_loop(core.clone(), tx.clone(), pair.clone()) => Ok(()),
             () = https => Ok(()),
             r = peer_server.run() => r.map_err(|e| format!("peer server: {e}")),
+            r = health_server.run() => r.map_err(|e| format!("health server: {e}")),
             () = peer::listener(
                 core.clone(),
                 tx.clone(),

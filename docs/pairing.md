@@ -38,11 +38,12 @@ fails or restarts midway, is in
 [design.md](design.md#configuration-lifecycle).
 
 A change to the sync link itself (the `sync` network's addresses, VLAN or
-ports, `cluster.sync_port`, or a sync key) cuts the tunnel the push travels
-through, so it is not yet pushed for you
-([#25](https://github.com/sparewall/sparewall/issues/25)). Apply the same
-document on the other node with `--allow-diverge`, then check
-`sparewall status` and resolve any divergence with `sparewall sync --from`.
+port, `cluster.sync_port`, or a sync key) goes to the other node first,
+through the current tunnel. The node you made it on decides whether both
+keep it, once the other node has confirmed it over the new tunnel (and
+you have, if you asked for a confirm window). If the new tunnel never
+comes up, or you don't confirm, both return to the old tunnel within a
+few minutes. Make such a change on its own, with nothing else pending.
 
 ## Sync states
 

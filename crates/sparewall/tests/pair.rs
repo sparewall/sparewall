@@ -366,4 +366,57 @@ fn pair_pushes_refuses_and_catches_up() {
         s["sync"]["active"] == 10 && s["sync"]["state"] == "in-sync"
     });
     assert_eq!(fw1.ok(&["get", "networks.users.mtu"]).trim(), "900");
+
+    // A sync-link change waits on the peer inside an admin call. With fw2
+    // stopped (connected, but silent) that call holds fw1's admin socket,
+    // and keepalived's health check, on its own socket, still answers.
+    let pid = fw2.child.as_ref().unwrap().id().to_string();
+    let signal = |s: &str| {
+        assert!(
+            Command::new("kill")
+                .args([s, &pid])
+                .status()
+                .unwrap()
+                .success()
+        )
+    };
+    signal("-STOP");
+    let t0 = Instant::now();
+    let change = std::thread::scope(|scope| {
+        let change = scope.spawn(|| fw1.sw(&["set", "cluster.sync_port=51900", "--confirm", "0"]));
+        let health = fw1.dir.join("org.sparewall.Health");
+        while !change.is_finished() {
+            let t = Instant::now();
+            let o = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+                .arg("--socket")
+                .arg(&health)
+                .args(["health", "-o", "json"])
+                .output()
+                .unwrap();
+            // An answer, whatever the fake system's level.
+            let h: serde_json::Value = serde_json::from_slice(&o.stdout)
+                .unwrap_or_else(|_| panic!("no health: {}", String::from_utf8_lossy(&o.stderr)));
+            assert!(h["level"].is_string());
+            assert!(
+                t.elapsed() < Duration::from_secs(1),
+                "health took {:?} behind a peer wait",
+                t.elapsed()
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        change.join().unwrap()
+    });
+    signal("-CONT");
+    assert!(
+        t0.elapsed() >= Duration::from_secs(4),
+        "the change did not wait on the peer: {}",
+        String::from_utf8_lossy(&change.stderr)
+    );
+    assert!(!change.status.success(), "a silent peer cannot take it");
+    for n in [&fw1, &fw2] {
+        n.wait("in sync after the refused move", |s| {
+            s["sync"]["state"] == "in-sync"
+        });
+        assert_eq!(n.ok(&["get", "networks.users.mtu"]).trim(), "900");
+    }
 }

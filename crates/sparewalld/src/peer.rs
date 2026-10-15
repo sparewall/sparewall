@@ -13,8 +13,9 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 use sparewall_api::{
-    FetchReply, HelloReply, LineageEntry, PEER_PORT, PEER_PROTOCOL, PeerError, PeerGeneration,
-    PeerProxy, PeerSecret, PeerSecretsProxy, PushReply, PutSecretsReply, UpgradeReply,
+    FetchReply, HelloReply, LineageEntry, LinkDecisionReply, PEER_PORT, PEER_PROTOCOL, PeerError,
+    PeerGeneration, PeerProxy, PeerSecret, PeerSecretsProxy, PushReply, PutSecretsReply,
+    UpgradeReply,
 };
 use sparewall_core::pair::{NodeView, SyncState, push_plan, sync_state};
 use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
@@ -41,7 +42,14 @@ pub struct PairStatus {
     /// Cluster secret versions last delivered to the peer.
     #[serde(skip)]
     pub secrets_sent: Vec<(String, u64)>,
+    /// While a sync-link change is in doubt: when the peer was last
+    /// reached, or this node last switched links to look for it.
+    #[serde(skip)]
+    pub doubt_since: Option<std::time::Instant>,
 }
+
+/// How long an in-doubt node tries one sync link before the other.
+const IN_DOUBT_SWITCH: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub type Pair = Arc<Mutex<PairStatus>>;
 
@@ -125,7 +133,7 @@ impl PeerService {
     }
 }
 
-#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, PeerSecret])]
+#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, LinkDecisionReply, PeerSecret])]
 impl PeerService {
     async fn hello(&mut self, node: String, protocol: i64) -> Result<HelloReply, PeerError> {
         let role = self
@@ -144,7 +152,13 @@ impl PeerService {
                 }));
             }
             let v = c.view()?;
-            let pending = c.state()?.pending.is_some();
+            // A kept sync-link change shows only once it is on disk.
+            let pending = c.publishes_pending()?;
+            let link_decision = c.published_link_decision()?.map(|d| LinkDecisionReply {
+                id: d.id as i64,
+                hash: d.hash,
+                kept: d.kept,
+            });
             let health = c.health()?.level.as_str().to_string();
             Ok(Ok(HelloReply {
                 node: v.node,
@@ -165,6 +179,7 @@ impl PeerService {
                 image: crate::service::booted_image_digest(),
                 health: Some(health),
                 role,
+                link_decision,
             }))
         })
         .await
@@ -185,6 +200,38 @@ impl PeerService {
         } else {
             PeerGate::Immediate
         };
+        // A gated change to the sync link: running it switches the tunnel
+        // this reply goes through, so validate it now (a refusal is the
+        // reply) and run it once the reply is out. A failure after that
+        // is never confirmed, so the pusher reverts at its deadline.
+        if gate == PeerGate::PeerConfirms && !force.unwrap_or(false) && activate.unwrap_or(true) {
+            let (g2, cfg2) = (g.clone(), config.clone());
+            let link = with_core_raw(&self.core, &self.events, move |c| {
+                if !c.changes_sync_link(&cfg2)? {
+                    return Ok(None);
+                }
+                c.check(cfg2)?;
+                Ok(Some(c.active()?))
+            })
+            .await
+            .map_err(peer_error)?;
+            if let Some(active) = link {
+                let (core, events, sync) =
+                    (self.core.clone(), self.events.clone(), self.sync.clone());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if let Err(e) =
+                        with_core_raw(&core, &events, move |c| c.receive(&g2, config, gate)).await
+                    {
+                        tracing::warn!(error = %e, "the peer's sync-link change did not run here");
+                    }
+                    sync.notify_one();
+                });
+                return Ok(PushReply {
+                    active: active as i64,
+                });
+            }
+        }
         let active = with_core_raw(&self.core, &self.events, move |c| {
             if force.unwrap_or(false) {
                 c.adopt(&g, config, gate)?;
@@ -522,12 +569,14 @@ async fn sync_once(
     events: &broadcast::Sender<Value>,
     pair: &Pair,
 ) -> Result<(), String> {
-    let (doc, local, pending, node) = with_core_raw(core, events, |c| {
+    let (doc, local, pending, node, doubt) = with_core_raw(core, events, |c| {
         Ok((
-            c.active_document()?,
+            // The tunnel as it runs: an in-doubt node may be on the old link.
+            c.live_document()?,
             c.view()?,
-            c.state()?.pending.is_some(),
+            c.state()?.pending,
             c.node().to_string(),
+            c.in_doubt()?,
         ))
     })
     .await
@@ -541,6 +590,7 @@ async fn sync_once(
         let p = pair.lock().unwrap_or_else(|p| p.into_inner());
         PairStatus {
             secrets_sent: p.secrets_sent.clone(),
+            doubt_since: p.doubt_since.filter(|_| doubt.is_some()),
             ..Default::default()
         }
     };
@@ -564,8 +614,38 @@ async fn sync_once(
                 // Protocol 2 peers run what we push pending until we
                 // confirm it over the tunnel.
                 let gated = h.protocol >= 2;
+                // The peer's sync-link change, in doubt here: do as the
+                // peer decided. Its decision record says so; without one,
+                // only a lineage that still holds the change proves it was
+                // kept (history may be pruned: absence proves nothing).
+                if let Some((id, hash, _)) = &doubt {
+                    status.doubt_since = Some(std::time::Instant::now());
+                    let decided = h
+                        .link_decision
+                        .as_ref()
+                        .filter(|d| d.id == *id as i64 && d.hash == *hash)
+                        .map(|d| d.kept)
+                        .or_else(|| {
+                            (!h.pending
+                                && h.lineage
+                                    .iter()
+                                    .any(|e| e.id == *id as i64 && e.hash == *hash))
+                            .then_some(true)
+                        });
+                    if let Some(kept) = decided
+                        && let Err(e) =
+                            with_core_raw(core, events, move |c| c.resolve_in_doubt(kept)).await
+                    {
+                        tracing::error!(error = %e, "cannot follow the peer's decision");
+                    }
+                }
+                // Nothing pending there: it followed our last sync-link
+                // decision, if we made one.
+                if !h.pending {
+                    let _ = with_core_raw(core, events, |c| c.peer_followed()).await;
+                }
                 if state == SyncState::PeerBehind
-                    && !pending
+                    && pending.is_none()
                     && !h.pending
                     && let Err(e) = push_missing(core, events, link, &local, &pv, gated).await
                 {
@@ -574,18 +654,37 @@ async fn sync_once(
                 }
                 // The peer runs our generation, waiting for our confirmation
                 // (a first attempt failed, or this node restarted): confirm.
-                if gated
-                    && h.pending
-                    && pv.active == local.active
-                    && pv.desired == local.desired
-                    && let Err(e) = confirm_pushed(link, local.active).await
-                {
-                    tracing::info!(peer, error = %e, "the peer has not confirmed our generation yet");
+                if gated && h.pending && pv.active == local.active && pv.desired == local.desired {
+                    match confirm_pushed(link, local.active).await {
+                        Ok(()) => {
+                            let id = local.active;
+                            let _ =
+                                with_core_raw(core, events, move |c| c.peer_confirmed(id)).await;
+                        }
+                        Err(e) => {
+                            tracing::info!(peer, error = %e, "the peer has not confirmed our generation yet");
+                        }
+                    }
                 }
                 status.state = Some(state);
                 status.peer_view = Some(pv);
             }
             Err(e) => {
+                // In doubt and the peer is not on this link: after a while,
+                // look for it on the other one.
+                if doubt.is_some() {
+                    let since = *status
+                        .doubt_since
+                        .get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed() >= IN_DOUBT_SWITCH {
+                        if let Err(e) =
+                            with_core_raw(core, events, |c| c.alternate_in_doubt()).await
+                        {
+                            tracing::error!(error = %e, "cannot switch sync links");
+                        }
+                        status.doubt_since = Some(std::time::Instant::now());
+                    }
+                }
                 // Resend everything once it is back (it may be a new node).
                 status.secrets_sent.clear();
                 status.state = Some(SyncState::PeerUnreachable);
@@ -706,6 +805,70 @@ async fn push_missing(
         tracing::info!(id, error = %e, "the peer has not confirmed generation yet");
     }
     Ok(())
+}
+
+/// Push a staged change to the sync link ([`sparewall_core::ApplyResult`]
+/// `staged`) through the current link, before it runs here. The peer runs
+/// it pending; once this node runs it too, the sync loop confirms it over
+/// the new link. If the new link never works, both revert to the old one.
+/// How a push of a sync-link change ended.
+#[derive(Debug)]
+pub enum PushFirst {
+    /// The peer took it.
+    Taken,
+    /// Sent, but the reply never came: the peer switches to the new link
+    /// as it runs the change, which can cut the reply off. Whether it took
+    /// it is settled by its confirmation over the new link (or, without
+    /// one, by this node reverting at its deadline).
+    Unknown(String),
+}
+
+/// How long to wait for the peer's reply to the push: it validates and
+/// checks the change with the providers' own checkers first.
+/// The peer answers before running the change, so this is only for a
+/// reply lost anyway.
+const PUSH_FIRST_REPLY: Duration = Duration::from_secs(15);
+
+pub async fn push_first(
+    core: &Core,
+    events: &broadcast::Sender<Value>,
+    id: u64,
+) -> Result<PushFirst, String> {
+    let (doc, node, g, config) = with_core_raw(core, events, move |c| {
+        Ok((
+            c.active_document()?,
+            c.node().to_string(),
+            c.generation(id)?,
+            c.document_value(id)?,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let (own, peer, name) = doc
+        .as_ref()
+        .and_then(|d| tunnel_addrs(d, &node))
+        .ok_or("this node is not paired")?;
+    let link = Link { own, peer };
+    if hello(link, &node).await?.protocol < 3 {
+        return Err(format!(
+            "{name} cannot take a sync-link change first (an older release); upgrade it, \
+             or apply the change on both nodes with --allow-diverge"
+        ));
+    }
+    tracing::info!(id, peer = %name, "pushing a sync-link change to the peer first");
+    let mut conn = connect(link).await?;
+    let reply = tokio::time::timeout(
+        PUSH_FIRST_REPLY,
+        conn.push(&to_peer(&g), &config, None, None, Some(true)),
+    )
+    .await;
+    match reply {
+        Ok(Ok(Ok(_))) => Ok(PushFirst::Taken),
+        // The peer answered: it refused the change.
+        Ok(Ok(Err(e))) => Err(e.to_string()),
+        Ok(Err(e)) => Ok(PushFirst::Unknown(e.to_string())),
+        Err(_) => Ok(PushFirst::Unknown("no reply".into())),
+    }
 }
 
 /// `sync --from <node>`: take the peer's active generation.

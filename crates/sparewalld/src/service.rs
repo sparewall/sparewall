@@ -83,17 +83,19 @@ impl Firewall {
 
     /// The divergence policy: in a pair, a change needs the peer reachable
     /// (or `allow_diverge`), and a node behind its peer takes no changes.
+    /// Returns whether the peer is reachable, so a change to the sync link
+    /// can go to it first.
     fn gate(
         &self,
         allow_diverge: Option<bool>,
         dry_run: Option<bool>,
-    ) -> Result<(), FirewallError> {
+    ) -> Result<bool, FirewallError> {
         if dry_run.unwrap_or(false) {
-            return Ok(());
+            return Ok(false);
         }
         let (paired, reachable, state) = crate::peer::reachable(&self.pair);
         if !paired {
-            return Ok(());
+            return Ok(false);
         }
         if state == Some(SyncState::LocalBehind) {
             return Err(FirewallError::ApplyFailed {
@@ -110,7 +112,42 @@ impl Firewall {
                 .unwrap_or_default();
             return Err(FirewallError::PeerUnreachable { peer });
         }
-        Ok(())
+        Ok(reachable)
+    }
+
+    /// Finish a change. One to the sync link was only stored: push it to
+    /// the peer through the current link, then run it here.
+    async fn finish(
+        &self,
+        r: Result<ApplyResult, FirewallError>,
+        window: Option<i64>,
+    ) -> Result<ApplyReply, FirewallError> {
+        let r = r?;
+        if r.staged {
+            self.run_staged(r.generation.id, window).await?;
+        }
+        self.sync.notify_one();
+        with_core(&self.core, &self.events, move |c| Ok(apply_reply(c, r))).await
+    }
+
+    async fn run_staged(&self, id: u64, window: Option<i64>) -> Result<(), FirewallError> {
+        match crate::peer::push_first(&self.core, &self.events, id).await {
+            Ok(crate::peer::PushFirst::Taken) => {}
+            Ok(crate::peer::PushFirst::Unknown(e)) => {
+                tracing::warn!(id, error = %e, "no reply to the sync-link push; running it, the peer's confirmation decides");
+            }
+            Err(e) => {
+                let _ = with_core(&self.core, &self.events, move |c| c.discard_staged(id)).await;
+                return Err(FirewallError::ApplyFailed {
+                    message: format!(
+                        "the change alters the sync link, so the peer takes it first, \
+                         but it did not: {e}. Nothing changed"
+                    ),
+                });
+            }
+        }
+        let w = window.unwrap_or(0).clamp(0, 24 * 3600) as u32;
+        with_core(&self.core, &self.events, move |c| c.activate_staged(id, w)).await
     }
 }
 
@@ -151,18 +188,20 @@ pub async fn with_core<T: Send + 'static>(
 /// confirm-window ticker nor a confirmation can change the answer in
 /// between. Any other rollback is a change the peer receives, and must
 /// have passed the divergence `gate`.
+/// Returns the generation, and whether it changes the sync link and was
+/// only stored, to go to the peer first.
 pub fn gated_rollback(
     c: &mut Coordinator<Box<dyn System>>,
     target: Option<u64>,
     author: &str,
-    gate: Result<(), FirewallError>,
-) -> Result<Result<Generation, FirewallError>, Error> {
-    if !c.rollback_is_local(target)?
-        && let Err(e) = gate
-    {
-        return Ok(Err(e));
-    }
-    c.rollback(target, author).map(Ok)
+    gate: Result<bool, FirewallError>,
+) -> Result<Result<(Generation, bool), FirewallError>, Error> {
+    let reachable = match gate {
+        Ok(r) => r,
+        Err(e) if !c.rollback_is_local(target)? => return Ok(Err(e)),
+        Err(_) => false,
+    };
+    c.rollback_staging(target, author, reachable).map(Ok)
 }
 
 pub fn to_api_error(e: Error) -> FirewallError {
@@ -218,8 +257,15 @@ fn apply_reply(c: &Coordinator<Box<dyn System>>, r: ApplyResult) -> ApplyReply {
     }
 }
 
-fn opts(base: i64, confirm: Option<i64>, dry_run: Option<bool>, author: String) -> ApplyOptions {
+fn opts(
+    base: i64,
+    confirm: Option<i64>,
+    dry_run: Option<bool>,
+    author: String,
+    peer_reachable: bool,
+) -> ApplyOptions {
     ApplyOptions {
+        stage_sync_link: peer_reachable,
         base: base.max(0) as u64,
         confirm_seconds: confirm.map(|s| s.clamp(0, 24 * 3600) as u32),
         author,
@@ -253,15 +299,16 @@ where
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<ApplyReply, FirewallError> {
-        self.gate(allow_diverge, dry_run)?;
-        let o = opts(base, confirm_seconds, dry_run, author::of(conn).await);
-        let r = with_core(&self.core, &self.events, move |c| {
-            let r = c.apply(config, &o)?;
-            Ok(apply_reply(c, r))
-        })
-        .await;
-        self.sync.notify_one();
-        r
+        let reachable = self.gate(allow_diverge, dry_run)?;
+        let o = opts(
+            base,
+            confirm_seconds,
+            dry_run,
+            author::of(conn).await,
+            reachable,
+        );
+        let r = with_core(&self.core, &self.events, move |c| c.apply(config, &o)).await;
+        self.finish(r, confirm_seconds).await
     }
 
     async fn merge(
@@ -273,15 +320,16 @@ where
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<ApplyReply, FirewallError> {
-        self.gate(allow_diverge, dry_run)?;
-        let o = opts(base, confirm_seconds, dry_run, author::of(conn).await);
-        let r = with_core(&self.core, &self.events, move |c| {
-            let r = c.merge(&patch, &o)?;
-            Ok(apply_reply(c, r))
-        })
-        .await;
-        self.sync.notify_one();
-        r
+        let reachable = self.gate(allow_diverge, dry_run)?;
+        let o = opts(
+            base,
+            confirm_seconds,
+            dry_run,
+            author::of(conn).await,
+            reachable,
+        );
+        let r = with_core(&self.core, &self.events, move |c| c.merge(&patch, &o)).await;
+        self.finish(r, confirm_seconds).await
     }
 
     async fn patch(
@@ -293,15 +341,16 @@ where
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<ApplyReply, FirewallError> {
-        self.gate(allow_diverge, dry_run)?;
-        let o = opts(base, confirm_seconds, dry_run, author::of(conn).await);
-        let r = with_core(&self.core, &self.events, move |c| {
-            let r = c.patch(&ops, &o)?;
-            Ok(apply_reply(c, r))
-        })
-        .await;
-        self.sync.notify_one();
-        r
+        let reachable = self.gate(allow_diverge, dry_run)?;
+        let o = opts(
+            base,
+            confirm_seconds,
+            dry_run,
+            author::of(conn).await,
+            reachable,
+        );
+        let r = with_core(&self.core, &self.events, move |c| c.patch(&ops, &o)).await;
+        self.finish(r, confirm_seconds).await
     }
 
     async fn confirm(&mut self, id: i64) -> Result<Empty, FirewallError> {
@@ -324,11 +373,14 @@ where
         // Evaluated now, applied below only if the rollback reaches the peer.
         let gate = self.gate(allow_diverge, None);
         let author = author::of(conn).await;
-        let g = with_core_raw(&self.core, &self.events, move |c| {
+        let (g, staged) = with_core_raw(&self.core, &self.events, move |c| {
             gated_rollback(c, target, &author, gate)
         })
         .await
         .map_err(to_api_error)??;
+        if staged {
+            self.run_staged(g.id, None).await?;
+        }
         self.sync.notify_one();
         Ok(GenerationReply {
             generation: api_generation(&g, true),
@@ -783,7 +835,7 @@ mod tests {
         (d, c)
     }
 
-    fn refused() -> Result<(), FirewallError> {
+    fn refused() -> Result<bool, FirewallError> {
         Err(FirewallError::PeerUnreachable { peer: "fw2".into() })
     }
 
@@ -794,7 +846,7 @@ mod tests {
         let g = gated_rollback(&mut c, None, "admin", refused())
             .unwrap()
             .unwrap();
-        assert_eq!((g.id, c.active().unwrap()), (2, 2));
+        assert_eq!((g.0.id, c.active().unwrap()), (2, 2));
         assert!(c.state().unwrap().pending.is_none());
     }
 
@@ -815,10 +867,10 @@ mod tests {
         assert_eq!(c.active().unwrap(), 2);
         assert_eq!(c.history(None).unwrap().len(), 3, "no generation was made");
         // With the gate passed, the same request is an ordinary rollback.
-        let g = gated_rollback(&mut c, None, "admin", Ok(()))
+        let g = gated_rollback(&mut c, None, "admin", Ok(true))
             .unwrap()
             .unwrap();
-        assert_eq!((g.id, g.hash), (4, c.generation(1).unwrap().hash));
+        assert_eq!((g.0.id, g.0.hash), (4, c.generation(1).unwrap().hash));
     }
 
     /// A confirmation lands in between: generation 3 is now confirmed and
