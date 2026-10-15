@@ -35,6 +35,14 @@ Where the implementation departs from, or settles open questions in,
   package it), with libnetfilter_log 1.0.2 linked statically because
   Fedora has 1.0.1. node_exporter is likewise not packaged and not yet
   included.
+- **The coordinator has its own SELinux domain, `sparewalld_t`,
+  permissive for now** (`image/selinux`, installed with `semodule` in
+  the image build). Only the executable is labelled, so no file changes
+  type; permissive means every access is allowed and logged. The boot
+  test checks the daemon runs in the domain and reports its AVCs in the
+  job summary; they become the rules for an enforcing domain before 1.0.
+  `sparewall-run@` runs the same binary but stays `unconfined_service_t`
+  (`SELinuxContext=`): it runs what the coordinator's confinement forbids.
 - **Confined daemons read their configs from their own runtime
   directories** (`/run/chrony`, `/run/keepalived`), which carry their
   SELinux labels; everything else is under `/run/sparewall/<subsystem>`.
@@ -330,7 +338,7 @@ rule for which side gives up) is outstanding.
   turning DHCP or log forwarding off; validation now rejects them as
   not built yet (#10).
 - Schema migrations (only schema 1 exists); the Web UI.
-- The SELinux policy module for the coordinator, benchmarks.
+- An enforcing SELinux policy for the coordinator; benchmarks.
 - A local Prometheus (`metrics.mode: local`, `metrics.retention`),
   scheduled upgrades (`updates.mode: windowed`, `updates.window`) and
   provider passthrough (`provider_options`). The schema keeps their

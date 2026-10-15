@@ -36,6 +36,7 @@ cleanup() {
         [ -f "$VPN_RESULTS" ] && cat "$VPN_RESULTS"
         dump_nodes
     fi
+    selinux_reports
     sudo pkill -f "$HERE/echo.py" 2>/dev/null || true
     sudo pkill -f "ping -D -i 0.2" 2>/dev/null || true
     [ -n "${REGISTRY:-}" ] && sudo podman rm -f "$REGISTRY" >/dev/null 2>&1 || true

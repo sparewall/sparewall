@@ -8,4 +8,7 @@ DefaultDependencies=no
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/sparewalld --run %i
+# The same binary as the coordinator, but outside its SELinux domain too:
+# these commands are the ones the coordinator's confinement forbids.
+SELinuxContext=system_u:system_r:unconfined_service_t:s0
 TimeoutStartSec=60min

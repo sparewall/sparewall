@@ -160,6 +160,17 @@ dump_nodes() {
     done
 }
 
+# Each running node's sparewalld_t report (conformance.sh), whatever the
+# outcome; a node that is down or not in the domain is only noted.
+selinux_reports() {
+    declare -F selinux_report >/dev/null || return 0
+    local n
+    for n in fw1 fw2; do
+        [ -f "$n.pid" ] || continue
+        (selinux_report "at $n" "$n") || echo "$n: no SELinux report"
+    done
+}
+
 stop_pair() {
     stop_vm fw1
     stop_vm fw2
