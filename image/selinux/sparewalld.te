@@ -18,3 +18,11 @@ init_daemon_domain(sparewalld_t, sparewalld_exec_t)
 init_nnp_daemon_domain(sparewalld_t)
 
 permissive sparewalld_t;
+
+# sparewall-run@ runs the same binary for commands the coordinator's
+# confinement forbids, in unconfined_service_t (SELinuxContext=), so that
+# domain may be entered through it.
+gen_require(`
+	type unconfined_service_t;
+')
+allow unconfined_service_t sparewalld_exec_t:file { entrypoint execute map read open getattr };
