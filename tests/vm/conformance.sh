@@ -118,7 +118,9 @@ selinux_report() { # run-command node-name
     local run=$1 node=$2 denials
     $run 'ps -eo label,comm' | grep -q 'sparewalld_t.*sparewalld' \
         || fail "$node: sparewalld does not run in sparewalld_t"
-    denials=$($run 'sudo journalctl -b -k --no-pager' \
+    # Kernel log and journald's audit transport: with auditd running, or
+    # kauditd rate-limiting printk, either one alone misses records.
+    denials=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
         | grep -oE 'avc: +denied .*scontext=[^ ]*:sparewalld_t:[^ ]*.*' \
         | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=1//' \
         | sort | uniq -c | sort -rn) || true
