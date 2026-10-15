@@ -214,6 +214,9 @@ impl System for RealNft {
     fn link_states(&mut self) -> std::collections::BTreeMap<String, String> {
         self.rest.link_states()
     }
+    fn bond_members(&mut self, bond: &str) -> Vec<(String, bool)> {
+        self.rest.bond_members(bond)
+    }
     fn install_files(
         &mut self,
         sub: sparewall_render::Subsystem,

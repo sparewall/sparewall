@@ -139,6 +139,10 @@ pub struct Meta {
     pub replication_links: Vec<String>,
     /// Interfaces that carry gateway addresses.
     pub vip_links: Vec<String>,
+    /// Bonds, by name, with the number of members configured: one with
+    /// fewer members up has lost its redundancy (health degraded).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bonds: BTreeMap<String, usize>,
     /// Services this generation runs, by role (`dhcp`, `dns`, `ntp`).
     pub services: BTreeMap<String, Service>,
     /// Bootstrap mode (generation 0).

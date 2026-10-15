@@ -274,6 +274,27 @@ Where the implementation departs from, or settles open questions in,
   export/import are not abstracted yet. The VM conformance suite covers
   the built providers (Kea, Unbound).
 
+## Release gates
+
+The two-node suite that gates promotion to `stable` (design: "Testing")
+runs as two CI jobs, each booting its own pair: `pair-test.sh` (build,
+boot, publish) and `pair-faults.sh` (pair faults).
+
+| Gate | Where | State |
+| --- | --- | --- |
+| Kill the master: gateway, flow and lease survive | pair-test | Tested |
+| Cut only the sync VLAN; divergence and `sync --from` | pair-test | Tested |
+| Lose a replication-only link on the master | pair-test | Tested |
+| Move the sync link, kept and reverted | pair-test | Tested |
+| VPN clients reconnect across failover and upgrade | pair-test | Tested |
+| Rolling upgrade, unsigned image refused | pair-test | Tested, to a derived image of the same build |
+| Flap a bond member on the master | pair-faults | Tested |
+| The master loses its whole trunk | pair-faults | Tested |
+| Cut one service VLAN on one side | pair-faults | Recorded, not asserted (below) |
+| Destroy both nodes, restore from bundles, re-pair | pair-faults | Tested |
+| Rolling upgrade from the previous release | | Outstanding: needs a first release |
+| Schema upgrade and downgrade, mixed versions | | Outstanding: needs schema 2 |
+
 ## Not built yet
 
 - ACME `http-01` and lego-based DNS providers (RFC 2136 is built in).

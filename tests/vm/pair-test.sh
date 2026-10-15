@@ -16,68 +16,12 @@ set -euo pipefail
 WORK=${1:?usage: pair-test.sh WORKDIR}
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$WORK"
-log() { printf '\n=== %s\n' "$*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-ns() { local n=$1; shift; sudo ip netns exec "sw-$n" "$@"; }
 # shellcheck source=vpn.sh
 . "$HERE/vpn.sh"
 
-# Bridge and the users client from boot-test.sh, or fresh ones.
-if ! ip link show swbr >/dev/null 2>&1; then
-    . "$HERE/conformance.sh"
-    setup_trunk
-fi
-# Trunks carry the service VLANs (WAN 10, users 20, servers 30); each
-# node's dedicated sync port, VLAN 4000.
-for t in swtap1 swtap2 swtap1s swtap2s; do
-    sudo ip tuntap add "$t" mode tap
-    sudo ip link set "$t" master swbr up
-    sudo bridge vlan del dev "$t" vid 1
-    case $t in
-    *s) sudo bridge vlan add dev "$t" vid 4000 ;;
-    *) for v in 10 20 30; do sudo bridge vlan add dev "$t" vid $v; done ;;
-    esac
-done
-
-boot() { # name ssh-port mgmt-mac trunk-mac tap sync-mac sync-tap
-    cp output/qcow2/disk.qcow2 "$1.qcow2"
-    cat > "$1.json" <<JSON
-{"node": "$1", "ssh_keys": ["$(cat id_ed25519.pub)"], "management": {"nic": "$3"}}
-JSON
-    start "$@"
-}
-
-start() { # name ssh-port mgmt-mac trunk-mac tap sync-mac sync-tap (the disk as it is)
-    local name=$1 port=$2 mac=$3 tmac=$4 tap=$5 smac=$6 stap=$7
-    sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 1536 -smp 2 \
-        -drive "file=$name.qcow2,if=virtio,format=qcow2" \
-        -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${port}-:22" \
-        -device "virtio-net-pci,netdev=n0,mac=$mac" \
-        -netdev "tap,id=n1,ifname=$tap,script=no,downscript=no" \
-        -device "virtio-net-pci,netdev=n1,mac=$tmac" \
-        -netdev "tap,id=n2,ifname=$stap,script=no,downscript=no" \
-        -device "virtio-net-pci,netdev=n2,mac=$smac" \
-        -smbios "type=11,value=io.systemd.credential.binary:sparewall.identity=$(base64 -w0 "$name.json")" \
-        -display none -serial "file:$name.serial" -pidfile "$name.pid" -daemonize
-}
-
-at() { # node command...
-    local port; case $1 in fw1) port=2231 ;; fw2) port=2232 ;; esac; shift
-    # QEMU accepts the forwarded connection before the guest is up, so
-    # ConnectTimeout alone does not bound a call: a hung one is retried.
-    timeout "${AT_TIMEOUT:-90}" ssh -p "$port" -i "$WORK/id_ed25519" -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR \
-        -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
-        admin@127.0.0.1 "$@"
-}
-
-wait_for() { # seconds description command...
-    local deadline=$((SECONDS + $1)) what=$2; shift 2
-    until "$@" >/dev/null 2>&1; do
-        [ $SECONDS -lt $deadline ] || fail "timed out: $what"
-        sleep 5
-    done
-}
+# shellcheck source=pair-lib.sh
+. "$HERE/pair-lib.sh"
+pair_taps
 
 cleanup() {
     local rc=$?
@@ -90,55 +34,25 @@ cleanup() {
             [ -f "$f" ] && { echo "--- $f"; tail -5 "$f"; }
         done
         [ -f "$VPN_RESULTS" ] && cat "$VPN_RESULTS"
-        for n in fw1 fw2; do
-            echo "--- $n"
-            at "$n" 'sudo journalctl -b -u sparewalld --no-pager | tail -40
-                timeout 20 sudo sparewall status
-                sudo wg show swsync 2>&1; ip -br addr
-                sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -s 2>&1 | head -30
-                sudo journalctl -b -u sparewalld --no-pager | grep -iE "vrrp|conntrackd" | tail -15
-                for u in keepalived conntrackd sparewall-kea; do echo "-- $u"; sudo journalctl -b -u $u --no-pager | tail -15; done
-                echo "-- systemd and D-Bus"; sudo journalctl -b _PID=1 + _SYSTEMD_UNIT=dbus-broker.service --no-pager | grep -vE "sparewall-run@" | tail -30
-                echo "-- helper jobs"; sudo journalctl -b -u "sparewall-run@*" --no-pager | tail -20
-                echo "-- networkd"; sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "swsync|wireguard|key" | tail -15
-                echo "-- AVC"; sudo journalctl -b -k --no-pager | grep -oE "avc: +denied.*" | sed -E "s/pid=[0-9]+ //; s/ino=[0-9]+ //" | sort | uniq -c | tail -25
-                ls -laZ /run/keepalived/' 2>/dev/null \
-                || sudo tail -60 "$n.serial" || true
-        done
+        dump_nodes
     fi
-    sudo pkill -f "$WORK/echo.py" 2>/dev/null || true
+    sudo pkill -f "$HERE/echo.py" 2>/dev/null || true
     sudo pkill -f "ping -D -i 0.2" 2>/dev/null || true
     [ -n "${REGISTRY:-}" ] && sudo podman rm -f "$REGISTRY" >/dev/null 2>&1 || true
-    for n in fw1 fw2; do
-        [ -f "$n.pid" ] && sudo kill "$(sudo cat "$n.pid")" 2>/dev/null || true
-    done
+    stop_pair
 }
 trap cleanup EXIT
 
 log "booting two nodes"
-FW1=(fw1 2231 52:54:00:12:34:56 52:54:00:12:34:57 swtap1 52:54:00:12:34:58 swtap1s)
-FW2=(fw2 2232 52:54:00:12:35:56 52:54:00:12:35:57 swtap2 52:54:00:12:35:58 swtap2s)
 boot "${FW1[@]}"
 boot "${FW2[@]}"
 wait_for 900 "fw1 SSH" at fw1 true
 wait_for 300 "fw2 SSH" at fw2 true
 
 log "pairing"
-k1=$(at fw1 'sudo sparewall status -o json' | jq -r .sync.sync_public_key)
-k2=$(at fw2 'sudo sparewall status -o json' | jq -r .sync.sync_public_key)
 vpn_keys
-sed -e "s|@FW1_KEY@|$k1|" -e "s|@FW2_KEY@|$k2|" "$HERE/site-pair.yaml" | vpn_doc > pair.yaml
-for n in fw1 fw2; do
-    at "$n" 'cat > /tmp/pair.yaml' < pair.yaml
-    at "$n" 'sudo sparewall apply -f /tmp/pair.yaml --confirm 0' || fail "pairing apply failed on $n"
-done
-in_sync() { at "$1" 'sudo sparewall status -o json' | jq -e '.sync.state == "in-sync"'; }
-wait_for 300 "fw1 in sync" in_sync fw1
-wait_for 120 "fw2 in sync" in_sync fw2
-role() { at "$1" 'sudo sparewall status -o json' | jq -r .role; }
-is_master() { [ "$(role "$1")" = MASTER ]; }
-wait_for 120 "fw1 master" is_master fw1
-[ "$(role fw2)" = BACKUP ] || fail "fw2 is $(role fw2), not BACKUP"
+pair_doc < "$HERE/site-pair.yaml" | vpn_doc > pair.yaml
+pair_up
 
 log "a change on fw1 reaches fw2"
 at fw1 'sudo sparewall set dhcp.users.lease_time=3600 --confirm 0'
@@ -148,10 +62,6 @@ wait_for 120 "fw2 at generation $gen" fw2_gen
 
 # A change to the sync link goes to the peer first, through the current
 # link; each node keeps it once the peer confirms over the new one (#25).
-settled() { # node generation
-    at "$1" 'sudo sparewall status -o json' \
-        | jq -e --argjson g "$2" '.sync.state == "in-sync" and .sync.active == $g and .sync.pending == null' >/dev/null
-}
 move_sync() { # fw1-address fw2-address
     log "moving the sync link to $1 and $2"
     at fw1 "sudo sparewall set networks.sync.addresses.fw1=$1/30 networks.sync.addresses.fw2=$2/30 --confirm 0"
@@ -192,56 +102,11 @@ log "echo servers behind the servers VLAN"
 # TCP (7000) and UDP (7001) echo servers in sw-guests. A TCP client sends
 # a line every half second on one connection, counting the echoes; the
 # UDP client sends a datagram every 0.3 s, logging each reply.
-cat > echo.py <<'PY'
-import socket, sys, threading, time
-def serve(c):
-    f = c.makefile("rwb", buffering=0)
-    for line in f:
-        f.write(line)
-if sys.argv[1] == "server":
-    # One thread per connection: the LAN and VPN clients run at once.
-    s = socket.create_server(("0.0.0.0", 7000))
-    while True:
-        c, _ = s.accept()
-        threading.Thread(target=serve, args=(c,), daemon=True).start()
-elif sys.argv[1] == "udpserver":
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind(("0.0.0.0", 7001))
-    while True:
-        d, a = s.recvfrom(64)
-        s.sendto(d, a)
-elif sys.argv[1] == "udpclient":
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.settimeout(0.5)
-    n = 0
-    while True:
-        n += 1
-        s.sendto(str(n).encode(), (sys.argv[2], 7001))
-        try:
-            s.recvfrom(64)
-            print(f"[{time.time():.6f}] reply {n}", flush=True)
-        except socket.timeout:
-            print(f"[{time.time():.6f}] lost {n}", flush=True)
-        time.sleep(0.3)
-else:
-    c = socket.create_connection((sys.argv[2], 7000), timeout=5)
-    c.settimeout(float(sys.argv[3]) if len(sys.argv) > 3 else 30)
-    f = c.makefile("rwb", buffering=0)
-    n = 0
-    while True:
-        f.write(b"ping\n")
-        if f.readline() != b"ping\n":
-            print("broken", flush=True)
-            sys.exit(1)
-        n += 1
-        print(n, flush=True)
-        time.sleep(0.5)
-PY
 ns guests ip addr flush dev eth0
 ns guests ip addr add 198.51.100.10/24 dev eth0
 ns guests ip route replace default via 198.51.100.1
-ns guests python3 "$WORK/echo.py" server &
-ns guests python3 "$WORK/echo.py" udpserver &
+ns guests python3 "$HERE/echo.py" server &
+ns guests python3 "$HERE/echo.py" udpserver &
 sleep 1
 vpn_setup
 
@@ -270,8 +135,6 @@ ns users ip route del 169.254.77.0/24
 
 log "cutting only the sync VLAN"
 for t in swtap1s swtap2s; do sudo bridge vlan del dev "$t" vid 4000; done
-state() { at "$1" 'sudo sparewall status -o json' | jq -r .sync.state; }
-unreachable() { [ "$(state "$1")" = peer-unreachable ]; }
 wait_for 120 "fw1 reports the peer down" unreachable fw1
 wait_for 60 "fw2 reports the peer down" unreachable fw2
 # VRRP runs on the other VLANs: nothing fails over.
@@ -300,7 +163,6 @@ wait_for 60 "fw2 in sync after sync --from" in_sync fw2
 
 # Losing a replication-only link locally (issue #6), on the master: health
 # degrades, nothing fails over, and replication comes back.
-level() { at "$1" 'sudo sparewall status -o json' | jq -r .health.level; }
 sync_loss() { # description, command that breaks it on fw1, command that restores it
     log "sync loss on the master: $1"
     at fw1 "$2"
@@ -327,7 +189,7 @@ sync_loss "the sync VLAN deleted" 'sudo ip link delete sync' \
     'sudo networkctl reconfigure syncp; sleep 3; ip link show sync >/dev/null 2>&1 || sudo networkctl reload'
 
 log "a connection through the pair"
-ns users python3 "$WORK/echo.py" client 198.51.100.10 > flow.log 2>&1 &
+ns users python3 "$HERE/echo.py" client 198.51.100.10 > flow.log 2>&1 &
 echoes() { tail -1 flow.log | grep -qE '^[0-9]+$' && echo "$(tail -1 flow.log)"; }
 sleep 3
 before=$(echoes) || fail "no echoes through fw1: $(cat flow.log)"
@@ -362,7 +224,6 @@ start "${FW1[@]}"
 wait_for 300 "fw1 SSH" at fw1 true
 wait_for 300 "fw1 in sync" in_sync fw1
 wait_for 120 "fw2 in sync" in_sync fw2
-is_backup() { [ "$(role "$1")" = BACKUP ]; }
 wait_for 60 "fw1 backup" is_backup fw1
 is_master fw2 || fail "fw2 gave up the gateway when fw1 returned (nopreempt)"
 
