@@ -55,6 +55,15 @@ sparewall token revoke prometheus
 Roles: `monitor` (health and metrics), `viewer`, `operator` (change,
 confirm, roll back, sync) and `admin`.
 
+**What a token can do today.** Every `sparewall` command goes through
+the coordinator's root-only socket, locally or over SSH with
+`sudo sparewall bridge`, and acts with full rights; no command takes a
+token. Tokens are accepted only by the HTTPS endpoints: verbose health
+(`/readyz?verbose`, `/readyz/<check>`) and `/metrics`, which any role
+may read. A token cannot change configuration, read secrets or manage
+tokens. Token access for scripts and front ends comes with the web UI's
+API (#11).
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:

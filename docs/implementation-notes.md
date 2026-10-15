@@ -142,6 +142,13 @@ Where the implementation departs from, or settles open questions in,
   (each applied the pairing document) converge on the one created first.
 - **Health endpoint detail and `/metrics`** need an API token, except
   `/metrics` when `metrics.mode` is `external`.
+- **Roles are not enforced per call yet** (#11). The only client path
+  to the coordinator is its root-only socket (directly, or through SSH
+  and `sparewall bridge`), and every caller there is admin. API tokens,
+  with their roles, are checked only by the HTTPS health and metrics
+  endpoints. How token-holding scripts and front ends reach the
+  coordinator is decided with the web UI (milestone 7), and per-call role
+  checks come with that transport.
 - **DHCP takeover is driven by VRRP.** Kea's hot-standby standby declares
   its partner down only after `max-unacked-clients` (5) distinct clients
   go unanswered, which a small network may never produce. When a node is
