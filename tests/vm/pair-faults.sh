@@ -39,6 +39,7 @@ cleanup() {
     sudo pkill -f "$HERE/echo.py" 2>/dev/null || true
     [ -f rest-server.pid ] && kill "$(cat rest-server.pid)" 2>/dev/null || true
     stop_pair
+    [ $rc -ne 0 ] || ! declare -F selinux_gate >/dev/null || selinux_gate || exit 1
 }
 trap cleanup EXIT
 

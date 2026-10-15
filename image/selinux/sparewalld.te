@@ -1,14 +1,14 @@
-policy_module(sparewalld, 0.1.0)
+policy_module(sparewalld, 0.2.0)
 
 ########################################
 #
 # The Sparewall coordinator (design: "Host hardening": its own policy
 # module before 1.0, with only its domain permissive until then).
 #
-# This first version gives the daemon its own domain and nothing else:
-# no file is relabelled, and the domain is permissive, so every access
-# is allowed and logged. The VM suites report the domain's AVCs; they
-# become the rules that let it run enforcing.
+# The rules below are what the VM suites showed the coordinator doing.
+# The domain is still permissive, so nothing is blocked, but the suites
+# fail on any sparewalld_t denial: a change that needs a new access adds
+# its rule here. Removing "permissive" is the step to enforcing.
 
 type sparewalld_t;
 type sparewalld_exec_t;
@@ -26,3 +26,133 @@ gen_require(`
 	type unconfined_service_t;
 ')
 allow unconfined_service_t sparewalld_exec_t:file { entrypoint execute map read open getattr };
+
+gen_require(`
+	type unconfined_t, init_t, kernel_t;
+	type bin_t, ifconfig_exec_t, iptables_exec_t, systemd_systemctl_exec_t;
+	type udev_exec_t, setfiles_exec_t, conntrackd_exec_t;
+	type file_context_t, default_context_t, security_t;
+	type net_conf_t, var_lib_t, var_run_t, tmp_t, cert_t, passwd_file_t;
+	type user_home_dir_t, ssh_home_t;
+	type init_var_lib_t, init_var_run_t, cgroup_t, nsfs_t, sysfs_t;
+	type chronyd_var_run_t, keepalived_var_run_t, conntrackd_conf_t;
+	type conntrackd_t, conntrackd_var_run_t;
+	type udev_t, udev_var_run_t;
+	type systemd_networkd_t, systemd_networkd_var_run_t;
+	type container_t, container_file_t, container_var_lib_t;
+	type systemd_unit_file_t, systemd_generator_unit_file_t;
+	type chronyd_unit_file_t, keepalived_unit_file_t, conntrackd_unit_file_t;
+	type http_port_t, unreserved_port_t, node_t;
+	class service { start stop status reload };
+')
+
+########################################
+#
+# Its own sockets and capabilities.
+#
+
+allow sparewalld_t self:capability { chown dac_override net_bind_service };
+allow sparewalld_t self:tcp_socket { accept bind connect create getattr getopt listen setopt shutdown read write };
+allow sparewalld_t self:unix_dgram_socket { connect create getattr getopt ioctl setattr setopt read write };
+allow sparewalld_t self:unix_stream_socket connectto;
+allow sparewalld_t self:netlink_route_socket { bind create getattr getopt setopt read write nlmsg_read nlmsg_write };
+allow sparewalld_t self:netlink_netfilter_socket { create getopt setopt read write };
+allow sparewalld_t self:netlink_kobject_uevent_socket { bind create getattr getopt setopt read };
+
+# The API and the sync link listen; backups, ACME and the peer are
+# reached on whatever port the site configures.
+allow sparewalld_t node_t:tcp_socket node_bind;
+allow sparewalld_t { http_port_t unreserved_port_t }:tcp_socket name_bind;
+corenet_tcp_connect_all_ports(sparewalld_t)
+
+########################################
+#
+# Its state: /var/lib/sparewall, /run/sparewall, and restic's temporary
+# packs.
+#
+
+allow sparewalld_t var_lib_t:dir { add_name create getattr open read remove_name search setattr write };
+allow sparewalld_t var_lib_t:file { create getattr open read rename setattr unlink write };
+allow sparewalld_t var_run_t:dir { add_name create getattr open read remove_name search setattr write relabelfrom };
+allow sparewalld_t var_run_t:file { create getattr open read rename setattr unlink write relabelfrom };
+allow sparewalld_t var_run_t:sock_file { create setattr unlink write };
+allow sparewalld_t var_run_t:fifo_file { create getattr open read setattr write };
+allow sparewalld_t tmp_t:dir { add_name remove_name search write };
+allow sparewalld_t tmp_t:file { create open unlink write };
+
+########################################
+#
+# Host configuration it renders: networkd, the admin's SSH keys, and the
+# files confined daemons read, relabelled to the daemon's type.
+#
+
+allow sparewalld_t net_conf_t:dir { add_name getattr open read remove_name search write };
+allow sparewalld_t net_conf_t:file { create getattr open read rename setattr unlink write };
+allow sparewalld_t net_conf_t:lnk_file { create getattr };
+allow sparewalld_t user_home_dir_t:dir search;
+allow sparewalld_t ssh_home_t:dir { add_name getattr open read remove_name search setattr write };
+allow sparewalld_t ssh_home_t:file { create getattr open read rename setattr write };
+allow sparewalld_t { chronyd_var_run_t keepalived_var_run_t }:dir { add_name getattr open read relabelto remove_name search write };
+allow sparewalld_t { chronyd_var_run_t keepalived_var_run_t }:file { create getattr open relabelto rename setattr unlink write };
+allow sparewalld_t chronyd_var_run_t:sock_file getattr;
+allow sparewalld_t conntrackd_conf_t:file { getattr ioctl open read relabelto unlink };
+allow sparewalld_t cert_t:dir { getattr open read search };
+allow sparewalld_t cert_t:file { getattr open read };
+allow sparewalld_t passwd_file_t:file { getattr open read };
+
+########################################
+#
+# Commands it runs in its own domain: ip, nft, systemctl, networkctl,
+# udevadm, restorecon, conntrackd, restic and coreutils.
+#
+
+allow sparewalld_t { bin_t ifconfig_exec_t iptables_exec_t systemd_systemctl_exec_t udev_exec_t setfiles_exec_t conntrackd_exec_t }:file { execute execute_no_trans getattr map open read };
+
+# restorecon reads the file contexts and walks the mounts.
+allow sparewalld_t { file_context_t default_context_t }:dir search;
+allow sparewalld_t { file_context_t default_context_t }:file { getattr map open read };
+allow sparewalld_t security_t:file map;
+fs_getattr_all_fs(sparewalld_t)
+
+# systemctl, and the units it manages (including Quadlet's).
+allow sparewalld_t init_t:lnk_file read;
+allow sparewalld_t init_var_lib_t:dir { open read search };
+allow sparewalld_t init_var_lib_t:file { getattr open read };
+allow sparewalld_t init_var_run_t:file { getattr open read };
+allow sparewalld_t cgroup_t:dir search;
+allow sparewalld_t cgroup_t:file read;
+allow sparewalld_t { systemd_unit_file_t systemd_generator_unit_file_t chronyd_unit_file_t keepalived_unit_file_t conntrackd_unit_file_t }:service { start stop status reload };
+
+# udevadm settle.
+allow sparewalld_t udev_var_run_t:dir { getattr search };
+allow sparewalld_t udev_var_run_t:lnk_file read;
+allow sparewalld_t udev_var_run_t:sock_file write;
+allow sparewalld_t udev_t:unix_stream_socket connectto;
+
+# Kernel state: net sysctls, sysfs, network namespaces.
+kernel_rw_net_sysctls(sparewalld_t)
+allow sparewalld_t sysfs_t:file { open write };
+allow sparewalld_t nsfs_t:file getattr;
+# The loginuid of an admin's CLI process, to record who made a change.
+allow sparewalld_t unconfined_t:dir search;
+allow sparewalld_t unconfined_t:file { getattr open read };
+
+########################################
+#
+# Daemons it talks to: the journal, networkd, conntrackd and the
+# provider containers (Kea's control socket).
+#
+
+logging_send_syslog_msg(sparewalld_t)
+# systemd's journal and notify sockets.
+allow sparewalld_t kernel_t:unix_dgram_socket sendto;
+allow sparewalld_t systemd_networkd_var_run_t:dir search;
+allow sparewalld_t systemd_networkd_var_run_t:sock_file write;
+allow sparewalld_t systemd_networkd_t:unix_stream_socket connectto;
+allow sparewalld_t conntrackd_var_run_t:sock_file write;
+allow sparewalld_t conntrackd_t:unix_stream_socket connectto;
+allow sparewalld_t container_var_lib_t:dir search;
+allow sparewalld_t container_file_t:dir search;
+allow sparewalld_t container_file_t:file { open read };
+allow sparewalld_t container_file_t:sock_file write;
+allow sparewalld_t container_t:unix_stream_socket connectto;

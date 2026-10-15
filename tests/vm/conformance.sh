@@ -112,8 +112,11 @@ start_rest_server() {
     done
 }
 
-# The coordinator's SELinux domain and what it was denied (permissive, so
-# nothing was blocked), for the job summary. $1 runs a command on a node.
+# The coordinator's SELinux domain and what it was denied, for the job
+# summary. The domain is permissive, so nothing was blocked, but a denial
+# means image/selinux lacks a rule: it is recorded in
+# $WORK/selinux-denials and fails the suite (selinux_gate).
+# $1 runs a command on a node.
 selinux_report() { # run-command node-name
     local run=$1 node=$2 denials
     $run 'ps -eo label,comm' | grep -q 'sparewalld_t.*sparewalld' \
@@ -126,6 +129,7 @@ selinux_report() { # run-command node-name
         | sort | uniq -c | sort -rn) || true
     echo "$node: $(printf '%s' "$denials" | grep -c . || true) distinct sparewalld_t denials"
     printf '%s\n' "$denials"
+    [ -z "$denials" ] || printf '%s\n' "$denials" | sed "s/^/$node: /" >> "$WORK/selinux-denials"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         {
             echo "### SELinux: sparewalld_t on $node"
@@ -134,4 +138,12 @@ selinux_report() { # run-command node-name
             echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
     fi
+}
+
+# Fail if any report found a denial.
+selinux_gate() {
+    [ -s "$WORK/selinux-denials" ] || return 0
+    echo "FAIL: sparewalld_t was denied; add rules to image/selinux/sparewalld.te:" >&2
+    cat "$WORK/selinux-denials" >&2
+    return 1
 }
