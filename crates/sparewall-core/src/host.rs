@@ -1,6 +1,6 @@
 //! Host operations the daemon's orchestration needs beyond [`System`]:
-//! conntrackd transitions, restic, systemd timers and RFC 2136 DNS
-//! updates. Each is a narrow trait at the level of the operation, with
+//! conntrackd transitions, restic, systemd timers, RFC 2136 DNS updates
+//! and lego. Each is a narrow trait at the level of the operation, with
 //! its failure model in the signature, so the orchestration around it
 //! (failover, backup, certificate challenges) is tested against fakes.
 //! The implementations here run the real commands.
@@ -252,6 +252,72 @@ pub trait DnsZone: Send + Sync {
     fn txt(&self, record: &str) -> Result<Vec<String>, String>;
     /// The server, for messages.
     fn server(&self) -> &str;
+}
+
+/// lego, the ACME client that speaks to hosted DNS APIs (Google Cloud DNS,
+/// Cloudflare, Route 53 and many more), for DNS-01 challenges the
+/// coordinator cannot publish itself. It runs a whole order.
+pub trait Lego: Send + Sync {
+    /// Run `lego ARGS` with its data directory, `data`, at `/data` and the
+    /// variables in `env_file` (credentials included) in its environment.
+    fn run(&self, data: &Path, env_file: &Path, args: &[String]) -> Result<(), String>;
+}
+
+/// Where the image ships the lego image reference, as a Quadlet `.image`
+/// unit that is also a logically bound image.
+pub const LEGO_IMAGE_UNIT: &str = "/usr/share/containers/systemd/sparewall-lego.image";
+/// bootc's store of logically bound images.
+const BOUND_STORE: &str = "/usr/lib/bootc/storage";
+
+/// lego in its provider image, run by podman outside the coordinator's
+/// sandbox.
+pub struct LegoContainer {
+    pub image: String,
+}
+
+impl LegoContainer {
+    /// The image the node ships (`SPAREWALL_LEGO_IMAGE` overrides it).
+    pub fn shipped() -> Result<LegoContainer, String> {
+        if let Ok(image) = std::env::var("SPAREWALL_LEGO_IMAGE") {
+            return Ok(LegoContainer { image });
+        }
+        let unit = std::fs::read_to_string(LEGO_IMAGE_UNIT)
+            .map_err(|e| format!("{LEGO_IMAGE_UNIT}: {e}"))?;
+        unit.lines()
+            .find_map(|l| l.trim().strip_prefix("Image="))
+            .map(|i| LegoContainer {
+                image: i.trim().to_string(),
+            })
+            .ok_or_else(|| format!("{LEGO_IMAGE_UNIT} names no image"))
+    }
+}
+
+impl Lego for LegoContainer {
+    fn run(&self, data: &Path, env_file: &Path, args: &[String]) -> Result<(), String> {
+        let mut argv: Vec<String> = Vec::new();
+        if Path::new(BOUND_STORE).is_dir() {
+            argv.push(format!("--storage-opt=additionalimagestore={BOUND_STORE}"));
+        }
+        argv.extend(
+            [
+                "run",
+                "--rm",
+                "--pull=never",
+                "--network=host",
+                "--env-file",
+            ]
+            .map(String::from),
+        );
+        argv.push(env_file.display().to_string());
+        argv.push("-v".into());
+        argv.push(format!("{}:/data:Z", data.display()));
+        argv.push(self.image.clone());
+        argv.extend(args.iter().cloned());
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        host_run("podman", &argv)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// RFC 2136 dynamic updates with `nsupdate`, read back with `dig`.

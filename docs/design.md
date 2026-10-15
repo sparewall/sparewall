@@ -566,7 +566,7 @@ The document says what a service must do; a **provider** turns that intent into 
 | --- | --- | --- | --- |
 | DHCPv4 | Pools, reservations (MAC, address, name), options (router, DNS, NTP, domain), lease time, HA | Kea | networkd's built-in server (standalone only), dnsmasq: not built yet |
 | DNS resolver | Enabled flag, listening networks, forwarders or full recursion, local records from reservations | Unbound | Disabled; Knot Resolver, dnsmasq: not built yet |
-| ACME DNS-01 | Names, CA directory, provider name, secret reference | Built-in RFC 2136 | lego (Google Cloud DNS, Cloudflare, Route 53 and many more): not built yet |
+| ACME DNS-01 | Names, CA directory, provider name, secret reference | Built-in RFC 2136 | lego (Google Cloud DNS, Cloudflare, Route 53 and many more) |
 | Log forwarding | Destination, protocol, TLS | `systemd-journal-upload` | Off; rsyslog remote (syslog or RELP): not built yet |
 | Metrics storage | Mode, retention | External scrape | Local Prometheus container; off |
 | Backup | Repository, schedule, credentials | restic | Any restic backend; off |

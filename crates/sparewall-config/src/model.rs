@@ -690,12 +690,17 @@ pub struct Acme {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AcmeDns {
-    /// `rfc2136` (built in). Lego provider names are not built yet.
+    /// `rfc2136` (built in), or a lego provider code such as `gcloud`,
+    /// `cloudflare` or `route53` (https://go-acme.github.io/lego/dns/).
     pub provider: String,
-    /// Secret reference, `secret:<name>`.
+    /// Secret reference, `secret:<name>`. For `rfc2136`, the TSIG key as
+    /// `algorithm:name:secret`; for lego, the provider's credentials as
+    /// `KEY=value` lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<String>,
-    /// Provider-specific settings (RFC 2136 server, zone, TSIG key name).
+    /// For `rfc2136`, `server` (host[:port]) and `zone`; for lego, the
+    /// provider's other environment variables (`GCE_PROJECT`), and lego's
+    /// own (`LEGO_DNS_RESOLVERS`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
 }
