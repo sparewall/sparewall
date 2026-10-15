@@ -14,7 +14,7 @@ For maintainers. A release is a tested commit on `main`, tagged.
    every VM suite, publishes the image as `sha-<commit>` (and `testing`),
    then the **release assets** job drafts a GitHub release with:
    - `sparewall-VERSION-x86_64.iso`: the unattended installer (it erases
-     the first disk);
+     the first fixed disk);
    - `sparewall-VERSION-x86_64.raw.zst` and `.qcow2`: disk images;
    - `sparewall-VERSION-x86_64-linux.tar.gz`: the static CLI;
    - SPDX SBOMs of the image and the CLI;

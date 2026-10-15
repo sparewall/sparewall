@@ -52,10 +52,12 @@ Where the implementation departs from, or settles open questions in,
   (ACME issuance on a node, real hardware).
   `sparewall-run@` runs the same binary but stays `unconfined_service_t`
   (`SELinuxContext=`): it runs what the coordinator's confinement forbids.
-- **The installer ISO is bootc-image-builder's `anaconda-iso`**: it
-  installs unattended to the first disk, from the image embedded in it,
-  with no network. An interactive installer would need a custom Anaconda
-  build. The release notes and getting-started say it erases the disk.
+- **The installer ISO is bootc-image-builder's `anaconda-iso`**, made
+  unattended by the kickstart in `image/installer.toml`: it erases the
+  first fixed disk (removable and optical drives are skipped) and
+  installs the image embedded in it, with no network. Without a
+  kickstart, Anaconda waits at its interactive screens. The release
+  notes and getting-started say it erases the disk.
   It builds Anaconda from the image's repositories, which it reads from
   `/etc/yum.repos.d`, so the image copies Fedora 45's dnf5 repository
   files there (nodes never run dnf; bootc replaces the whole image).

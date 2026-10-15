@@ -20,8 +20,8 @@ Each [release](https://github.com/sparewall/sparewall/releases) also has
 ready-made images, with checksums signed by the same key:
 
 - `sparewall-VERSION-x86_64.iso`: an installer for physical machines.
-  It installs **unattended to the first disk it finds, erasing it**:
-  disconnect any disk you want to keep.
+  It installs **unattended to the first fixed disk it finds, erasing
+  it** (USB sticks are skipped): disconnect any disk you want to keep.
 - `sparewall-VERSION-x86_64.raw.zst`: a disk image to write to the
   machine's disk or a USB stick
   (`zstd -dc sparewall-*.raw.zst | sudo dd of=/dev/sdX bs=4M`).

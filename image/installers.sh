@@ -3,7 +3,8 @@
 # with bootc-image-builder (design: "Build, sign, publish"):
 #
 #   sparewall-VERSION-x86_64.iso        unattended installer for physical
-#                                       machines: it erases the first disk
+#                                       machines: it erases the first fixed
+#                                       disk (installer.toml)
 #   sparewall-VERSION-x86_64.raw.zst    a disk image to write to a disk
 #   sparewall-VERSION-x86_64.qcow2      a disk image for VMs
 #
@@ -18,6 +19,7 @@ VERSION=${2:?usage: installers.sh IMAGE VERSION OUTDIR}
 OUT=${3:?usage: installers.sh IMAGE VERSION OUTDIR}
 BIB=${BIB:-quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b}
 LIMIT=$((2 * 1024 * 1024 * 1024 - 1))
+HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$OUT/build"
 OUT=$(cd "$OUT" && pwd)
 
@@ -27,11 +29,18 @@ for ref in $(sudo podman run --rm --entrypoint sh "$IMAGE" -c \
         'for f in /usr/lib/bootc/bound-images.d/*; do sed -n "s/^Image=//p" "$f"; done'); do
     sudo podman image exists "$ref" || sudo podman pull "$ref"
 done
-sudo podman run --rm --privileged \
-    --security-opt label=type:unconfined_t \
-    -v "$OUT/build:/output" \
-    -v /var/lib/containers/storage:/var/lib/containers/storage \
-    "$BIB" --type qcow2 --type raw --type anaconda-iso --rootfs xfs "$IMAGE"
+bib() { # [config.toml] -- bootc-image-builder arguments
+    local config=$1; shift 2
+    sudo podman run --rm --privileged \
+        --security-opt label=type:unconfined_t \
+        -v "$OUT/build:/output" \
+        -v /var/lib/containers/storage:/var/lib/containers/storage \
+        ${config:+-v "$config:/config.toml:ro"} \
+        "$BIB" "$@" --rootfs xfs "$IMAGE"
+}
+bib '' -- --type qcow2 --type raw
+# The kickstart is for the installer only, so the ISO is a separate build.
+bib "$HERE/installer.toml" -- --type anaconda-iso
 sudo chown -R "$(id -u):$(id -g)" "$OUT/build"
 
 base=$OUT/sparewall-$VERSION-x86_64

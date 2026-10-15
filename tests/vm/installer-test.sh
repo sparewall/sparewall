@@ -8,7 +8,7 @@
 #   tests/vm/installer-test.sh IMAGE WORKDIR
 #
 # Needs root (podman for bootc-image-builder, KVM), qemu-system-x86_64,
-# mkfs.vfat and mcopy.
+# xorriso, mkfs.vfat and mcopy.
 set -euo pipefail
 IMAGE=${1:?usage: installer-test.sh IMAGE WORKDIR}
 WORK=${2:?usage: installer-test.sh IMAGE WORKDIR}
@@ -43,6 +43,7 @@ if [ ! -f output/bootiso/install.iso ]; then
     sudo podman run --rm --privileged \
         --security-opt label=type:unconfined_t \
         -v "$WORK/output:/output" \
+        -v "$HERE/../../image/installer.toml:/config.toml:ro" \
         -v /var/lib/containers/storage:/var/lib/containers/storage \
         "$BIB" --type anaconda-iso --rootfs xfs "$IMAGE"
 fi
@@ -52,11 +53,23 @@ ls -la output/bootiso/install.iso
 log "installing with no network"
 rm -f installed.qcow2
 qemu-img create -q -f qcow2 installed.qcow2 20G
-# The ISO installs to the first disk unattended and reboots; -no-reboot
-# turns that into an exit.
-timeout 3600 sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 3072 -smp 2 \
+# The ISO's own kernel and arguments, plus a serial console, so the
+# install shows in install.serial; the ISO stays attached as the source.
+rm -rf iso && mkdir iso
+xorriso -osirrox on -indev output/bootiso/install.iso \
+    -extract /images/pxeboot/vmlinuz iso/vmlinuz \
+    -extract /images/pxeboot/initrd.img iso/initrd.img \
+    -extract /EFI/BOOT/grub.cfg iso/grub.cfg >/dev/null 2>&1 \
+    || fail "cannot read the kernel from the ISO"
+args=$(sed -nE 's/^[[:space:]]*linux(efi)?[[:space:]]+[^[:space:]]+[[:space:]]+//p' iso/grub.cfg | head -1)
+[ -n "$args" ] || fail "no kernel arguments in the ISO's grub.cfg"
+echo "installer arguments: $args"
+# The kickstart installs unattended to the first fixed disk and reboots;
+# -no-reboot turns that into an exit.
+timeout 2400 sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 3072 -smp 2 \
     -drive "file=installed.qcow2,if=virtio,format=qcow2" \
-    -cdrom output/bootiso/install.iso -boot once=d \
+    -cdrom output/bootiso/install.iso \
+    -kernel iso/vmlinuz -initrd iso/initrd.img -append "$args console=ttyS0" \
     -nic none -no-reboot \
     -display none -serial "file:install.serial" \
     || fail "the installer did not finish"

@@ -1,0 +1,28 @@
+# bootc-image-builder configuration for the installer ISO (image/installers.sh,
+# tests/vm/installer-test.sh). bootc-image-builder adds the command that
+# installs the embedded image; this kickstart makes the install unattended.
+#
+# It erases the first fixed disk: removable disks (the install stick, a
+# seed stick) and optical drives are skipped. With none, the install stops
+# at the storage error.
+[customizations.installer.kickstart]
+contents = """
+text --non-interactive
+rootpw --lock
+zerombr
+%include /tmp/sparewall-disk.ks
+clearpart --all --initlabel --disklabel=gpt
+autopart --noswap --type=plain --fstype=xfs
+reboot --eject
+
+%pre
+: > /tmp/sparewall-disk.ks
+for d in /sys/block/*; do
+    n=${d##*/}
+    case $n in loop*|ram*|zram*|sr*|dm-*|md*|nbd*) continue ;; esac
+    [ "$(cat "$d/removable")" = 0 ] && [ "$(cat "$d/size")" -gt 0 ] || continue
+    echo "ignoredisk --only-use=$n" > /tmp/sparewall-disk.ks
+    break
+done
+%end
+"""
