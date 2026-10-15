@@ -16,7 +16,27 @@ Images are published to `ghcr.io/sparewall/sparewall` with `testing` and
 cosign verify --key cosign.pub ghcr.io/sparewall/sparewall:testing
 ```
 
-Build a disk image with
+Each [release](https://github.com/sparewall/sparewall/releases) also has
+ready-made images, with checksums signed by the same key:
+
+- `sparewall-VERSION-x86_64.iso`: an installer for physical machines.
+  It installs **unattended to the first disk it finds, erasing it**:
+  disconnect any disk you want to keep.
+- `sparewall-VERSION-x86_64.raw.zst`: a disk image to write to the
+  machine's disk or a USB stick
+  (`zstd -dc sparewall-*.raw.zst | sudo dd of=/dev/sdX bs=4M`).
+- `sparewall-VERSION-x86_64.qcow2`: a disk image for VMs.
+- `sparewall-VERSION-x86_64-linux.tar.gz`: the `sparewall` CLI for your
+  workstation (a static Linux binary).
+
+```shell
+cosign verify-blob --key cosign.pub --bundle SHA256SUMS.sigstore.json SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+Files named `.partNN` are pieces of one file: `cat` them together first.
+
+Or build a disk image yourself with
 [bootc-image-builder](https://github.com/osbuild/bootc-image-builder):
 
 ```shell
@@ -53,10 +73,17 @@ management is untagged.
   or with QEMU directly:
   `-smbios type=11,value=io.systemd.credential.binary:sparewall.identity=$(base64 -w0 identity.json)`.
   Give the VM a fixed MAC (`<mac address='52:54:00:aa:00:01'/>`).
-- **Physical machines:** on the console (log in as root with the password
-  set at install), run
-  `sparewall init --node fw1 --mgmt-nic <MAC> --ssh-key "<key>"` and then
-  `systemctl restart sparewalld`.
+- **Physical machines:** a seed stick. Put the identity, as
+  `sparewall-identity.yaml` (or `.json`), on a USB stick whose filesystem
+  is labelled `SPAREWALL`, and plug it in before the first boot:
+  ```shell
+  sudo mkfs.vfat -n SPAREWALL /dev/sdX1
+  sudo mount /dev/sdX1 /mnt && sudo cp sparewall-identity.yaml /mnt/ && sudo umount /mnt
+  ```
+  The node reads it once, and ignores the stick after that. Alternatively,
+  on a console where you can log in as root, run
+  `sparewall init --node fw1 --mgmt-nic <MAC> --ssh-key "<key>"` (or
+  `sparewall init --from identity.yaml`).
 
 The node boots into **bootstrap mode**: only the management port is up
 (named `mgmt0`, or `mgmt` for a tagged VLAN), SSH is accepted on it for

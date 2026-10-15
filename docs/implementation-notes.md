@@ -52,6 +52,23 @@ Where the implementation departs from, or settles open questions in,
   (ACME issuance on a node, real hardware).
   `sparewall-run@` runs the same binary but stays `unconfined_service_t`
   (`SELinuxContext=`): it runs what the coordinator's confinement forbids.
+- **The installer ISO is bootc-image-builder's `anaconda-iso`**: it
+  installs unattended to the first disk, from the image embedded in it,
+  with no network. An interactive installer would need a custom Anaconda
+  build. The release notes and getting-started say it erases the disk.
+- **Physical nodes get their identity from a seed stick**: a filesystem
+  labelled `SPAREWALL` with `sparewall-identity.yaml` (or `.json`). A udev
+  rule starts `sparewall-seed@.service`, which mounts it read-only and
+  runs `sparewall init --from`, until an identity is recorded. The
+  unattended ISO sets no root password, so the console route
+  (`sparewall init`) needs one set by other means. A custom kickstart
+  could write the identity too; the release ISO has none.
+- **Releases are drafted, then published by a maintainer**
+  ([releasing.md](releasing.md)). A `v*` tag reruns every VM suite; the
+  draft carries the ISO, raw and qcow2 images, the static (musl) CLI,
+  SBOMs and signed checksums. Publishing tags the tested image with the
+  version and, unless it is a prerelease, `stable`: promotion is that
+  decision, not a separate test run.
 - **Confined daemons read their configs from their own runtime
   directories** (`/run/chrony`, `/run/keepalived`), which carry their
   SELinux labels; everything else is under `/run/sparewall/<subsystem>`.

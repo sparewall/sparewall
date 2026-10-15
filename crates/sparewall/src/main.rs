@@ -251,11 +251,11 @@ enum Cmd {
     /// Record this node's install-time identity (run on the node as root).
     Init {
         /// Node name, e.g. fw1.
-        #[arg(long)]
-        node: String,
+        #[arg(long, required_unless_present = "from")]
+        node: Option<String>,
         /// Management NIC: permanent MAC address or udev path.
-        #[arg(long)]
-        mgmt_nic: String,
+        #[arg(long, required_unless_present = "from")]
+        mgmt_nic: Option<String>,
         #[arg(long)]
         mgmt_vlan: Option<u16>,
         /// Static management address (CIDR); default DHCP.
@@ -266,6 +266,10 @@ enum Cmd {
         /// Admin SSH public key (repeatable).
         #[arg(long = "ssh-key")]
         ssh_keys: Vec<String>,
+        /// Take the whole identity from a JSON or YAML file instead (as on
+        /// a seed stick).
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["node", "mgmt_nic", "mgmt_vlan", "mgmt_address", "mgmt_gateway", "ssh_keys"])]
+        from: Option<PathBuf>,
         /// Where to write the identity.
         #[arg(long, default_value = "/etc/sparewall/identity.json")]
         out: PathBuf,
@@ -1160,9 +1164,16 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
             mgmt_address,
             mgmt_gateway,
             ssh_keys,
+            from,
             out,
         } => {
-            let id = json!({
+            let id = match from {
+                Some(f) => {
+                    let text = std::fs::read_to_string(f)
+                        .map_err(|e| Fail::other(format!("{}: {e}", f.display())))?;
+                    sparewall_config::parse_value(&text, Format::detect(f.to_str(), &text))?
+                }
+                None => json!({
                 "node": node,
                 "ssh_keys": ssh_keys,
                 "management": {
@@ -1171,7 +1182,8 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
                     "address": mgmt_address,
                     "gateway": mgmt_gateway,
                 }
-            });
+                }),
+            };
             let mut id = id;
             if let Some(m) = id["management"].as_object_mut() {
                 m.retain(|_, v| !v.is_null());
@@ -1186,7 +1198,7 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
             std::fs::write(out, sparewall_config::format_value(&id, Format::Json))
                 .map_err(|e| Fail::other(format!("{}: {e}", out.display())))?;
             eprintln!(
-                "Wrote {}. sparewalld records it on its next start (systemctl restart sparewalld).",
+                "Wrote {}. A waiting sparewalld records it within seconds.",
                 out.display()
             );
             Ok(true)

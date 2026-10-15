@@ -262,3 +262,49 @@ fn backup_to_restic_and_restore() {
         "{secrets}"
     );
 }
+
+#[test]
+fn init_from_a_seed_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let init = |file: &str, text: &str| {
+        let seed = dir.path().join(file);
+        std::fs::write(&seed, text).unwrap();
+        let out = dir.path().join("identity.json");
+        let _ = std::fs::remove_file(&out);
+        let o = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+            .args(["init", "--from"])
+            .arg(&seed)
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .unwrap();
+        (o, std::fs::read_to_string(&out).ok())
+    };
+    let (o, written) = init(
+        "sparewall-identity.yaml",
+        "node: fw1\nssh_keys: [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl ci\"]\nmanagement: { nic: \"52:54:00:aa:00:01\", vlan: 99 }\n",
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_str(&written.unwrap()).unwrap();
+    assert_eq!(
+        (&v["node"], &v["management"]["vlan"]),
+        (&"fw1".into(), &99.into())
+    );
+
+    // A broken identity is refused and nothing is written.
+    let (o, written) = init("bad.json", r#"{"node": "fw1"}"#);
+    assert_eq!(
+        o.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(written.is_none());
+
+    // --from stands alone.
+    let o = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+        .args(["init", "--from", "x.yaml", "--node", "fw1"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+}

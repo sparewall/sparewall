@@ -1,0 +1,12 @@
+[Unit]
+Description=Read the node identity from the seed stick %I
+Documentation=https://github.com/sparewall/sparewall
+# Only until the coordinator has recorded an identity.
+ConditionPathExists=!/var/lib/sparewall/identity.json
+After=local-fs.target
+Before=sparewalld.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/sparewall/seed /dev/%I
+PrivateTmp=yes
