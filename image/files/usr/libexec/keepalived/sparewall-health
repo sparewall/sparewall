@@ -2,4 +2,6 @@
 # keepalived's track script. It lives here so SELinux runs it unconfined
 # (keepalived_unconfined_script_exec_t) and it may reach the coordinator.
 # Exits non-zero only when the node's health is "failed".
-exec /usr/bin/sparewall health --quiet
+# Its own socket: the admin socket may be busy with a call that waits on
+# the peer (sparewall_api::HEALTH_SOCKET).
+exec /usr/bin/sparewall --socket /run/sparewall/org.sparewall.Health health --quiet

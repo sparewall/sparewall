@@ -11,6 +11,11 @@ use zlink::introspect::{CustomType, ReplyError, Type};
 pub const INTERFACE: &str = "org.sparewall.Firewall";
 /// The root-only admin socket.
 pub const SOCKET: &str = "/run/sparewall/org.sparewall.Firewall";
+/// A second root-only socket serving the same interface, for keepalived's
+/// health check. The server answers one call at a time, so a call on the
+/// admin socket that waits on the peer would otherwise hold the check up
+/// past its timeout and hand the gateway addresses over.
+pub const HEALTH_SOCKET: &str = "/run/sparewall/org.sparewall.Health";
 
 /// One configuration generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]

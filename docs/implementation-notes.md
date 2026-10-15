@@ -45,6 +45,12 @@ Where the implementation departs from, or settles open questions in,
   check and notify scripts live in `/usr/libexec/keepalived` (where they run
   unconfined), and transitions reach the coordinator through a FIFO the
   notify script writes, since keepalived itself may not use notify_fifo.
+- **keepalived's health check has a socket of its own**,
+  `/run/sparewall/org.sparewall.Health`, served by a second instance of
+  the same service. zlink answers one call at a time per server, and some
+  admin calls wait on the peer (a sync-link change waits up to 15 s for
+  the push reply); behind one of those, the check would time out (5 s,
+  three in a row) and keepalived would hand the gateway addresses over.
 - **Commands the coordinator's sandbox forbids** (podman config checks,
   the keepalived netns check, bootc) run as the oneshot unit
   `sparewall-run@<id>.service`; `systemd-run` from inside the sandbox fails.
@@ -188,8 +194,7 @@ Where the implementation departs from, or settles open questions in,
     reply goes through (the pair VM test hung there). So the receiver
     validates a gated sync-link push, replies, and then runs it. A
     failure after the reply is never confirmed, so the pusher reverts.
-    The pusher's wait stays short, which matters: zlink serves one call
-    at a time, and keepalived's health check waits behind it.
+    That keeps the pusher's wait short on the normal path.
   - **Lost push replies:** a push that was sent but got no reply within
     15 s runs anyway. If the peer took it, it confirms over the new
     link; if not, nothing confirms it and this node reverts at its
