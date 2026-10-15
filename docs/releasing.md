@@ -17,7 +17,8 @@ For maintainers. A release is a tested commit on `main`, tagged.
      the first fixed disk);
    - `sparewall-VERSION-x86_64.raw.zst` and `.qcow2`: disk images;
    - `sparewall-VERSION-x86_64-linux.tar.gz`: the static CLI;
-   - SPDX SBOMs of the image and the CLI;
+   - SPDX SBOMs of the image and of the CLI (from the dependency list
+     cargo-auditable embeds in the binary);
    - `SHA256SUMS`, signed with the project key
      (`SHA256SUMS.sigstore.json`).
 
