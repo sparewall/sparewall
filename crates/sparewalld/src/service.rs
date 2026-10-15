@@ -58,12 +58,18 @@ pub fn lookup_booted_image() {
 }
 
 /// The Varlink service. Coordinator calls run on the blocking pool, since
-/// they shell out to nft and networkctl.
+/// they shell out to nft and networkctl. Each connection is served by its
+/// own clone (`varlink::serve`), so calls from different clients overlap.
+#[derive(Clone)]
 pub struct Firewall {
     core: Core,
     events: broadcast::Sender<Value>,
     pair: Pair,
     sync: Arc<Notify>,
+    /// Held for the whole of a call that changes the configuration, so
+    /// changes still run one at a time: a sync-link change must not have
+    /// another land between the peer taking it and it running here.
+    changes: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Firewall {
@@ -78,6 +84,7 @@ impl Firewall {
             events,
             pair,
             sync,
+            changes: Default::default(),
         }
     }
 
@@ -299,6 +306,7 @@ where
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<ApplyReply, FirewallError> {
+        let _change = self.changes.lock().await;
         let reachable = self.gate(allow_diverge, dry_run)?;
         let o = opts(
             base,
@@ -320,6 +328,7 @@ where
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<ApplyReply, FirewallError> {
+        let _change = self.changes.lock().await;
         let reachable = self.gate(allow_diverge, dry_run)?;
         let o = opts(
             base,
@@ -341,6 +350,7 @@ where
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<ApplyReply, FirewallError> {
+        let _change = self.changes.lock().await;
         let reachable = self.gate(allow_diverge, dry_run)?;
         let o = opts(
             base,
@@ -354,6 +364,7 @@ where
     }
 
     async fn confirm(&mut self, id: i64) -> Result<Empty, FirewallError> {
+        let _change = self.changes.lock().await;
         with_core(&self.core, &self.events, move |c| {
             c.confirm(id.max(0) as u64)
         })
@@ -369,6 +380,7 @@ where
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<GenerationReply, FirewallError> {
+        let _change = self.changes.lock().await;
         let target = id.map(|i| i.max(0) as u64);
         // Evaluated now, applied below only if the rollback reaches the peer.
         let gate = self.gate(allow_diverge, None);
@@ -429,6 +441,7 @@ where
     }
 
     async fn sync(&mut self, from_node: String) -> Result<GenerationReply, FirewallError> {
+        let _change = self.changes.lock().await;
         let (node, peer) = with_core(&self.core, &self.events, |c| {
             let doc = c.active_document()?;
             Ok((
@@ -616,6 +629,7 @@ where
         channel: Option<String>,
         image: Option<String>,
     ) -> Result<UpgradeStartReply, FirewallError> {
+        let _change = self.changes.lock().await;
         let (target, peer, plan) =
             crate::upgrade::plan(&self.core, &self.events, &self.pair, channel, image)
                 .await

@@ -11,6 +11,7 @@ mod peer;
 mod rules;
 mod service;
 mod upgrade;
+mod varlink;
 mod vrrp;
 
 use std::os::unix::fs::PermissionsExt;
@@ -159,7 +160,7 @@ fn root_only(socket: &Path) -> Result<std::os::unix::net::UnixListener, String> 
         .map_err(|e| format!("{}: {e}", socket.display()))
 }
 
-fn listener(socket: &Path) -> std::io::Result<zlink::tokio::unix::Listener> {
+fn listener(socket: &Path) -> std::io::Result<tokio::net::UnixListener> {
     let mut fds = listenfd::ListenFd::from_env();
     let std_listener = match fds.take_unix_listener(0)? {
         Some(l) => {
@@ -178,7 +179,7 @@ fn listener(socket: &Path) -> std::io::Result<zlink::tokio::unix::Listener> {
         }
     };
     std_listener.set_nonblocking(true)?;
-    Ok(tokio::net::UnixListener::from_std(std_listener)?.into())
+    tokio::net::UnixListener::from_std(std_listener)
 }
 
 /// Revert expired confirm windows and feed the watchdog.
@@ -270,19 +271,15 @@ fn run(args: Args) -> Result<(), String> {
         // Publish anything boot did (a revert of an unconfirmed change).
         let _ = with_core(&core, &tx, |_| Ok(())).await;
         let l = listener(&args.socket).map_err(|e| format!("socket: {e}"))?;
-        let server = zlink::Server::new(
-            l,
-            Firewall::new(core.clone(), tx.clone(), pair.clone(), wake.clone()),
-        );
-        // keepalived's health check, on a server of its own (see
+        let firewall = Firewall::new(core.clone(), tx.clone(), pair.clone(), wake.clone());
+        let server = varlink::serve(l, firewall.clone());
+        // keepalived's health check, on a socket of its own (see
         // HEALTH_SOCKET).
         let health_socket = args.socket.with_file_name("org.sparewall.Health");
-        let health_server = zlink::Server::new(
-            zlink::tokio::unix::Listener::from(
-                tokio::net::UnixListener::from_std(root_only(&health_socket)?)
-                    .map_err(|e| e.to_string())?,
-            ),
-            Firewall::new(core.clone(), tx.clone(), pair.clone(), wake.clone()),
+        let health_server = varlink::serve(
+            tokio::net::UnixListener::from_std(root_only(&health_socket)?)
+                .map_err(|e| e.to_string())?,
+            firewall,
         );
         // The peer service, reached only through the sync-tunnel listener.
         let peer_socket = args.socket.with_file_name("org.sparewall.Peer");
@@ -335,7 +332,7 @@ fn run(args: Args) -> Result<(), String> {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .map_err(|e| e.to_string())?;
         tokio::select! {
-            r = server.run() => r.map_err(|e| format!("varlink server: {e}")),
+            r = server => r.map_err(|e| format!("varlink server: {e}")),
             () = ticker(core.clone(), tx.clone()) => Ok(()),
             () = async {
                 if args.fake_system {
@@ -346,7 +343,7 @@ fn run(args: Args) -> Result<(), String> {
             () = dhcp_ha::takeover_loop(core.clone(), tx.clone(), pair.clone()) => Ok(()),
             () = https => Ok(()),
             r = peer_server.run() => r.map_err(|e| format!("peer server: {e}")),
-            r = health_server.run() => r.map_err(|e| format!("health server: {e}")),
+            r = health_server => r.map_err(|e| format!("health server: {e}")),
             () = peer::listener(
                 core.clone(),
                 tx.clone(),
