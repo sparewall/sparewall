@@ -38,6 +38,10 @@ pub trait System: Send {
     /// Operational state of each existing link (`up`, `down`, `unknown`...).
     fn link_states(&mut self) -> BTreeMap<String, String>;
 
+    /// The members a bond holds now, each with whether its link is up
+    /// (the bonding driver's MII status).
+    fn bond_members(&mut self, bond: &str) -> Vec<(String, bool)>;
+
     /// Install a provider subsystem's files (under `/run/sparewall/<dir>`).
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error>;
 
@@ -95,6 +99,8 @@ pub struct Fake {
     pub network: Files,
     pub sysctl: Option<String>,
     pub links: BTreeMap<String, String>,
+    /// Members of each bond, with their MII status.
+    pub bonds: BTreeMap<String, Vec<(String, bool)>>,
     /// Make `nft_check` fail with this message.
     pub fail_nft_check: Option<String>,
     /// Make `nft_load` fail with this message.
@@ -205,6 +211,10 @@ impl System for Fake {
 
     fn link_states(&mut self) -> BTreeMap<String, String> {
         self.links.clone()
+    }
+
+    fn bond_members(&mut self, bond: &str) -> Vec<(String, bool)> {
+        self.bonds.get(bond).cloned().unwrap_or_default()
     }
 
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
@@ -347,6 +357,9 @@ impl System for Box<dyn System> {
     }
     fn link_states(&mut self) -> BTreeMap<String, String> {
         (**self).link_states()
+    }
+    fn bond_members(&mut self, bond: &str) -> Vec<(String, bool)> {
+        (**self).bond_members(bond)
     }
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
         (**self).install_files(sub, files)

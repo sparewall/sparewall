@@ -11,7 +11,6 @@ set -euo pipefail
 IMAGE=${1:?usage: boot-test.sh IMAGE [WORKDIR]}
 WORK=${2:-$(mktemp -d)}
 HERE=$(cd "$(dirname "$0")" && pwd)
-BIB=${BIB:-quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b}
 SSH_PORT=${SSH_PORT:-2222}
 MAC=52:54:00:12:34:56
 mkdir -p "$WORK/output"
@@ -22,25 +21,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 trap 'dump' ERR
 
 log "building a qcow2 from $IMAGE"
-if [ ! -f output/qcow2/disk.qcow2 ]; then
-    # bootc copies the logically bound provider images into the new system
-    # from the host's container storage, so they must be there first.
-    for ref in $(sudo podman run --rm --entrypoint sh "$IMAGE" -c \
-            'for f in /usr/lib/bootc/bound-images.d/*; do sed -n "s/^Image=//p" "$f"; done'); do
-        sudo podman image exists "$ref" || sudo podman pull "$ref"
-    done
-    auth=()
-    if sudo test -f /run/containers/0/auth.json; then
-        auth=(-v /run/containers/0/auth.json:/run/containers/0/auth.json:ro)
-    fi
-    sudo podman run --rm --privileged \
-        --security-opt label=type:unconfined_t \
-        "${auth[@]}" \
-        -v "$WORK/output:/output" \
-        -v /var/lib/containers/storage:/var/lib/containers/storage \
-        "$BIB" --type qcow2 --rootfs xfs "$IMAGE"
-fi
-sudo chown -R "$(id -u):$(id -g)" output
+"$HERE/build-disk.sh" "$IMAGE" "$WORK"
 cp output/qcow2/disk.qcow2 vm.qcow2
 
 # shellcheck source=conformance.sh
@@ -158,8 +139,15 @@ fi
 
 log "metrics, with host metrics from node_exporter"
 token=$(vm 'sudo sparewall token create ci-monitor --role monitor -q')
-vm "curl -sfk -H 'Authorization: Bearer $token' https://localhost/metrics" > metrics.txt \
-    || fail "/metrics refused a monitor token"
+# node_exporter may still be starting after the reboot above.
+deadline=$((SECONDS + 60))
+while :; do
+    vm "curl -sfk -H 'Authorization: Bearer $token' https://localhost/metrics" > metrics.txt \
+        || fail "/metrics refused a monitor token"
+    grep -q '^node_network_receive_bytes_total{device="uplink"}' metrics.txt && break
+    [ $SECONDS -lt $deadline ] || break
+    sleep 3
+done
 grep -q '^sparewall_generation' metrics.txt || fail "no coordinator metrics: $(head -5 metrics.txt)"
 grep -q '^node_network_receive_bytes_total{device="uplink"}' metrics.txt || {
     vm 'systemctl status prometheus-node-exporter.service --no-pager' || true
@@ -185,25 +173,7 @@ done
 run_conformance
 
 log "backup to a restic REST server"
-REST_SERVER=${REST_SERVER:-0.14.0}
-REST_SHA256=${REST_SHA256:-4c9c95bc079a0334e81fad379b19dc5c3353c71c2c88d652cafce2081c2b1c66}
-if ! command -v rest-server >/dev/null; then
-    f=rest-server_${REST_SERVER}_linux_amd64.tar.gz
-    curl -fsSLO "https://github.com/restic/rest-server/releases/download/v$REST_SERVER/$f"
-    echo "$REST_SHA256  $f" | sha256sum -c -
-    tar -xzf "$f" --strip-components=1 "rest-server_${REST_SERVER}_linux_amd64/rest-server"
-    # The release archive ships it without the execute bit.
-    chmod +x rest-server
-    PATH=$WORK:$PATH
-fi
-mkdir -p restic
-rest-server --path "$WORK/restic" --listen 127.0.0.1:8000 --no-auth >rest-server.log 2>&1 &
-echo $! > rest-server.pid
-deadline=$((SECONDS + 30))
-until curl -s -o /dev/null http://127.0.0.1:8000/; do
-    [ $SECONDS -lt $deadline ] || fail "rest-server did not start: $(cat rest-server.log)"
-    sleep 1
-done
+start_rest_server
 REPO=rest:http://10.0.2.2:8000/fw1
 PASSWORD="ci backup password"
 vm "printf %s '$PASSWORD' | sudo sparewall secret set backup-password"

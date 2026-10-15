@@ -14,6 +14,8 @@ replication_links:
 vip_links:
   - users
   - wan
+bonds:
+  uplink: 2
 services:
   dhcp:
     provider: kea

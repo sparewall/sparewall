@@ -577,6 +577,19 @@ impl System for Linux {
             .collect()
     }
 
+    fn bond_members(&mut self, bond: &str) -> Vec<(String, bool)> {
+        let net = &self.sys_class_net;
+        fs::read_to_string(net.join(bond).join("bonding/slaves"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(|m| {
+                let up = fs::read_to_string(net.join(m).join("bonding_slave/mii_status"))
+                    .is_ok_and(|s| s.trim() == "up");
+                (m.to_string(), up)
+            })
+            .collect()
+    }
+
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
         let (dir, shared) = match install_dir(sub) {
             Some(d) => (PathBuf::from(d), true),

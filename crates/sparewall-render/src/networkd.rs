@@ -82,6 +82,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 );
                 nd.opt("TransmitHashPolicy", bond.hash_policy.as_deref());
                 nd.set("MIIMonitorSec", bond.miimon.as_deref().unwrap_or("100ms"));
+                out.meta.bonds.insert(role.to_string(), bond.members.len());
                 out.add(
                     Subsystem::Networkd,
                     format!("10-sparewall-{role}.netdev"),

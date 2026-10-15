@@ -423,6 +423,52 @@ fn dedicated_sync_port(v: &mut Value) {
 /// replicating, the gateway addresses stay); losing one that carries
 /// traffic fails it; restoring either returns to ok.
 #[test]
+fn a_bond_member_down_degrades_health() {
+    // fw2's uplink in the example is a bond of two NICs.
+    let mut t = pair_node("fw2");
+    t.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let doc =
+        sparewall_config::from_value(t.c.document_value(t.c.active().unwrap()).unwrap()).unwrap();
+    let m = sparewall_render::render(&doc, "fw2").unwrap().meta;
+    assert_eq!(m.bonds, [("uplink".to_string(), 2)].into());
+    for l in m.required_links.iter().chain(&m.replication_links) {
+        t.c.system().links.insert(l.clone(), "up".into());
+    }
+    let bond = |t: &mut T, members: &[(&str, bool)]| {
+        t.c.system().bonds.insert(
+            "uplink".into(),
+            members.iter().map(|(m, up)| (m.to_string(), *up)).collect(),
+        );
+        let h = t.c.health().unwrap();
+        let c = h.check("bonds").unwrap();
+        (c.level, h.level, c.message.clone())
+    };
+    let (check, overall, _) = bond(&mut t, &[("eth1", true), ("eth2", true)]);
+    assert_eq!((check, overall), (Level::Ok, Level::Ok));
+    // A member whose link is down, then one the bond no longer holds:
+    // traffic still flows, so degraded, never failed.
+    for (members, said) in [
+        (
+            &[("eth1", true), ("eth2", false)][..],
+            "uplink: 1 of 2 members up (eth2 down)",
+        ),
+        (&[("eth1", true)][..], "uplink: 1 of 2 members up"),
+    ] {
+        let (check, overall, msg) = bond(&mut t, members);
+        assert_eq!(
+            (check, overall),
+            (Level::Degraded, Level::Degraded),
+            "{said}"
+        );
+        assert_eq!(msg, said);
+    }
+    // fw1's uplink is one NIC: no bonds check.
+    let mut t = pair_node("fw1");
+    t.c.apply(pair_example(), &opts(0, None)).unwrap();
+    assert!(t.c.health().unwrap().check("bonds").is_none());
+}
+
+#[test]
 fn replication_link_loss_degrades_health() {
     struct Case {
         name: &'static str,
@@ -487,6 +533,10 @@ fn replication_link_loss_degrades_health() {
         let m = meta(t);
         for l in m.required_links.iter().chain(&m.replication_links) {
             t.c.system().links.insert(l.clone(), "up".into());
+        }
+        for (bond, &n) in &m.bonds {
+            let members = (0..n).map(|i| (format!("{bond}{i}"), true)).collect();
+            t.c.system().bonds.insert(bond.clone(), members);
         }
     };
     let levels = |t: &mut T| {

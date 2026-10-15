@@ -141,8 +141,8 @@ vpn_setup() {
     wait_for 30 "natk has a session from keepalives alone" has_session natk
     # Inner flows from vpna (the echo servers run in sw-guests), and
     # timestamped pings from the active clients.
-    ns vpna python3 "$WORK/echo.py" client "$VPN_TARGET" 120 > vpn-tcp.log 2>&1 &
-    ns vpna python3 "$WORK/echo.py" udpclient "$VPN_TARGET" > vpn-udp.log 2>&1 &
+    ns vpna python3 "$HERE/echo.py" client "$VPN_TARGET" 120 > vpn-tcp.log 2>&1 &
+    ns vpna python3 "$HERE/echo.py" udpclient "$VPN_TARGET" > vpn-udp.log 2>&1 &
     ns vpna ping -D -i 0.2 -W 1 "$VPN_TARGET" > vpna.ping 2>&1 &
     ns natc ping -D -i 0.2 -W 1 "$VPN_TARGET" > natc.ping 2>&1 &
     sleep 3

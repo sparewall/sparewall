@@ -87,3 +87,27 @@ run_conformance() {
         || fail "the guests->users default drop counted nothing"
     log "conformance PASS"
 }
+
+# A restic REST server on 127.0.0.1:8000 (10.0.2.2:8000 from the VMs),
+# storing under $WORK/restic.
+start_rest_server() {
+    local v=${REST_SERVER:-0.14.0}
+    local sum=${REST_SHA256:-4c9c95bc079a0334e81fad379b19dc5c3353c71c2c88d652cafce2081c2b1c66}
+    if ! command -v rest-server >/dev/null; then
+        local f=rest-server_${v}_linux_amd64.tar.gz
+        curl -fsSLO "https://github.com/restic/rest-server/releases/download/v$v/$f"
+        echo "$sum  $f" | sha256sum -c -
+        tar -xzf "$f" --strip-components=1 "rest-server_${v}_linux_amd64/rest-server"
+        # The release archive ships it without the execute bit.
+        chmod +x rest-server
+        PATH=$WORK:$PATH
+    fi
+    mkdir -p "$WORK/restic"
+    rest-server --path "$WORK/restic" --listen 127.0.0.1:8000 --no-auth >"$WORK/rest-server.log" 2>&1 &
+    echo $! > "$WORK/rest-server.pid"
+    local deadline=$((SECONDS + 30))
+    until curl -s -o /dev/null http://127.0.0.1:8000/; do
+        [ $SECONDS -lt $deadline ] || fail "rest-server did not start: $(cat "$WORK/rest-server.log")"
+        sleep 1
+    done
+}

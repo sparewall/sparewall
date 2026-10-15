@@ -1855,6 +1855,41 @@ impl<S: System> Coordinator<S> {
             });
         }
 
+        // A bond with a member down still carries traffic, without the
+        // redundancy it was built for.
+        if !r.meta.bonds.is_empty() {
+            let short: Vec<String> = r
+                .meta
+                .bonds
+                .iter()
+                .filter_map(|(bond, &want)| {
+                    let members = self.sys.bond_members(bond);
+                    let down: Vec<&str> = members
+                        .iter()
+                        .filter(|(_, up)| !up)
+                        .map(|(m, _)| m.as_str())
+                        .collect();
+                    let up = members.len() - down.len();
+                    (up < want).then(|| {
+                        let mut s = format!("{bond}: {up} of {want} members up");
+                        if !down.is_empty() {
+                            s.push_str(&format!(" ({} down)", down.join(", ")));
+                        }
+                        s
+                    })
+                })
+                .collect();
+            checks.push(if short.is_empty() {
+                Check::new(
+                    "bonds",
+                    Level::Ok,
+                    format!("{} bonds with every member up", r.meta.bonds.len()),
+                )
+            } else {
+                Check::new("bonds", Level::Degraded, short.join("; "))
+            });
+        }
+
         checks.extend(self.extra_checks.values().flatten().cloned());
 
         let units: Vec<String> = r.meta.services.values().map(|s| s.unit.clone()).collect();
