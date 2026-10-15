@@ -31,7 +31,8 @@ files_pid_file(sparewalld_var_run_t)
 # Its private /tmp (restic's temporary packs).
 type sparewalld_tmp_t;
 files_tmp_file(sparewalld_tmp_t)
-# Its own units (sparewalld, sparewall-*).
+# Its own units (sparewalld, sparewall-*), and journal-upload's, which
+# it starts and has no type of its own.
 type sparewalld_unit_file_t;
 systemd_unit_file(sparewalld_unit_file_t)
 
@@ -85,15 +86,20 @@ corenet_tcp_connect_all_ports(sparewalld_t)
 
 ########################################
 #
-# Its state, runtime and temporary files. /var/lib/sparewall is created
-# by tmpfiles and /run/sparewall by systemd (sparewalld.socket), both
-# labelled from the file contexts; what the coordinator creates inside
-# inherits the type. tmpfiles relabels /var/lib/sparewall at boot, for
-# nodes whose state predates this type.
+# Its state, runtime and temporary files. What the coordinator creates
+# inside its directories inherits their type. tmpfiles relabels
+# /var/lib/sparewall at boot, for nodes whose state predates this type.
+# sparewall-early runs before tmpfiles and may create /run/sparewall and
+# the confined daemons' runtime directories itself, so those are named
+# transitions (they need write access to /run itself).
 #
 
 manage_dirs_pattern(sparewalld_t, sparewalld_var_lib_t, sparewalld_var_lib_t)
 manage_files_pattern(sparewalld_t, sparewalld_var_lib_t, sparewalld_var_lib_t)
+files_pid_filetrans(sparewalld_t, sparewalld_var_run_t, dir, "sparewall")
+files_pid_filetrans(sparewalld_t, chronyd_var_run_t, dir, "chrony")
+files_pid_filetrans(sparewalld_t, keepalived_var_run_t, dir, "keepalived")
+allow sparewalld_t { chronyd_var_run_t keepalived_var_run_t }:dir { create setattr };
 manage_dirs_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
 manage_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
 manage_sock_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
