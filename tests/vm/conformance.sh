@@ -111,3 +111,25 @@ start_rest_server() {
         sleep 1
     done
 }
+
+# The coordinator's SELinux domain and what it was denied (permissive, so
+# nothing was blocked), for the job summary. $1 runs a command on a node.
+selinux_report() { # run-command node-name
+    local run=$1 node=$2 denials
+    $run 'ps -eo label,comm' | grep -q 'sparewalld_t.*sparewalld' \
+        || fail "$node: sparewalld does not run in sparewalld_t"
+    denials=$($run 'sudo journalctl -b -k --no-pager' \
+        | grep -oE 'avc: +denied .*scontext=[^ ]*:sparewalld_t:[^ ]*.*' \
+        | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=1//' \
+        | sort | uniq -c | sort -rn) || true
+    echo "$node: $(printf '%s' "$denials" | grep -c . || true) distinct sparewalld_t denials"
+    printf '%s\n' "$denials"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        {
+            echo "### SELinux: sparewalld_t on $node"
+            echo '```'
+            printf '%s\n' "${denials:-none}"
+            echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    fi
+}

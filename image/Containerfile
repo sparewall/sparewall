@@ -64,6 +64,15 @@ RUN curl -fsSLO https://netfilter.org/pub/ulogd/ulogd-${ULOGD_VERSION}.tar.xz \
     && test ! -e /out/usr/sbin
 
 # ---------------------------------------------------------------------------
+# The coordinator's SELinux policy module.
+FROM quay.io/fedora/fedora:45 AS selinux
+RUN dnf -y install --setopt=install_weak_deps=False selinux-policy-devel make \
+    && dnf clean all
+COPY image/selinux /src
+RUN make -C /src -f /usr/share/selinux/devel/Makefile sparewalld.pp \
+    && install -D -m 0644 /src/sparewalld.pp /out/usr/share/selinux/packages/sparewalld.pp
+
+# ---------------------------------------------------------------------------
 FROM quay.io/fedora/fedora-bootc:45
 
 # Provider images, pinned by digest in CI so a service and the OS move and
@@ -112,12 +121,15 @@ RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManag
 # real usr/sbin directory would replace it and hide every tool in it.
 COPY --from=build /out/ /
 COPY --from=ulogd /out/ /
+COPY --from=selinux /out/ /
 COPY image/files/ /
 
 RUN test -L /usr/sbin \
     && sed -i -e "s|@KEA_IMAGE@|${KEA_IMAGE}|" /usr/share/containers/systemd/sparewall-kea.container \
     && sed -i -e "s|@UNBOUND_IMAGE@|${UNBOUND_IMAGE}|" /usr/share/containers/systemd/sparewall-unbound.container \
     && sed -i -e "s|@LEGO_IMAGE@|${LEGO_IMAGE}|" /usr/share/containers/systemd/sparewall-lego.image \
+    && semodule -i /usr/share/selinux/packages/sparewalld.pp \
+    && semodule -l | grep -qx sparewalld \
     && systemctl preset-all \
     && systemctl mask bootc-fetch-apply-updates.timer \
     && chmod 0440 /etc/sudoers.d/sparewall \

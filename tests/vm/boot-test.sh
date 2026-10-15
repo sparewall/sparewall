@@ -230,4 +230,6 @@ dhcp_script
 [ "$(lease users)" = 192.0.2.20 ] || fail "users lost its reservation after the restore"
 can users 192.0.2.1 || fail "users cannot ping the gateway after the restore"
 
+log "the coordinator's SELinux domain"
+selinux_report vm fw1
 log "PASS"
