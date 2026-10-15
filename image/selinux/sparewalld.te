@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.2.0)
+policy_module(sparewalld, 0.3.0)
 
 ########################################
 #
@@ -9,6 +9,11 @@ policy_module(sparewalld, 0.2.0)
 # The domain is still permissive, so nothing is blocked, but the suites
 # fail on any sparewalld_t denial: a change that needs a new access adds
 # its rule here. Removing "permissive" is the step to enforcing.
+#
+# Grants are to the coordinator's own types wherever it owns the
+# objects: its state, runtime and temporary files and its units. Two
+# stay with generic types, each explained where it is granted: running
+# bin_t commands, and Quadlet's generated units.
 
 type sparewalld_t;
 type sparewalld_exec_t;
@@ -16,6 +21,19 @@ init_daemon_domain(sparewalld_t, sparewalld_exec_t)
 # The units run it with NoNewPrivileges=yes, so systemd's transition into
 # the domain is an nnp transition and must be allowed as one.
 init_nnp_daemon_domain(sparewalld_t)
+
+# /var/lib/sparewall: identity, keys, generations, secrets, TLS.
+type sparewalld_var_lib_t;
+files_type(sparewalld_var_lib_t)
+# /run/sparewall: rendered configs, sockets, the helper spool.
+type sparewalld_var_run_t;
+files_pid_file(sparewalld_var_run_t)
+# Its private /tmp (restic's temporary packs).
+type sparewalld_tmp_t;
+files_tmp_file(sparewalld_tmp_t)
+# Its own units (sparewalld, sparewall-*).
+type sparewalld_unit_file_t;
+systemd_unit_file(sparewalld_unit_file_t)
 
 permissive sparewalld_t;
 
@@ -29,18 +47,18 @@ allow unconfined_service_t sparewalld_exec_t:file { entrypoint execute map read 
 
 gen_require(`
 	type unconfined_t, init_t, kernel_t;
-	type bin_t, ifconfig_exec_t, iptables_exec_t, systemd_systemctl_exec_t;
+	type ifconfig_exec_t, iptables_exec_t, systemd_systemctl_exec_t;
 	type udev_exec_t, setfiles_exec_t, conntrackd_exec_t;
 	type file_context_t, default_context_t, security_t;
-	type net_conf_t, var_lib_t, var_run_t, tmp_t, cert_t, passwd_file_t;
+	type net_conf_t, cert_t, passwd_file_t;
 	type user_home_dir_t, ssh_home_t;
 	type init_var_lib_t, init_var_run_t, cgroup_t, nsfs_t, sysfs_t;
 	type chronyd_var_run_t, keepalived_var_run_t, conntrackd_conf_t;
-	type conntrackd_t, conntrackd_var_run_t;
+	type conntrackd_t, conntrackd_var_run_t, ulogd_t, systemd_journal_upload_t;
 	type udev_t, udev_var_run_t;
 	type systemd_networkd_t, systemd_networkd_var_run_t;
 	type container_t, container_file_t, container_var_lib_t;
-	type systemd_unit_file_t, systemd_generator_unit_file_t;
+	type systemd_generator_unit_file_t;
 	type chronyd_unit_file_t, keepalived_unit_file_t, conntrackd_unit_file_t;
 	type http_port_t, unreserved_port_t, node_t;
 	class service { start stop status reload };
@@ -67,18 +85,31 @@ corenet_tcp_connect_all_ports(sparewalld_t)
 
 ########################################
 #
-# Its state: /var/lib/sparewall, /run/sparewall, and restic's temporary
-# packs.
+# Its state, runtime and temporary files. /var/lib/sparewall is created
+# by tmpfiles and /run/sparewall by systemd (sparewalld.socket), both
+# labelled from the file contexts; what the coordinator creates inside
+# inherits the type. tmpfiles relabels /var/lib/sparewall at boot, for
+# nodes whose state predates this type.
 #
 
-allow sparewalld_t var_lib_t:dir { add_name create getattr open read remove_name search setattr write };
-allow sparewalld_t var_lib_t:file { create getattr open read rename setattr unlink write };
-allow sparewalld_t var_run_t:dir { add_name create getattr open read remove_name search setattr write relabelfrom };
-allow sparewalld_t var_run_t:file { create getattr open read rename setattr unlink write relabelfrom };
-allow sparewalld_t var_run_t:sock_file { create setattr unlink write };
-allow sparewalld_t var_run_t:fifo_file { create getattr open read setattr write };
-allow sparewalld_t tmp_t:dir { add_name remove_name search write };
-allow sparewalld_t tmp_t:file { create open unlink write };
+manage_dirs_pattern(sparewalld_t, sparewalld_var_lib_t, sparewalld_var_lib_t)
+manage_files_pattern(sparewalld_t, sparewalld_var_lib_t, sparewalld_var_lib_t)
+manage_dirs_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
+manage_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
+manage_sock_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
+manage_fifo_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
+# conntrackd.conf is written here, then given conntrackd's type.
+allow sparewalld_t sparewalld_var_run_t:file relabelfrom;
+manage_dirs_pattern(sparewalld_t, sparewalld_tmp_t, sparewalld_tmp_t)
+manage_files_pattern(sparewalld_t, sparewalld_tmp_t, sparewalld_tmp_t)
+files_tmp_filetrans(sparewalld_t, sparewalld_tmp_t, { dir file })
+
+# Confined daemons that read their rendered configs from /run/sparewall
+# (ulogd, journal-upload) or reach their own file in it (conntrackd).
+# keepalived's scripts run unconfined.
+allow { conntrackd_t ulogd_t systemd_journal_upload_t } sparewalld_var_run_t:dir search_dir_perms;
+allow { ulogd_t systemd_journal_upload_t } sparewalld_var_run_t:file read_file_perms;
+allow systemd_journal_upload_t sparewalld_var_run_t:lnk_file read_lnk_file_perms;
 
 ########################################
 #
@@ -106,7 +137,12 @@ allow sparewalld_t passwd_file_t:file { getattr open read };
 # udevadm, restorecon, conntrackd, restic and coreutils.
 #
 
-allow sparewalld_t { bin_t ifconfig_exec_t iptables_exec_t systemd_systemctl_exec_t udev_exec_t setfiles_exec_t conntrackd_exec_t }:file { execute execute_no_trans getattr map open read };
+allow sparewalld_t { ifconfig_exec_t iptables_exec_t systemd_systemctl_exec_t udev_exec_t setfiles_exec_t conntrackd_exec_t }:file { execute execute_no_trans getattr map open read };
+# wg, networkctl, systemd-creds, restic and coreutils are bin_t, like
+# most of /usr/bin. Running them adds no privilege: execute_no_trans keeps
+# them in sparewalld_t, under these same rules. Labelling each one would
+# take the label away from other domains that run it.
+corecmd_exec_bin(sparewalld_t)
 
 # restorecon reads the file contexts and walks the mounts.
 allow sparewalld_t { file_context_t default_context_t }:dir search;
@@ -121,7 +157,11 @@ allow sparewalld_t init_var_lib_t:file { getattr open read };
 allow sparewalld_t init_var_run_t:file { getattr open read };
 allow sparewalld_t cgroup_t:dir search;
 allow sparewalld_t cgroup_t:file read;
-allow sparewalld_t { systemd_unit_file_t systemd_generator_unit_file_t chronyd_unit_file_t keepalived_unit_file_t conntrackd_unit_file_t }:service { start stop status reload };
+allow sparewalld_t { sparewalld_unit_file_t chronyd_unit_file_t keepalived_unit_file_t conntrackd_unit_file_t }:service { start stop status reload };
+# Quadlet generates sparewall-kea and sparewall-unbound at boot, and the
+# generator gives every unit it writes this one type, whatever its
+# source; file contexts cannot tell them apart.
+allow sparewalld_t systemd_generator_unit_file_t:service { start stop status reload };
 
 # udevadm settle.
 allow sparewalld_t udev_var_run_t:dir { getattr search };

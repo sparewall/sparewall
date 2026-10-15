@@ -1,1 +1,4 @@
 /usr/bin/sparewalld	--	gen_context(system_u:object_r:sparewalld_exec_t,s0)
+/var/lib/sparewall(/.*)?	gen_context(system_u:object_r:sparewalld_var_lib_t,s0)
+/run/sparewall(/.*)?	gen_context(system_u:object_r:sparewalld_var_run_t,s0)
+/usr/lib/systemd/system/sparewall.*	--	gen_context(system_u:object_r:sparewalld_unit_file_t,s0)
