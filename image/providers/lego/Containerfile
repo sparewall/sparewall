@@ -1,0 +1,12 @@
+# lego for Sparewall, from Fedora's packages: the ACME client for DNS-01
+# challenges through hosted DNS APIs. The coordinator runs it for one
+# order at a time (sparewall_core::host::LegoContainer).
+FROM quay.io/fedora/fedora-minimal:45
+RUN microdnf -y install --setopt=install_weak_deps=0 lego ca-certificates \
+    && microdnf clean all \
+    && rm -rf /var/cache/* /var/log/* \
+    && lego --version
+LABEL org.opencontainers.image.title="Sparewall lego" \
+      org.opencontainers.image.source="https://github.com/sparewall/sparewall" \
+      org.opencontainers.image.licenses="MIT"
+ENTRYPOINT ["/usr/bin/lego"]

@@ -375,23 +375,65 @@ fn rejects_providers_not_built_yet() {
         &d,
         "unknown provider \"fluentd\"; use journal-upload"
     ));
-    // ACME DNS: any provider but rfc2136 is a lego provider, not built yet.
-    let cert = |provider: &str| {
+    // ACME DNS: any provider but rfc2136 is a lego provider code, whose
+    // options are environment variables.
+    let cert = |provider: &str, options: serde_json::Value| {
         json!({"tls": {"certificates": {"mgmt": {
             "names": ["fw.example.org"],
             "acme": {
                 "directory": "https://acme.example/dir",
                 "dns": {"provider": provider, "credentials": "secret:dns",
-                        "options": {"server": "ns.example:53"}}
+                        "options": options}
             }
         }}}})
     };
-    let d = edit(STANDALONE, cert("cloudflare"));
-    assert!(has_error(
-        &d,
-        "the cloudflare provider is not built yet; use rfc2136"
+    let server = json!({"server": "ns.example:53"});
+    assert!(!has_error(
+        &edit(STANDALONE, cert("rfc2136", server.clone())),
+        "provider"
     ));
-    assert!(!has_error(&edit(STANDALONE, cert("rfc2136")), "provider"));
+    let d = edit(STANDALONE, cert("cloudflare", json!({})));
+    assert!(
+        error_paths(&d).iter().all(|e| !e.contains("acme")),
+        "{:?}",
+        error_paths(&d)
+    );
+    let d = edit(
+        STANDALONE,
+        cert("gcloud", json!({"GCE_PROJECT": "p", "server": "x"})),
+    );
+    assert!(has_error(&d, "options are its environment variables"));
+    assert_eq!(
+        error_paths(&d)
+            .iter()
+            .filter(|e| e.contains("acme"))
+            .count(),
+        1
+    );
+    let d = edit(STANDALONE, cert("Cloud Flare", json!({})));
+    assert!(has_error(&d, "neither rfc2136 nor a lego provider code"));
+}
+
+/// Certificate names become file and secret names: no separators or
+/// traversal (#38 review).
+#[test]
+fn rejects_certificate_names_that_are_not_plain() {
+    for bad in ["../../etc/environment", "a/b", ".env", "Mgmt", "-x", ""] {
+        let d = edit(
+            STANDALONE,
+            json!({"tls": {"certificates": {bad: {"names": ["fw.example.org"]}}}}),
+        );
+        assert!(
+            has_error(&d, "a certificate name is lowercase letters"),
+            "{bad:?}: {:?}",
+            error_paths(&d)
+        );
+    }
+    let d = edit(
+        STANDALONE,
+        json!({"tls": {"certificates": {"mgmt-2": {"names": ["fw.example.org"]}}}}),
+    );
+    assert!(!has_error(&d, "a certificate name"));
 }
 
 #[test]

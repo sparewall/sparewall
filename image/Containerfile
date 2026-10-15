@@ -70,6 +70,7 @@ FROM quay.io/fedora/fedora-bootc:45
 # roll back together (design: "Container conventions").
 ARG KEA_IMAGE=ghcr.io/sparewall/kea:testing
 ARG UNBOUND_IMAGE=ghcr.io/sparewall/unbound:testing
+ARG LEGO_IMAGE=ghcr.io/sparewall/lego:testing
 
 LABEL org.opencontainers.image.title="Sparewall" \
       org.opencontainers.image.description="Image-based Linux firewall: one node or an HA pair, configured from one versioned document" \
@@ -116,6 +117,7 @@ COPY image/files/ /
 RUN test -L /usr/sbin \
     && sed -i -e "s|@KEA_IMAGE@|${KEA_IMAGE}|" /usr/share/containers/systemd/sparewall-kea.container \
     && sed -i -e "s|@UNBOUND_IMAGE@|${UNBOUND_IMAGE}|" /usr/share/containers/systemd/sparewall-unbound.container \
+    && sed -i -e "s|@LEGO_IMAGE@|${LEGO_IMAGE}|" /usr/share/containers/systemd/sparewall-lego.image \
     && systemctl preset-all \
     && systemctl mask bootc-fetch-apply-updates.timer \
     && chmod 0440 /etc/sudoers.d/sparewall \

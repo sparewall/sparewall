@@ -57,6 +57,13 @@ jobs:
           tar -xzf $f --strip-components=1 -C ~/.cargo/bin cargo-deny-$VERSION-x86_64-unknown-linux-musl/cargo-deny
       - run: cargo deny --locked check licenses advisories bans sources
 
+  sandbox:
+    name: sandbox exposure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: tests/ci/sandbox-exposure.sh
+
   acme:
     name: ACME against Pebble
     runs-on: ubuntu-latest

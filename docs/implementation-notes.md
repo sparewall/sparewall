@@ -142,6 +142,13 @@ Where the implementation departs from, or settles open questions in,
   (each applied the pairing document) converge on the one created first.
 - **Health endpoint detail and `/metrics`** need an API token, except
   `/metrics` when `metrics.mode` is `external`.
+- **Roles are not enforced per call yet** (#11). The only client path
+  to the coordinator is its root-only socket (directly, or through SSH
+  and `sparewall bridge`), and every caller there is admin. API tokens,
+  with their roles, are checked only by the HTTPS health and metrics
+  endpoints. How token-holding scripts and front ends reach the
+  coordinator is decided with the web UI (milestone 7), and per-call role
+  checks come with that transport.
 - **DHCP takeover is driven by VRRP.** Kea's hot-standby standby declares
   its partner down only after `max-unacked-clients` (5) distinct clients
   go unanswered, which a small network may never produce. When a node is
@@ -273,6 +280,17 @@ Where the implementation departs from, or settles open questions in,
   built provider per role, provider-specific status and state
   export/import are not abstracted yet. The VM conformance suite covers
   the built providers (Kea, Unbound).
+- **lego runs whole ACME orders**, not just the DNS records: it has no
+  command that only publishes a TXT record. So a lego certificate uses
+  lego's ACME account, one per node under `/var/lib/sparewall/lego`, not
+  the cluster's (built-in RFC 2136 orders share one account through the
+  secret store). The coordinator decides when to order (two-thirds of
+  the lifetime, as for RFC 2136) and passes `--renew-force`. lego runs in
+  its provider image, a logically bound image, through
+  `sparewall-run@` (podman is outside the coordinator's sandbox); the
+  credentials go in an environment file under `/run/sparewall/lego` that
+  exists only while lego runs. Provider codes are checked for form only;
+  lego rejects an unknown one when it runs.
 
 ## Release gates
 
@@ -305,13 +323,12 @@ rule for which side gives up) is outstanding.
 
 ## Not built yet
 
-- ACME `http-01` and lego-based DNS providers (RFC 2136 is built in).
+- ACME `http-01`.
 - Alternative providers: networkd's DHCP server (`dhcp.provider:
   networkd`) and syslog forwarding (`logging.remote.provider: syslog`).
   Earlier versions accepted them and then rendered nothing, silently
   turning DHCP or log forwarding off; validation now rejects them as
-  not built yet (#10), and an ACME DNS provider other than `rfc2136` the
-  same way.
+  not built yet (#10).
 - Schema migrations (only schema 1 exists); the Web UI.
 - The SELinux policy module for the coordinator, benchmarks.
 - A local Prometheus (`metrics.mode: local`, `metrics.retention`),

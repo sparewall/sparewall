@@ -1,0 +1,5 @@
+# The lego image (ACME through hosted DNS APIs), pulled with the OS as a
+# logically bound image. The coordinator reads Image= from here.
+[Image]
+Image=@LEGO_IMAGE@
+GlobalArgs=--storage-opt=additionalimagestore=/usr/lib/bootc/storage

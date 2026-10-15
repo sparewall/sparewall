@@ -1,6 +1,7 @@
 #!/bin/bash
 # ACME end to end: Pebble (a test CA) validates DNS-01 challenges that the
-# coordinator publishes to BIND with RFC 2136 dynamic updates.
+# coordinator publishes to BIND with RFC 2136 dynamic updates, and then
+# the same through lego (its RFC 2136 provider) in the lego provider image.
 #
 #   tests/acme/run.sh          (needs podman, nsupdate and dig)
 set -euo pipefail
@@ -62,9 +63,17 @@ for _ in $(seq 30); do
 done
 
 cd "$HERE/../.."
-ACME_DIRECTORY=https://localhost:14000/dir \
-ACME_CA="$WORK/ca.pem" \
-ACME_DNS=127.0.0.1:5353 \
-ACME_TSIG="hmac-sha256:acme:$secret" \
-    cargo test -p sparewalld --locked -- --ignored --exact acme::tests::against_pebble --nocapture
+LEGO_IMAGE=${LEGO_IMAGE:-localhost/sparewall-lego:test}
+podman build -q -t "$LEGO_IMAGE" image/providers/lego >/dev/null
+for t in against_pebble against_pebble_with_lego; do
+    # SPAREWALL_NO_HOST_RUN: run podman directly, even if the runner itself
+    # is a systemd service.
+    ACME_DIRECTORY=https://localhost:14000/dir \
+    ACME_CA="$WORK/ca.pem" \
+    ACME_DNS=127.0.0.1:5353 \
+    ACME_TSIG="hmac-sha256:acme:$secret" \
+    SPAREWALL_LEGO_IMAGE="$LEGO_IMAGE" \
+    SPAREWALL_NO_HOST_RUN=1 \
+        cargo test -p sparewalld --locked -- --ignored --exact "acme::tests::$t" --nocapture
+done
 echo "ACME PASS"
