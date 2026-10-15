@@ -339,6 +339,11 @@ async fn issue_with_lego(
     cert: &Certificate,
     lego: Arc<dyn Lego>,
 ) -> Result<Issued, String> {
+    // The name goes into lego's file names; validation already holds it
+    // to a plain name, and nothing here relies on that alone.
+    if !sparewall_config::validate::cert_name_ok(name) {
+        return Err(format!("{name:?} is not a valid certificate name"));
+    }
     let acme = cert.acme.as_ref().ok_or("no acme settings")?;
     let dns = acme.dns.as_ref().ok_or("acme.dns is required for dns-01")?;
     let mut env: Vec<(String, String)> = dns
@@ -390,19 +395,22 @@ async fn issue_with_lego(
         data.clone()
     };
     std::fs::create_dir_all(&env_dir).map_err(|e| e.to_string())?;
-    let env_file = env_dir.join(format!(".env-{}-{name}", std::process::id()));
-    {
+    // A fresh name, created exclusively: never an existing file or link.
+    let env_file = {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
+        let mut nonce = [0u8; 8];
+        getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
+        let p = env_dir.join(format!(".env-{}", hex::encode(nonce)));
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(&env_file)
-            .map_err(|e| e.to_string())?;
+            .open(&p)
+            .map_err(|e| format!("{}: {e}", p.display()))?;
         f.write_all(lines.as_bytes()).map_err(|e| e.to_string())?;
-    }
+        p
+    };
     let args = lego_args(name, cert, acme, &dns.provider);
     let (d, f) = (data.clone(), env_file.clone());
     let ran = blocking(move || lego.run(&d, &f, &args)).await;
@@ -773,6 +781,13 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert!(left.iter().all(|f| !f.starts_with(".env")), "{left:?}");
+        // A name that could leave the data directory never reaches a path,
+        // even past validation (#38 review).
+        let e = issue_with_lego(&core, &events, "../../etc/environment", &cert, lego.clone())
+            .await
+            .unwrap_err();
+        assert!(e.contains("not a valid certificate name"), "{e}");
+        assert_eq!(lego.0.lock().unwrap().len(), 1, "lego did not run");
         // A credential that is not KEY=value lines is refused before lego runs.
         set_secret(&core, "gcloud", "just a token");
         let e = issue_with_lego(&core, &events, "mgmt", &cert, lego.clone())

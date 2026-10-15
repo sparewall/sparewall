@@ -1963,6 +1963,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "futures-util",
+ "getrandom 0.4.3",
  "hex",
  "http-body-util",
  "hyper",

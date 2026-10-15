@@ -414,6 +414,28 @@ fn rejects_providers_not_built_yet() {
     assert!(has_error(&d, "neither rfc2136 nor a lego provider code"));
 }
 
+/// Certificate names become file and secret names: no separators or
+/// traversal (#38 review).
+#[test]
+fn rejects_certificate_names_that_are_not_plain() {
+    for bad in ["../../etc/environment", "a/b", ".env", "Mgmt", "-x", ""] {
+        let d = edit(
+            STANDALONE,
+            json!({"tls": {"certificates": {bad: {"names": ["fw.example.org"]}}}}),
+        );
+        assert!(
+            has_error(&d, "a certificate name is lowercase letters"),
+            "{bad:?}: {:?}",
+            error_paths(&d)
+        );
+    }
+    let d = edit(
+        STANDALONE,
+        json!({"tls": {"certificates": {"mgmt-2": {"names": ["fw.example.org"]}}}}),
+    );
+    assert!(!has_error(&d, "a certificate name"));
+}
+
 #[test]
 fn rejects_port_mistakes() {
     let d = edit(

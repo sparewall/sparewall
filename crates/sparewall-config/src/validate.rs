@@ -113,6 +113,12 @@ pub fn nft_name_ok(s: &str) -> bool {
     ident_ok(s, 31, "_")
 }
 
+/// Certificate names become file and secret names (`tls-<name>`, lego's
+/// `certificates/<name>.crt`): lowercase, a letter first, no separators.
+pub fn cert_name_ok(s: &str) -> bool {
+    ident_ok(s, 63, "-_")
+}
+
 pub fn mac_ok(s: &str) -> bool {
     let parts: Vec<&str> = s.split(':').collect();
     parts.len() == 6
@@ -1207,6 +1213,13 @@ impl Validator<'_> {
         let Some(t) = &doc.tls else { return };
         for (name, c) in &t.certificates {
             let p = format!("tls.certificates.{name}");
+            if !cert_name_ok(name) {
+                self.err(
+                    &p,
+                    "a certificate name is lowercase letters, digits, '-' and '_', \
+                     starting with a letter",
+                );
+            }
             if c.names.is_empty() {
                 self.err(
                     format!("{p}.names"),
