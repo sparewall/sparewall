@@ -338,7 +338,60 @@ fn rejects_dhcp_mistakes() {
     );
     assert!(has_error(&d, "not served on WAN"));
     let d = edit(PAIR, json!({"dhcp": {"provider": "networkd"}}));
-    assert!(has_error(&d, "no HA"));
+    assert!(has_error(&d, "cannot run in an HA pair"));
+    let d = edit(STANDALONE, json!({"dhcp": {"provider": "dnsmasq"}}));
+    assert!(has_error(&d, "unknown provider \"dnsmasq\"; use kea"));
+}
+
+/// #10: a provider the table lists but this release does not build is
+/// rejected (it used to validate and then render nothing), while stored
+/// history naming it stays readable.
+#[test]
+fn rejects_providers_not_built_yet() {
+    for (patch, path) in [
+        (json!({"dhcp": {"provider": "networkd"}}), "dhcp.provider"),
+        (
+            json!({"logging": {"remote": {"provider": "syslog", "destination": "log.example:514"}}}),
+            "logging.remote.provider",
+        ),
+    ] {
+        let d = edit(STANDALONE, patch);
+        let e = error_paths(&d);
+        assert!(
+            e.iter()
+                .any(|e| e.starts_with(path) && e.contains("not built yet")),
+            "{path}: {e:?}"
+        );
+        assert!(
+            crate::validate::errors(&crate::validate::validate_history(&d)).is_empty(),
+            "{path}: history stays readable"
+        );
+    }
+    let d = edit(
+        STANDALONE,
+        json!({"logging": {"remote": {"provider": "fluentd", "destination": "x:1"}}}),
+    );
+    assert!(has_error(
+        &d,
+        "unknown provider \"fluentd\"; use journal-upload"
+    ));
+    // ACME DNS: any provider but rfc2136 is a lego provider, not built yet.
+    let cert = |provider: &str| {
+        json!({"tls": {"certificates": {"mgmt": {
+            "names": ["fw.example.org"],
+            "acme": {
+                "directory": "https://acme.example/dir",
+                "dns": {"provider": provider, "credentials": "secret:dns",
+                        "options": {"server": "ns.example:53"}}
+            }
+        }}}})
+    };
+    let d = edit(STANDALONE, cert("cloudflare"));
+    assert!(has_error(
+        &d,
+        "the cloudflare provider is not built yet; use rfc2136"
+    ));
+    assert!(!has_error(&edit(STANDALONE, cert("rfc2136")), "provider"));
 }
 
 #[test]
@@ -424,4 +477,26 @@ fn rejects_settings_not_built_yet() {
     assert_eq!(error_paths(&d).len(), 5, "{:?}", error_paths(&d));
     let history = validate::validate_history(&d);
     assert!(validate::errors(&history).is_empty(), "{history:?}");
+}
+
+/// #10: switching a role's provider away from one whose state the new one
+/// cannot import warns; keeping it, or a role without state, does not.
+#[test]
+fn provider_switch_warns_about_lost_state() {
+    use crate::providers::switch_warnings;
+    let old = load(STANDALONE);
+    let to_networkd = edit(STANDALONE, json!({"dhcp": {"provider": "networkd"}}));
+    let w = switch_warnings(&old, &to_networkd);
+    assert_eq!(
+        w,
+        [
+            "dhcp.provider: switching from kea to networkd does not carry over Kea's lease database; it starts empty"
+        ]
+    );
+    assert!(switch_warnings(&to_networkd, &to_networkd).is_empty());
+    let named = edit(STANDALONE, json!({"dhcp": {"provider": "kea"}}));
+    assert!(
+        switch_warnings(&old, &named).is_empty(),
+        "the default, named"
+    );
 }

@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use sparewall_config::model::Document;
+use sparewall_config::providers::{self, Role};
 
 use crate::kea::gateway_addr;
 use crate::{CheckSpec, Error, Rendered, Service, Subsystem};
@@ -35,7 +36,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     let Some(dns) = doc.dns.as_ref().filter(|d| d.enabled) else {
         return Ok(());
     };
-    if dns.provider.as_deref().unwrap_or("unbound") != "unbound" {
+    if providers::chosen(doc, Role::Dns) != Some("unbound") {
         return Ok(());
     }
     let mut s = String::from(crate::HEADER);

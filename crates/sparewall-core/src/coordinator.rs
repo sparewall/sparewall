@@ -466,7 +466,10 @@ impl<S: System> Coordinator<S> {
     pub fn apply(&mut self, value: Value, opts: &ApplyOptions) -> Result<ApplyResult, Error> {
         let state = self.check_base(opts.base)?;
         self.link_change_in_progress(&state)?;
-        let (doc, warnings, rendered) = self.check(value)?;
+        let (doc, mut warnings, rendered) = self.check(value)?;
+        if let Some(old) = self.active_document()? {
+            warnings.extend(sparewall_config::providers::switch_warnings(&old, &doc));
+        }
         let hash = sparewall_config::hash(&doc);
         let active_gen = self.generation(state.active)?;
         let old_value = self.document_value(state.active)?;

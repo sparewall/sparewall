@@ -25,10 +25,6 @@ use crate::peer::{Pair, PairStatus};
 
 pub type Core = Arc<Mutex<Coordinator<Box<dyn System>>>>;
 
-/// Kea's lease file in its named volume.
-pub const KEA_LEASES: &str =
-    "/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv";
-
 /// The booted image (`name@digest`), looked up once by
 /// [`lookup_booted_image`]; fixed for the life of the boot.
 static BOOTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();

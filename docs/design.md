@@ -564,10 +564,10 @@ The document says what a service must do; a **provider** turns that intent into 
 
 | Role | Neutral config | Default provider | Alternatives |
 | --- | --- | --- | --- |
-| DHCPv4 | Pools, reservations (MAC, address, name), options (router, DNS, NTP, domain), lease time, HA | Kea 3.0 LTS | Kea 3.2; networkd's built-in server (standalone only); dnsmasq |
-| DNS resolver | Enabled flag, listening networks, forwarders or full recursion, local records from reservations | Unbound | Knot Resolver; dnsmasq; disabled |
-| ACME DNS-01 | Names, CA directory, provider name, secret reference | Built-in RFC 2136 | lego (Google Cloud DNS, Cloudflare, Route 53 and many more) |
-| Log forwarding | Destination, protocol, TLS | `systemd-journal-upload` | rsyslog remote (syslog or RELP); off |
+| DHCPv4 | Pools, reservations (MAC, address, name), options (router, DNS, NTP, domain), lease time, HA | Kea | networkd's built-in server (standalone only), dnsmasq: not built yet |
+| DNS resolver | Enabled flag, listening networks, forwarders or full recursion, local records from reservations | Unbound | Disabled; Knot Resolver, dnsmasq: not built yet |
+| ACME DNS-01 | Names, CA directory, provider name, secret reference | Built-in RFC 2136 | lego (Google Cloud DNS, Cloudflare, Route 53 and many more): not built yet |
+| Log forwarding | Destination, protocol, TLS | `systemd-journal-upload` | Off; rsyslog remote (syslog or RELP): not built yet |
 | Metrics storage | Mode, retention | External scrape | Local Prometheus container; off |
 | Backup | Repository, schedule, credentials | restic | Any restic backend; off |
 
@@ -583,6 +583,16 @@ The document says what a service must do; a **provider** turns that intent into 
 - **Capabilities are checked.** Each provider declares what it supports (HA, DDNS, DNSSEC, VLAN redetection); validation rejects a document needing something the chosen provider lacks.
 - **State moves or is declared lost.** Switching runs the provider's export and import (Kea's lease file, for example) where possible, and otherwise warns that state will be lost.
 - **One conformance suite per role,** run against every provider and version: a lease on every VLAN, reservations honoured, lease continuity across failover, local names resolve.
+
+### In the first releases
+
+Each role has one built provider, so the contract is narrower than the full interface above:
+
+- **One table.** Every provider is listed per role with its capabilities (HA) and the state it keeps (Kea's lease database, with where it lives and which providers can import it). Validation, the renderers, backups and `apply` all go by that table.
+- **Not built means rejected.** A provider the table lists as not built is rejected at its path, like other settings not built yet, so a document never names a provider that silently does nothing.
+- **State on a switch.** A change that switches a role's provider warns when the old provider's state cannot move to the new one.
+- **Status and state export/import** stay provider-specific until a second provider of a role exists.
+- **Conformance.** The VM conformance suite runs against the built providers.
 
 ### Container conventions
 
