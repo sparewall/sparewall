@@ -56,6 +56,9 @@ Where the implementation departs from, or settles open questions in,
   installs unattended to the first disk, from the image embedded in it,
   with no network. An interactive installer would need a custom Anaconda
   build. The release notes and getting-started say it erases the disk.
+  It builds Anaconda from the image's repositories, which it reads from
+  `/etc/yum.repos.d`, so the image copies Fedora 45's dnf5 repository
+  files there (nodes never run dnf; bootc replaces the whole image).
 - **Physical nodes get their identity from a seed stick**: a filesystem
   labelled `SPAREWALL` with `sparewall-identity.yaml` (or `.json`). A udev
   rule starts `sparewall-seed@.service`, which mounts it read-only and
