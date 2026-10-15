@@ -57,7 +57,13 @@ Where the implementation departs from, or settles open questions in,
   first fixed disk (removable and optical drives are skipped) and
   installs the image embedded in it, with no network. Without a
   kickstart, Anaconda waits at its interactive screens. The release
-  notes and getting-started say it erases the disk.
+  notes and getting-started say it erases the disk. bootc pulls the
+  logically bound provider images from their registry during the
+  install unless the target's image store already has them, and
+  bootc-image-builder does not put them in the ISO, so
+  `image/embed-bound-images.sh` adds them as `/bound-images.tar` and the
+  kickstart's `%pre-install` loads them into `ostree/bootc/storage` on
+  the new disk.
   It builds Anaconda from the image's repositories, which it reads from
   `/etc/yum.repos.d`, so the image copies Fedora 45's dnf5 repository
   files there (nodes never run dnf; bootc replaces the whole image).

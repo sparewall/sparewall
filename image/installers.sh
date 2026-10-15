@@ -12,7 +12,7 @@
 #
 #   image/installers.sh IMAGE VERSION OUTDIR
 #
-# Needs root (podman), qemu-img and zstd.
+# Needs root (podman), qemu-img, zstd and xorriso.
 set -euo pipefail
 IMAGE=${1:?usage: installers.sh IMAGE VERSION OUTDIR}
 VERSION=${2:?usage: installers.sh IMAGE VERSION OUTDIR}
@@ -42,6 +42,7 @@ bib '' -- --type qcow2 --type raw
 # The kickstart is for the installer only, so the ISO is a separate build.
 bib "$HERE/installer.toml" -- --type anaconda-iso
 sudo chown -R "$(id -u):$(id -g)" "$OUT/build"
+"$HERE/embed-bound-images.sh" "$IMAGE" "$OUT/build/bootiso/install.iso"
 
 base=$OUT/sparewall-$VERSION-x86_64
 mv "$OUT/build/bootiso/install.iso" "$base.iso"

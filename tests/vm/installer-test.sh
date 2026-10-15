@@ -46,6 +46,8 @@ if [ ! -f output/bootiso/install.iso ]; then
         -v "$HERE/../../image/installer.toml:/config.toml:ro" \
         -v /var/lib/containers/storage:/var/lib/containers/storage \
         "$BIB" --type anaconda-iso --rootfs xfs "$IMAGE"
+    sudo chown -R "$(id -u):$(id -g)" output
+    "$HERE/../../image/embed-bound-images.sh" "$IMAGE" output/bootiso/install.iso
 fi
 sudo chown -R "$(id -u):$(id -g)" output
 ls -la output/bootiso/install.iso
@@ -73,6 +75,10 @@ timeout 2400 sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 3072 -s
     -nic none -no-reboot \
     -display none -serial "file:install.serial" \
     || fail "the installer did not finish"
+if grep -aq "The installer will now terminate" install.serial; then
+    sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' install.serial | grep -a -B3 -A8 "exact error message" >&2 || true
+    fail "the installer failed"
+fi
 
 log "booting the installed system with a seed stick, still offline"
 [ -f id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f id_ed25519

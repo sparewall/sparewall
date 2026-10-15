@@ -5,6 +5,11 @@
 # It erases the first fixed disk: removable disks (the install stick, a
 # seed stick) and optical drives are skipped. With none, the install stops
 # at the storage error.
+#
+# bootc pulls the logically bound provider images from their registry
+# unless the target's image store (ostree/bootc/storage) has them, so the
+# release ISO carries them (embed-bound-images.sh) and %pre-install loads
+# them there once the disk is mounted: the install needs no network.
 [customizations.installer.kickstart]
 contents = """
 text --non-interactive
@@ -24,5 +29,15 @@ for d in /sys/block/*; do
     echo "ignoredisk --only-use=$n" > /tmp/sparewall-disk.ks
     break
 done
+%end
+
+%pre-install --log=/tmp/sparewall-bound-images.log
+set -e
+images=/run/install/repo/bound-images.tar
+[ -f "$images" ] || exit 0
+for root in /mnt/sysimage /mnt/sysroot; do mountpoint -q "$root" && break; done
+mkdir -p "$root/ostree/bootc/storage" /tmp/sparewall-runroot
+podman --root "$root/ostree/bootc/storage" --runroot /tmp/sparewall-runroot \
+    load -i "$images"
 %end
 """
