@@ -225,4 +225,12 @@ wait_for 120 "a DHCP lease after the restore" got_lease
 got=$(ns users ip -4 -br addr show dev eth0 | awk '{print $3}' | cut -d/ -f1)
 [ "$got" = "$LEASE" ] || fail "the client got $got after the restore, not its lease $LEASE"
 
+# The restored secrets work, not just their names: a new backup seals the
+# secrets with the restored backup-password and opens the same restic
+# repository with it.
+for n in fw1 fw2; do
+    at "$n" 'sudo sparewall backup' > "after-$n.txt" 2>&1 || fail "$n: backup after the restore failed: $(cat "after-$n.txt")"
+    grep -q snapshot "after-$n.txt" || fail "$n: the post-restore bundle was not sent: $(cat "after-$n.txt")"
+    ! grep -q 'no cluster secrets' "after-$n.txt" || fail "$n: the post-restore bundle left out the secrets"
+done
 log "pair faults PASS"
