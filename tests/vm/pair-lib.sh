@@ -120,8 +120,9 @@ roles_are() { # fw1-role fw2-role description
 # The pair document on stdin, with both nodes' sync keys filled in.
 pair_doc() {
     local k1 k2
-    k1=$(status fw1 | jq -r .sync.sync_public_key)
-    k2=$(status fw2 | jq -r .sync.sync_public_key)
+    # ssh would read the document from stdin.
+    k1=$(status fw1 </dev/null | jq -r .sync.sync_public_key)
+    k2=$(status fw2 </dev/null | jq -r .sync.sync_public_key)
     sed -e "s|@FW1_KEY@|$k1|" -e "s|@FW2_KEY@|$k2|"
 }
 
