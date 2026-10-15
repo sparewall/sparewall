@@ -37,10 +37,19 @@ Where the implementation departs from, or settles open questions in,
   included.
 - **The coordinator has its own SELinux domain, `sparewalld_t`,
   permissive for now** (`image/selinux`, installed with `semodule` in
-  the image build). Only the executable is labelled, so no file changes
-  type; permissive means every access is allowed and logged. The boot
-  test checks the daemon runs in the domain and reports its AVCs in the
-  job summary; they become the rules for an enforcing domain before 1.0.
+  the image build); permissive means every access is allowed and
+  logged. Its state, runtime and temporary files and its units have their
+  own types (`sparewalld_var_lib_t`, `sparewalld_var_run_t`,
+  `sparewalld_tmp_t`, `sparewalld_unit_file_t`), and the confined daemons
+  that read configs from `/run/sparewall` (ulogd, journal-upload,
+  conntrackd) get rules for that. tmpfiles relabels `/var/lib/sparewall`
+  at boot. Two grants stay generic: running `bin_t` commands, which run
+  in `sparewalld_t` under the same rules; and Quadlet's generated units,
+  which share one type. The rules are what the VM suites saw it do, and
+  the suites fail on any denial by `sparewalld_t` or on its types, so a
+  change that needs a new access adds its rule with the code. Enforcing (dropping `permissive`) waits for
+  production nodes to log none: the suites do not exercise everything
+  (ACME issuance on a node, real hardware).
   `sparewall-run@` runs the same binary but stays `unconfined_service_t`
   (`SELinuxContext=`): it runs what the coordinator's confinement forbids.
 - **Confined daemons read their configs from their own runtime
@@ -338,7 +347,7 @@ rule for which side gives up) is outstanding.
   turning DHCP or log forwarding off; validation now rejects them as
   not built yet (#10).
 - Schema migrations (only schema 1 exists); the Web UI.
-- An enforcing SELinux policy for the coordinator; benchmarks.
+- The coordinator's SELinux domain enforcing; benchmarks.
 - A local Prometheus (`metrics.mode: local`, `metrics.retention`),
   scheduled upgrades (`updates.mode: windowed`, `updates.window`) and
   provider passthrough (`provider_options`). The schema keeps their

@@ -41,6 +41,7 @@ cleanup() {
     sudo pkill -f "ping -D -i 0.2" 2>/dev/null || true
     [ -n "${REGISTRY:-}" ] && sudo podman rm -f "$REGISTRY" >/dev/null 2>&1 || true
     stop_pair
+    [ $rc -ne 0 ] || ! declare -F selinux_gate >/dev/null || selinux_gate || exit 1
 }
 trap cleanup EXIT
 

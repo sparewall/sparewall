@@ -112,20 +112,28 @@ start_rest_server() {
     done
 }
 
-# The coordinator's SELinux domain and what it was denied (permissive, so
-# nothing was blocked), for the job summary. $1 runs a command on a node.
+# The coordinator's SELinux domain and its denials, for the job summary:
+# what sparewalld_t was denied (permissive, so not blocked) and what any
+# domain was denied on the coordinator's types (enforcing, so blocked).
+# Either means image/selinux lacks a rule: it is recorded in
+# $WORK/selinux-denials and fails the suite (selinux_gate).
+# $1 runs a command on a node.
 selinux_report() { # run-command node-name
     local run=$1 node=$2 denials
     $run 'ps -eo label,comm' | grep -q 'sparewalld_t.*sparewalld' \
         || fail "$node: sparewalld does not run in sparewalld_t"
     # Kernel log and journald's audit transport: with auditd running, or
     # kauditd rate-limiting printk, either one alone misses records.
+    # The coordinator denied anything, or any domain denied the
+    # coordinator's own files (a consumer of /run/sparewall, say).
     denials=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
-        | grep -oE 'avc: +denied .*scontext=[^ ]*:sparewalld_t:[^ ]*.*' \
+        | grep -oE 'avc: +denied .*' \
+        | grep -E 'scontext=[^ ]*:sparewalld_t:|tcontext=[^ ]*:sparewalld_[a-z_]*:' \
         | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=1//' \
         | sort | uniq -c | sort -rn) || true
-    echo "$node: $(printf '%s' "$denials" | grep -c . || true) distinct sparewalld_t denials"
+    echo "$node: $(printf '%s' "$denials" | grep -c . || true) distinct sparewalld denials"
     printf '%s\n' "$denials"
+    [ -z "$denials" ] || printf '%s\n' "$denials" | sed "s/^/$node: /" >> "$WORK/selinux-denials"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         {
             echo "### SELinux: sparewalld_t on $node"
@@ -134,4 +142,12 @@ selinux_report() { # run-command node-name
             echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
     fi
+}
+
+# Fail if any report found a denial.
+selinux_gate() {
+    [ -s "$WORK/selinux-denials" ] || return 0
+    echo "FAIL: sparewalld_t was denied; add rules to image/selinux/sparewalld.te:" >&2
+    cat "$WORK/selinux-denials" >&2
+    return 1
 }

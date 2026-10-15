@@ -161,7 +161,8 @@ dump_nodes() {
 }
 
 # Each running node's sparewalld_t report (conformance.sh), whatever the
-# outcome; a node that is down or not in the domain is only noted.
+# outcome; a node that is down or not in the domain is only noted. The
+# suites' cleanup fails a passing run that found denials (selinux_gate).
 selinux_reports() {
     declare -F selinux_report >/dev/null || return 0
     local n
