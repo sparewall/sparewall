@@ -139,8 +139,15 @@ fi
 
 log "metrics, with host metrics from node_exporter"
 token=$(vm 'sudo sparewall token create ci-monitor --role monitor -q')
-vm "curl -sfk -H 'Authorization: Bearer $token' https://localhost/metrics" > metrics.txt \
-    || fail "/metrics refused a monitor token"
+# node_exporter may still be starting after the reboot above.
+deadline=$((SECONDS + 60))
+while :; do
+    vm "curl -sfk -H 'Authorization: Bearer $token' https://localhost/metrics" > metrics.txt \
+        || fail "/metrics refused a monitor token"
+    grep -q '^node_network_receive_bytes_total{device="uplink"}' metrics.txt && break
+    [ $SECONDS -lt $deadline ] || break
+    sleep 3
+done
 grep -q '^sparewall_generation' metrics.txt || fail "no coordinator metrics: $(head -5 metrics.txt)"
 grep -q '^node_network_receive_bytes_total{device="uplink"}' metrics.txt || {
     vm 'systemctl status prometheus-node-exporter.service --no-pager' || true

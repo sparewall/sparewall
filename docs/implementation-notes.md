@@ -290,10 +290,18 @@ boot, publish) and `pair-faults.sh` (pair faults).
 | Rolling upgrade, unsigned image refused | pair-test | Tested, to a derived image of the same build |
 | Flap a bond member on the master | pair-faults | Tested |
 | The master loses its whole trunk | pair-faults | Tested |
-| Cut one service VLAN on one side | pair-faults | Recorded, not asserted (below) |
+| Cut one service VLAN on one side | pair-faults | Recorded, not asserted: see below |
 | Destroy both nodes, restore from bundles, re-pair | pair-faults | Tested |
 | Rolling upgrade from the previous release | | Outstanding: needs a first release |
 | Schema upgrade and downgrade, mixed versions | | Outstanding: needs schema 2 |
+
+**A service VLAN cut on the master's side only** leaves the roles where
+they are: keepalived's sync group keeps every instance BACKUP on the
+other node while it hears the master on the remaining VLANs, so nothing
+flaps, but the cut network has no gateway until the cut is mended. Each
+node's own links are up, so health cannot see it. Detecting it (each
+node probing the peer on every service VLAN over the sync tunnel, and a
+rule for which side gives up) is outstanding.
 
 ## Not built yet
 
