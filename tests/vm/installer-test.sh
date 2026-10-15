@@ -86,12 +86,14 @@ mkfs.vfat -C -n SPAREWALL seed.img 4096 >/dev/null
 mcopy -i seed.img sparewall-identity.yaml ::sparewall-identity.yaml
 # restrict=on: the guest reaches neither the host nor the internet, but
 # the SSH forward still works.
+# bootindex: the firmware would otherwise try the seed stick first.
 sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 2048 -smp 2 \
-    -drive "file=installed.qcow2,if=virtio,format=qcow2" \
+    -drive "file=installed.qcow2,if=none,id=disk,format=qcow2" \
+    -device "virtio-blk-pci,drive=disk,bootindex=0" \
     -netdev "user,id=n0,restrict=on,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
     -device "virtio-net-pci,netdev=n0,mac=$MAC" \
     -drive "file=seed.img,if=none,id=seed,format=raw,readonly=on" \
-    -device "usb-ehci" -device "usb-storage,drive=seed,removable=on" \
+    -device "usb-ehci" -device "usb-storage,drive=seed,removable=on,bootindex=1" \
     -display none -serial "file:installed.serial" -pidfile installed.pid -daemonize
 vm() {
     timeout 60 ssh -p "$SSH_PORT" -i id_ed25519 -o StrictHostKeyChecking=no \
