@@ -91,12 +91,20 @@ Where the implementation departs from, or settles open questions in,
   check and notify scripts live in `/usr/libexec/keepalived` (where they run
   unconfined), and transitions reach the coordinator through a FIFO the
   notify script writes, since keepalived itself may not use notify_fifo.
+- **Each Varlink connection has a server of its own.** zlink's server
+  answers one call at a time across all its connections, and some admin
+  calls wait on the peer or bootc (a sync-link change waits up to 15 s
+  for the push reply), so the coordinator serves every connection with
+  its own copy of the service (`sparewalld/src/varlink.rs`). Calls that
+  change the configuration (apply, merge, patch, confirm, rollback,
+  sync, upgrade start) still run one at a time, under a shared lock: a
+  sync-link change must not have another land between the peer taking it
+  and it running here. Reads run alongside them.
 - **keepalived's health check has a socket of its own**,
-  `/run/sparewall/org.sparewall.Health`, served by a second instance of
-  the same service. zlink answers one call at a time per server, and some
-  admin calls wait on the peer (a sync-link change waits up to 15 s for
-  the push reply); behind one of those, the check would time out (5 s,
-  three in a row) and keepalived would hand the gateway addresses over.
+  `/run/sparewall/org.sparewall.Health`, serving the same interface. A
+  check held up past its timeout (5 s, three in a row) would hand the
+  gateway addresses over, so it does not share a listener with admin
+  clients.
 - **Commands the coordinator's sandbox forbids** (podman config checks,
   the keepalived netns check, bootc) run as the oneshot unit
   `sparewall-run@<id>.service`; `systemd-run` from inside the sandbox fails.
