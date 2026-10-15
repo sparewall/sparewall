@@ -8,6 +8,7 @@ mod http;
 #[cfg(test)]
 mod isolation_tests;
 mod peer;
+mod reach;
 mod rules;
 mod service;
 mod upgrade;
@@ -354,6 +355,13 @@ fn run(args: Args) -> Result<(), String> {
                     .then(|| sparewall_config::topology::SYNC_TUNNEL_IFACE.to_string()),
             ) => Ok(()),
             () = peer::sync_loop(core.clone(), tx.clone(), pair.clone(), wake.clone()) => Ok(()),
+            () = async {
+                // A fake system has no networks to probe.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                reach::probe_loop(core.clone(), tx.clone(), pair.clone()).await
+            } => Ok(()),
             () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone(), vrrp::host_conntrackd()) => Ok(()),
             () = rules::listener(args.socket.with_file_name("rules.sock")) => Ok(()),
             _ = term.recv() => {

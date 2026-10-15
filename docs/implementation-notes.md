@@ -362,18 +362,25 @@ boot, publish) and `pair-faults.sh` (pair faults).
 | Rolling upgrade, unsigned image refused | pair-test | Tested, to a derived image of the same build |
 | Flap a bond member on the master | pair-faults | Tested |
 | The master loses its whole trunk | pair-faults | Tested |
-| Cut one service VLAN on one side | pair-faults | Recorded, not asserted: see below |
+| Cut one service VLAN on one side | pair-faults | Tested: see below |
 | Destroy both nodes, restore from bundles, re-pair | pair-faults | Tested |
 | Rolling upgrade from the previous release | | Outstanding: needs a first release |
 | Schema upgrade and downgrade, mixed versions | | Outstanding: needs schema 2 |
 
-**A service VLAN cut on the master's side only** leaves the roles where
-they are: keepalived's sync group keeps every instance BACKUP on the
-other node while it hears the master on the remaining VLANs, so nothing
-flaps, but the cut network has no gateway until the cut is mended. Each
-node's own links are up, so health cannot see it. Detecting it (each
-node probing the peer on every service VLAN over the sync tunnel, and a
-rule for which side gives up) is outstanding.
+**A service VLAN cut on the master's side only** leaves every link up,
+and keepalived's sync group keeps the backup's instances BACKUP while it
+hears the master on the remaining VLANs, so neither sees it. The
+coordinators do (`sparewalld/src/reach.rs`): every 10 s each node
+re-resolves the peer's own address on every network with a gateway
+address (ARP, which nft does not filter), and while the peer is silent
+there, the hosts either node knows on it. Each reports what answered in
+its hello. A node whose peer is silent on a network, where no host
+answers it but a host that answers the peer was asked, has lost the
+network: after two such rounds its `reach` check fails, keepalived puts
+it in FAULT, and the gateway moves. A network where nothing answers
+either node (empty, or cut on both sides) only degrades health. In the
+suite the gateway moves within about a minute of the cut; connections
+through the cut network do not survive that long a stall.
 
 ## Not built yet
 
