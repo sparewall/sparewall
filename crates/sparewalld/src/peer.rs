@@ -13,9 +13,9 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 use sparewall_api::{
-    FetchReply, HelloReply, LineageEntry, LinkDecisionReply, PEER_PORT, PEER_PROTOCOL, PeerError,
-    PeerGeneration, PeerProxy, PeerSecret, PeerSecretsProxy, PushReply, PutSecretsReply,
-    UpgradeReply,
+    FetchReply, HelloReply, LineageEntry, LinkDecisionReply, NetworkReach, PEER_PORT,
+    PEER_PROTOCOL, PeerError, PeerGeneration, PeerProxy, PeerSecret, PeerSecretsProxy, PushReply,
+    PutSecretsReply, UpgradeReply,
 };
 use sparewall_core::pair::{NodeView, SyncState, push_plan, sync_state};
 use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
@@ -46,6 +46,13 @@ pub struct PairStatus {
     /// reached, or this node last switched links to look for it.
     #[serde(skip)]
     pub doubt_since: Option<std::time::Instant>,
+    /// What this node reaches on each network with a gateway address
+    /// (`reach::probe_loop`), for the peer's hello.
+    #[serde(skip)]
+    pub reach: Vec<NetworkReach>,
+    /// The same from the peer's last hello, while it answers.
+    #[serde(skip)]
+    pub peer_reach: Option<Vec<NetworkReach>>,
 }
 
 /// How long an in-doubt node tries one sync link before the other.
@@ -133,15 +140,13 @@ impl PeerService {
     }
 }
 
-#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, LinkDecisionReply, PeerSecret])]
+#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, LinkDecisionReply, NetworkReach, PeerSecret])]
 impl PeerService {
     async fn hello(&mut self, node: String, protocol: i64) -> Result<HelloReply, PeerError> {
-        let role = self
-            .pair
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .role
-            .clone();
+        let (role, reach) = {
+            let p = self.pair.lock().unwrap_or_else(|p| p.into_inner());
+            (p.role.clone(), p.reach.clone())
+        };
         with_core_raw(&self.core, &self.events, move |c| {
             if let Some(doc) = c.active_document()?
                 && let Some(expected) = doc.peer_of(c.node())
@@ -180,6 +185,7 @@ impl PeerService {
                 health: Some(health),
                 role,
                 link_decision,
+                reach,
             }))
         })
         .await
@@ -605,6 +611,7 @@ async fn sync_once(
             Ok(h) => {
                 status.reachable = true;
                 status.peer_image = h.image.clone();
+                status.peer_reach = Some(h.reach.clone());
                 if let Err(e) = send_secrets(core, events, link, &mut status.secrets_sent).await {
                     tracing::warn!(peer, error = %e, "sending secrets to the peer failed");
                     status.last_error = Some(e);
@@ -698,6 +705,7 @@ async fn sync_once(
         // it while this pass was talking to the peer: keep its value.
         let mut p = pair.lock().unwrap_or_else(|p| p.into_inner());
         status.role = p.role.take();
+        status.reach = std::mem::take(&mut p.reach);
         *p = status;
     }
     let _ = with_core_raw(core, events, move |c| {

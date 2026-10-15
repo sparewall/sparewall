@@ -137,25 +137,36 @@ wait_for 120 "fw1 healthy" healthy fw1
 count=$(flowing "$count" "fw1's trunk returned")
 
 # --- 3. one service VLAN cut on the master's side
+# Every link stays up, so only the coordinators' ARP probes see it: fw2
+# hears neither fw1 nor any host on the users network while fw1 does, so
+# fw2 fails health and the gateway moves to fw1.
 log "the users VLAN cut on fw2's side only"
 sudo bridge vlan del dev swtap2 vid 20
 : > vlan-cut.log
-for _ in $(seq 1 30); do
+moved=
+for _ in $(seq 1 60); do
     if gateway; then gw=up; else gw=down; fi
-    printf '%s fw1=%s fw2=%s gateway=%s\n' "$(date +%T)" "$(role fw1)" "$(role fw2)" "$gw" | tee -a vlan-cut.log
+    printf '%s fw1=%s fw2=%s gateway=%s fw2-reach=%s\n' "$(date +%T)" "$(role fw1)" "$(role fw2)" "$gw" \
+        "$(check fw2 reach | sort -u | tr '\n' ' ')" | tee -a vlan-cut.log
+    if [ "$gw" = up ] && is_master fw1; then moved=1; break; fi
     sleep 3
 done
-sudo bridge vlan add dev swtap2 vid 20
-settle() { [ "$(role fw1)" != "$(role fw2)" ] && in_sync fw1 && in_sync fw2; }
-wait_for 180 "one master again after the VLAN returned" settle
-transitions=$(awk '{print $2, $3}' vlan-cut.log | uniq | wc -l)
-echo "users VLAN cut: $transitions distinct role states in 90 s"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
         echo "### users VLAN cut on the master's side"
         echo '```'; cat vlan-cut.log; echo '```'
     } >> "$GITHUB_STEP_SUMMARY"
 fi
+[ -n "$moved" ] || fail "the gateway did not move to fw1 within 180 s of the users VLAN cut on fw2"
+status fw2 | jq -r '.health.checks[] | select(.name == "reach") | .message'
+check fw2 reach | grep -qx failed || fail "fw2's reach check is not failed: $(check fw2 reach)"
+sudo bridge vlan add dev swtap2 vid 20
+reach_ok() { [ -z "$(check fw2 reach)" ] && healthy fw2; }
+wait_for 120 "fw2 healthy again after the VLAN returned" reach_ok
+wait_for 60 "fw2 back as the backup" is_backup fw2
+is_master fw1 || fail "fw1 gave up the gateway when fw2's VLAN returned (nopreempt)"
+settle() { in_sync fw1 && in_sync fw2; }
+wait_for 120 "the pair in sync again" settle
 
 # --- 4. both nodes destroyed and restored
 log "backups of both nodes"

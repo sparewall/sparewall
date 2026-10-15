@@ -306,6 +306,24 @@ pub struct HelloReply {
     /// until it sees the caller follow it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_decision: Option<LinkDecisionReply>,
+    /// What the callee reaches on each network with a gateway address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reach: Vec<NetworkReach>,
+}
+
+/// One node's view of a network with a gateway address: whether the peer
+/// answers on it, and, while it does not, which other hosts there do.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct NetworkReach {
+    pub network: String,
+    /// The peer's own address answered ARP or neighbour discovery.
+    pub peer: bool,
+    /// Other hosts that answered. Probed only while the peer does not.
+    #[serde(default)]
+    pub answered: Vec<String>,
+    /// Hosts this node knows on the network, for the peer to probe too.
+    #[serde(default)]
+    pub known: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

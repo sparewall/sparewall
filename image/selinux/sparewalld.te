@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.3.0)
+policy_module(sparewalld, 0.4.0)
 
 ########################################
 #
@@ -77,6 +77,10 @@ allow sparewalld_t self:unix_stream_socket connectto;
 allow sparewalld_t self:netlink_route_socket { bind create getattr getopt setopt read write nlmsg_read nlmsg_write };
 allow sparewalld_t self:netlink_netfilter_socket { create getopt setopt read write };
 allow sparewalld_t self:netlink_kobject_uevent_socket { bind create getattr getopt setopt read };
+# The reach probes: an empty datagram to each address makes the kernel
+# resolve it, from the network's own address.
+allow sparewalld_t self:udp_socket { bind create getattr setopt write };
+allow sparewalld_t node_t:udp_socket node_bind;
 
 # The API and the sync link listen; backups, ACME and the peer are
 # reached on whatever port the site configures.
