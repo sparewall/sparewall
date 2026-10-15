@@ -1033,8 +1033,20 @@ impl Validator<'_> {
             .collect::<Vec<_>>()
             .join(", ");
         match providers::find(role, name) {
-            // Any other name is a lego provider: not built yet (unbuilt).
-            None if role == Role::AcmeDns => {}
+            // Any other name is a lego provider code (`gcloud`,
+            // `cloudflare`, `route53`...); lego checks it when it runs.
+            None if role == Role::AcmeDns => {
+                if name.is_empty()
+                    || !name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                {
+                    self.err(
+                        path,
+                        format!("{name:?} is neither rfc2136 nor a lego provider code"),
+                    );
+                }
+            }
             None => self.err(path, format!("unknown provider {name:?}; use {built}")),
             Some(p) if !p.ha && self.doc.is_pair() => self.err(
                 path,
@@ -1082,10 +1094,7 @@ impl Validator<'_> {
             }
         }
         for (role, path, name) in chosen {
-            let unbuilt = match providers::find(role, name) {
-                Some(p) => !p.built,
-                None => role == Role::AcmeDns,
-            };
+            let unbuilt = providers::find(role, name).is_some_and(|p| !p.built);
             if unbuilt {
                 let default = providers::chosen_default(role);
                 self.err(
@@ -1237,6 +1246,22 @@ impl Validator<'_> {
                                 format!("{p}.acme.dns.credentials"),
                                 "needs a secret:<name> reference",
                             );
+                        }
+                        if d.provider != "rfc2136" {
+                            // lego's settings are environment variables.
+                            for k in d.options.keys() {
+                                let env = k.starts_with(|c: char| c.is_ascii_uppercase())
+                                    && k.chars().all(|c| {
+                                        c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'
+                                    });
+                                if !env {
+                                    self.err(
+                                        format!("{p}.acme.dns.options.{k}"),
+                                        "a lego provider's options are its environment \
+                                         variables, e.g. GCE_PROJECT",
+                                    );
+                                }
+                            }
                         }
                         if d.provider == "rfc2136" && !d.options.contains_key("server") {
                             self.err(

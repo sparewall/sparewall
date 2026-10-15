@@ -23,17 +23,19 @@ use crate::service::{Core, booted_image_digest, with_core, with_core_raw};
 const TIMER: &str = "sparewall-backup";
 const DEFAULT_SCHEDULE: &str = "hourly";
 
-fn credentials_env(text: &str) -> Result<Vec<(String, String)>, String> {
+/// `KEY=value` lines (blank lines and `#` comments skipped, `export`
+/// allowed) as environment variables; `what` names them in errors.
+pub(crate) fn credentials_env(what: &str, text: &str) -> Result<Vec<(String, String)>, String> {
     text.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(|l| {
             let (k, v) = l
                 .split_once('=')
-                .ok_or_else(|| "backup credentials are KEY=value lines".to_string())?;
+                .ok_or_else(|| format!("{what} are KEY=value lines"))?;
             let k = k.trim().trim_start_matches("export ").trim();
             if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                return Err(format!("backup credentials: bad variable name {k:?}"));
+                return Err(format!("{what}: bad variable name {k:?}"));
             }
             Ok((k.to_string(), v.trim().to_string()))
         })
@@ -72,7 +74,7 @@ pub async fn run(
                                 "backup.credentials: no secret {name:?}"
                             )])
                         })?;
-                        credentials_env(&String::from_utf8_lossy(&v))
+                        credentials_env("backup credentials", &String::from_utf8_lossy(&v))
                             .map_err(|e| sparewall_core::Error::Validation(vec![e]))?
                     }
                     None => vec![],
@@ -256,15 +258,18 @@ mod tests {
     #[test]
     fn credentials() {
         assert_eq!(
-            credentials_env("# s3\nAWS_ACCESS_KEY_ID=abc\nexport AWS_SECRET_ACCESS_KEY = x=y\n\n")
-                .unwrap(),
+            credentials_env(
+                "backup credentials",
+                "# s3\nAWS_ACCESS_KEY_ID=abc\nexport AWS_SECRET_ACCESS_KEY = x=y\n\n"
+            )
+            .unwrap(),
             [
                 ("AWS_ACCESS_KEY_ID".to_string(), "abc".to_string()),
                 ("AWS_SECRET_ACCESS_KEY".to_string(), "x=y".to_string())
             ]
         );
-        assert!(credentials_env("no equals sign").is_err());
-        assert!(credentials_env("BAD-NAME=1").is_err());
+        assert!(credentials_env("c", "no equals sign").is_err());
+        assert!(credentials_env("c", "BAD-NAME=1").is_err());
     }
 
     use std::sync::Mutex;

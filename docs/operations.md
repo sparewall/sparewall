@@ -119,6 +119,49 @@ rule, a changed policy) fails `nft` and `applied`, so the node reports
 `apply-failed`. To restore it, reload the generation:
 `systemctl restart sparewalld` (or apply any new change).
 
+## Certificates
+
+Each node serves a self-signed certificate on the management network
+until a certificate under `tls.certificates` is issued (by preference the
+one named `mgmt`). ACME orders use the DNS-01 challenge. In a pair only
+the master orders; the certificate reaches the peer as a cluster secret.
+Renewal starts at two-thirds of the lifetime, and the `tls` health check
+degrades when an order fails or a certificate is within a week of
+expiring.
+
+With an RFC 2136 server (BIND, Knot, PowerDNS), the coordinator updates
+the zone itself:
+
+```yaml
+tls:
+  certificates:
+    mgmt:
+      names: [fw.example.org]
+      acme:
+        directory: https://acme-v02.api.letsencrypt.org/directory
+        email: ops@example.org
+        dns:
+          provider: rfc2136
+          credentials: secret:dns-tsig     # hmac-sha256:keyname:base64secret
+          options: { server: ns1.example.org, zone: example.org }
+```
+
+Any other `provider` is a [lego provider](https://go-acme.github.io/lego/dns/)
+code (`gcloud`, `cloudflare`, `route53`...). lego runs the order in its
+container. The credentials secret holds the provider's secret variables
+as `KEY=value` lines, and `options` its other variables, plus lego's own
+(`LEGO_DNS_RESOLVERS`, `LEGO_DNS_PROPAGATION_WAIT`):
+
+```shell
+printf 'CLOUDFLARE_DNS_API_TOKEN=%s\n' "$TOKEN" | sparewall secret set cloudflare-dns
+sparewall set 'tls.certificates.mgmt.acme.dns={"provider": "cloudflare", "credentials": "secret:cloudflare-dns"}'
+```
+
+Scope the credential to the `_acme-challenge` records where the DNS
+service allows it, or delegate `_acme-challenge` to a zone of its own: a
+leaked credential can otherwise issue certificates for the whole zone.
+Each node keeps its own lego account under `/var/lib/sparewall/lego`.
+
 ## Backup and restore
 
 A bundle holds the active document, recent generations, the cluster
@@ -198,8 +241,8 @@ rejected.
 
 `provider_options`, `metrics.mode: local`, `metrics.retention`,
 `updates.mode: windowed`, `updates.window`, `dhcp.provider: networkd`,
-`logging.remote.provider: syslog` and ACME DNS providers other than
-`rfc2136` are rejected with an error at their path. Earlier versions accepted them, though nothing acted on
+and `logging.remote.provider: syslog` are rejected with an error at
+their path. Earlier versions accepted them, though nothing acted on
 them. After upgrading:
 
 - A node already running a document with one of them keeps running it,
