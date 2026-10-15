@@ -1,0 +1,48 @@
+# bootc-image-builder configuration for the installer ISO (image/installers.sh,
+# tests/vm/installer-test.sh). bootc-image-builder adds the command that
+# installs the embedded image; this kickstart makes the install unattended.
+#
+# It erases the first fixed disk: removable disks (the install stick, a
+# seed stick) and optical drives are skipped. With none, the install stops
+# at the storage error.
+#
+# bootc pulls the logically bound provider images from their registry
+# unless the target's image store (ostree/bootc/storage) has them, so the
+# release ISO carries them (embed-bound-images.sh) and the pre-install
+# script copies them there once the disk is mounted: the install needs no
+# network.
+[customizations.installer.kickstart]
+contents = """
+text --non-interactive
+rootpw --lock
+zerombr
+%include /tmp/sparewall-disk.ks
+clearpart --all --initlabel --disklabel=gpt
+autopart --noswap --type=plain --fstype=xfs
+reboot --eject
+
+%pre
+: > /tmp/sparewall-disk.ks
+for d in /sys/block/*; do
+    n=${d##*/}
+    case $n in loop*|ram*|zram*|sr*|dm-*|md*|nbd*) continue ;; esac
+    [ "$(cat "$d/removable")" = 0 ] && [ "$(cat "$d/size")" -gt 0 ] || continue
+    echo "ignoredisk --only-use=$n" > /tmp/sparewall-disk.ks
+    break
+done
+%end
+
+%pre-install --log=/tmp/sparewall-bound-images.log
+set -e
+dir=/run/install/repo/bound-images
+[ -f "$dir/images.list" ] || exit 0
+for root in /mnt/sysimage /mnt/sysroot; do mountpoint -q "$root" && break; done
+# skopeo writes the store without podman's database, which records the
+# path it was made under; bootc's podman uses the store at another path.
+store="containers-storage:[overlay@$root/ostree/bootc/storage+/tmp/sparewall-runroot]"
+mkdir -p "$root/ostree/bootc/storage" /tmp/sparewall-runroot
+while read -r file ref; do
+    skopeo copy "docker-archive:$dir/$file" "$store$ref"
+done < "$dir/images.list"
+%end
+"""

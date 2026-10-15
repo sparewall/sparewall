@@ -1,0 +1,19 @@
+#!/bin/sh
+# Mount a seed stick read-only and record the identity on it with
+# `sparewall init --from`, for sparewalld to pick up.
+#
+#   seed DEVICE
+set -eu
+dev=${1:?usage: seed DEVICE}
+dir=$(mktemp -d)
+trap 'umount "$dir" 2>/dev/null || true; rmdir "$dir"' EXIT
+mount -o ro,nosuid,nodev,noexec "$dev" "$dir"
+for f in sparewall-identity.yaml sparewall-identity.yml sparewall-identity.json; do
+    if [ -f "$dir/$f" ]; then
+        /usr/bin/sparewall init --from "$dir/$f"
+        echo "recorded the identity in $f from $dev"
+        exit 0
+    fi
+done
+echo "$dev is labelled SPAREWALL but has no sparewall-identity.yaml or .json" >&2
+exit 1

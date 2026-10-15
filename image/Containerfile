@@ -124,6 +124,11 @@ COPY --from=ulogd /out/ /
 COPY --from=selinux /out/ /
 COPY image/files/ /
 
+# bootc-image-builder builds the installer ISO's Anaconda from the
+# image's repositories, read from /etc/yum.repos.d; Fedora 45 keeps them
+# only in dnf5's /usr/share/dnf5/repos.d.
+RUN mkdir -p /etc/yum.repos.d && cp /usr/share/dnf5/repos.d/*.repo /etc/yum.repos.d/
+
 RUN test -L /usr/sbin \
     && sed -i -e "s|@KEA_IMAGE@|${KEA_IMAGE}|" /usr/share/containers/systemd/sparewall-kea.container \
     && sed -i -e "s|@UNBOUND_IMAGE@|${UNBOUND_IMAGE}|" /usr/share/containers/systemd/sparewall-unbound.container \

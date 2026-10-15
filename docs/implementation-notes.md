@@ -52,6 +52,35 @@ Where the implementation departs from, or settles open questions in,
   (ACME issuance on a node, real hardware).
   `sparewall-run@` runs the same binary but stays `unconfined_service_t`
   (`SELinuxContext=`): it runs what the coordinator's confinement forbids.
+- **The installer ISO is bootc-image-builder's `anaconda-iso`**, made
+  unattended by the kickstart in `image/installer.toml`: it erases the
+  first fixed disk (removable and optical drives are skipped) and
+  installs the image embedded in it, with no network. Without a
+  kickstart, Anaconda waits at its interactive screens. The release
+  notes and getting-started say it erases the disk. bootc pulls the
+  logically bound provider images from their registry during the
+  install unless the target's image store already has them, and
+  bootc-image-builder does not put them in the ISO, so
+  `image/embed-bound-images.sh` adds them under `/bound-images` and the
+  kickstart's `%pre-install` copies them into `ostree/bootc/storage` on
+  the new disk with skopeo (podman would record the store's path in its
+  database, and bootc's podman reaches the store through another).
+  It builds Anaconda from the image's repositories, which it reads from
+  `/etc/yum.repos.d`, so the image copies Fedora 45's dnf5 repository
+  files there (nodes never run dnf; bootc replaces the whole image).
+- **Physical nodes get their identity from a seed stick**: a filesystem
+  labelled `SPAREWALL` with `sparewall-identity.yaml` (or `.json`). A udev
+  rule starts `sparewall-seed@.service`, which mounts it read-only and
+  runs `sparewall init --from`, until an identity is recorded. The
+  unattended ISO sets no root password, so the console route
+  (`sparewall init`) needs one set by other means. A custom kickstart
+  could write the identity too; the release ISO has none.
+- **Releases are drafted, then published by a maintainer**
+  ([releasing.md](releasing.md)). A `v*` tag reruns every VM suite; the
+  draft carries the ISO, raw and qcow2 images, the static (musl) CLI,
+  SBOMs and signed checksums. Publishing tags the tested image with the
+  version and, unless it is a prerelease, `stable`: promotion is that
+  decision, not a separate test run.
 - **Confined daemons read their configs from their own runtime
   directories** (`/run/chrony`, `/run/keepalived`), which carry their
   SELinux labels; everything else is under `/run/sparewall/<subsystem>`.

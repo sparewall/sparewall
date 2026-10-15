@@ -1,0 +1,50 @@
+name: Release
+
+# Publishing a release (drafted by image.yml's release job for a v* tag)
+# tags the tested image with its version and, unless it is a prerelease,
+# promotes it to the stable channel (design: "Channels").
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/sparewall/sparewall
+
+jobs:
+  promote:
+    name: promote the image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Tag and promote
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends skopeo
+          echo "$TOKEN" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
+          src="$IMAGE:sha-$(git rev-parse --short=12 HEAD)"
+          cosign verify --key cosign.pub "$src" > /dev/null
+          # The same manifest under new tags: its signature and SBOM,
+          # attached by digest, carry over.
+          tags=("${TAG#v}")
+          [ "$PRERELEASE" = true ] || tags+=(stable)
+          for t in "${tags[@]}"; do
+            skopeo copy --all --preserve-digests "docker://$src" "docker://$IMAGE:$t"
+            cosign verify --key cosign.pub "$IMAGE:$t" > /dev/null
+            echo "$src is now $IMAGE:$t" >> "$GITHUB_STEP_SUMMARY"
+          done
