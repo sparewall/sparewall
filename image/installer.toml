@@ -8,8 +8,9 @@
 #
 # bootc pulls the logically bound provider images from their registry
 # unless the target's image store (ostree/bootc/storage) has them, so the
-# release ISO carries them (embed-bound-images.sh) and %pre-install loads
-# them there once the disk is mounted: the install needs no network.
+# release ISO carries them (embed-bound-images.sh) and the pre-install
+# script copies them there once the disk is mounted: the install needs no
+# network.
 [customizations.installer.kickstart]
 contents = """
 text --non-interactive
@@ -33,11 +34,15 @@ done
 
 %pre-install --log=/tmp/sparewall-bound-images.log
 set -e
-images=/run/install/repo/bound-images.tar
-[ -f "$images" ] || exit 0
+dir=/run/install/repo/bound-images
+[ -f "$dir/images.list" ] || exit 0
 for root in /mnt/sysimage /mnt/sysroot; do mountpoint -q "$root" && break; done
+# skopeo writes the store without podman's database, which records the
+# path it was made under; bootc's podman uses the store at another path.
+store="containers-storage:[overlay@$root/ostree/bootc/storage+/tmp/sparewall-runroot]"
 mkdir -p "$root/ostree/bootc/storage" /tmp/sparewall-runroot
-podman --root "$root/ostree/bootc/storage" --runroot /tmp/sparewall-runroot \
-    load -i "$images"
+while read -r file ref; do
+    skopeo copy "docker-archive:$dir/$file" "$store$ref"
+done < "$dir/images.list"
 %end
 """

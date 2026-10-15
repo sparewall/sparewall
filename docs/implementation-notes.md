@@ -61,9 +61,10 @@ Where the implementation departs from, or settles open questions in,
   logically bound provider images from their registry during the
   install unless the target's image store already has them, and
   bootc-image-builder does not put them in the ISO, so
-  `image/embed-bound-images.sh` adds them as `/bound-images.tar` and the
-  kickstart's `%pre-install` loads them into `ostree/bootc/storage` on
-  the new disk.
+  `image/embed-bound-images.sh` adds them under `/bound-images` and the
+  kickstart's `%pre-install` copies them into `ostree/bootc/storage` on
+  the new disk with skopeo (podman would record the store's path in its
+  database, and bootc's podman reaches the store through another).
   It builds Anaconda from the image's repositories, which it reads from
   `/etc/yum.repos.d`, so the image copies Fedora 45's dnf5 repository
   files there (nodes never run dnf; bootc replaces the whole image).
