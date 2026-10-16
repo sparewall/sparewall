@@ -122,6 +122,32 @@ check_wan() { # master backup
 wait_for 30 "fw1 reaches the outside" egress fw1
 check_wan fw1 fw2
 
+# Staging beside another gateway (#51): held, the pair runs and stays in
+# sync but claims no gateway address and offers no lease; released, it
+# takes over. Twice, so a hold after a release is covered too.
+gateway_up() { ns users ping -c 1 -W 1 192.0.2.1 >/dev/null 2>&1; }
+gateway_down() { ! gateway_up; }
+both_held() {
+    [ "$(role fw1)" = FAULT ] && [ "$(role fw2)" = FAULT ] \
+        && status fw1 | jq -e '.health.checks[] | select(.name == "held")' >/dev/null \
+        && status fw2 | jq -e '.health.checks[] | select(.name == "held")' >/dev/null
+}
+for round in 1 2; do
+    log "held (round $round): no gateway address, no lease"
+    at fw1 'sudo sparewall set cluster.hold=true --confirm 0'
+    wait_for 120 "both nodes held, in FAULT" both_held
+    wait_for 30 "the gateway address gone" gateway_down
+    in_sync fw1 >/dev/null && in_sync fw2 >/dev/null || fail "the held pair is not in sync"
+    ! got_lease || fail "DHCP offered a lease while held"
+    log "released (round $round)"
+    at fw1 'sudo sparewall set cluster.hold=false --confirm 0'
+    wait_for 120 "fw1 master again" is_master fw1
+    wait_for 30 "the gateway address back" gateway_up
+    [ "$(role fw2)" = BACKUP ] || fail "fw2 is $(role fw2) after the release, not BACKUP"
+done
+wait_for 120 "a DHCP lease again after the release" got_lease
+[ "$(client_ip)" = "$LEASE" ] || fail "the client got $(client_ip) after the hold, not its lease $LEASE"
+
 log "echo servers behind the servers VLAN"
 # TCP (7000) and UDP (7001) echo servers in sw-guests. A TCP client sends
 # a line every half second on one connection, counting the echoes; the

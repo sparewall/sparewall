@@ -1,0 +1,6 @@
+#!/bin/sh
+# keepalived's track script while the document sets cluster.hold: it
+# always fails, so every VRRP instance stays in FAULT and claims no
+# gateway address. It lives here so SELinux runs it unconfined, like
+# sparewall-health.
+exit 1

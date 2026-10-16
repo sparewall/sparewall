@@ -88,6 +88,32 @@ While the peer is unreachable, changes are refused unless you pass
 `sparewall sync --from <node>`: the other node's diverged generation is
 kept on disk, not lost.
 
+## Replacing an existing gateway
+
+To stage a pair (or a standalone node) beside the firewall it replaces,
+on the same VLANs, apply the real document with `cluster.hold: true`.
+Everything is rendered, applied and paired as usual, but no gateway
+address is claimed: keepalived runs with every instance held in FAULT,
+a standalone node does not install its gateway addresses, and Kea runs
+(HA included) with no pools, reservations or authority, so it neither
+offers leases nor NAKs the old server's clients. Health shows a
+degraded `held` check, so the pair can be checked in sync, its sync
+tunnel and conntrackd up, before cutover.
+
+Cut over with one small change, confirm-or-revert like any other:
+
+```shell
+sparewall set cluster.hold=false --confirm 300
+```
+
+Take the old gateway's addresses off first (or in the same maintenance
+window): until then both would answer for them. Setting
+`cluster.hold=true` again hands the addresses back.
+
+What a hold cannot prove: Kea HA serves nothing while held, so leases
+are first handed out after the cutover; VRRP elections are first held
+then too.
+
 ## Failover
 
 A node whose health is **failed** puts its VRRP instances into FAULT and
