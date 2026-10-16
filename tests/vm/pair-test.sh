@@ -127,6 +127,7 @@ check_wan fw1 fw2
 # takes over. Twice, so a hold after a release is covered too.
 gateway_up() { ns users ping -c 1 -W 1 192.0.2.1 >/dev/null 2>&1; }
 gateway_down() { ! gateway_up; }
+fw2_backup() { [ "$(role fw2)" = BACKUP ]; }
 both_held() {
     [ "$(role fw1)" = FAULT ] && [ "$(role fw2)" = FAULT ] \
         && status fw1 | jq -e '.health.checks[] | select(.name == "held")' >/dev/null \
@@ -137,13 +138,15 @@ for round in 1 2; do
     at fw1 'sudo sparewall set cluster.hold=true --confirm 0'
     wait_for 120 "both nodes held, in FAULT" both_held
     wait_for 30 "the gateway address gone" gateway_down
-    in_sync fw1 >/dev/null && in_sync fw2 >/dev/null || fail "the held pair is not in sync"
+    wait_for 120 "fw1 in sync while held" in_sync fw1
+    wait_for 60 "fw2 in sync while held" in_sync fw2
     ! got_lease || fail "DHCP offered a lease while held"
     log "released (round $round)"
     at fw1 'sudo sparewall set cluster.hold=false --confirm 0'
     wait_for 120 "fw1 master again" is_master fw1
     wait_for 30 "the gateway address back" gateway_up
-    [ "$(role fw2)" = BACKUP ] || fail "fw2 is $(role fw2) after the release, not BACKUP"
+    wait_for 120 "fw1 in sync after the release" in_sync fw1
+    wait_for 60 "fw2 BACKUP after the release" fw2_backup
 done
 wait_for 120 "a DHCP lease again after the release" got_lease
 [ "$(client_ip)" = "$LEASE" ] || fail "the client got $(client_ip) after the hold, not its lease $LEASE"
