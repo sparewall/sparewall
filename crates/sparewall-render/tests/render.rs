@@ -488,4 +488,9 @@ fn pair_wan_one_lease_on_the_master() {
         Some("swwan")
     );
     assert_nft_ok(&r);
+    // Held, there is no master: no route via the peer either.
+    doc.cluster.hold = true;
+    let r = render(&doc, "fw1").unwrap();
+    let base = &r.files[&format!("{}/30-sparewall-wan.network", Subsystem::Networkd.dir())];
+    assert!(!base.contains("[Route]"), "{base}");
 }
