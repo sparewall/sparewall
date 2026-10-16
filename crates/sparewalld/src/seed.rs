@@ -11,9 +11,10 @@
 //! A seed that is refused or reverts shows in health until the node is
 //! configured. Once it is, seeds are ignored.
 //!
-//! Each source remembers the last seed it tried, so a seed is applied
-//! once; a file also counts as new when it is written again, so putting
-//! a seed stick back in tries it again.
+//! Each source remembers the content it last tried, so a seed is tried
+//! once: a corrected seed stick is tried when it is put back in, but the
+//! same stick left in, or a credential delivered again at each boot, is
+//! not tried again.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -40,28 +41,11 @@ const HEALTHY_CHECKS: u32 = 3;
 const POLL: Duration = Duration::from_secs(5);
 const AUTHOR: &str = "seed";
 
-/// Where seeds come from: a path, and whether a new write of the same
-/// content counts as a new seed (files do; a credential is delivered
-/// afresh at every boot).
-#[derive(Debug, Clone)]
-pub struct Source {
-    pub path: PathBuf,
-    pub rewrite_is_new: bool,
-}
-
-pub fn sources(credentials: Option<&Path>) -> Vec<Source> {
-    let mut v: Vec<Source> = DROPS
-        .iter()
-        .map(|p| Source {
-            path: PathBuf::from(p),
-            rewrite_is_new: true,
-        })
-        .collect();
+/// Where seeds come from, in order.
+pub fn sources(credentials: Option<&Path>) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = DROPS.iter().map(PathBuf::from).collect();
     if let Some(dir) = credentials {
-        v.push(Source {
-            path: dir.join(CREDENTIAL),
-            rewrite_is_new: false,
-        });
+        v.push(dir.join(CREDENTIAL));
     }
     v
 }
@@ -105,23 +89,12 @@ pub struct Seed {
     text: String,
 }
 
-fn fingerprint(text: &str, path: &Path, rewrite_is_new: bool) -> String {
-    let mut fp = hex::encode(Sha256::digest(text.as_bytes()));
-    if rewrite_is_new
-        && let Ok(t) = std::fs::metadata(path).and_then(|m| m.modified())
-        && let Ok(d) = t.duration_since(std::time::UNIX_EPOCH)
-    {
-        fp.push_str(&format!("@{}.{:09}", d.as_secs(), d.subsec_nanos()));
-    }
-    fp
-}
-
 /// The first source holding a seed it has not tried.
-fn find(sources: &[Source], rec: &Record) -> Option<Seed> {
-    sources.iter().find_map(|s| {
-        let text = std::fs::read_to_string(&s.path).ok()?;
-        let source = s.path.display().to_string();
-        let fingerprint = fingerprint(&text, &s.path, s.rewrite_is_new);
+fn find(sources: &[PathBuf], rec: &Record) -> Option<Seed> {
+    sources.iter().find_map(|p| {
+        let text = std::fs::read_to_string(p).ok()?;
+        let source = p.display().to_string();
+        let fingerprint = hex::encode(Sha256::digest(text.as_bytes()));
         (rec.tried.get(&source) != Some(&fingerprint)).then_some(Seed {
             source,
             fingerprint,
@@ -235,7 +208,7 @@ pub async fn seed_loop(
     core: Core,
     events: broadcast::Sender<Value>,
     state: PathBuf,
-    sources: Vec<Source>,
+    sources: Vec<PathBuf>,
 ) {
     let path = state.join(RECORD);
     let mut rec: Record = std::fs::read(&path)
@@ -322,15 +295,12 @@ zones:
     }
 
     impl T {
-        fn drop_seed(&self, text: &str) -> Vec<Source> {
+        fn drop_seed(&self, text: &str) -> Vec<PathBuf> {
             let p = self.dir.path().join("config.yaml");
             std::fs::write(&p, text).unwrap();
-            vec![Source {
-                path: p,
-                rewrite_is_new: true,
-            }]
+            vec![p]
         }
-        fn step(&mut self, sources: &[Source]) {
+        fn step(&mut self, sources: &[PathBuf]) {
             let seed = find(sources, &self.rec);
             step(&mut self.c, &mut self.rec, seed).unwrap();
         }
@@ -388,9 +358,14 @@ zones:
         assert_eq!(t.rec.outcome, Some(Outcome::Reverted { id: 1 }));
         assert_eq!(t.c.state().unwrap().active, 0);
         assert!(checks(&t.rec, 0)[0].message.contains("reverted"));
-        // Re-seeding in bootstrap mode: the file written again is new.
-        std::thread::sleep(Duration::from_millis(20));
+        // The same seed again (a stick left in, at the next boot): not
+        // tried again.
         let src = t.drop_seed(SITE);
+        t.step(&src);
+        assert_eq!(t.rec.outcome, Some(Outcome::Reverted { id: 1 }));
+        assert_eq!(t.c.state().unwrap().active, 0);
+        // A corrected one, in bootstrap mode: tried.
+        let src = t.drop_seed(&SITE.replace("dhcp_client: true", "dhcp_client: true, mtu: 1400"));
         t.step(&src);
         assert!(matches!(t.rec.outcome, Some(Outcome::Pending { .. })));
         assert!(t.c.state().unwrap().active > 0);
@@ -412,18 +387,15 @@ zones:
     }
 
     #[test]
-    fn a_credential_is_new_only_when_its_content_changes() {
+    fn a_seed_is_new_only_when_its_content_changes() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join(CREDENTIAL);
         std::fs::write(&p, SITE).unwrap();
-        let src = [Source {
-            path: p.clone(),
-            rewrite_is_new: false,
-        }];
+        let src = [p.clone()];
         let mut rec = Record::default();
         let s = find(&src, &rec).unwrap();
         rec.tried.insert(s.source, s.fingerprint);
-        std::thread::sleep(Duration::from_millis(20));
+        // Written again, as at each boot.
         std::fs::write(&p, SITE).unwrap();
         assert!(find(&src, &rec).is_none());
         std::fs::write(&p, format!("{SITE}\n")).unwrap();

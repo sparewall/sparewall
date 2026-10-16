@@ -76,10 +76,11 @@ Where the implementation departs from, or settles open questions in,
   600 s confirm window. It confirms after three consecutive health checks
   (5 s apart) out of `failed`; a refused or reverted seed is a degraded
   `seed` check while the node stays in bootstrap mode. `seed.json` in the
-  state directory records the last seed tried from each source (a content
-  hash, plus the write time for files, so a re-inserted stick counts as
-  new and a credential delivered again at boot does not). Secrets and
-  pairing are not seeded.
+  state directory records a hash of the last seed tried from each source,
+  so a seed is tried once: a corrected stick is tried, but the same stick
+  left in, or a credential delivered again at boot, is not. The seed
+  unit runs on every insertion; it records a stick's identity only while
+  none is recorded. Secrets and pairing are not seeded.
 - **Physical nodes get their identity from a seed stick**: a filesystem
   labelled `SPAREWALL` with `sparewall-identity.yaml` (or `.json`). A udev
   rule starts `sparewall-seed@.service`, which mounts it read-only and

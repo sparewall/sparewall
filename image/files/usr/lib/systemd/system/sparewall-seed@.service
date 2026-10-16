@@ -1,8 +1,9 @@
 [Unit]
-Description=Read the node identity from the seed stick %I
+Description=Read the seed stick %I
 Documentation=https://github.com/sparewall/sparewall
-# Only until the coordinator has recorded an identity.
-ConditionPathExists=!/var/lib/sparewall/identity.json
+# Every insertion: the script records an identity only while none is
+# recorded, and sparewalld applies a configuration only in bootstrap
+# mode, so a corrected stick can be put back in.
 After=local-fs.target
 Before=sparewalld.service
 

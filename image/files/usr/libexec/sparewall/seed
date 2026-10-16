@@ -14,12 +14,18 @@ mount -o ro,nosuid,nodev,noexec "$dev" "$dir"
 found=
 for f in sparewall-identity.yaml sparewall-identity.yml sparewall-identity.json; do
     if [ -f "$dir/$f" ]; then
-        /usr/bin/sparewall init --from "$dir/$f"
-        echo "recorded the identity in $f from $dev"
         found=1
+        # The identity is fixed once the coordinator has recorded one.
+        if [ -e /var/lib/sparewall/identity.json ]; then
+            echo "an identity is already recorded; ignoring $f from $dev"
+        else
+            /usr/bin/sparewall init --from "$dir/$f"
+            echo "recorded the identity in $f from $dev"
+        fi
         break
     fi
 done
+# sparewalld applies it only in bootstrap mode, and says so otherwise.
 for f in sparewall-config.yaml sparewall-config.yml sparewall-config.json; do
     if [ -f "$dir/$f" ]; then
         /usr/bin/sparewall init --config "$dir/$f"
