@@ -90,13 +90,20 @@ management: { nic: "$MAC" }
 YAML
 # And a first configuration, applied by the node itself. Its port is
 # bound by PCI path, as for hardware not seen before (the NIC is placed at
-# 00:05.0 below).
+# 00:05.0 below). The first stick's is for another node, so it is
+# refused; a corrected stick replaces it later.
 sed 's|nic: "52:54:00:12:34:56"|nic: "pci-0000:00:05.0"|' "$HERE/site.yaml" > sparewall-config.yaml
 grep -q pci-0000 sparewall-config.yaml || fail "no PCI path in the seeded configuration"
-rm -f seed.img
-mkfs.vfat -C -n SPAREWALL seed.img 4096 >/dev/null
-mcopy -i seed.img sparewall-identity.yaml ::sparewall-identity.yaml
-mcopy -i seed.img sparewall-config.yaml ::sparewall-config.yaml
+stick() { # image config
+    rm -f "$1"
+    mkfs.vfat -C -n SPAREWALL "$1" 4096 >/dev/null
+    mcopy -i "$1" sparewall-identity.yaml ::sparewall-identity.yaml
+    mcopy -i "$1" "$2" ::sparewall-config.yaml
+}
+sed 's|nodes: \[fw1\]|nodes: [fw9]|; s|^  fw1:|  fw9:|' sparewall-config.yaml > wrong-config.yaml
+grep -q fw9 wrong-config.yaml || fail "could not make the wrong configuration"
+stick seed.img wrong-config.yaml
+stick seed2.img sparewall-config.yaml
 # restrict=on: the guest reaches neither the host nor the internet, but
 # the SSH forward still works.
 # bootindex: the firmware would otherwise try the seed stick first.
@@ -106,8 +113,20 @@ sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 2048 -smp 2 \
     -netdev "user,id=n0,restrict=on,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
     -device "virtio-net-pci,netdev=n0,mac=$MAC,bus=pcie.0,addr=0x5" \
     -drive "file=seed.img,if=none,id=seed,format=raw,readonly=on" \
-    -device "usb-ehci" -device "usb-storage,drive=seed,removable=on,bootindex=1" \
+    -device "usb-ehci" -device "usb-storage,drive=seed,id=stick,removable=on,bootindex=1" \
+    -monitor "unix:$WORK/monitor.sock,server=on,wait=off" \
     -display none -serial "file:installed.serial" -pidfile installed.pid -daemonize
+# A QEMU monitor command (HMP), for unplugging and plugging sticks.
+monitor() {
+    sudo python3 -c 'import socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+time.sleep(0.5)
+s.recv(65536)
+s.sendall(sys.argv[2].encode() + b"\n")
+time.sleep(1)
+print(s.recv(65536).decode(errors="replace"))' "$WORK/monitor.sock" "$1"
+}
 vm() {
     timeout 60 ssh -p "$SSH_PORT" -i id_ed25519 -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR \
@@ -120,6 +139,27 @@ until vm true 2>/dev/null; do
 done
 vm 'sudo journalctl -b -u "sparewall-seed@*" --no-pager' | grep -q "recorded the identity" \
     || fail "the identity did not come from the seed stick"
+
+log "a seed for another node is refused, and says so"
+refused() {
+    vm 'sudo sparewall health --verbose -o json' \
+        | jq -e '.checks[] | select(.name == "seed" and .level == "degraded") | .message | test("refused")' >/dev/null
+}
+deadline=$((SECONDS + 120))
+until refused 2>/dev/null; do
+    if [ $SECONDS -ge $deadline ]; then
+        vm 'sudo sparewall health --verbose; sudo journalctl -b -u sparewalld --no-pager | tail -40' || true
+        fail "the wrong seed was not reported as refused"
+    fi
+    sleep 5
+done
+[ "$(vm 'sudo sparewall status -o json' | jq .sync.active)" = 0 ] || fail "the wrong seed was applied"
+
+log "a corrected stick, put in in its place"
+monitor "device_del stick"
+sleep 3
+monitor "drive_add 0 if=none,id=seed2,file=$WORK/seed2.img,format=raw,readonly=on"
+monitor "device_add usb-storage,drive=seed2,id=stick2,removable=on"
 
 log "the seeded configuration, applied and confirmed by the node"
 seeded() { vm 'sudo sparewall status -o json' | jq -e '.sync.active == 1 and .sync.confirmed == 1' >/dev/null; }
