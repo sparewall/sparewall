@@ -901,6 +901,24 @@ impl Validator<'_> {
                 }
                 _ => {}
             }
+            if !f.hairpin.is_empty() && f.dst.is_none() {
+                self.err(
+                    format!("{p}.hairpin"),
+                    "needs dst: the outside address inside clients connect to",
+                );
+            }
+            for (i, z) in f.hairpin.iter().enumerate() {
+                let hp = format!("{p}.hairpin[{i}]");
+                if z == SELF_ZONE {
+                    self.err(hp, "the firewall itself cannot be a hairpin zone");
+                } else if !doc.zones.contains_key(z) {
+                    self.err(hp, format!("no zone named {z:?}"));
+                } else if z == from {
+                    self.err(hp, "the forward already applies from this zone");
+                } else if f.hairpin[..i].contains(z) {
+                    self.err(hp, "listed twice");
+                }
+            }
         }
     }
 

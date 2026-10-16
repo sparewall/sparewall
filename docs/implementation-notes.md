@@ -171,6 +171,17 @@ Where the implementation departs from, or settles open questions in,
   tunnel subnet arriving on another interface, ahead of conntrack state,
   zone policy and raw rules, while the forward chain routes nothing into
   or out of the tunnel. No zone-to-self policy can open it.
+- **NAT reflection is per forward** (`forwards.<name>.hairpin: [zones]`,
+  #48): a DNAT rule per hairpin zone for the forward's `dst` (required:
+  without it every connection to that port would be reflected) and
+  `dport`, and the implied zone pair accepts the DNATed connections, as
+  for `from`. A client on the server's own network leaves by the
+  interface it came in on, which the zone map never dispatches, so the
+  forward chain accepts that case explicitly, and postrouting SNATs it
+  to the network's gateway address (`vip`, which moves with the
+  gateway; the node's address standalone without one). Other hairpinned
+  clients keep their address. The listed zones reach the server only
+  through the forward, not past their own zone-pair policy.
 - **A generation that never ran gives way.** A local change that fails
   to activate is moved aside (`generations/<id>.failed-<hash>`), out of
   history, and its id is reused. One left by a crash before `state.json`

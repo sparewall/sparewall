@@ -456,7 +456,7 @@ The coordinator renders the nftables ruleset from the document: a zone-based pol
 - **Zones** are named groups of networks, plus a built-in `self` zone for traffic to and from the firewall.
 - **Policies** are per zone pair (`users->wan`): a default action (accept, drop, reject) and named, ordered rules (protocol, ports, source and destination objects, log, rate limit).
 - **Objects** are named address and port sets rendered as nft named sets. Sets that networkd fills via `NFTSet=` (the WAN address, for example) appear as dynamic objects, so rules never hold literal addresses that DHCP can change.
-- **NAT** attaches to zone pairs (masquerade or SNAT outbound); **forwards** define inbound DNAT.
+- **NAT** attaches to zone pairs (masquerade or SNAT outbound); **forwards** define inbound DNAT. A forward's `hairpin` zones may also use it by its outside address (NAT reflection); clients on the server's own network are then source-NATed to the firewall's address there, so replies return through it.
 
 ### Raw rules
 

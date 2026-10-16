@@ -7,6 +7,9 @@
 #                             printing the count of echoes ("broken" if
 #                             one comes back wrong; T is the read timeout)
 #   echo.py udpclient HOST    a datagram every 0.3 s, logging each reply
+#   echo.py whoami            TCP on 7002: answers with the address the
+#                             connection came from, then closes
+#   echo.py ask HOST PORT     connect once and print the answer
 import socket, sys, threading, time
 def serve(c):
     f = c.makefile("rwb", buffering=0)
@@ -18,6 +21,15 @@ if sys.argv[1] == "server":
     while True:
         c, _ = s.accept()
         threading.Thread(target=serve, args=(c,), daemon=True).start()
+elif sys.argv[1] == "whoami":
+    s = socket.create_server(("0.0.0.0", 7002))
+    while True:
+        c, a = s.accept()
+        c.sendall(a[0].encode() + b"\n")
+        c.close()
+elif sys.argv[1] == "ask":
+    c = socket.create_connection((sys.argv[2], int(sys.argv[3])), timeout=5)
+    print(c.makefile().readline().strip(), flush=True)
 elif sys.argv[1] == "udpserver":
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(("0.0.0.0", 7001))

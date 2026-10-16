@@ -112,8 +112,12 @@ fn reload_keeps_networkd_set_elements() {
     let admin = nft(&["list", "set", "inet", "sparewall", "admin_nets"]);
     assert!(admin.contains("10.0.99.0/24"), "{admin}");
 
-    // Removing a chain and a set between generations works too.
-    let fewer = changed.replace("  guests->users: { action: reject }\n", "");
+    // Removing a chain and a set between generations works too (the
+    // forward's hairpin from guests would keep the pair's chain).
+    let fewer = changed
+        .replace("  guests->users: { action: reject }\n", "")
+        .replace("hairpin: [users, guests]", "hairpin: [users]");
+    assert_ne!(fewer, changed);
     let (body3, preserved3) = rendered(&fewer);
     sys.nft_load(&body3, &preserved3).unwrap();
     let chains = sys.nft_chains().unwrap().unwrap();
