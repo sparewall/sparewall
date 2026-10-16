@@ -109,12 +109,13 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         }
         s.push_str("    track_script {\n        sparewall_health\n    }\n");
         writeln!(s, "    notify \"{NOTIFY_SCRIPT}\"").unwrap();
-        writeln!(
-            s,
-            "    virtual_ipaddress {{\n        {} dev {iface}\n    }}\n}}\n",
-            net.vip.expect("filtered")
-        )
-        .unwrap();
+        // Extra gateway addresses ride in the same instance, so they move
+        // in the same step.
+        s.push_str("    virtual_ipaddress {\n");
+        for a in net.vip.iter().chain(&net.extra_vips) {
+            writeln!(s, "        {a} dev {iface}").unwrap();
+        }
+        s.push_str("    }\n}\n\n");
     }
     let mut links: Vec<String> = Vec::new();
     for (name, net) in &instances {

@@ -76,7 +76,7 @@ Sparewall ships as a bootable container image built from a Containerfile on a Fe
 The same image and the same config document run on a VM fed a VLAN trunk, a single-NIC mini PC, or a multi-NIC box with bonds, including a mixed pair of one VM and one physical node. The document makes this possible by separating **ports** (physical, per node) from **networks** (logical, shared); zones, gateway addresses, DHCP and policy only ever reference networks.
 
 - A **port** is a per-node role name (`uplink`, `wan`, `mgmt`) bound to hardware: one NIC matched by permanent MAC or PCI path, or a bond of several NICs.
-- A **network** is one L2 segment: a port role, an optional VLAN ID, per-node addresses, and (in a pair) a gateway address (`vip`) and VRRP ID. Management and sync are networks with a role.
+- A **network** is one L2 segment: a port role, an optional VLAN ID, per-node addresses, and (in a pair) a gateway address (`vip`) and VRRP ID. `extra_vips` adds addresses that move with the gateway address, for services that need their own public address (forwards, SNAT). Management and sync are networks with a role.
 - Because networks reference port *roles*, `uplink` can be a virtio trunk on one node and an LACP bond on the other.
 
 ```yaml
@@ -140,7 +140,7 @@ One versioned document describes a whole deployment, one node or a pair, and the
 | `cluster` | Node names (one or two), VRRP timing, which network carries sync | No |
 | `management` | Which network is management; anti-lockout switch | No |
 | `ports` | Per node: port role → NIC (MAC or PCI path) or bond (members, mode, LACP options); MTU; offload overrides | Yes |
-| `networks` | Name → port role, VLAN, role (`wan`, `management`, `sync`, service), addresses, `vip`, `vrid`, MTU, WAN DHCP client | Addresses per node |
+| `networks` | Name → port role, VLAN, role (`wan`, `management`, `sync`, service), addresses, `vip`, `extra_vips`, `vrid`, MTU, WAN DHCP client | Addresses per node |
 | `zones` | Name → member networks; `self` is built in | No |
 | `objects` | Named address and port sets; dynamic sets filled by networkd | No |
 | `policy` | `"from->to"` → default action, NAT mode, `rules` (named, ordered) | No |

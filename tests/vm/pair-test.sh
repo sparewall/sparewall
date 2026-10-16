@@ -27,6 +27,7 @@ cleanup() {
     local rc=$?
     if [ $rc -ne 0 ]; then
         [ -f flow.log ] && { echo "--- flow.log"; tail -5 flow.log; }
+        [ -f fwd.log ] && { echo "--- fwd.log"; tail -5 fwd.log; }
         for c in $VPN_CLIENTS; do
             echo "--- VPN client $c"; ns "$c" wg show wg0 2>/dev/null || true
         done
@@ -200,6 +201,25 @@ sleep 3
 at fw2 'sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -e' | grep -q 'dport=7000' \
     || fail "fw2's external cache does not hold the connection"
 
+log "an extra gateway address: a forward in, SNAT out"
+# From the WAN, a connection to 203.0.113.5 reaches the echo server in
+# sw-guests (forwards.echo-in); it must survive the failover below.
+wan_ns inet 203.0.113.60
+ns inet python3 "$HERE/echo.py" client 203.0.113.5 > fwd.log 2>&1 &
+fwd_echoes() { tail -1 fwd.log | grep -qE '^[0-9]+$' && echo "$(tail -1 fwd.log)"; }
+sleep 3
+fwd_before=$(fwd_echoes) || fail "no echoes through the forward on 203.0.113.5: $(cat fwd.log)"
+# The servers network reaches the WAN as 203.0.113.5 (policy servers->wan).
+ns inet python3 -c 'import socket
+s = socket.create_server(("0.0.0.0", 7002))
+c, a = s.accept()
+c.sendall(a[0].encode() + b"\n")' &
+sleep 1
+seen=$(ns guests python3 -c 'import socket
+c = socket.create_connection(("203.0.113.60", 7002), timeout=5)
+print(c.makefile().readline().strip())') || fail "the servers network cannot reach the WAN"
+[ "$seen" = 203.0.113.5 ] || fail "the servers network reached the WAN as $seen, not 203.0.113.5"
+
 vpn_before_loss
 log "failover"
 sudo kill "$(sudo cat fw1.pid)"; rm -f fw1.pid
@@ -213,6 +233,12 @@ after=$(echoes) || fail "the connection stalled: $(tail -5 flow.log)"
 sleep 3
 [ "$(echoes)" -gt "$after" ] && [ "$after" -gt "$before" ] \
     || fail "the connection stalled after the failover ($before, $after, $(echoes))"
+# And the one to the extra gateway address, now held by fw2.
+grep -q broken fwd.log && fail "the forwarded connection broke in the failover: $(tail -5 fwd.log)"
+fwd_after=$(fwd_echoes) || fail "the forwarded connection stalled: $(tail -5 fwd.log)"
+[ "$fwd_after" -gt "$fwd_before" ] \
+    || fail "the forwarded connection stalled after the failover ($fwd_before, $fwd_after)"
+at fw2 'ip -br addr show wan' | grep -q '203.0.113.5/24' || fail "fw2 does not hold 203.0.113.5"
 wait_for 60 "fw2 reports the peer down" unreachable fw2
 # The client keeps its address, now from fw2. (Without flushing it first:
 # the connection above runs from it.)

@@ -205,6 +205,15 @@ Where the implementation departs from, or settles open questions in,
   so the listen port's accept covers it. A forward could not express
   this (its `to` must be in another zone), and a general NAT hook would
   be hard to validate.
+- **Extra gateway addresses ride in the gateway's VRRP instance**
+  (`networks.<name>.extra_vips`, #47): more `virtual_ipaddress` lines,
+  no new VRIDs, so they move in the same step as the gateway address;
+  standalone they are static addresses. Dynamic `address` objects
+  include them. An `snat` target, or a literal forward `dst`, inside a
+  statically addressed network must be an address some node holds
+  there (a node address, the gateway address or an extra one):
+  otherwise it would silently go nowhere. Addresses outside every
+  static network (a DHCP WAN's) cannot be checked.
 - **A generation that never ran gives way.** A local change that fails
   to activate is moved aside (`generations/<id>.failed-<hash>`), out of
   history, and its id is reused. One left by a crash before `state.json`

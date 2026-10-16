@@ -29,6 +29,9 @@ networks:
     role: wan
     addresses: { fw1: 203.0.113.2/24, fw2: 203.0.113.3/24 }
     vip: 203.0.113.1/24
+    # A service address that moves with the gateway (#47): forwarded in,
+    # and the servers network's outbound source.
+    extra_vips: [203.0.113.5/24]
     vrid: 10
   users:
     port: trunk
@@ -65,6 +68,9 @@ policy:
     rules:
       ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }
   vpn->servers: { action: accept }
+  servers->wan: { action: accept, nat: { snat: 203.0.113.5 } }
+forwards:
+  echo-in: { proto: tcp, dport: 7000, dst: 203.0.113.5, to: 198.51.100.10 }
 dhcp:
   users: { pool: 192.0.2.100-192.0.2.199 }
 # Remote access on the WAN gateway address (tests/vm/vpn.sh). The client

@@ -260,3 +260,17 @@ fn vpn_extra_ports_standalone_redirect() {
     );
     assert_nft_ok(&r);
 }
+
+#[test]
+fn extra_vips_standalone_are_static_addresses() {
+    let mut doc = example("standalone.yaml");
+    let users = doc.networks.get_mut("users").unwrap();
+    users.extra_vips = vec![serde_json::from_value(serde_json::json!("192.0.2.5/24")).unwrap()];
+    let r = render(&doc, "fw1").unwrap();
+    let (_, network) = r
+        .files
+        .iter()
+        .find(|(p, c)| p.ends_with(".network") && c.contains("Address=192.0.2.1/24"))
+        .expect("the users .network file");
+    assert!(network.contains("Address=192.0.2.5/24"), "{network}");
+}

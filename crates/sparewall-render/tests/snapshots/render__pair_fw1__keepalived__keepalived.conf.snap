@@ -64,5 +64,6 @@ vrrp_instance VI_wan {
     notify "/usr/libexec/keepalived/sparewall-notify"
     virtual_ipaddress {
         203.0.113.1/29 dev wan
+        203.0.113.5/29 dev wan
     }
 }

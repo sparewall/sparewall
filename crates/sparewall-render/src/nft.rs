@@ -203,7 +203,7 @@ fn static_dynamic_elements(doc: &Document, node: &str, d: &DynamicSource) -> Vec
             if let Some(a) = net.addresses.get(node) {
                 out.insert(a.0.addr().to_string());
             }
-            if let Some(v) = &net.vip {
+            for v in net.vip.iter().chain(&net.extra_vips) {
                 out.insert(v.0.addr().to_string());
             }
         }

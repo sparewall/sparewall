@@ -16,6 +16,7 @@ table inet sparewall {
 	}
 	chain prerouting_nat {
 		type nat hook prerouting priority dstnat; policy accept;
+		iifname "wan" ip daddr 203.0.113.5 tcp dport 25 counter dnat ip to 192.0.2.25 comment "forward:mail"
 		iifname "wan" ip daddr 203.0.113.1 udp dport { 53, 443 } counter dnat ip to 203.0.113.1:51820 comment "vpn-roadwarrior:extra-ports"
 	}
 	chain input {
@@ -44,7 +45,7 @@ table inet sparewall {
 		oifname "roadwarrior" tcp flags syn tcp option maxseg size set rt mtu comment "vpn-mss"
 		ct state vmap { established : accept, related : accept, invalid : drop }
 		meta nfproto ipv6 drop
-		iifname . oifname vmap { "users" . "wan" : jump fwd_users_wan, "roadwarrior" . "users" : jump fwd_vpn_users, "roadwarrior" . "wan" : jump fwd_vpn_wan }
+		iifname . oifname vmap { "users" . "wan" : jump fwd_users_wan, "roadwarrior" . "users" : jump fwd_vpn_users, "roadwarrior" . "wan" : jump fwd_vpn_wan, "wan" . "users" : jump fwd_wan_users }
 		counter comment "default:forward"
 	}
 	chain output {
@@ -68,5 +69,9 @@ table inet sparewall {
 	chain in_wan {
 		ip saddr @admin_nets tcp dport 22 counter accept comment "rule:wan->self:ssh-admin"
 		counter drop comment "default:wan->self"
+	}
+	chain fwd_wan_users {
+		ip daddr 192.0.2.25 tcp dport 25 ct status dnat counter accept comment "forward:mail"
+		counter drop comment "default:wan->users"
 	}
 }
