@@ -475,6 +475,12 @@ pub struct Forward {
     /// Log forwarded connections.
     #[serde(default, skip_serializing_if = "is_false")]
     pub log: bool,
+    /// Inside zones whose clients may also use the forward by its outside
+    /// address (NAT reflection), e.g. `[users]`. Needs `dst`. Clients on
+    /// the server's own network are also source-NATed to the firewall's
+    /// address there, so that replies come back through it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hairpin: Vec<String>,
 }
 
 /// A raw nft statement placed at a hook point.

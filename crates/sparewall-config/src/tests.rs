@@ -542,3 +542,39 @@ fn provider_switch_warns_about_lost_state() {
         "the default, named"
     );
 }
+
+#[test]
+fn hairpin_needs_dst_and_inside_zones() {
+    let hp = |v: serde_json::Value| edit(STANDALONE, json!({"forwards": {"web-server": v}}));
+    // The example's own hairpin is valid.
+    assert_valid(&hp(json!({"hairpin": ["users", "guests"]})));
+    assert!(has_error(
+        &hp(json!({"dst": null, "hairpin": ["users"]})),
+        "needs dst"
+    ));
+    assert!(has_error(
+        &hp(json!({"hairpin": ["self"]})),
+        "cannot be a hairpin zone"
+    ));
+    assert!(has_error(&hp(json!({"hairpin": ["lab"]})), "no zone named"));
+    assert!(has_error(
+        &hp(json!({"hairpin": ["wan"]})),
+        "already applies from"
+    ));
+    assert!(has_error(
+        &hp(json!({"hairpin": ["users", "users"]})),
+        "listed twice"
+    ));
+}
+
+#[test]
+fn vm_suite_documents_are_valid() {
+    // The single-node VM suites' documents (the pair's carries key
+    // placeholders, filled in at run time).
+    for text in [
+        include_str!("../../../tests/vm/site.yaml"),
+        include_str!("../../../tests/vm/site-vlans.yaml"),
+    ] {
+        assert_valid(&load(text));
+    }
+}

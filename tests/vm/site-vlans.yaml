@@ -32,6 +32,18 @@ policy:
     rules:
       ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }
   guests->self: { action: drop }
+forwards:
+  # NAT reflection (#48): the management address (QEMU's DHCP always
+  # gives 10.0.2.15) stands in for a public one; the server is sw-srv on
+  # the users VLAN.
+  reflect:
+    from: mgmt
+    proto: tcp
+    dport: 8080
+    dst: 10.0.2.15
+    to: 192.0.2.30
+    to_port: 7002
+    hairpin: [users, guests]
 dhcp:
   users:
     pool: 192.0.2.100-192.0.2.199

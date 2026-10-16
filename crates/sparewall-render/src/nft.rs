@@ -216,6 +216,41 @@ fn static_dynamic_elements(doc: &Document, node: &str, d: &DynamicSource) -> Vec
     out.into_iter().collect()
 }
 
+/// The zones a forward applies from: its `from`, then its hairpin zones.
+fn forward_zones(f: &Forward) -> impl Iterator<Item = &str> {
+    std::iter::once(f.from.as_deref().unwrap_or("wan")).chain(f.hairpin.iter().map(String::as_str))
+}
+
+/// The port a forwarded connection reaches the server on.
+fn forward_port(f: &Forward) -> String {
+    match f.to_port {
+        Some(p) => p.to_string(),
+        None => match_expr(&f.dport),
+    }
+}
+
+/// Forwards reflected for clients on the server's own network: the
+/// forward, that network's interface, and the firewall's address there
+/// (the gateway address, which moves with the gateway in a pair).
+fn same_network_hairpins<'a>(
+    doc: &'a Document,
+    node: &str,
+) -> Vec<(&'a String, &'a Forward, String, std::net::Ipv4Addr)> {
+    doc.forwards
+        .iter()
+        .filter_map(|(name, f)| {
+            let net = doc.network_containing(f.to)?;
+            let zone = doc.zone_of_network(net)?;
+            if !f.hairpin.iter().any(|z| z == zone) {
+                return None;
+            }
+            let n = doc.networks.get(net)?;
+            let gw = n.vip.as_ref().or_else(|| n.addresses.get(node))?.0.addr();
+            Some((name, f, doc.network_iface(net)?.to_string(), gw))
+        })
+        .collect()
+}
+
 pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(), Error> {
     let pair = doc.is_pair();
     let mut sc = Script {
@@ -284,25 +319,31 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // A forward implies its zone pair: without a policy, the pair gets a
     // chain that accepts only the forwarded connections.
     for f in doc.forwards.values() {
-        let from = f.from.as_deref().unwrap_or("wan");
         let Some(to) = doc
             .network_containing(f.to)
             .and_then(|n| doc.zone_of_network(n))
         else {
             continue;
         };
-        if !policies.iter().any(|(a, b, _, _)| *a == from && *b == to) {
-            policies.push((
-                from,
-                to,
-                format!("{from}->{to}"),
-                Policy {
-                    action: Action::Drop,
-                    log: false,
-                    nat: None,
-                    rules: Default::default(),
-                },
-            ));
+        for from in forward_zones(f) {
+            // Within one zone, a pair chain is reached only between two of
+            // its interfaces (same_network_hairpins covers the one).
+            if from == to && zone_ifs.get(to).is_none_or(|i| i.len() < 2) {
+                continue;
+            }
+            if !policies.iter().any(|(a, b, _, _)| *a == from && *b == to) {
+                policies.push((
+                    from,
+                    to,
+                    format!("{from}->{to}"),
+                    Policy {
+                        action: Action::Drop,
+                        log: false,
+                        nat: None,
+                        rules: Default::default(),
+                    },
+                ));
+            }
         }
     }
     policies.sort_by_key(|(a, b, _, _)| (*a, *b));
@@ -318,28 +359,34 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
 
     let mut dnat = String::from("type nat hook prerouting priority dstnat; policy accept;\n");
     for (name, f) in &doc.forwards {
-        let from = f.from.as_deref().unwrap_or("wan");
-        let ifs = zone_ifs.get(from).cloned().unwrap_or_default();
-        if ifs.is_empty() {
-            continue;
+        for from in forward_zones(f) {
+            let ifs = zone_ifs.get(from).cloned().unwrap_or_default();
+            if ifs.is_empty() {
+                continue;
+            }
+            let comment = if f.hairpin.iter().any(|z| z == from) {
+                format!("forward:{name}:hairpin")
+            } else {
+                format!("forward:{name}")
+            };
+            let mut parts = vec![format!("iifname {}", ifset(&ifs))];
+            if let Some(s) = &f.src {
+                parts.push(format!("ip saddr {}", match_expr(s)));
+            }
+            if let Some(d) = &f.dst {
+                parts.push(format!("ip daddr {}", match_expr(d)));
+            }
+            parts.push(format!("{} dport {}", f.proto, match_expr(&f.dport)));
+            parts.push("counter".into());
+            let to = match f.to_port {
+                Some(p) => format!("{}:{p}", f.to),
+                None => f.to.to_string(),
+            };
+            parts.push(format!("dnat ip to {to}"));
+            parts.push(format!("comment {}", q(&comment)));
+            dnat.push_str(&parts.join(" "));
+            dnat.push('\n');
         }
-        let mut parts = vec![format!("iifname {}", ifset(&ifs))];
-        if let Some(s) = &f.src {
-            parts.push(format!("ip saddr {}", match_expr(s)));
-        }
-        if let Some(d) = &f.dst {
-            parts.push(format!("ip daddr {}", match_expr(d)));
-        }
-        parts.push(format!("{} dport {}", f.proto, match_expr(&f.dport)));
-        parts.push("counter".into());
-        let to = match f.to_port {
-            Some(p) => format!("{}:{p}", f.to),
-            None => f.to.to_string(),
-        };
-        parts.push(format!("dnat ip to {to}"));
-        parts.push(format!("comment {}", q(&format!("forward:{name}"))));
-        dnat.push_str(&parts.join(" "));
-        dnat.push('\n');
     }
     sc.chain("prerouting_nat", dnat);
 
@@ -488,6 +535,20 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             }
         }
     }
+    // A client reflected to a server on its own network leaves by the
+    // interface it came in on, which the zone map does not dispatch.
+    for (name, f, iface, _) in same_network_hairpins(doc, node) {
+        writeln!(
+            fwd,
+            "iifname {i} oifname {i} ip daddr {} {} dport {} ct status dnat counter accept comment {}",
+            f.to,
+            f.proto,
+            forward_port(f),
+            q(&format!("forward:{name}:hairpin")),
+            i = q(&iface)
+        )
+        .unwrap();
+    }
     if !fwd_map.is_empty() {
         writeln!(fwd, "iifname . oifname vmap {{ {} }}", fwd_map.join(", ")).unwrap();
     }
@@ -535,6 +596,20 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // --- postrouting ----------------------------------------------------------
     let mut post = String::from("type nat hook postrouting priority srcnat; policy accept;\n");
     post.push_str(&raw_at_hook(doc, RawHook::Postrouting));
+    // The server would answer a client on its own network directly, past
+    // the reverse translation: make the firewall the source.
+    for (name, f, iface, gw) in same_network_hairpins(doc, node) {
+        writeln!(
+            post,
+            "iifname {i} oifname {i} ip daddr {} {} dport {} ct status dnat counter snat ip to {gw} comment {}",
+            f.to,
+            f.proto,
+            forward_port(f),
+            q(&format!("forward:{name}:hairpin")),
+            i = q(&iface)
+        )
+        .unwrap();
+    }
     for (from, to, key, pol) in &policies {
         let Some(nat) = &pol.nat else { continue };
         let (Some(fi), Some(ti)) = (zone_ifs.get(from), zone_ifs.get(to)) else {
@@ -585,15 +660,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         // Accept DNATed connections that forwards send into this pair.
         if *to != SELF_ZONE && *from != SELF_ZONE {
             for (fname, f) in &doc.forwards {
-                let ffrom = f.from.as_deref().unwrap_or("wan");
                 let fto = doc
                     .network_containing(f.to)
                     .and_then(|n| doc.zone_of_network(n));
-                if ffrom == *from && fto == Some(*to) {
-                    let port = match f.to_port {
-                        Some(p) => p.to_string(),
-                        None => match_expr(&f.dport),
-                    };
+                if forward_zones(f).any(|z| z == *from) && fto == Some(*to) {
+                    let port = forward_port(f);
                     let log = if f.log {
                         format!(
                             " log group {} prefix {}",

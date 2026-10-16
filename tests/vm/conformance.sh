@@ -50,6 +50,36 @@ lease() {
 
 can() { ns "$1" ping -c 2 -W 2 "$2" >/dev/null 2>&1; }
 
+# NAT reflection (forwards.reflect): inside clients reach the server in
+# sw-srv (users VLAN) by the forward's outside address. One on another
+# network keeps its own address; one on the server's network is
+# source-NATed to the gateway address so the reply comes back through
+# the firewall.
+hairpin() {
+    sudo ip netns add sw-srv
+    sudo ip link add v-srv type veth peer name eth0 netns sw-srv
+    sudo ip link set v-srv master swbr up
+    sudo bridge vlan del dev v-srv vid 1
+    sudo bridge vlan add dev v-srv vid 20 pvid untagged
+    ns srv ip link set lo up
+    ns srv ip addr add 192.0.2.30/24 dev eth0
+    ns srv ip link set eth0 up
+    ns srv ip route add default via 192.0.2.1
+    ns srv python3 "$HERE/echo.py" whoami &
+    sleep 1
+    local seen
+    seen=$(ns guests python3 "$HERE/echo.py" ask 10.0.2.15 8080) \
+        || fail "guests cannot reach the forward by its outside address"
+    [ "$seen" = "$g" ] || fail "the server saw guests as $seen, not $g"
+    seen=$(ns users python3 "$HERE/echo.py" ask 10.0.2.15 8080) \
+        || fail "users cannot reach the forward on its own network by its outside address"
+    [ "$seen" = 192.0.2.1 ] || fail "the server saw users as $seen, not the gateway address"
+    # Only the forward is opened: guests still cannot reach the server.
+    ! ns guests python3 "$HERE/echo.py" ask 192.0.2.30 7002 2>/dev/null \
+        || fail "guests reached the server directly"
+    log "hairpin: guests seen as $g, users as 192.0.2.1"
+}
+
 run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
@@ -77,6 +107,8 @@ run_conformance() {
     can users "$g" || fail "users cannot reach guests"
     ! can guests "$u" || fail "guests reached users"
     ! can guests 198.51.100.1 || fail "guests could ping the firewall"
+
+    hairpin
 
     local a
     a=$(ns users dig +short +time=3 +tries=3 @192.0.2.1 printer.home.arpa) || true

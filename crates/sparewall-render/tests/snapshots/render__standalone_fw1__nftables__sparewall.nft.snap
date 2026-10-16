@@ -27,6 +27,8 @@ table inet sparewall {
 	chain prerouting_nat {
 		type nat hook prerouting priority dstnat; policy accept;
 		iifname "wan" ip daddr @wan_address tcp dport @web counter dnat ip to 192.0.2.80 comment "forward:web-server"
+		iifname "users" ip daddr @wan_address tcp dport @web counter dnat ip to 192.0.2.80 comment "forward:web-server:hairpin"
+		iifname "guests" ip daddr @wan_address tcp dport @web counter dnat ip to 192.0.2.80 comment "forward:web-server:hairpin"
 	}
 	chain input {
 		type filter hook input priority filter; policy drop;
@@ -48,6 +50,7 @@ table inet sparewall {
 		tcp flags syn tcp option maxseg size set rt mtu comment "raw:mss-clamp"
 		ct state vmap { established : accept, related : accept, invalid : drop }
 		meta nfproto ipv6 drop
+		iifname "users" oifname "users" ip daddr 192.0.2.80 tcp dport @web ct status dnat counter accept comment "forward:web-server:hairpin"
 		iifname . oifname vmap { "guests" . "users" : jump fwd_guests_users, "guests" . "wan" : jump fwd_guests_wan, "users" . "guests" : jump fwd_users_guests, "users" . "wan" : jump fwd_users_wan, "wan" . "users" : jump fwd_wan_users }
 		counter comment "default:forward"
 	}
@@ -56,6 +59,7 @@ table inet sparewall {
 	}
 	chain postrouting_nat {
 		type nat hook postrouting priority srcnat; policy accept;
+		iifname "users" oifname "users" ip daddr 192.0.2.80 tcp dport @web ct status dnat counter snat ip to 192.0.2.1 comment "forward:web-server:hairpin"
 		iifname "guests" oifname "wan" counter masquerade comment "nat:guests->wan"
 		iifname "users" oifname "wan" counter masquerade comment "nat:users->wan"
 	}
@@ -64,6 +68,7 @@ table inet sparewall {
 		counter drop comment "default:guests->self"
 	}
 	chain fwd_guests_users {
+		ip daddr 192.0.2.80 tcp dport @web ct status dnat counter accept comment "forward:web-server"
 		counter log group 0 prefix "guests->users:default " drop comment "default:guests->users"
 	}
 	chain fwd_guests_wan {

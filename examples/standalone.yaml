@@ -70,6 +70,8 @@ forwards:
     dport: "@web"
     dst: "@wan_address"
     to: 192.0.2.80
+    # Inside clients may use the public address too.
+    hairpin: [users, guests]
 raw:
   block-scanner:
     at: { pair: wan->self, position: before }
