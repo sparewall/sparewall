@@ -68,6 +68,18 @@ Where the implementation departs from, or settles open questions in,
   It builds Anaconda from the image's repositories, which it reads from
   `/etc/yum.repos.d`, so the image copies Fedora 45's dnf5 repository
   files there (nodes never run dnf; bootc replaces the whole image).
+- **A seeded first configuration is applied by the node itself**
+  (`sparewalld/src/seed.rs`, #46): from `/etc/sparewall/config.{json,yaml}`
+  (written by `sparewall init --config`, which the seed stick runs for
+  `sparewall-config.yaml`) or the `sparewall.config` credential, only at
+  generation 0, through the ordinary apply path with author `seed` and a
+  600 s confirm window. It confirms after three consecutive health checks
+  (5 s apart) out of `failed`; a refused or reverted seed is a degraded
+  `seed` check while the node stays in bootstrap mode. `seed.json` in the
+  state directory records the last seed tried from each source (a content
+  hash, plus the write time for files, so a re-inserted stick counts as
+  new and a credential delivered again at boot does not). Secrets and
+  pairing are not seeded.
 - **Physical nodes get their identity from a seed stick**: a filesystem
   labelled `SPAREWALL` with `sparewall-identity.yaml` (or `.json`). A udev
   rule starts `sparewall-seed@.service`, which mounts it read-only and

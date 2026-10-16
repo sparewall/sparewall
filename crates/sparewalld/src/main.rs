@@ -10,6 +10,7 @@ mod isolation_tests;
 mod peer;
 mod reach;
 mod rules;
+mod seed;
 mod service;
 mod upgrade;
 mod varlink;
@@ -355,6 +356,13 @@ fn run(args: Args) -> Result<(), String> {
                     .then(|| sparewall_config::topology::SYNC_TUNNEL_IFACE.to_string()),
             ) => Ok(()),
             () = peer::sync_loop(core.clone(), tx.clone(), pair.clone(), wake.clone()) => Ok(()),
+            () = async {
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                let creds = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
+                seed::seed_loop(core.clone(), tx.clone(), args.state.clone(), seed::sources(creds.as_deref())).await
+            } => Ok(()),
             () = async {
                 // A fake system has no networks to probe.
                 if args.fake_system {

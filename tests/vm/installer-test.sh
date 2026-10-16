@@ -1,9 +1,10 @@
 #!/bin/bash
 # Install from the ISO with no network, then boot the installed system
 # (design: "To prove in the lab": container images absent after an
-# offline install). The installed node gets its identity from a seed
-# stick, as a physical machine would, and must reach bootstrap mode with
-# every logically bound provider image already in place.
+# offline install). The installed node gets its identity and a first
+# configuration from a seed stick, as a physical machine would: it must
+# apply and confirm that configuration by itself (its port bound by PCI
+# path), with every logically bound provider image already in place.
 #
 #   tests/vm/installer-test.sh IMAGE WORKDIR
 #
@@ -87,9 +88,15 @@ node: fw1
 ssh_keys: ["$(cat id_ed25519.pub)"]
 management: { nic: "$MAC" }
 YAML
+# And a first configuration, applied by the node itself. Its port is
+# bound by PCI path, as for hardware not seen before (the NIC is placed at
+# 00:05.0 below).
+sed 's|nic: "52:54:00:12:34:56"|nic: "pci-0000:00:05.0"|' "$HERE/site.yaml" > sparewall-config.yaml
+grep -q pci-0000 sparewall-config.yaml || fail "no PCI path in the seeded configuration"
 rm -f seed.img
 mkfs.vfat -C -n SPAREWALL seed.img 4096 >/dev/null
 mcopy -i seed.img sparewall-identity.yaml ::sparewall-identity.yaml
+mcopy -i seed.img sparewall-config.yaml ::sparewall-config.yaml
 # restrict=on: the guest reaches neither the host nor the internet, but
 # the SSH forward still works.
 # bootindex: the firmware would otherwise try the seed stick first.
@@ -97,7 +104,7 @@ sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 2048 -smp 2 \
     -drive "file=installed.qcow2,if=none,id=disk,format=qcow2" \
     -device "virtio-blk-pci,drive=disk,bootindex=0" \
     -netdev "user,id=n0,restrict=on,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
-    -device "virtio-net-pci,netdev=n0,mac=$MAC" \
+    -device "virtio-net-pci,netdev=n0,mac=$MAC,bus=pcie.0,addr=0x5" \
     -drive "file=seed.img,if=none,id=seed,format=raw,readonly=on" \
     -device "usb-ehci" -device "usb-storage,drive=seed,removable=on,bootindex=1" \
     -display none -serial "file:installed.serial" -pidfile installed.pid -daemonize
@@ -111,10 +118,23 @@ until vm true 2>/dev/null; do
     [ $SECONDS -lt $deadline ] || fail "no SSH on the installed system"
     sleep 5
 done
-[ "$(vm 'sudo sparewall status -o json' | jq -r .role)" = bootstrap ] \
-    || fail "the installed node is not in bootstrap mode"
 vm 'sudo journalctl -b -u "sparewall-seed@*" --no-pager' | grep -q "recorded the identity" \
     || fail "the identity did not come from the seed stick"
+
+log "the seeded configuration, applied and confirmed by the node"
+seeded() { vm 'sudo sparewall status -o json' | jq -e '.sync.active == 1 and .sync.confirmed == 1' >/dev/null; }
+deadline=$((SECONDS + 300))
+until seeded 2>/dev/null; do
+    if [ $SECONDS -ge $deadline ]; then
+        vm 'sudo sparewall health --verbose; sudo journalctl -b -u sparewalld --no-pager | tail -40' || true
+        fail "the seeded configuration was not applied and confirmed"
+    fi
+    sleep 5
+done
+vm 'sudo sparewall history'
+[ "$(vm 'sudo sparewall history -o json' | jq -r '.[] | select(.id == 1) | .author')" = seed ] \
+    || fail "generation 1 is not the seeded configuration"
+vm 'ip -br link show uplink' | grep -q UP || fail "the port bound by PCI path is not up"
 
 log "the bound provider images"
 missing=0
