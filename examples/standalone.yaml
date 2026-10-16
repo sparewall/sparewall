@@ -89,6 +89,8 @@ dhcp:
   guests:
     pool: 198.51.100.100-198.51.100.250
     lease_time: 3600
+    # Guest Wi-Fi isolates clients, so nothing would answer the ping.
+    ping_check: false
 dns:
   enabled: true
   provider: unbound

@@ -224,7 +224,10 @@ Each node keeps its own lego account under `/var/lib/sparewall/lego`.
 ## Backup and restore
 
 A bundle holds the active document, recent generations, the cluster
-secrets, DHCP leases and the running image digest. Node private keys are
+secrets, DHCP leases and the running image digest. Leases granted after
+the backup are not in it, but Kea pings each address before offering
+it, so one still in use is skipped (turn this off with
+`dhcp.ping_check: false`, or per network, where ICMP echo is filtered). Node private keys are
 never included: a rebuilt node of a pair is re-paired with its new sync
 key.
 
@@ -316,7 +319,9 @@ them. After upgrading:
 
   For a provider, unset it to use the built-in default (`sparewall unset
   dhcp.provider`, which means Kea). With networkd's DHCP server, nothing
-  served DHCP before; Kea starts with an empty lease database.
+  served DHCP before; Kea starts with an empty lease database. Kea pings
+  each address before offering it, so a client still holding an old
+  lease is not given away (`dhcp.ping_check`).
 
   Unsetting `metrics` returns `/metrics` to needing a token, which is
   what `local` did; to keep `external` or `off`, unset only
