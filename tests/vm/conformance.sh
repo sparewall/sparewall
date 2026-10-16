@@ -180,6 +180,14 @@ start_rest_server() {
     done
 }
 
+# Rebuild the node's policy without dontaudit rules, so that the report
+# below also sees denials the policy hides: hidden ones still fail once
+# sparewalld_t is enforcing. It persists across reboots.
+# $1 runs a command on a node.
+full_audit() { # run-command node-name
+    $1 'sudo semodule -DB' || fail "$2: cannot disable dontaudit rules"
+}
+
 # The coordinator's SELinux domain and its denials, for the job summary:
 # what sparewalld_t was denied (permissive, so not blocked) and what any
 # domain was denied on the coordinator's types (enforcing, so blocked).

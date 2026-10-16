@@ -79,6 +79,7 @@ wait_ssh() {
 }
 wait_ssh 900
 log "up: $(vm uname -r)"
+full_audit vm fw1
 
 vm 'systemctl is-system-running --wait' || {
     vm 'systemctl --failed --no-legend'
@@ -198,6 +199,7 @@ sleep 2
 cp output/qcow2/disk.qcow2 vm.qcow2
 start_vm
 wait_ssh 900
+full_audit vm fw1
 vm 'systemctl is-system-running --wait' || true
 vm 'sudo sparewall status -o json' > status.json
 [ "$(jq -r .role status.json)" = bootstrap ] || fail "the reinstalled node is not in bootstrap mode"
