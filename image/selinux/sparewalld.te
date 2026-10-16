@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.4.0)
+policy_module(sparewalld, 0.5.0)
 
 ########################################
 #
@@ -70,7 +70,9 @@ gen_require(`
 # Its own sockets and capabilities.
 #
 
-allow sparewalld_t self:capability { chown dac_override net_bind_service };
+# fowner: the admin's authorized_keys is chowned to admin, then its mode
+# fixed (the unit grants CAP_FOWNER for this).
+allow sparewalld_t self:capability { chown dac_override fowner net_bind_service };
 allow sparewalld_t self:tcp_socket { accept bind connect create getattr getopt listen setopt shutdown read write };
 allow sparewalld_t self:unix_dgram_socket { connect create getattr getopt ioctl setattr setopt read write };
 allow sparewalld_t self:unix_stream_socket connectto;
