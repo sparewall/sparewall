@@ -120,6 +120,36 @@ fn run(cmd: &str, args: &[&str], stdin: Option<&str>) -> Result<String, Error> {
     }
 }
 
+/// Whether `systemctl` failed because it lost its connection to the
+/// manager, not because the job failed: systemd re-executes on SIGTERM,
+/// and keepalived can send it one on a reload (its `script_killall` signals
+/// `-getpgid(pid)`, which is PID 1 once a tracked script is gone).
+pub fn manager_lost(err: &str) -> bool {
+    [
+        "D-Bus connection terminated",
+        "Connection reset by peer",
+        "Transport endpoint is not connected",
+    ]
+    .iter()
+    .any(|m| err.contains(m))
+}
+
+/// `systemctl` on a unit, retried while the manager re-executes. The verbs
+/// used here are idempotent, so a retry after a lost reply is safe.
+fn systemctl(args: &[&str]) -> Result<String, Error> {
+    let mut tries = 0;
+    loop {
+        match run("systemctl", args, None) {
+            Err(Error::Apply(e)) if manager_lost(&e) && tries < 3 => {
+                tries += 1;
+                tracing::warn!(?args, error = e, "lost the service manager; retrying");
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            r => return r,
+        }
+    }
+}
+
 /// Where commands for `sparewall-run@.service` are spooled (root only).
 pub const RUN_SPOOL: &str = "/run/sparewall/run";
 
@@ -702,7 +732,7 @@ impl System for Linux {
         for unit in PROVIDER_UNITS.iter().filter(|u| !wanted.contains(*u)) {
             if self.unit_active(unit) {
                 tracing::info!(unit, "stopping service");
-                run("systemctl", &["stop", unit], None)?;
+                systemctl(&["stop", unit])?;
             }
         }
         for svc in meta.services.values() {
@@ -710,9 +740,9 @@ impl System for Linux {
             if !self.unit_active(unit) {
                 tracing::info!(unit, startup, "starting service");
                 if startup {
-                    run("systemctl", &["start", "--no-block", unit], None)?;
+                    systemctl(&["start", "--no-block", unit])?;
                 } else {
-                    run("systemctl", &["start", unit], None)?;
+                    systemctl(&["start", unit])?;
                 }
             } else if changed.contains(&svc.subsystem) {
                 let verb = if svc.reload {
@@ -721,7 +751,7 @@ impl System for Linux {
                     "restart"
                 };
                 tracing::info!(unit, verb, "configuration changed");
-                run("systemctl", &[verb, unit], None)?;
+                systemctl(&[verb, unit])?;
             }
         }
         Ok(())
@@ -877,6 +907,16 @@ impl Linux {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reexecuting_manager_is_retried_a_failed_job_is_not() {
+        assert!(manager_lost(
+            "systemctl reload-or-restart keepalived.service: D-Bus connection terminated while waiting for jobs.\nFailed to wait for response: Connection reset by peer"
+        ));
+        assert!(!manager_lost(
+            "systemctl restart sparewall-kea.service: Job for sparewall-kea.service failed because the control process exited with error code."
+        ));
+    }
 
     #[test]
     fn prelude_keeps_compatible_preserved_sets() {
