@@ -101,6 +101,27 @@ LEASES=/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases
 fw2_has_lease() { at fw2 "sudo grep -q '^$LEASE,02:00:00:00:00:20' $LEASES"; }
 wait_for 60 "fw2 holds the lease of $LEASE (Kea HA)" fw2_has_lease
 
+log "the WAN: private node addresses, the public ones on the master (#54)"
+# sw-isp is the ISP's gateway (203.0.113.254), with an outside address
+# behind it answering with the source each connection came from.
+wan_ns isp 203.0.113.254
+ns isp ip addr add 198.18.0.1/32 dev lo
+ns isp python3 "$HERE/echo.py" whoami &
+# The address a node reaches the outside as.
+egress() { at "$1" 'timeout 5 bash -c "exec 3<>/dev/tcp/198.18.0.1/7002; head -1 <&3"'; }
+public_route() { at "$1" 'ip route show default' | grep -q 'via 203.0.113.254 dev wan'; }
+check_wan() { # master backup
+    public_route "$1" || fail "$1 (master) has no default route via the ISP: $(at "$1" 'ip route show default')"
+    ! public_route "$2" || fail "$2 (backup) has the public default route"
+    local n src
+    for n in "$1" "$2"; do
+        src=$(egress "$n") || fail "$n cannot reach the outside"
+        [ "$src" = 203.0.113.1 ] || fail "$n reached the outside as $src, not 203.0.113.1"
+    done
+}
+wait_for 30 "fw1 reaches the outside" egress fw1
+check_wan fw1 fw2
+
 log "echo servers behind the servers VLAN"
 # TCP (7000) and UDP (7001) echo servers in sw-guests. A TCP client sends
 # a line every half second on one connection, counting the echoes; the
@@ -239,6 +260,9 @@ fwd_after=$(fwd_echoes) || fail "the forwarded connection stalled: $(tail -5 fwd
 [ "$fwd_after" -gt "$fwd_before" ] \
     || fail "the forwarded connection stalled after the failover ($fwd_before, $fwd_after)"
 at fw2 'ip -br addr show wan' | grep -q '203.0.113.5/24' || fail "fw2 does not hold 203.0.113.5"
+public_route fw2 || fail "fw2 has no default route via the ISP after the failover"
+src=$(egress fw2) || fail "fw2 cannot reach the outside after the failover"
+[ "$src" = 203.0.113.1 ] || fail "fw2 reached the outside as $src after the failover"
 wait_for 60 "fw2 reports the peer down" unreachable fw2
 # The client keeps its address, now from fw2. (Without flushing it first:
 # the connection above runs from it.)
@@ -254,6 +278,7 @@ wait_for 300 "fw1 in sync" in_sync fw1
 wait_for 120 "fw2 in sync" in_sync fw2
 wait_for 60 "fw1 backup" is_backup fw1
 is_master fw2 || fail "fw2 gave up the gateway when fw1 returned (nopreempt)"
+check_wan fw2 fw1
 
 log "a derived image in a local registry"
 # QEMU user networking reaches the host at 10.0.2.2.

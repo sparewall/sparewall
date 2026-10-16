@@ -29,6 +29,31 @@ Private keys never leave their node; only public keys are in the document.
 Cluster secrets (such as the remote-access VPN server key) are sent through
 the tunnel and re-encrypted by the receiving node.
 
+## The WAN
+
+The nodes need no public address of their own. Give them private
+addresses on the WAN link, and put the public block (the gateway address,
+any extra addresses and the ISP's gateway) in a subnet of its own:
+
+```yaml
+networks:
+  wan:
+    port: uplink
+    vlan: 10
+    role: wan
+    addresses: { fw1: 10.0.10.2/24, fw2: 10.0.10.3/24 }
+    vip: 203.0.113.1/29
+    extra_vips: [203.0.113.5/29]
+    vrid: 10
+    gateway: 203.0.113.6
+```
+
+The master holds every public address and the default route; the backup
+reaches the internet through the master, as the gateway address, so
+upgrades, ACME, NTP and backups work on either node. Nothing from the
+private addresses reaches the ISP. Public node addresses in the same
+subnet as `vip` still work as before.
+
 ## Changing configuration
 
 Apply a change on either node; it runs there first and is pushed to the

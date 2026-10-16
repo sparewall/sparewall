@@ -66,4 +66,7 @@ vrrp_instance VI_wan {
         203.0.113.1/29 dev wan
         203.0.113.5/29 dev wan
     }
+    virtual_routes {
+        0.0.0.0/0 via 203.0.113.6 dev wan metric 100 onlink
+    }
 }

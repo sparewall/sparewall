@@ -214,6 +214,17 @@ Where the implementation departs from, or settles open questions in,
   there (a node address, the gateway address or an extra one):
   otherwise it would silently go nowhere. Addresses outside every
   static network (a DHCP WAN's) cannot be checked.
+- **A pair's WAN may have private node addresses** (#54): when `vip`
+  lies outside the nodes' subnet, the public subnet is the vip's and
+  `gateway` must be in it. The master's default route is a keepalived
+  `virtual_routes` entry; each node also routes via its peer at metric
+  200. The postrouting SNAT for the nodes' own traffic matches `rt ip
+  nexthop != <peer>` rather than the ISP's gateway, so the master's
+  traffic to other hosts in the public subnet is covered too, while on
+  the backup (whose next hop is always the peer) nothing matches. No
+  output-chain rule is needed: postrouting sees locally generated
+  traffic. Route `src` is left to the kernel, which already prefers
+  the vip for a gateway in its subnet.
 - **A generation that never ran gives way.** A local change that fails
   to activate is moved aside (`generations/<id>.failed-<hash>`), out of
   history, and its id is reused. One left by a crash before `state.json`

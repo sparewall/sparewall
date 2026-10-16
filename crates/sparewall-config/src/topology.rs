@@ -88,6 +88,20 @@ impl Document {
             .map(|c| c.0.trunc())
     }
 
+    /// For a pair's WAN whose gateway address lies outside the nodes' own
+    /// subnet (#54), that private subnet: the nodes hold private
+    /// addresses, and the master holds the public ones and the default
+    /// route.
+    pub fn split_wan(&self, network: &str) -> Option<Ipv4Net> {
+        let net = self.networks.get(network)?;
+        if !self.is_pair() || net.role != NetworkRole::Wan || net.dhcp_client {
+            return None;
+        }
+        let vip = net.vip.as_ref()?;
+        let private = net.addresses.values().next()?.0.trunc();
+        (!private.contains(&vip.0.addr())).then_some(private)
+    }
+
     /// Networks with a given role.
     pub fn networks_with_role(
         &self,

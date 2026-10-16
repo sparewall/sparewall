@@ -632,7 +632,7 @@ fn extra_vips_are_checked_and_count_as_held() {
         "not in the gateway address's subnet"
     ));
     assert!(has_error(
-        &x(json!(["203.0.113.2/29"])),
+        &x(json!(["203.0.113.5/29", "203.0.113.5/29"])),
         "already used on network wan"
     ));
     assert!(has_error(
@@ -668,4 +668,63 @@ fn extra_vips_are_checked_and_count_as_held() {
     assert_valid(&snat("100.64.0.9", json!(["203.0.113.5/29"])));
     let d = edit(PAIR, json!({"forwards": {"mail": {"dst": "203.0.113.4"}}}));
     assert!(has_error(&d, "forwards.mail.dst"));
+}
+
+#[test]
+fn pair_wan_public_block_beside_private_node_addresses() {
+    // The example: private node addresses, the public block on its own.
+    let doc = load(PAIR);
+    assert_eq!(
+        doc.split_wan("wan").map(|s| s.to_string()).as_deref(),
+        Some("10.0.10.0/24")
+    );
+    let wan = |v: serde_json::Value| edit(PAIR, json!({"networks": {"wan": v}}));
+    assert!(has_error(
+        &wan(json!({"gateway": null})),
+        "needs the ISP's gateway"
+    ));
+    assert!(has_error(
+        &wan(json!({"gateway": "10.0.10.1"})),
+        "not inside the gateway address's subnet 203.0.113.0/29"
+    ));
+    assert!(has_error(
+        &wan(json!({"gateway": "203.0.113.5"})),
+        "one of the pair's own addresses"
+    ));
+    assert!(has_error(
+        &wan(json!({"vip": "10.0.10.128/25"})),
+        "overlaps the nodes' subnet"
+    ));
+    assert!(has_error(
+        &wan(json!({"vip": "203.0.113.0/29", "extra_vips": []})),
+        "network or broadcast"
+    ));
+    // The public subnet counts for overlaps with other networks.
+    assert!(has_error(
+        &edit(
+            PAIR,
+            json!({"networks": {"users": {
+            "addresses": {"fw1": "203.0.113.2/29", "fw2": "203.0.113.3/29"},
+            "vip": "203.0.113.4/29"}}})
+        ),
+        "overlaps network"
+    ));
+    // Public node addresses in the gateway address's subnet still work.
+    let public = wan(json!({"addresses": {"fw1": "203.0.113.2/29", "fw2": "203.0.113.3/29"}}));
+    assert_valid(&public);
+    assert_eq!(public.split_wan("wan"), None);
+    // Only a pair's WAN: elsewhere the gateway address stays in the subnet.
+    assert!(has_error(
+        &edit(
+            PAIR,
+            json!({"networks": {"users": {"vip": "198.18.0.1/24"}}})
+        ),
+        "not in the network's subnet"
+    ));
+    let standalone = edit(
+        STANDALONE,
+        json!({"networks": {"wan": {"dhcp_client": false, "addresses": {"fw1": "10.0.10.2/24"},
+               "vip": "203.0.113.1/29", "gateway": "203.0.113.6"}}}),
+    );
+    assert!(has_error(&standalone, "not in the network's subnet"));
 }

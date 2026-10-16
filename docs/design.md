@@ -87,7 +87,8 @@ ports:
     uplink: { bond: { members: ["9c:6b:00:00:00:01", "9c:6b:00:00:00:02"], mode: 802.3ad } }
 networks:
   wan:   { port: uplink, vlan: 10, role: wan,
-           addresses: { fw1: 203.0.113.2/29, fw2: 203.0.113.3/29 }, vip: 203.0.113.1/29, vrid: 10 }
+           addresses: { fw1: 10.0.10.2/24, fw2: 10.0.10.3/24 },
+           vip: 203.0.113.1/29, vrid: 10, gateway: 203.0.113.6 }
   users: { port: uplink, vlan: 20,
            addresses: { fw1: 192.0.2.2/24, fw2: 192.0.2.3/24 }, vip: 192.0.2.1/24, vrid: 20 }
   sync:  { port: uplink, vlan: 4000, role: sync,
@@ -524,6 +525,17 @@ A pair is active/standby: keepalived moves the gateway addresses, conntrackd mov
 - VRRPv3; `track_interface` on every member link; `nopreempt`; optional `use_vmac`.
 - A `track_script` calls the coordinator's `Health()` over Varlink. Only a **failed** result lowers priority, with a hold-down so a briefly failing check cannot flap the pair.
 - State changes reach the coordinator through `notify_fifo`, so transitions are serialized and logged in one place.
+
+### The WAN of a pair
+
+A pair does not need a public address per node. With a static block, each node has a private address on the WAN link (VRRP and node-to-node traffic), and the public addresses (`vip`, `extra_vips`) and the ISP's `gateway` lie in a subnet of their own:
+
+- The public addresses are VRRP addresses held by the master, and the public default route is a keepalived `virtual_routes` entry (on-link, metric 100) in the WAN instance, so it moves with them.
+- Both nodes have a default route via the peer's private address, metric 200 (below a management network's 1024): only the backup uses it, so its own traffic (upgrades, ACME, NTP, backups) leaves through the master. The master's forward chain accepts its peer's traffic on the WAN interface (`infra:peer-egress`).
+- In postrouting, traffic from the private subnet leaving the WAN for anything outside it, by a next hop other than the peer, is SNATed to the gateway address (`infra:wan-egress`). That is the master's own traffic and the backup's it forwards; on the backup the next hop is always the peer, so nothing matches there.
+- Reach probes (#41) use the private subnet: the ISP's gateway cannot answer the backup, so a WAN cut on one side is found only through other hosts on the private subnet, and otherwise only degrades health.
+
+A single DHCP lease (one MAC, held by the master on the VRRP virtual MAC) is planned in the same shape (#54). Standalone nodes keep their own public address, static or leased.
 
 ### conntrackd
 

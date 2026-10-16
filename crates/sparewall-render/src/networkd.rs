@@ -17,6 +17,12 @@ use crate::{Error, KEY_DIR, Rendered, SYNC_KEY_RUNTIME, Subsystem};
 pub const BOOTSTRAP_PORT: &str = "mgmt0";
 /// Interface name of the tagged management VLAN in bootstrap mode.
 pub const BOOTSTRAP_VLAN: &str = "mgmt";
+/// Metric of the WAN default route (static or leased).
+pub const WAN_METRIC: u32 = 100;
+/// Metric of a pair node's default route via its peer on a WAN with
+/// private node addresses: above the master's public route, below a
+/// management network's (1024).
+pub const PEER_EGRESS_METRIC: u32 = 200;
 
 fn match_hw(ini: &mut Ini, nic: &str) {
     if mac_ok(nic) {
@@ -229,11 +235,21 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
         ini.set("LLDP", v);
         ini.set("EmitLLDP", if lldp { "nearest-bridge" } else { "no" });
     }
-    if let Some(gw) = net.gateway {
+    if doc.split_wan(name).is_some() {
+        // The public default route belongs to keepalived (on the master
+        // only). Both nodes route via the peer's private address with a
+        // higher metric, which the backup alone uses: its own traffic
+        // leaves through the master.
+        if let Some(peer) = doc.peer_of(node).and_then(|p| net.addresses.get(p)) {
+            ini.section("Route")
+                .set("Gateway", peer.0.addr())
+                .set("Metric", PEER_EGRESS_METRIC);
+        }
+    } else if let Some(gw) = net.gateway {
         ini.section("Route").set("Gateway", gw).set(
             "Metric",
             if net.role == NetworkRole::Wan {
-                100
+                WAN_METRIC
             } else {
                 1024
             },
@@ -246,7 +262,7 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
             .set(
                 "RouteMetric",
                 if net.role == NetworkRole::Wan {
-                    100
+                    WAN_METRIC
                 } else {
                     1024
                 },

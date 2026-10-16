@@ -216,6 +216,33 @@ fn static_dynamic_elements(doc: &Document, node: &str, d: &DynamicSource) -> Vec
     out.into_iter().collect()
 }
 
+/// WANs with private node addresses (#54), as `node` sees them: the
+/// interface, the private subnet, the gateway address and the peer's
+/// private address.
+fn split_wans<'a>(
+    doc: &'a Document,
+    node: &str,
+) -> Vec<(
+    &'a str,
+    ipnet::Ipv4Net,
+    std::net::Ipv4Addr,
+    std::net::Ipv4Addr,
+)> {
+    doc.networks
+        .iter()
+        .filter_map(|(name, n)| {
+            let private = doc.split_wan(name)?;
+            let peer = n.addresses.get(doc.peer_of(node)?)?;
+            Some((
+                doc.network_iface(name)?,
+                private,
+                n.vip?.0.addr(),
+                peer.0.addr(),
+            ))
+        })
+        .collect()
+}
+
 /// The zones a forward applies from: its `from`, then its hairpin zones.
 fn forward_zones(f: &Forward) -> impl Iterator<Item = &str> {
     std::iter::once(f.from.as_deref().unwrap_or("wan")).chain(f.hairpin.iter().map(String::as_str))
@@ -557,6 +584,16 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     }
     fwd.push_str(CT_STATE);
     fwd.push_str("meta nfproto ipv6 drop\n");
+    // On a WAN with private node addresses the backup's own traffic
+    // leaves through the master (#54).
+    for (i, _, _, peer) in split_wans(doc, node) {
+        writeln!(
+            fwd,
+            "iifname {i} oifname {i} ip saddr {peer} counter accept comment \"infra:peer-egress\"",
+            i = q(i)
+        )
+        .unwrap();
+    }
     let mut fwd_map: Vec<String> = Vec::new();
     for (from, to, _, _) in &policies {
         if *from == SELF_ZONE || *to == SELF_ZONE {
@@ -636,6 +673,18 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // --- postrouting ----------------------------------------------------------
     let mut post = String::from("type nat hook postrouting priority srcnat; policy accept;\n");
     post.push_str(&raw_at_hook(doc, RawHook::Postrouting));
+    // The nodes' private addresses never reach the ISP: the master's
+    // own traffic and the backup's, which it forwards, take the gateway
+    // address. On the backup everything outside leaves via the peer, so
+    // nothing matches there.
+    for (i, private, vip, peer) in split_wans(doc, node) {
+        writeln!(
+            post,
+            "oifname {} ip saddr {private} ip daddr != {private} rt ip nexthop != {peer} counter snat ip to {vip} comment \"infra:wan-egress\"",
+            q(i)
+        )
+        .unwrap();
+    }
     // The server would answer a client on its own network directly, past
     // the reverse translation: make the firewall the source.
     for (name, f, iface, gw) in same_network_hairpins(doc, node) {

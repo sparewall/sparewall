@@ -45,6 +45,7 @@ table inet sparewall {
 		oifname "roadwarrior" tcp flags syn tcp option maxseg size set rt mtu comment "vpn-mss"
 		ct state vmap { established : accept, related : accept, invalid : drop }
 		meta nfproto ipv6 drop
+		iifname "wan" oifname "wan" ip saddr 10.0.10.3 counter accept comment "infra:peer-egress"
 		iifname . oifname vmap { "users" . "wan" : jump fwd_users_wan, "roadwarrior" . "users" : jump fwd_vpn_users, "roadwarrior" . "wan" : jump fwd_vpn_wan, "wan" . "users" : jump fwd_wan_users }
 		counter comment "default:forward"
 	}
@@ -54,6 +55,7 @@ table inet sparewall {
 	}
 	chain postrouting_nat {
 		type nat hook postrouting priority srcnat; policy accept;
+		oifname "wan" ip saddr 10.0.10.0/24 ip daddr != 10.0.10.0/24 rt ip nexthop != 10.0.10.3 counter snat ip to 203.0.113.1 comment "infra:wan-egress"
 		iifname "users" oifname "wan" counter snat ip to 203.0.113.1 comment "nat:users->wan"
 		iifname "roadwarrior" oifname "wan" counter snat ip to 203.0.113.1 comment "nat:vpn->wan"
 	}
