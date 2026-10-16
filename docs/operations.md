@@ -75,6 +75,22 @@ sparewall set "vpn.roadwarrior.peers.laptop.public_key=<public key>" \
 sparewall vpn client-config laptop --qr
 ```
 
+### More ports, for restrictive networks
+
+Hotel and guest networks often block UDP except to the DNS and HTTPS
+ports. `extra_ports` makes the instance answer on those too: they are
+redirected to the listen port on the WAN gateway address only, so
+nothing else on the WAN interfaces changes, and the clients' traffic is
+the same WireGuard on another port.
+
+```shell
+sparewall set "vpn.roadwarrior.extra_ports=[53, 443]"
+sparewall vpn client-config laptop --port 443
+```
+
+Validation refuses a port that a UDP forward from the WAN, DNS or NTP
+served on the WAN, or another VPN instance already uses.
+
 ### Keeping an existing server key
 
 Clients know the server by its public key, so a VPN moved from another

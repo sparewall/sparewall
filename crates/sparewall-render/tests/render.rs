@@ -235,3 +235,28 @@ fn vpn_peer_preshared_key() {
     // Never the key itself, nor the secret's name.
     assert!(!netdev.contains("psk-alice\n"), "{netdev}");
 }
+
+#[test]
+fn vpn_extra_ports_standalone_redirect() {
+    let mut doc = example("standalone.yaml");
+    doc.vpn.insert(
+        "roadwarrior".into(),
+        serde_json::from_value(serde_json::json!({
+            "listen_port": 51820,
+            "extra_ports": [53],
+            "endpoint": "vpn.example.org",
+            "addresses": ["10.99.0.1/24"],
+            "zone": "users",
+        }))
+        .unwrap(),
+    );
+    let r = render(&doc, "fw1").unwrap();
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    assert!(
+        nft.contains(
+            "iifname \"wan\" fib daddr type local udp dport 53 counter redirect to :51820 comment \"vpn-roadwarrior:extra-ports\""
+        ),
+        "{nft}"
+    );
+    assert_nft_ok(&r);
+}

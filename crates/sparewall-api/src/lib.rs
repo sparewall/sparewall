@@ -437,6 +437,7 @@ pub trait VpnProxy {
         &mut self,
         instance: Option<&str>,
         peer: &str,
+        port: Option<i64>,
     ) -> zlink::Result<Result<VpnConfigReply, FirewallError>>;
 }
 

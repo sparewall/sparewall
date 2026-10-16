@@ -195,6 +195,16 @@ Where the implementation departs from, or settles open questions in,
   gateway; the node's address standalone without one). Other hairpinned
   clients keep their address. The listed zones reach the server only
   through the forward, not past their own zone-pair policy.
+- **Remote access on extra ports** (`vpn.<instance>.extra_ports`, #50)
+  is a prerouting NAT rule on the WAN interfaces. In a pair it is
+  `ip daddr <vip> ... dnat ip to <vip>:<listen_port>`, not `redirect`:
+  `redirect` rewrites the destination to the interface's primary (the
+  node's own) address, and the output chain drops remote-access replies
+  that do not come from the gateway address. Standalone it is
+  `fib daddr type local ... redirect`. Input sees the translated port,
+  so the listen port's accept covers it. A forward could not express
+  this (its `to` must be in another zone), and a general NAT hook would
+  be hard to validate.
 - **A generation that never ran gives way.** A local change that fails
   to activate is moved aside (`generations/<id>.failed-<hash>`), out of
   history, and its id is reused. One left by a crash before `state.json`

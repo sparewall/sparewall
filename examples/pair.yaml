@@ -72,6 +72,8 @@ dns: { enabled: true, provider: unbound }
 vpn:
   roadwarrior:
     listen_port: 51820
+    # For clients on networks that let only DNS and HTTPS ports out.
+    extra_ports: [53, 443]
     endpoint: vpn.example.org
     addresses: [10.99.0.1/24]
     zone: vpn

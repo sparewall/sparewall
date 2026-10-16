@@ -295,6 +295,7 @@ impl<S: System> Coordinator<S> {
         &mut self,
         instance: Option<&str>,
         peer: &str,
+        port: Option<u16>,
     ) -> Result<String, Error> {
         let doc = self
             .active_document()?
@@ -319,6 +320,17 @@ impl<S: System> Coordinator<S> {
         let server = self
             .vpn_public_key(name)?
             .ok_or_else(|| Error::Validation(vec![format!("vpn {name} has no server key yet")]))?;
+        // The listen port, or one of the extra ports it is also reached on.
+        let port = match port {
+            None => vpn.listen_port,
+            Some(p) if p == vpn.listen_port || vpn.extra_ports.contains(&p) => p,
+            Some(p) => {
+                return Err(Error::Validation(vec![format!(
+                    "vpn {name} is not reached on port {p}: its listen_port is {}, extra_ports {:?}",
+                    vpn.listen_port, vpn.extra_ports
+                )]));
+            }
+        };
         let allowed = if vpn.client_allowed_ips.is_empty() {
             "0.0.0.0/0".to_string()
         } else {
@@ -358,7 +370,7 @@ impl<S: System> Coordinator<S> {
         s.push_str(&format!(
             "\n[Peer]\nPublicKey = {server}\n{psk}Endpoint = {}:{}\nAllowedIPs = {allowed}\n\
              # Keeps NAT mappings open while idle; it does not shorten the outage\n# after a failover (see the operations guide).\nPersistentKeepalive = 25\n",
-            vpn.endpoint, vpn.listen_port
+            vpn.endpoint, port
         ));
         Ok(s)
     }
