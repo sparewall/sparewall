@@ -198,6 +198,11 @@ selinux_report() { # run-command node-name
         | sort | uniq -c | sort -rn) || true
     echo "$node: $(printf '%s' "$denials" | grep -c . || true) distinct sparewalld denials"
     printf '%s\n' "$denials"
+    # keepalived signals init when it may not getpgid a running script
+    # (the keepalived rule in sparewalld.te).
+    if $run 'sudo journalctl -b --no-pager _PID=1' | grep -q 'Received SIG[A-Z]* from PID [0-9]* (keepalived)'; then
+        echo "$node: keepalived signalled systemd" | tee -a "$WORK/selinux-denials"
+    fi
     [ -z "$denials" ] || printf '%s\n' "$denials" | sed "s/^/$node: /" >> "$WORK/selinux-denials"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         {
