@@ -1317,6 +1317,13 @@ impl Validator<'_> {
         {
             refs.push(("backup.credentials".into(), c));
         }
+        for (name, v) in &doc.vpn {
+            for (peer, p) in &v.peers {
+                if let Some(k) = &p.preshared_key {
+                    refs.push((format!("vpn.{name}.peers.{peer}.preshared_key"), k));
+                }
+            }
+        }
         for (p, r) in refs {
             let ok = r.strip_prefix("secret:").is_some_and(|n| {
                 !n.is_empty()

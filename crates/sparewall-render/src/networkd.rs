@@ -342,7 +342,7 @@ fn remote_access(name: &str, vpn: &Vpn, out: &mut Rendered) {
             format!("{KEY_DIR}/{}", crate::vpn_key_file(name)),
         )
         .set("ListenPort", vpn.listen_port);
-    for peer in vpn.peers.values() {
+    for (pname, peer) in &vpn.peers {
         nd.section("WireGuardPeer")
             .set("PublicKey", &peer.public_key)
             .set(
@@ -354,6 +354,12 @@ fn remote_access(name: &str, vpn: &Vpn, out: &mut Rendered) {
                     .join(","),
             );
         nd.opt("Endpoint", peer.endpoint.as_deref());
+        if peer.preshared_key.is_some() {
+            nd.set(
+                "PresharedKeyFile",
+                format!("{KEY_DIR}/{}", crate::vpn_psk_file(name, pname)),
+            );
+        }
     }
     out.add(
         Subsystem::Networkd,

@@ -32,6 +32,12 @@ pub fn vpn_key_file(instance: &str) -> String {
     format!("sparewall-vpn-{instance}.key")
 }
 
+/// The file (in [`KEY_DIR`]) networkd reads a remote-access peer's
+/// preshared key from.
+pub fn vpn_psk_file(instance: &str, peer: &str) -> String {
+    format!("sparewall-vpn-{instance}-{peer}.psk")
+}
+
 /// The sync tunnel's private key (node secret); the master copy.
 pub const SYNC_KEY_FILE: &str = "/var/lib/sparewall/keys/sync.key";
 

@@ -564,7 +564,11 @@ where
             SecretClass::Node
         };
         let info = with_core(&self.core, &self.events, move |c| {
-            c.secret_set(&name, value.as_bytes(), class)
+            let info = c.secret_set(&name, value.as_bytes(), class)?;
+            // A key the live remote-access VPN uses (a server key, or a
+            // peer's preshared key) takes effect now.
+            c.refresh_vpn_keys(std::slice::from_ref(&name))?;
+            Ok(info)
         })
         .await?;
         self.sync.notify_one();

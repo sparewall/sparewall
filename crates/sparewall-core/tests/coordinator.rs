@@ -1541,6 +1541,70 @@ fn vpn_keys_and_client_config() {
 }
 
 #[test]
+fn vpn_preshared_keys() {
+    use sparewall_core::secrets::SecretClass;
+    let mut doc = pair_example();
+    doc["vpn"]["roadwarrior"]["peers"]["alice-laptop"]["preshared_key"] = json!("secret:psk-alice");
+    let mut a = pair_node("fw1");
+    // Referenced before it is set: applied, with a warning, and health
+    // says the peer cannot connect.
+    let r = a.c.apply(doc.clone(), &opts(0, None)).unwrap();
+    assert!(
+        r.warnings.iter().any(|w| w.contains("psk-alice")),
+        "{:?}",
+        r.warnings
+    );
+    assert_eq!(
+        a.c.health().unwrap().check("vpn").unwrap().level,
+        Level::Degraded
+    );
+    assert!(a.c.vpn_client_config(None, "alice-laptop").is_err());
+
+    // Set: installed where the netdev reads it, and the interface is
+    // recreated so networkd reads it.
+    a.c.secret_set("psk-alice", b"the psk", SecretClass::Cluster)
+        .unwrap();
+    a.c.refresh_vpn_keys(&["psk-alice".to_string()]).unwrap();
+    let netdev = &a.c.system().network["50-sparewall-roadwarrior.netdev"];
+    let path = netdev
+        .lines()
+        .find_map(|l| l.strip_prefix("PresharedKeyFile="))
+        .unwrap()
+        .to_string();
+    let file = path
+        .strip_prefix(&format!("{}/", sparewall_render::KEY_DIR))
+        .unwrap();
+    assert_eq!(
+        a.c.system().runtime_keys.get(file).map(Vec::as_slice),
+        Some(&b"the psk"[..])
+    );
+    assert!(a.c.system().log.iter().any(|l| l == "recreate roadwarrior"));
+    assert!(a.c.health().unwrap().check("vpn").is_none());
+    let cfg = a.c.vpn_client_config(None, "alice-laptop").unwrap();
+    assert!(cfg.contains("PresharedKey = the psk\n"), "{cfg}");
+
+    // It is a cluster secret: the peer installs it once it arrives.
+    let mut b = pair_node("fw2");
+    b.c.receive(
+        &a.c.generation(1).unwrap(),
+        a.c.document_value(1).unwrap(),
+        PeerGate::Immediate,
+    )
+    .unwrap();
+    assert_eq!(
+        b.c.health().unwrap().check("vpn").unwrap().level,
+        Level::Degraded
+    );
+    let changed = b.c.receive_secrets(a.c.cluster_secrets().unwrap()).unwrap();
+    b.c.refresh_vpn_keys(&changed).unwrap();
+    assert_eq!(
+        b.c.system().runtime_keys.get(file).map(Vec::as_slice),
+        Some(&b"the psk"[..])
+    );
+    assert!(b.c.health().unwrap().check("vpn").is_none());
+}
+
+#[test]
 fn tokens_create_check_revoke() {
     use sparewall_core::tokens::Role;
     let mut t = setup();
