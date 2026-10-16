@@ -36,6 +36,10 @@ vpn_keys() {
         wg genkey > "$WORK/$c.key"
         wg pubkey < "$WORK/$c.key" > "$WORK/$c.pub"
     done
+    # vpna also uses a preshared key (#49), stored on fw1 only: fw2 gets
+    # it as a cluster secret once the pair is up.
+    wg genpsk > "$WORK/vpna.psk"
+    at fw1 'sudo sparewall secret set psk-vpna' < "$WORK/vpna.psk"
 }
 
 # Substitute the client public keys (@VPNA@...) into a document on stdin.
@@ -72,8 +76,10 @@ nat_ns() { # name inside-link prefix (172.16.0: router .1, client .2)
 }
 
 wg_peer() { # name [keepalive]
+    local psk=()
+    [ -f "$WORK/$1.psk" ] && psk=(preshared-key "$WORK/$1.psk")
     ns "$1" wg set wg0 peer "$VPN_PUB" endpoint "$VPN_SERVER:51820" \
-        allowed-ips 10.99.0.0/24,198.51.100.0/24 ${2:+persistent-keepalive $2}
+        allowed-ips 10.99.0.0/24,198.51.100.0/24 ${2:+persistent-keepalive $2} "${psk[@]}"
 }
 
 wg_client() { # name tunnel-address [keepalive]
@@ -118,6 +124,9 @@ vpn_setup() {
     server_key() { at "$1" 'sudo sparewall vpn client-config vpna' | sed -n 's/^PublicKey = //p'; }
     same_key() { [ -n "$(server_key fw1)" ] && [ "$(server_key fw1)" = "$(server_key fw2)" ]; }
     wait_for 120 "both nodes share the VPN server key" same_key
+    psk_of() { at "$1" 'sudo sparewall vpn client-config vpna' | sed -n 's/^PresharedKey = //p'; }
+    both_psk() { [ "$(psk_of fw1)" = "$(cat "$WORK/vpna.psk")" ] && [ "$(psk_of fw2)" = "$(cat "$WORK/vpna.psk")" ]; }
+    wait_for 120 "both nodes hold vpna's preshared key" both_psk
     VPN_PUB=$(server_key fw1)
     wan_ns vpna 203.0.113.50
     wan_ns vpnb 203.0.113.51

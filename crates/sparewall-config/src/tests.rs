@@ -469,6 +469,18 @@ fn secrets_must_be_references() {
         json!({"backup": {"enabled": true, "credentials": "secret:restic-s3"}}),
     );
     assert_valid(&d);
+    let psk = |k: &str| {
+        edit(
+            PAIR,
+            json!({"vpn": {"roadwarrior": {"peers": {"alice-laptop": {"preshared_key": k}}}}}),
+        )
+    };
+    let d = psk("8y4o0Hq9w1VQ0p2Zr0qYx3vJk7o5nT1mB2cD3eF4gH0=");
+    assert!(has_error(
+        &d,
+        "vpn.roadwarrior.peers.alice-laptop.preshared_key"
+    ));
+    assert_valid(&psk("secret:psk-alice"));
 }
 
 #[test]

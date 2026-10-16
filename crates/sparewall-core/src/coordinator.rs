@@ -470,6 +470,7 @@ impl<S: System> Coordinator<S> {
         if let Some(old) = self.active_document()? {
             warnings.extend(sparewall_config::providers::switch_warnings(&old, &doc));
         }
+        warnings.extend(missing_psk_messages(&self.missing_vpn_psks(&doc)?));
         let hash = sparewall_config::hash(&doc);
         let active_gen = self.generation(state.active)?;
         let old_value = self.document_value(state.active)?;
@@ -1890,6 +1891,13 @@ impl<S: System> Coordinator<S> {
             });
         }
 
+        if let Some(doc) = self.active_document()? {
+            let missing = missing_psk_messages(&self.missing_vpn_psks(&doc)?);
+            if !missing.is_empty() {
+                checks.push(Check::new("vpn", Level::Degraded, missing.join("; ")));
+            }
+        }
+
         checks.extend(self.extra_checks.values().flatten().cloned());
 
         let units: Vec<String> = r.meta.services.values().map(|s| s.unit.clone()).collect();
@@ -1921,4 +1929,18 @@ impl<S: System> Coordinator<S> {
         let state = self.store.state()?;
         Ok((self.generation(state.active)?.hash, self.applied()?))
     }
+}
+
+/// What to say about preshared keys the document references but the
+/// store lacks.
+fn missing_psk_messages(missing: &[(String, String, String)]) -> Vec<String> {
+    missing
+        .iter()
+        .map(|(name, peer, secret)| {
+            format!(
+                "vpn.{name}.peers.{peer}: preshared key secret {secret:?} is not set, so the peer \
+                 cannot connect (sparewall secret set {secret})"
+            )
+        })
+        .collect()
 }

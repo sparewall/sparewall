@@ -56,6 +56,21 @@ pub fn vpn_secret(instance: &str) -> String {
     format!("vpn-{instance}")
 }
 
+/// The remote-access peers with a preshared key: `(instance, peer,
+/// secret name)`.
+pub fn vpn_psk_refs(doc: &Document) -> Vec<(String, String, String)> {
+    let mut v = Vec::new();
+    for (name, vpn) in &doc.vpn {
+        for (peer, p) in &vpn.peers {
+            if let Some(r) = &p.preshared_key {
+                let secret = r.strip_prefix("secret:").unwrap_or(r);
+                v.push((name.clone(), peer.clone(), secret.to_string()));
+            }
+        }
+    }
+    v
+}
+
 /// Write an encrypted secret and its metadata into a state directory.
 pub fn store_encrypted(state_dir: &Path, info: &SecretInfo, blob: &[u8]) -> Result<(), Error> {
     let dir = state_dir.join("secrets");
@@ -207,12 +222,31 @@ impl<S: System> Coordinator<S> {
             return Ok(());
         };
         self.install_vpn_keys(&doc)?;
+        let psks = vpn_psk_refs(&doc);
         for name in doc.vpn.keys() {
-            if changed.contains(&vpn_secret(name)) {
+            let psk_changed = psks
+                .iter()
+                .any(|(i, _, secret)| i == name && changed.contains(secret));
+            if changed.contains(&vpn_secret(name)) || psk_changed {
                 self.system().netdev_recreate(name)?;
             }
         }
         Ok(())
+    }
+
+    /// Preshared keys the document references but the store lacks:
+    /// `(instance, peer, secret name)`. Those peers cannot connect.
+    pub fn missing_vpn_psks(
+        &mut self,
+        doc: &Document,
+    ) -> Result<Vec<(String, String, String)>, Error> {
+        let mut v = Vec::new();
+        for r in vpn_psk_refs(doc) {
+            if self.secret_info(&r.2)?.is_none() {
+                v.push(r);
+            }
+        }
+        Ok(v)
     }
 
     /// Hand the remote-access server keys to networkd (in tmpfs).
@@ -226,6 +260,18 @@ impl<S: System> Coordinator<S> {
                 )?,
                 None => {
                     tracing::warn!(instance = %name, "no server key yet for the remote-access VPN")
+                }
+            }
+        }
+        for (name, peer, secret) in vpn_psk_refs(doc) {
+            match self.secret_get(&secret)? {
+                Some(key) => self.system().install_key(
+                    &sparewall_render::vpn_psk_file(&name, &peer),
+                    &key,
+                    "systemd-network",
+                )?,
+                None => {
+                    tracing::warn!(instance = %name, peer, secret, "no preshared key yet for the remote-access peer")
                 }
             }
         }
@@ -297,8 +343,20 @@ impl<S: System> Coordinator<S> {
                     .join(", ")
             ));
         }
+        let psk = match &p.preshared_key {
+            Some(r) => {
+                let secret = r.strip_prefix("secret:").unwrap_or(r);
+                let k = self.secret_get(secret)?.ok_or_else(|| {
+                    Error::Validation(vec![format!(
+                        "vpn.{name}.peers.{peer}: its preshared key {secret:?} is not set"
+                    )])
+                })?;
+                format!("PresharedKey = {}\n", String::from_utf8_lossy(&k).trim())
+            }
+            None => String::new(),
+        };
         s.push_str(&format!(
-            "\n[Peer]\nPublicKey = {server}\nEndpoint = {}:{}\nAllowedIPs = {allowed}\n\
+            "\n[Peer]\nPublicKey = {server}\n{psk}Endpoint = {}:{}\nAllowedIPs = {allowed}\n\
              # Keeps NAT mappings open while idle; it does not shorten the outage\n# after a failover (see the operations guide).\nPersistentKeepalive = 25\n",
             vpn.endpoint, vpn.listen_port
         ));

@@ -650,6 +650,10 @@ pub struct VpnPeer {
     /// Static endpoint, for site-to-site peers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// WireGuard preshared key, a cluster secret: `secret:<name>`. The
+    /// client must be configured with the same key (`wg genpsk`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preshared_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

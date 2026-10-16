@@ -209,3 +209,29 @@ fn replication_links_are_separate() {
         assert!(r.meta.required_links.contains(&"uplink".to_string()));
     }
 }
+
+#[test]
+fn vpn_peer_preshared_key() {
+    let mut doc = example("pair.yaml");
+    let peer = doc
+        .vpn
+        .get_mut("roadwarrior")
+        .unwrap()
+        .peers
+        .get_mut("alice-laptop")
+        .unwrap();
+    peer.preshared_key = Some("secret:psk-alice".into());
+    let r = render(&doc, "fw1").unwrap();
+    let netdev = &r.files[&format!(
+        "{}/50-sparewall-roadwarrior.netdev",
+        Subsystem::Networkd.dir()
+    )];
+    let line = format!(
+        "PresharedKeyFile={}/{}",
+        sparewall_render::KEY_DIR,
+        sparewall_render::vpn_psk_file("roadwarrior", "alice-laptop")
+    );
+    assert!(netdev.contains(&line), "{netdev}");
+    // Never the key itself, nor the secret's name.
+    assert!(!netdev.contains("psk-alice\n"), "{netdev}");
+}

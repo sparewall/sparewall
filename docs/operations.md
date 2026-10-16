@@ -89,8 +89,25 @@ sparewall secret set vpn-roadwarrior < server.key   # the base64 private key
 
 It is a cluster secret: in a pair it reaches the other node through the
 sync tunnel. Set it on the node you apply the document to; a generation
-pushed to the peer never generates keys. Peers configured with a
-preshared key cannot connect yet (#49).
+pushed to the peer never generates keys. Setting it later replaces the
+generated key at once (the interface is recreated), but clients
+configured with the generated key then need the new one.
+
+### Preshared keys
+
+A peer may also use a WireGuard preshared key. Like the server key it is
+a cluster secret, referenced by name; the document never holds it:
+
+```shell
+wg genpsk | sparewall secret set psk-laptop
+sparewall set "vpn.roadwarrior.peers.laptop.preshared_key=secret:psk-laptop"
+sparewall vpn client-config laptop --qr      # now includes PresharedKey
+```
+
+Changing the secret takes effect at once. While a referenced key is not
+set, the apply warns and health is degraded (`vpn`): that peer cannot
+complete a handshake. For clients moved from another server, store each
+client's existing preshared key the same way.
 
 After a failover, or the gateway's handover during an upgrade, each
 client is cut off until it makes a new handshake with the new master. A

@@ -76,7 +76,7 @@ vpn:
     addresses: [10.99.0.1/24]
     zone: vpn
     peers:
-      vpna: { public_key: "@VPNA@", addresses: [10.99.0.10/32] }
+      vpna: { public_key: "@VPNA@", addresses: [10.99.0.10/32], preshared_key: "secret:psk-vpna" }
       vpnb: { public_key: "@VPNB@", addresses: [10.99.0.11/32] }
       vpnc: { public_key: "@VPNC@", addresses: [10.99.0.12/32] }
       natc: { public_key: "@NATC@", addresses: [10.99.0.13/32] }
