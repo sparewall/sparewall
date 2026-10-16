@@ -590,3 +590,35 @@ fn vm_suite_documents_are_valid() {
         assert_valid(&load(text));
     }
 }
+
+#[test]
+fn vpn_extra_ports_must_be_free() {
+    let ports =
+        |v: serde_json::Value| edit(PAIR, json!({"vpn": {"roadwarrior": {"extra_ports": v}}}));
+    assert_valid(&ports(json!([53, 443])));
+    assert!(has_error(&ports(json!([51820])), "already in use by a VPN"));
+    assert!(has_error(
+        &ports(json!([53, 53])),
+        "already in use by a VPN"
+    ));
+    assert!(has_error(&ports(json!([0])), "not a port"));
+    // A UDP forward from the WAN zone on that port, directly or by range.
+    for dport in [json!(53), json!("50-60"), json!([443, 53])] {
+        let d = edit(
+            PAIR,
+            json!({"vpn": {"roadwarrior": {"extra_ports": [53]}},
+                   "forwards": {"dns-in": {"proto": "udp", "dport": dport, "to": "192.0.2.53"}}}),
+        );
+        assert!(
+            has_error(&d, "forwards.dns-in already uses UDP 53"),
+            "{dport}"
+        );
+    }
+    // TCP does not collide.
+    let d = edit(
+        PAIR,
+        json!({"vpn": {"roadwarrior": {"extra_ports": [443]}},
+               "forwards": {"web": {"proto": "tcp", "dport": 443, "to": "192.0.2.80"}}}),
+    );
+    assert!(!has_error(&d, "already uses UDP"));
+}

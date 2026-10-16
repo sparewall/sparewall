@@ -1519,9 +1519,18 @@ fn vpn_keys_and_client_config() {
         "netdev reads {path}; installed: {:?}",
         a.c.system().runtime_keys.keys().collect::<Vec<_>>()
     );
-    let cfg = a.c.vpn_client_config(None, "alice-laptop").unwrap();
+    let cfg = a.c.vpn_client_config(None, "alice-laptop", None).unwrap();
     assert!(cfg.contains("Endpoint = vpn.example.org:51820"), "{cfg}");
     assert!(cfg.contains("Address = 10.99.0.10/32"), "{cfg}");
+    // One of the extra ports the example's instance is also reached on.
+    let cfg =
+        a.c.vpn_client_config(None, "alice-laptop", Some(53))
+            .unwrap();
+    assert!(cfg.contains("Endpoint = vpn.example.org:53"), "{cfg}");
+    assert!(
+        a.c.vpn_client_config(None, "alice-laptop", Some(9))
+            .is_err()
+    );
     // The key is generated once; a peer receives it rather than making one.
     let shared = a.c.cluster_secrets().unwrap();
     assert_eq!(shared.len(), 1);
@@ -1558,7 +1567,7 @@ fn vpn_preshared_keys() {
         a.c.health().unwrap().check("vpn").unwrap().level,
         Level::Degraded
     );
-    assert!(a.c.vpn_client_config(None, "alice-laptop").is_err());
+    assert!(a.c.vpn_client_config(None, "alice-laptop", None).is_err());
 
     // Set: installed where the netdev reads it, and the interface is
     // recreated so networkd reads it.
@@ -1580,7 +1589,7 @@ fn vpn_preshared_keys() {
     );
     assert!(a.c.system().log.iter().any(|l| l == "recreate roadwarrior"));
     assert!(a.c.health().unwrap().check("vpn").is_none());
-    let cfg = a.c.vpn_client_config(None, "alice-laptop").unwrap();
+    let cfg = a.c.vpn_client_config(None, "alice-laptop", None).unwrap();
     assert!(cfg.contains("PresharedKey = the psk\n"), "{cfg}");
 
     // It is a cluster secret: the peer installs it once it arrives.

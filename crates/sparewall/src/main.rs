@@ -383,6 +383,10 @@ enum VpnCmd {
         peer: String,
         #[arg(long)]
         instance: Option<String>,
+        /// Connect on this port instead of the listen port: one of the
+        /// instance's `extra_ports`, for networks that block the other.
+        #[arg(long)]
+        port: Option<u16>,
         #[arg(long)]
         qr: bool,
     },
@@ -979,11 +983,16 @@ impl App {
                 self.conn().await?.revoke_token(&name).await??;
                 self.say(format!("Revoked {name}."));
             }
-            Cmd::Vpn(VpnCmd::ClientConfig { peer, instance, qr }) => {
+            Cmd::Vpn(VpnCmd::ClientConfig {
+                peer,
+                instance,
+                port,
+                qr,
+            }) => {
                 let r = self
                     .conn()
                     .await?
-                    .vpn_client_config(instance.as_deref(), &peer)
+                    .vpn_client_config(instance.as_deref(), &peer, port.map(i64::from))
                     .await??;
                 print!("{}", r.config);
                 if qr {

@@ -16,6 +16,7 @@ table inet sparewall {
 	}
 	chain prerouting_nat {
 		type nat hook prerouting priority dstnat; policy accept;
+		iifname "wan" ip daddr 203.0.113.1 udp dport { 53, 443 } counter dnat ip to 203.0.113.1:51820 comment "vpn-roadwarrior:extra-ports"
 	}
 	chain input {
 		type filter hook input priority filter; policy drop;

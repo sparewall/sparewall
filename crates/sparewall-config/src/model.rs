@@ -632,6 +632,10 @@ pub struct Ntp {
 #[serde(deny_unknown_fields)]
 pub struct Vpn {
     pub listen_port: u16,
+    /// More UDP ports clients may use from networks that block the listen
+    /// port, e.g. `[53, 443]`: redirected to it on the WAN gateway address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_ports: Vec<u16>,
     /// Public name or address clients connect to.
     pub endpoint: String,
     /// Tunnel addresses of the firewall.

@@ -1188,6 +1188,16 @@ impl Validator<'_> {
             if !ports.insert(v.listen_port) || doc.cluster.sync_port == Some(v.listen_port) {
                 self.err(format!("{p}.listen_port"), "port already in use");
             }
+            for (i, &port) in v.extra_ports.iter().enumerate() {
+                let ep = format!("{p}.extra_ports[{i}]");
+                if port == 0 {
+                    self.err(ep, "not a port");
+                } else if !ports.insert(port) || doc.cluster.sync_port == Some(port) {
+                    self.err(ep, "port already in use by a VPN");
+                } else if let Some(what) = wan_udp_user(doc, port) {
+                    self.err(ep, format!("{what} already uses UDP {port} on the WAN"));
+                }
+            }
             if !doc.zones.contains_key(&v.zone) {
                 self.err(format!("{p}.zone"), format!("no zone named {:?}", v.zone));
             }
@@ -1355,5 +1365,68 @@ impl Validator<'_> {
                 );
             }
         }
+    }
+}
+
+/// What else takes UDP `port` on a WAN network, if anything: a forward
+/// from a zone with a WAN network, or DNS or NTP served there.
+fn wan_udp_user(doc: &Document, port: u16) -> Option<String> {
+    let wan: Vec<&String> = doc
+        .networks_with_role(NetworkRole::Wan)
+        .map(|(n, _)| n)
+        .collect();
+    let wan_zone = |z: &str| wan.iter().any(|n| doc.zone_of_network(n) == Some(z));
+    for (name, f) in &doc.forwards {
+        if f.proto == "udp"
+            && wan_zone(f.from.as_deref().unwrap_or("wan"))
+            && match_has_port(doc, &f.dport, port)
+        {
+            return Some(format!("forwards.{name}"));
+        }
+    }
+    if port == 53
+        && let Some(d) = &doc.dns
+        && d.enabled
+        && d.networks.iter().any(|n| wan.contains(&n))
+    {
+        return Some("dns".into());
+    }
+    if port == 123
+        && let Some(n) = &doc.ntp
+        && n.serve.iter().any(|s| wan.contains(&s))
+    {
+        return Some("ntp".into());
+    }
+    None
+}
+
+/// Whether a port match includes `port`: numbers, `a-b` ranges, lists
+/// and `@object` port sets.
+fn match_has_port(doc: &Document, m: &Match, port: u16) -> bool {
+    fn text(doc: &Document, t: &str, port: u16) -> bool {
+        let port = u32::from(port);
+        if let Some(obj) = t.strip_prefix('@') {
+            return doc.objects.get(obj).is_some_and(|o| {
+                o.elements.iter().any(|e| match e {
+                    MatchItem::Number(n) => *n == port,
+                    MatchItem::Text(t) => text(doc, t, port as u16),
+                })
+            });
+        }
+        match t.split_once('-') {
+            Some((a, b)) => match (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
+                (Ok(a), Ok(b)) => (a..=b).contains(&port),
+                _ => false,
+            },
+            None => t.trim().parse::<u32>() == Ok(port),
+        }
+    }
+    match m {
+        Match::Number(n) => *n == u32::from(port),
+        Match::Text(t) => text(doc, t, port),
+        Match::List(items) => items.iter().any(|i| match i {
+            MatchItem::Number(n) => *n == u32::from(port),
+            MatchItem::Text(t) => text(doc, t, port),
+        }),
     }
 }

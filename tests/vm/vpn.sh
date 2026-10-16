@@ -14,10 +14,11 @@
 #           until it has a new handshake, which only rekeying can start
 #
 # All sit on the WAN VLAN 10 and connect to the gateway address
-# 203.0.113.1:51820. Inner flows go to the echo servers in sw-guests
-# (198.51.100.10: TCP 7000, UDP 7001). Probing starts the moment the
-# gateway moves (vpn_moved), so each session is in its intended age
-# bucket; the results are checked later (vpn_after_move).
+# 203.0.113.1:51820 (vpnb on 53, an extra port). Inner flows go to the
+# echo servers in sw-guests (198.51.100.10: TCP 7000, UDP 7001).
+# Probing starts the moment the gateway moves (vpn_moved), so each
+# session is in its intended age bucket; the results are checked later
+# (vpn_after_move).
 
 VPN_SERVER=203.0.113.1
 VPN_TARGET=198.51.100.10
@@ -75,10 +76,14 @@ nat_ns() { # name inside-link prefix (172.16.0: router .1, client .2)
     ns "$1" ip route add default via "$3.1"
 }
 
+# vpnb uses the extra port 53, which the gateway address redirects to
+# the listen port.
+vpn_port() { if [ "$1" = vpnb ]; then echo 53; else echo 51820; fi; }
+
 wg_peer() { # name [keepalive]
     local psk=()
     [ -f "$WORK/$1.psk" ] && psk=(preshared-key "$WORK/$1.psk")
-    ns "$1" wg set wg0 peer "$VPN_PUB" endpoint "$VPN_SERVER:51820" \
+    ns "$1" wg set wg0 peer "$VPN_PUB" endpoint "$VPN_SERVER:$(vpn_port "$1")" \
         allowed-ips 10.99.0.0/24,198.51.100.0/24 ${2:+persistent-keepalive $2} "${psk[@]}"
 }
 
@@ -128,6 +133,8 @@ vpn_setup() {
     both_psk() { [ "$(psk_of fw1)" = "$(cat "$WORK/vpna.psk")" ] && [ "$(psk_of fw2)" = "$(cat "$WORK/vpna.psk")" ]; }
     wait_for 120 "both nodes hold vpna's preshared key" both_psk
     VPN_PUB=$(server_key fw1)
+    at fw1 'sudo sparewall vpn client-config vpnb --port 53' | grep -qx "Endpoint = .*:53" \
+        || fail "client-config --port 53 does not use port 53"
     wan_ns vpna 203.0.113.50
     wan_ns vpnb 203.0.113.51
     # natc and natk sit behind a masquerading router.
@@ -294,7 +301,7 @@ vpn_after_move() { # event
     # node's own address would have made it roam there.
     for c in $VPN_CLIENTS; do
         s=$(ns "$c" wg show wg0 endpoints | awk '{print $2}')
-        [ "$s" = "$VPN_SERVER:51820" ] || fail "$c roamed to $s after $event"
+        [ "$s" = "$VPN_SERVER:$(vpn_port "$c")" ] || fail "$c roamed to $s after $event"
     done
     # Inner flows, separately from the tunnel: the TCP connection
     # survived (conntrackd) and keeps echoing; UDP replies resumed.

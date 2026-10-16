@@ -543,9 +543,11 @@ where
         &mut self,
         instance: Option<String>,
         peer: String,
+        port: Option<i64>,
     ) -> Result<VpnConfigReply, FirewallError> {
+        let port = port.map(|p| u16::try_from(p).unwrap_or(0));
         let config = with_core(&self.core, &self.events, move |c| {
-            c.vpn_client_config(instance.as_deref(), &peer)
+            c.vpn_client_config(instance.as_deref(), &peer, port)
         })
         .await?;
         Ok(VpnConfigReply { config })

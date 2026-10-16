@@ -388,6 +388,46 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             dnat.push('\n');
         }
     }
+    // Remote access on more ports: to the listen port, for the gateway
+    // address only. In a pair that is the WAN gateway address, kept as the
+    // destination (`redirect` would use the node's own address, and the
+    // output chain sends remote-access replies only from the gateway
+    // address); standalone, any of the firewall's own addresses.
+    for (name, vpn) in &doc.vpn {
+        if vpn.extra_ports.is_empty() {
+            continue;
+        }
+        let ports = match_expr(&Match::List(
+            vpn.extra_ports
+                .iter()
+                .map(|p| MatchItem::Number(u32::from(*p)))
+                .collect(),
+        ));
+        for (net, n) in doc.networks_with_role(NetworkRole::Wan) {
+            let Some(i) = doc.network_iface(net) else {
+                continue;
+            };
+            let target = match (pair, n.vip) {
+                (true, Some(vip)) => format!(
+                    "ip daddr {a} udp dport {ports} counter dnat ip to {a}:{}",
+                    vpn.listen_port,
+                    a = vip.0.addr()
+                ),
+                (true, None) => continue,
+                (false, _) => format!(
+                    "fib daddr type local udp dport {ports} counter redirect to :{}",
+                    vpn.listen_port
+                ),
+            };
+            writeln!(
+                dnat,
+                "iifname {} {target} comment {}",
+                q(i),
+                q(&format!("vpn-{name}:extra-ports"))
+            )
+            .unwrap();
+        }
+    }
     sc.chain("prerouting_nat", dnat);
 
     // --- input ----------------------------------------------------------------
