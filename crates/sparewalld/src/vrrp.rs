@@ -47,6 +47,13 @@ pub fn conntrackd_steps(state: &str) -> &'static [ConntrackStep] {
     }
 }
 
+/// The node's role after a notify of `state`, if it changes. An instance
+/// a reload removed (`DELETED`) says nothing about the node's role: the
+/// remaining instances keep theirs.
+pub fn new_role<'a>(current: Option<&str>, state: &'a str) -> Option<&'a str> {
+    (state != "DELETED" && current != Some(state)).then_some(state)
+}
+
 /// Run the steps for `state`. Like conntrack-tools' script, a failed
 /// step does not stop the ones after it: on becoming master, committing
 /// the peer's state may fail, but this node must still resync with its
@@ -140,9 +147,13 @@ pub async fn fifo_reader(
         // change of role.
         let changed = {
             let mut p = pair.lock().unwrap_or_else(|p| p.into_inner());
-            let changed = p.role.as_deref() != Some(state);
-            p.role = Some(state.to_string());
-            changed
+            match new_role(p.role.as_deref(), state) {
+                Some(r) => {
+                    p.role = Some(r.to_string());
+                    true
+                }
+                None => false,
+            }
         };
         if changed {
             let _ = events.send(json!({"type": "vrrp", "source": name, "state": state}));
@@ -165,6 +176,14 @@ pub async fn fifo_reader(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deleted_instance_does_not_change_the_role() {
+        assert_eq!(new_role(Some("BACKUP"), "DELETED"), None);
+        assert_eq!(new_role(Some("BACKUP"), "BACKUP"), None);
+        assert_eq!(new_role(Some("BACKUP"), "MASTER"), Some("MASTER"));
+        assert_eq!(new_role(None, "BACKUP"), Some("BACKUP"));
+    }
 
     #[test]
     fn parses_notify_lines() {

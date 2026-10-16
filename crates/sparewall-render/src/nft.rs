@@ -11,7 +11,7 @@ use std::fmt::Write;
 
 use sparewall_config::identity::Identity;
 use sparewall_config::model::*;
-use sparewall_config::topology::{SELF_ZONE, SYNC_TUNNEL_IFACE, SYNC_TUNNEL_PORT};
+use sparewall_config::topology::{LEASE_IFACE, SELF_ZONE, SYNC_TUNNEL_IFACE, SYNC_TUNNEL_PORT};
 
 use crate::{Error, Rendered, Subsystem};
 
@@ -243,6 +243,29 @@ fn split_wans<'a>(
         .collect()
 }
 
+/// The interface a network's DHCP client runs on: a pair's lease link
+/// for its leased WAN, else the network's own.
+fn dhcp_iface<'a>(doc: &'a Document, name: &'a str) -> Option<&'a str> {
+    if doc.leased_wan(name).is_some() {
+        Some(LEASE_IFACE)
+    } else {
+        doc.network_iface(name)
+    }
+}
+
+/// Leased WANs (#54), as `node` sees them: the WAN interface and the
+/// peer's private address.
+fn leased_wans<'a>(doc: &'a Document, node: &str) -> Vec<(&'a str, std::net::Ipv4Addr)> {
+    doc.networks
+        .iter()
+        .filter_map(|(name, n)| {
+            doc.leased_wan(name)?;
+            let peer = n.addresses.get(doc.peer_of(node)?)?;
+            Some((doc.network_iface(name)?, peer.0.addr()))
+        })
+        .collect()
+}
+
 /// The zones a forward applies from: its `from`, then its hairpin zones.
 fn forward_zones(f: &Forward) -> impl Iterator<Item = &str> {
     std::iter::once(f.from.as_deref().unwrap_or("wan")).chain(f.hairpin.iter().map(String::as_str))
@@ -292,7 +315,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 let dhcp = doc.networks.get(&d.network).is_some_and(|n| n.dhcp_client);
                 if dhcp {
                     out.meta.preserved_sets.push(name.clone());
-                    if let Some(i) = doc.network_iface(&d.network) {
+                    if let Some(i) = dhcp_iface(doc, &d.network) {
                         out.meta.set_links.insert(name.clone(), i.to_string());
                     }
                     ("ipv4_addr", vec![])
@@ -431,10 +454,13 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 .collect(),
         ));
         for (net, n) in doc.networks_with_role(NetworkRole::Wan) {
-            let Some(i) = doc.network_iface(net) else {
+            let Some(i) = dhcp_iface(doc, net) else {
                 continue;
             };
-            let target = match (pair, n.vip) {
+            // A pair's lease is on the master's lease link, as a
+            // standalone node's is on the WAN.
+            let leased = doc.leased_wan(net).is_some();
+            let target = match (pair && !leased, n.vip) {
                 (true, Some(vip)) => format!(
                     "ip daddr {a} udp dport {ports} counter dnat ip to {a}:{}",
                     vpn.listen_port,
@@ -534,7 +560,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     }
     for (name, net) in &doc.networks {
         if net.dhcp_client
-            && let Some(i) = doc.network_iface(name)
+            && let Some(i) = dhcp_iface(doc, name)
         {
             writeln!(
                 input,
@@ -591,6 +617,15 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             fwd,
             "iifname {i} oifname {i} ip saddr {peer} counter accept comment \"infra:peer-egress\"",
             i = q(i)
+        )
+        .unwrap();
+    }
+    for (i, peer) in leased_wans(doc, node) {
+        writeln!(
+            fwd,
+            "iifname {} oifname {} ip saddr {peer} counter accept comment \"infra:peer-egress\"",
+            q(i),
+            q(LEASE_IFACE)
         )
         .unwrap();
     }
@@ -684,6 +719,18 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             q(i)
         )
         .unwrap();
+    }
+    // With one lease for the pair, only the master has the lease link:
+    // its own traffic and its peer's take the leased address.
+    for name in doc.networks.keys() {
+        if let Some(private) = doc.leased_wan(name) {
+            writeln!(
+                post,
+                "oifname {} ip saddr {private} counter masquerade comment \"infra:wan-egress\"",
+                q(LEASE_IFACE)
+            )
+            .unwrap();
+        }
     }
     // The server would answer a client on its own network directly, past
     // the reverse translation: make the firewall the source.

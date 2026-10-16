@@ -234,9 +234,17 @@ Where the implementation departs from, or settles open questions in,
   address and its extras are not installed. Kea keeps its subnets (so
   HA runs) with no pools or reservations, and is not authoritative: an
   authoritative Kea would NAK the clients of the server it is staged
-  beside. On a WAN with private node addresses the route via the peer
+  beside. On a WAN with private node addresses (static or leased) the route via the peer
   is left out too: with no master, it would bounce traffic between the
   nodes.
+- **One lease for a pair** (#54) is a macvlan (`swwan`) with the VRRP
+  virtual MAC rather than keepalived's `use_vmac`, which creates the
+  vmac interface on both nodes. Both nodes render the link with
+  `ActivationPolicy=manual`, so the renderer stays a pure function of
+  the document; the coordinator (`lease.rs`) runs `networkctl up` or
+  `down` to match the VRRP role. `SendRelease=no` keeps the lease for
+  the next master. The VPN extra ports use the standalone `redirect` on
+  `swwan`, which only the master has up.
 - **A generation that never ran gives way.** A local change that fails
   to activate is moved aside (`generations/<id>.failed-<hash>`), out of
   history, and its id is reused. One left by a crash before `state.json`

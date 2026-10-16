@@ -535,7 +535,13 @@ A pair does not need a public address per node. With a static block, each node h
 - In postrouting, traffic from the private subnet leaving the WAN for anything outside it, by a next hop other than the peer, is SNATed to the gateway address (`infra:wan-egress`). That is the master's own traffic and the backup's it forwards; on the backup the next hop is always the peer, so nothing matches there.
 - Reach probes (#41) use the private subnet: the ISP's gateway cannot answer the backup, so a WAN cut on one side is found only through other hosts on the private subnet, and otherwise only degrades health.
 
-A single DHCP lease (one MAC, held by the master on the VRRP virtual MAC) is planned in the same shape (#54). Standalone nodes keep their own public address, static or leased.
+With a single DHCP lease (one public address, leased to one MAC), the WAN has `dhcp_client: true`, private `addresses` and a `vrid`, and no `vip`:
+
+- Both nodes render a macvlan `swwan` on the WAN link with the VRRP virtual MAC of that `vrid` (`00:00:5e:00:01:<vrid>`), running the DHCP client (`ClientIdentifier=mac`, `SendRelease=no`) and filling the dynamic objects. networkd leaves it down (`ActivationPolicy=manual`); the coordinator brings it up on the master and down otherwise, on every keepalived transition and every few seconds. The ISP sees one MAC and one client ID, and the new master asks for the lease the old one held. keepalived's own `use_vmac` is not used: it keeps the virtual MAC up on both nodes, where the backup's IPv6 link-local traffic could pull the ISP's frames toward it.
+- The WAN zone includes `swwan`, so outbound NAT masquerades to the leased address and forwards and remote access are reached there.
+- The backup's own traffic takes the route via the peer as above; the master accepts it (`infra:peer-egress`, from the WAN to `swwan`) and masquerades whatever leaves by `swwan` from the private subnet (`infra:wan-egress`).
+
+Standalone nodes keep their own public address, static or leased.
 
 ### conntrackd
 

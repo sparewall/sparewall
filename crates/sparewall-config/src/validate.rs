@@ -473,24 +473,33 @@ impl Validator<'_> {
                         "only WAN and management networks can use a DHCP client",
                     );
                 }
-                if !net.addresses.is_empty() {
-                    self.err(
-                        format!("{p}.dhcp_client"),
-                        "use either addresses or dhcp_client, not both",
-                    );
-                }
-                if pair && net.role == NetworkRole::Wan && net.vip.is_none() {
-                    self.warn(format!("{p}.dhcp_client"), "a DHCP WAN in a pair has no shared gateway address; failover changes the public address");
-                }
-            } else {
-                for n in self.nodes().to_vec() {
-                    if !net.addresses.contains_key(&n) {
+                let leased = pair && net.role == NetworkRole::Wan && !net.addresses.is_empty();
+                if leased {
+                    // One lease for the pair (#54): private node
+                    // addresses, the lease on the master's virtual MAC.
+                    self.node_addresses(&p, net);
+                    if net.vrid.is_none() {
                         self.err(
-                            format!("{p}.addresses"),
-                            format!("no address for node {n:?}"),
+                            format!("{p}.vrid"),
+                            "a leased WAN with node addresses needs a VRRP ID, for its virtual MAC",
                         );
                     }
+                    if net.vip.is_some() {
+                        self.err(
+                            format!("{p}.vip"),
+                            "the lease is the public address of a leased WAN",
+                        );
+                    }
+                } else if !net.addresses.is_empty() {
+                    self.err(
+                        format!("{p}.dhcp_client"),
+                        "use either addresses or dhcp_client, not both (in a pair, a WAN may have both: one lease for the pair)",
+                    );
+                } else if pair && net.role == NetworkRole::Wan && net.vip.is_none() {
+                    self.warn(format!("{p}.dhcp_client"), "each node leases its own address: failover changes the public address (give the nodes private addresses and a vrid for one lease for the pair)");
                 }
+            } else {
+                self.node_addresses(&p, net);
             }
             let mut subnet: Option<Ipv4Net> = None;
             for (n, a) in &net.addresses {
@@ -570,7 +579,7 @@ impl Validator<'_> {
                         "a gateway address in a pair needs a VRRP ID",
                     );
                 }
-            } else if net.vrid.is_some() {
+            } else if net.vrid.is_some() && doc.leased_wan(name).is_none() {
                 self.err(
                     format!("{p}.vrid"),
                     "a VRRP ID needs a gateway address (vip)",
@@ -642,6 +651,20 @@ impl Validator<'_> {
         if wans > 1 {
             self.err("networks", "only one WAN network is supported");
         }
+        // The lease follows the VRRP master.
+        for name in doc.networks.keys() {
+            if doc.leased_wan(name).is_some()
+                && !doc
+                    .networks
+                    .values()
+                    .any(|n| n.vip.is_some() && n.vrid.is_some())
+            {
+                self.err(
+                    format!("networks.{name}.dhcp_client"),
+                    "a leased WAN follows the master: some network needs a gateway address (vip)",
+                );
+            }
+        }
         for (i, (a, an)) in subnets.iter().enumerate() {
             for (b, bn) in &subnets[i + 1..] {
                 if a.contains(b) || b.contains(a) {
@@ -650,6 +673,18 @@ impl Validator<'_> {
                         format!("subnet {b} overlaps network {an:?} ({a})"),
                     );
                 }
+            }
+        }
+    }
+
+    /// Every node has an address on a statically addressed network.
+    fn node_addresses(&mut self, p: &str, net: &Network) {
+        for n in self.nodes().to_vec() {
+            if !net.addresses.contains_key(&n) {
+                self.err(
+                    format!("{p}.addresses"),
+                    format!("no address for node {n:?}"),
+                );
             }
         }
     }

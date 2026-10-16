@@ -105,6 +105,9 @@ in_sync() { status "$1" | jq -e '.sync.state == "in-sync"'; }
 role() { status "$1" | jq -r .role; }
 is_master() { [ "$(role "$1")" = MASTER ]; }
 is_backup() { [ "$(role "$1")" = BACKUP ]; }
+# The address a node reaches the outside (sw-isp's 198.18.0.1, answering
+# with the source of each connection) as.
+egress() { at "$1" 'timeout 5 bash -c "exec 3<>/dev/tcp/198.18.0.1/7002; head -1 <&3"'; }
 state() { status "$1" | jq -r .sync.state; }
 unreachable() { [ "$(state "$1")" = peer-unreachable ]; }
 level() { status "$1" | jq -r .health.level; }

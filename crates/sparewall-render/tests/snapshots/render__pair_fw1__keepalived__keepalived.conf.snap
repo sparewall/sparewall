@@ -42,6 +42,7 @@ vrrp_instance VI_users {
         sparewall_health
     }
     notify "/usr/libexec/keepalived/sparewall-notify"
+    notify_deleted
     virtual_ipaddress {
         192.0.2.1/24 dev users
     }
@@ -62,6 +63,7 @@ vrrp_instance VI_wan {
         sparewall_health
     }
     notify "/usr/libexec/keepalived/sparewall-notify"
+    notify_deleted
     virtual_ipaddress {
         203.0.113.1/29 dev wan
         203.0.113.5/29 dev wan

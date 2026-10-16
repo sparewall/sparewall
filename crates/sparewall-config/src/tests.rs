@@ -728,3 +728,50 @@ fn pair_wan_public_block_beside_private_node_addresses() {
     );
     assert!(has_error(&standalone, "not in the network's subnet"));
 }
+
+/// The pair example with one DHCP lease for the pair on its WAN.
+fn leased_pair(extra: serde_json::Value) -> Document {
+    let mut wan = json!({"dhcp_client": true, "vip": null, "extra_vips": [], "gateway": null});
+    if let (Some(w), Some(e)) = (wan.as_object_mut(), extra.as_object()) {
+        w.extend(e.clone());
+    }
+    edit(PAIR, json!({"networks": {"wan": wan}}))
+}
+
+#[test]
+fn pair_wan_one_lease_for_the_pair() {
+    let doc = leased_pair(json!({}));
+    assert_valid(&doc);
+    assert_eq!(
+        doc.leased_wan("wan").map(|s| s.to_string()).as_deref(),
+        Some("10.0.10.0/24")
+    );
+    assert_eq!(doc.split_wan("wan"), None);
+    assert_eq!(Document::vrrp_mac(10), "00:00:5e:00:01:0a");
+    assert!(has_error(
+        &leased_pair(json!({"vrid": null})),
+        "needs a VRRP ID"
+    ));
+    assert!(has_error(
+        &leased_pair(json!({"vip": "203.0.113.1/29"})),
+        "the lease is the public address"
+    ));
+    assert!(has_error(
+        &leased_pair(json!({"addresses": {"fw2": null}})),
+        "no address for node \"fw2\""
+    ));
+    // The lease follows the VRRP master: some network needs a vip.
+    let d = edit(
+        PAIR,
+        json!({"networks": {
+            "wan": {"dhcp_client": true, "vip": null, "extra_vips": [], "gateway": null},
+            "users": {"vip": null, "vrid": null}}}),
+    );
+    assert!(has_error(&d, "follows the master"));
+    // Standalone: a DHCP client and addresses are still exclusive.
+    let d = edit(
+        STANDALONE,
+        json!({"networks": {"wan": {"addresses": {"fw1": "10.0.10.2/24"}}}}),
+    );
+    assert!(has_error(&d, "not both"));
+}
