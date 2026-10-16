@@ -396,6 +396,10 @@ fn hold_claims_no_gateway_address() {
         serde_json::from_str(&r.files[&format!("{}/kea-dhcp4.conf", Subsystem::Dhcp.dir())])
             .unwrap();
     assert_eq!(kea["Dhcp4"]["authoritative"], false);
+    // On a WAN with private node addresses, no route via the peer: with
+    // no master it would bounce between the two.
+    let wan = &r.files[&format!("{}/30-sparewall-wan.network", Subsystem::Networkd.dir())];
+    assert!(!wan.contains("[Route]"), "{wan}");
     for s in kea["Dhcp4"]["subnet4"].as_array().unwrap() {
         assert!(s["pools"].as_array().unwrap().is_empty(), "{s}");
         assert!(s["reservations"].as_array().unwrap().is_empty(), "{s}");

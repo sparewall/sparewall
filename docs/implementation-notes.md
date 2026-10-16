@@ -234,7 +234,9 @@ Where the implementation departs from, or settles open questions in,
   address and its extras are not installed. Kea keeps its subnets (so
   HA runs) with no pools or reservations, and is not authoritative: an
   authoritative Kea would NAK the clients of the server it is staged
-  beside.
+  beside. On a WAN with private node addresses the route via the peer
+  is left out too: with no master, it would bounce traffic between the
+  nodes.
 - **A generation that never ran gives way.** A local change that fails
   to activate is moved aside (`generations/<id>.failed-<hash>`), out of
   history, and its id is reused. One left by a crash before `state.json`

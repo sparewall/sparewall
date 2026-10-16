@@ -138,6 +138,7 @@ for round in 1 2; do
     at fw1 'sudo sparewall set cluster.hold=true --confirm 0'
     wait_for 120 "both nodes held, in FAULT" both_held
     wait_for 30 "the gateway address gone" gateway_down
+    ! public_route fw1 && ! public_route fw2 || fail "a held node has the public default route"
     wait_for 120 "fw1 in sync while held" in_sync fw1
     wait_for 60 "fw2 in sync while held" in_sync fw2
     ! got_lease || fail "DHCP offered a lease while held"
@@ -148,6 +149,7 @@ for round in 1 2; do
     wait_for 120 "fw1 in sync after the release" in_sync fw1
     wait_for 60 "fw2 BACKUP after the release" fw2_backup
 done
+check_wan fw1 fw2
 wait_for 120 "a DHCP lease again after the release" got_lease
 [ "$(client_ip)" = "$LEASE" ] || fail "the client got $(client_ip) after the hold, not its lease $LEASE"
 
