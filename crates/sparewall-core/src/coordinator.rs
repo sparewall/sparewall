@@ -1708,6 +1708,16 @@ impl<S: System> Coordinator<S> {
             )
         });
 
+        // Degraded, not failed: a held pair must still confirm and sync.
+        if self.active_document()?.is_some_and(|d| d.cluster.hold) {
+            checks.push(Check::new(
+                "held",
+                Level::Degraded,
+                "holding: no gateway address is claimed and DHCP offers nothing \
+                 (cluster.hold); cut over with sparewall set cluster.hold=false",
+            ));
+        }
+
         if let Some(p) = &state.pending {
             checks.push(Check::new(
                 "confirm",

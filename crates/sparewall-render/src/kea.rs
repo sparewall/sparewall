@@ -136,13 +136,23 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 })
             })
             .collect();
+        // Held (cluster.hold): the subnets are known, so HA runs, but
+        // nothing is offered.
+        let (pools, reservations) = if doc.cluster.hold {
+            (vec![], vec![])
+        } else {
+            (
+                vec![json!({"pool": format!("{first} - {last}")})],
+                reservations,
+            )
+        };
         let mut s = json!({
             "id": subnet_id(name, net.vlan),
             // No "interface": Kea selects directly connected subnets by the
             // receiving interface's address, and naming one makes the config
             // test fail for a VLAN that does not exist yet.
             "subnet": subnet.to_string(),
-            "pools": [{"pool": format!("{first} - {last}")}],
+            "pools": pools,
             "option-data": option_data,
             "reservations": reservations,
         });
@@ -220,7 +230,9 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 "lfc-interval": 3600,
             },
             "valid-lifetime": dhcp.lease_time.unwrap_or(DEFAULT_LEASE_TIME),
-            "authoritative": true,
+            // Held beside another server, it must not answer that
+            // server's clients with DHCPNAKs.
+            "authoritative": !doc.cluster.hold,
             "subnet4": subnets,
             "hooks-libraries": hooks,
             "loggers": [{

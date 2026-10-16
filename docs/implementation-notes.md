@@ -225,6 +225,18 @@ Where the implementation departs from, or settles open questions in,
   output-chain rule is needed: postrouting sees locally generated
   traffic. Route `src` is left to the kernel, which already prefers
   the vip for a gateway in its subnet.
+- **A hold keeps keepalived running** (`cluster.hold`, #51): every
+  instance also tracks `sparewall-held`, a script that always fails, so
+  all sit in FAULT and announce nothing while the VRRP configuration,
+  the sync group and conntrackd are still exercised. Health reports a
+  degraded `held` check rather than failed, since a failed level would
+  block the confirmations a pair relies on. Standalone, the gateway
+  address and its extras are not installed. Kea keeps its subnets (so
+  HA runs) with no pools or reservations, and is not authoritative: an
+  authoritative Kea would NAK the clients of the server it is staged
+  beside. On a WAN with private node addresses the route via the peer
+  is left out too: with no master, it would bounce traffic between the
+  nodes.
 - **A generation that never ran gives way.** A local change that fails
   to activate is moved aside (`generations/<id>.failed-<hash>`), out of
   history, and its id is reused. One left by a crash before `state.json`

@@ -369,3 +369,57 @@ fn ping_check_default_and_overrides() {
         .ping_check = None;
     assert!(ping_hook(&kea_conf(&doc)).is_none());
 }
+
+#[test]
+fn hold_claims_no_gateway_address() {
+    // A pair: keepalived runs, but every instance also tracks a script
+    // that always fails, so all stay in FAULT.
+    let mut doc = example("pair.yaml");
+    doc.cluster.hold = true;
+    let r = render(&doc, "fw1").unwrap();
+    let ka = &r.files[&format!(
+        "{}/{}",
+        Subsystem::Keepalived.dir(),
+        sparewall_render::keepalived::CONF
+    )];
+    assert!(ka.contains("vrrp_script sparewall_held"), "{ka}");
+    let instances = ka.matches("vrrp_instance ").count();
+    assert!(instances > 0);
+    assert_eq!(
+        ka.matches("        sparewall_held\n").count(),
+        instances,
+        "{ka}"
+    );
+    // Kea knows the subnets (HA runs) but offers nothing, and does not
+    // NAK the clients of the server it sits beside.
+    let kea: serde_json::Value =
+        serde_json::from_str(&r.files[&format!("{}/kea-dhcp4.conf", Subsystem::Dhcp.dir())])
+            .unwrap();
+    assert_eq!(kea["Dhcp4"]["authoritative"], false);
+    // On a WAN with private node addresses, no route via the peer: with
+    // no master it would bounce between the two.
+    let wan = &r.files[&format!("{}/30-sparewall-wan.network", Subsystem::Networkd.dir())];
+    assert!(!wan.contains("[Route]"), "{wan}");
+    for s in kea["Dhcp4"]["subnet4"].as_array().unwrap() {
+        assert!(s["pools"].as_array().unwrap().is_empty(), "{s}");
+        assert!(s["reservations"].as_array().unwrap().is_empty(), "{s}");
+    }
+
+    // Standalone: neither the gateway address nor an extra one is
+    // installed.
+    let mut doc = example("standalone.yaml");
+    let users = doc.networks.get_mut("users").unwrap();
+    users.extra_vips = vec![serde_json::from_value(serde_json::json!("192.0.2.5/24")).unwrap()];
+    let installed = |doc: &sparewall_config::Document, a: &str| {
+        render(doc, "fw1")
+            .unwrap()
+            .files
+            .values()
+            .any(|c| c.contains(&format!("Address={a}")))
+    };
+    assert!(installed(&doc, "192.0.2.1/24"));
+    assert!(installed(&doc, "192.0.2.5/24"));
+    doc.cluster.hold = true;
+    assert!(!installed(&doc, "192.0.2.1/24"));
+    assert!(!installed(&doc, "192.0.2.5/24"));
+}

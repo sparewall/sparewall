@@ -207,9 +207,13 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
     // belongs to keepalived.
     if let Some(vip) = &net.vip {
         if !pair {
-            ini.set("Address", vip);
-            for a in &net.extra_vips {
-                ini.set("Address", a);
+            // A held node claims no gateway address, nor the extras that
+            // move with it (cluster.hold).
+            if !doc.cluster.hold {
+                ini.set("Address", vip);
+                for a in &net.extra_vips {
+                    ini.set("Address", a);
+                }
             }
         } else {
             // networkd must not remove addresses keepalived added.
@@ -239,8 +243,11 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
         // The public default route belongs to keepalived (on the master
         // only). Both nodes route via the peer's private address with a
         // higher metric, which the backup alone uses: its own traffic
-        // leaves through the master.
-        if let Some(peer) = doc.peer_of(node).and_then(|p| net.addresses.get(p)) {
+        // leaves through the master. A held pair has no master, and the
+        // two would only bounce such traffic between them.
+        if !doc.cluster.hold
+            && let Some(peer) = doc.peer_of(node).and_then(|p| net.addresses.get(p))
+        {
             ini.section("Route")
                 .set("Gateway", peer.0.addr())
                 .set("Metric", PEER_EGRESS_METRIC);

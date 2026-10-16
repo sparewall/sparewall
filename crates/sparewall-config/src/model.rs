@@ -103,6 +103,11 @@ pub struct Cluster {
     /// Connection-tracking sizing, identical on both nodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conntrack: Option<ConntrackSizing>,
+    /// Stage beside the gateway this replaces: everything runs, but no
+    /// gateway address is claimed (VRRP instances held in FAULT, or not
+    /// installed standalone) and DHCP offers nothing. Set false to cut over.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hold: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

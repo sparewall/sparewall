@@ -25,6 +25,9 @@ pub const FIFO: &str = "/run/sparewall/keepalived.fifo";
 pub const NOTIFY_SCRIPT: &str = "/usr/libexec/keepalived/sparewall-notify";
 /// The track script (unconfined under SELinux by its location).
 pub const HEALTH_SCRIPT: &str = "/usr/libexec/keepalived/sparewall-health";
+/// A track script that always fails, for `cluster.hold`: every instance
+/// stays in FAULT and claims no address.
+pub const HELD_SCRIPT: &str = "/usr/libexec/keepalived/sparewall-held";
 pub const SYNC_GROUP: &str = "SPAREWALL";
 pub const DEFAULT_PRIORITY: [u8; 2] = [150, 100];
 
@@ -64,6 +67,15 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
          interval 2\n    timeout 5\n    fall 3\n    rise 2\n}}\n"
     )
     .unwrap();
+    let hold = doc.cluster.hold;
+    if hold {
+        writeln!(
+            s,
+            "vrrp_script sparewall_held {{\n    script \"{HELD_SCRIPT}\"\n    \
+             interval 2\n    fall 1\n    rise 1\n}}\n"
+        )
+        .unwrap();
+    }
     let instances: Vec<(&String, &sparewall_config::model::Network)> = doc
         .networks
         .iter()
@@ -107,7 +119,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         if port != iface {
             writeln!(s, "    track_interface {{\n        {port}\n    }}").unwrap();
         }
-        s.push_str("    track_script {\n        sparewall_health\n    }\n");
+        s.push_str("    track_script {\n        sparewall_health\n");
+        if hold {
+            s.push_str("        sparewall_held\n");
+        }
+        s.push_str("    }\n");
         writeln!(s, "    notify \"{NOTIFY_SCRIPT}\"").unwrap();
         // Extra gateway addresses ride in the same instance, so they move
         // in the same step.

@@ -2919,3 +2919,25 @@ fn restarted_decider_withholds_an_unsynced_decision() {
     follow(&mut b, &mut a);
     assert_eq!((at(&a), at(&b)), ((2, 2, false), (2, 2, false)));
 }
+
+#[test]
+fn hold_is_reported_and_released_like_any_change() {
+    let mut t = setup();
+    let mut doc = example();
+    doc["cluster"]["hold"] = json!(true);
+    t.c.apply(doc.clone(), &opts(0, None)).unwrap();
+    let h = t.c.health().unwrap();
+    let held = h.check("held").unwrap();
+    assert_eq!(held.level, Level::Degraded);
+    assert!(
+        held.message.contains("cluster.hold=false"),
+        "{}",
+        held.message
+    );
+    // Release: one small generation, with a confirm window like any other.
+    doc["cluster"]["hold"] = json!(false);
+    let r = t.c.apply(doc, &opts(1, Some(120))).unwrap();
+    assert_eq!(r.generation.id, 2);
+    assert!(t.c.health().unwrap().check("held").is_none());
+    t.c.confirm(2).unwrap();
+}
