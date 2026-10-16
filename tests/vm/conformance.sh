@@ -217,7 +217,7 @@ selinux_report() { # run-command node-name
 # Fail if any report found a denial.
 selinux_gate() {
     [ -s "$WORK/selinux-denials" ] || return 0
-    echo "FAIL: sparewalld_t was denied; add rules to image/selinux/sparewalld.te:" >&2
+    echo "FAIL: SELinux denials or their effects; add rules to image/selinux/sparewalld.te:" >&2
     cat "$WORK/selinux-denials" >&2
     return 1
 }
