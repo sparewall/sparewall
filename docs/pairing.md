@@ -54,6 +54,25 @@ upgrades, ACME, NTP and backups work on either node. Nothing from the
 private addresses reaches the ISP. Public node addresses in the same
 subnet as `vip` still work as before.
 
+With one public address leased by DHCP, give the nodes private addresses
+and a `vrid`, and no `vip`:
+
+```yaml
+networks:
+  wan:
+    port: uplink
+    vlan: 10
+    role: wan
+    dhcp_client: true
+    addresses: { fw1: 10.0.10.2/24, fw2: 10.0.10.3/24 }
+    vrid: 10
+```
+
+The master runs the DHCP client on `swwan`, a link with the VRRP virtual
+MAC (`00:00:5e:00:01:0a` here), so the ISP sees one MAC and one client and
+the lease moves with the gateway. Another network of the pair must have
+a gateway address: the lease follows its VRRP master.
+
 ## Changing configuration
 
 Apply a change on either node; it runs there first and is pushed to the

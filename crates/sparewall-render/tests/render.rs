@@ -423,3 +423,69 @@ fn hold_claims_no_gateway_address() {
     assert!(!installed(&doc, "192.0.2.1/24"));
     assert!(!installed(&doc, "192.0.2.5/24"));
 }
+
+#[test]
+fn pair_wan_one_lease_on_the_master() {
+    // The pair example's WAN with one DHCP lease for the pair (#54).
+    let mut doc = example("pair.yaml");
+    let wan = doc.networks.get_mut("wan").unwrap();
+    wan.dhcp_client = true;
+    wan.vip = None;
+    wan.extra_vips.clear();
+    wan.gateway = None;
+    doc.objects.insert(
+        "wan_address".into(),
+        serde_json::from_value(serde_json::json!({"type": "ipv4", "dynamic": {"network": "wan"}}))
+            .unwrap(),
+    );
+    let r = render(&doc, "fw1").unwrap();
+    let file = |name: &str| r.files[&format!("{}/{name}", Subsystem::Networkd.dir())].clone();
+    // The WAN itself: the private address, the macvlan, the route via the
+    // peer, and no DHCP client.
+    let base = file("30-sparewall-wan.network");
+    assert!(base.contains("Address=10.0.10.2/24\n"), "{base}");
+    assert!(base.contains("MACVLAN=swwan\n"), "{base}");
+    assert!(
+        base.contains("[Route]\nGateway=10.0.10.3\nMetric=200\n"),
+        "{base}"
+    );
+    assert!(!base.contains("DHCP"), "{base}");
+    // The lease link: the VRRP virtual MAC, down until the coordinator
+    // brings it up on the master, one client ID, the lease kept.
+    let nd = file("40-sparewall-swwan.netdev");
+    assert!(nd.contains("Kind=macvlan\n"), "{nd}");
+    assert!(nd.contains("MACAddress=00:00:5e:00:01:0a\n"), "{nd}");
+    let nn = file("40-sparewall-swwan.network");
+    for line in [
+        "ActivationPolicy=manual\n",
+        "DHCP=ipv4\n",
+        "ClientIdentifier=mac\n",
+        "SendRelease=no\n",
+        "RouteMetric=100\n",
+        "NFTSet=address:inet:sparewall:wan_address\n",
+    ] {
+        assert!(nn.contains(line), "{line}: {nn}");
+    }
+    // No keepalived instance, route or address for the WAN.
+    let ka = &r.files[&format!(
+        "{}/{}",
+        Subsystem::Keepalived.dir(),
+        sparewall_render::keepalived::CONF
+    )];
+    assert!(!ka.contains("VI_wan"), "{ka}");
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    for line in [
+        "iifname \"swwan\" udp sport 67 udp dport 68 accept comment \"infra:dhcp-client\"",
+        "iifname \"wan\" oifname \"swwan\" ip saddr 10.0.10.3 counter accept comment \"infra:peer-egress\"",
+        "oifname \"swwan\" ip saddr 10.0.10.0/24 counter masquerade comment \"infra:wan-egress\"",
+        "iifname \"users\" oifname { \"swwan\", \"wan\" } counter masquerade comment \"nat:users->wan\"",
+        "iifname \"swwan\" fib daddr type local udp dport { 53, 443 } counter redirect to :51820 comment \"vpn-roadwarrior:extra-ports\"",
+    ] {
+        assert!(nft.contains(line), "{line}\n{nft}");
+    }
+    assert_eq!(
+        r.meta.set_links.get("wan_address").map(String::as_str),
+        Some("swwan")
+    );
+    assert_nft_ok(&r);
+}

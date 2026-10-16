@@ -7,6 +7,7 @@ mod dhcp_ha;
 mod http;
 #[cfg(test)]
 mod isolation_tests;
+mod lease;
 mod peer;
 mod reach;
 mod rules;
@@ -369,6 +370,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 reach::probe_loop(core.clone(), tx.clone(), pair.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no links.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                lease::lease_loop(core.clone(), tx.clone(), pair.clone()).await
             } => Ok(()),
             () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone(), vrrp::host_conntrackd()) => Ok(()),
             () = rules::listener(args.socket.with_file_name("rules.sock")) => Ok(()),

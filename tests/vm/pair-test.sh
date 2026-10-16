@@ -107,8 +107,6 @@ log "the WAN: private node addresses, the public ones on the master (#54)"
 wan_ns isp 203.0.113.254
 ns isp ip addr add 198.18.0.1/32 dev lo
 ns isp python3 "$HERE/echo.py" whoami &
-# The address a node reaches the outside as.
-egress() { at "$1" 'timeout 5 bash -c "exec 3<>/dev/tcp/198.18.0.1/7002; head -1 <&3"'; }
 public_route() { at "$1" 'ip route show default' | grep -q 'via 203.0.113.254 dev wan'; }
 check_wan() { # master backup
     public_route "$1" || fail "$1 (master) has no default route via the ISP: $(at "$1" 'ip route show default')"

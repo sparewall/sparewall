@@ -12,8 +12,11 @@ pub const SYNC_TUNNEL_IFACE: &str = "swsync";
 pub const SYNC_TUNNEL_PORT: u16 = 51871;
 /// The built-in zone for traffic to and from the firewall itself.
 pub const SELF_ZONE: &str = "self";
+/// The interface a pair's leased WAN is reached on (#54): a macvlan with
+/// the VRRP virtual MAC, up on the master only.
+pub const LEASE_IFACE: &str = "swwan";
 /// Interface names the coordinator reserves.
-pub const RESERVED_IFACES: &[&str] = &["lo", SYNC_TUNNEL_IFACE];
+pub const RESERVED_IFACES: &[&str] = &["lo", SYNC_TUNNEL_IFACE, LEASE_IFACE];
 
 impl Document {
     /// True for an HA pair, false for a standalone node.
@@ -56,6 +59,9 @@ impl Document {
             for n in &z.networks {
                 if let Some(i) = self.network_iface(n) {
                     out.push(i.to_string());
+                }
+                if self.leased_wan(n).is_some() {
+                    out.push(LEASE_IFACE.to_string());
                 }
             }
         }
@@ -100,6 +106,23 @@ impl Document {
         let vip = net.vip.as_ref()?;
         let private = net.addresses.values().next()?.0.trunc();
         (!private.contains(&vip.0.addr())).then_some(private)
+    }
+
+    /// For a pair's WAN with one DHCP lease for the pair (#54), the
+    /// nodes' private subnet: the master runs the DHCP client on
+    /// [`LEASE_IFACE`], with the VRRP virtual MAC of the network's `vrid`.
+    pub fn leased_wan(&self, network: &str) -> Option<Ipv4Net> {
+        let net = self.networks.get(network)?;
+        if !self.is_pair() || net.role != NetworkRole::Wan || !net.dhcp_client {
+            return None;
+        }
+        net.vrid?;
+        Some(net.addresses.values().next()?.0.trunc())
+    }
+
+    /// The VRRP virtual MAC of a VRRP ID (RFC 5798).
+    pub fn vrrp_mac(vrid: u8) -> String {
+        format!("00:00:5e:00:01:{vrid:02x}")
     }
 
     /// Networks with a given role.

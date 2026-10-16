@@ -30,13 +30,14 @@ pair_taps
 cleanup() {
     local rc=$?
     if [ $rc -ne 0 ]; then
-        for f in flow.log vlan-cut.log restore-fw1.txt restore-fw2.txt; do
+        for f in flow.log vlan-cut.log restore-fw1.txt restore-fw2.txt isp-dhcp.log isp.leases; do
             [ -f "$f" ] && { echo "--- $f"; tail -20 "$f"; }
         done
         dump_nodes
     fi
     selinux_reports
     sudo pkill -f "$HERE/echo.py" 2>/dev/null || true
+    sudo pkill -f "$WORK/isp.leases" 2>/dev/null || true
     [ -f rest-server.pid ] && kill "$(cat rest-server.pid)" 2>/dev/null || true
     stop_pair
     [ $rc -ne 0 ] || ! declare -F selinux_gate >/dev/null || selinux_gate || exit 1
@@ -56,6 +57,45 @@ pair_doc < "$HERE/site-pair.yaml" | vpn_doc \
     > pair.yaml
 grep -q "mode: active-backup" pair.yaml || fail "the bond did not go into the document"
 pair_up
+
+# The WAN of a pair with one public address, leased by DHCP to one MAC
+# (#54): the master runs the client on the lease link (the VRRP virtual
+# MAC), and the backup's own traffic leaves through it. sw-isp leases
+# exactly one address, 203.0.113.1, so the lease can only move.
+log "the WAN: one lease for the pair"
+wan_ns isp 203.0.113.254
+ns isp ip addr add 198.18.0.1/32 dev lo
+ns isp python3 "$HERE/echo.py" whoami &
+ns isp dnsmasq --keep-in-foreground --conf-file=/dev/null --port=0 --user=root \
+    --interface=eth0 --bind-interfaces --no-ping --log-dhcp \
+    --dhcp-range=203.0.113.1,203.0.113.1,255.255.255.0,10m \
+    --dhcp-option=option:router,203.0.113.254 \
+    --dhcp-leasefile="$WORK/isp.leases" > isp-dhcp.log 2>&1 &
+at fw1 'sudo sparewall merge -f - --confirm 0' <<'JSON'
+{"networks": {"wan": {"dhcp_client": true, "vip": null, "extra_vips": null, "gateway": null}},
+ "policy": {"servers->wan": {"nat": "masquerade"}},
+ "forwards": {"echo-in": null}}
+JSON
+wait_for 120 "fw1 in sync on the leased WAN" in_sync fw1
+wait_for 60 "fw2 in sync on the leased WAN" in_sync fw2
+leased() { at "$1" 'ip -4 -br addr show dev swwan' | grep -q ' 203\.0\.113\.1/'; }
+lease_on() { # master backup
+    leased "$1" || return 1
+    at "$2" 'ip -j link show dev swwan' | jq -e '.[0].flags | index("UP") | not' >/dev/null
+}
+check_lease() { # master backup
+    wait_for 90 "the lease on $1, the lease link down on $2" lease_on "$1" "$2"
+    local n src
+    for n in "$1" "$2"; do
+        src=$(egress "$n") || fail "$n cannot reach the outside"
+        [ "$src" = 203.0.113.1 ] || fail "$n reached the outside as $src, not 203.0.113.1"
+    done
+    # One MAC, one client: the ISP holds a single lease.
+    [ "$(grep -c . "$WORK/isp.leases")" = 1 ] || fail "the ISP holds more than one lease: $(cat "$WORK/isp.leases")"
+    grep -q ' 00:00:5e:00:01:0a 203.0.113.1 ' "$WORK/isp.leases" \
+        || fail "the lease is not the virtual MAC's: $(cat "$WORK/isp.leases")"
+}
+check_lease fw1 fw2
 
 log "a connection through the pair"
 dhcp_script
@@ -132,6 +172,7 @@ monitor fw1 set_link n1 on
 monitor fw1 set_link n3 on
 wait_for 120 "fw1 back as the backup" is_backup fw1
 is_master fw2 || fail "fw2 gave up the gateway when fw1's trunk returned (nopreempt)"
+check_lease fw2 fw1
 healthy() { [ "$(level "$1")" = ok ]; }
 wait_for 120 "fw1 healthy" healthy fw1
 count=$(flowing "$count" "fw1's trunk returned")
@@ -165,6 +206,7 @@ reach_ok() { [ -z "$(check fw2 reach)" ] && healthy fw2; }
 wait_for 120 "fw2 healthy again after the VLAN returned" reach_ok
 wait_for 60 "fw2 back as the backup" is_backup fw2
 is_master fw1 || fail "fw1 gave up the gateway when fw2's VLAN returned (nopreempt)"
+check_lease fw1 fw2
 settle() { in_sync fw1 && in_sync fw2; }
 wait_for 120 "the pair in sync again" settle
 

@@ -7,7 +7,7 @@
 use ipnet::Ipv4Net;
 use sparewall_config::identity::Identity;
 use sparewall_config::model::*;
-use sparewall_config::topology::{SYNC_TUNNEL_IFACE, SYNC_TUNNEL_PORT};
+use sparewall_config::topology::{LEASE_IFACE, SYNC_TUNNEL_IFACE, SYNC_TUNNEL_PORT};
 use sparewall_config::validate::mac_ok;
 
 use crate::ini::Ini;
@@ -186,6 +186,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     if pair {
         sync_tunnel(doc, node, out);
     }
+    for (name, net) in &doc.networks {
+        if doc.leased_wan(name).is_some() {
+            lease_link(doc, name, net, out);
+        }
+    }
     for (name, vpn) in &doc.vpn {
         remote_access(name, vpn, out);
     }
@@ -220,7 +225,11 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
             ini.set("KeepConfiguration", "yes");
         }
     }
-    if net.dhcp_client {
+    let leased = doc.leased_wan(name).is_some();
+    if leased {
+        // The pair's one lease is the master's, on the macvlan.
+        ini.set("MACVLAN", LEASE_IFACE);
+    } else if net.dhcp_client {
         ini.set("DHCP", "ipv4");
     }
     for d in &net.dns {
@@ -239,12 +248,13 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
         ini.set("LLDP", v);
         ini.set("EmitLLDP", if lldp { "nearest-bridge" } else { "no" });
     }
-    if doc.split_wan(name).is_some() {
-        // The public default route belongs to keepalived (on the master
-        // only). Both nodes route via the peer's private address with a
-        // higher metric, which the backup alone uses: its own traffic
-        // leaves through the master. A held pair has no master, and the
-        // two would only bounce such traffic between them.
+    if doc.split_wan(name).is_some() || leased {
+        // The public default route is the master's only (keepalived's, or
+        // the lease's on the macvlan). Both nodes route via the peer's
+        // private address with a higher metric, which the backup alone
+        // uses: its own traffic leaves through the master. A held pair has
+        // no master, and the two would only bounce such traffic between
+        // them.
         if !doc.cluster.hold
             && let Some(peer) = doc.peer_of(node).and_then(|p| net.addresses.get(p))
         {
@@ -262,42 +272,85 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
             },
         );
     }
-    if net.dhcp_client {
-        ini.section("DHCPv4")
-            .set("UseDNS", "yes")
-            .set("SendHostname", "no")
-            .set(
-                "RouteMetric",
-                if net.role == NetworkRole::Wan {
-                    WAN_METRIC
-                } else {
-                    1024
-                },
-            );
-        // Dynamic objects filled from this network's leased address.
-        let sets: Vec<String> = doc
-            .objects
-            .iter()
-            .filter_map(|(oname, o)| {
-                let d = o.dynamic.as_ref()?;
-                (d.network == name).then(|| {
-                    let src = match d.source {
-                        DynamicKind::Address => "address",
-                        DynamicKind::Prefix => "prefix",
-                    };
-                    format!("{src}:inet:sparewall:{oname}")
-                })
-            })
-            .collect();
-        if !sets.is_empty() {
-            ini.set("NFTSet", sets.join(" "));
-        }
+    if net.dhcp_client && !leased {
+        dhcp_client(ini, doc, name, net);
     }
     if let Some(cake) = &net.cake {
         ini.section("CAKE")
             .set("Parent", "root")
             .set("Bandwidth", &cake.bandwidth);
     }
+}
+
+/// The `[DHCPv4]` section of a network's DHCP client.
+fn dhcp_client(ini: &mut Ini, doc: &Document, name: &str, net: &Network) {
+    ini.section("DHCPv4")
+        .set("UseDNS", "yes")
+        .set("SendHostname", "no")
+        .set(
+            "RouteMetric",
+            if net.role == NetworkRole::Wan {
+                WAN_METRIC
+            } else {
+                1024
+            },
+        );
+    // Dynamic objects filled from this network's leased address.
+    let sets: Vec<String> = doc
+        .objects
+        .iter()
+        .filter_map(|(oname, o)| {
+            let d = o.dynamic.as_ref()?;
+            (d.network == name).then(|| {
+                let src = match d.source {
+                    DynamicKind::Address => "address",
+                    DynamicKind::Prefix => "prefix",
+                };
+                format!("{src}:inet:sparewall:{oname}")
+            })
+        })
+        .collect();
+    if !sets.is_empty() {
+        ini.set("NFTSet", sets.join(" "));
+    }
+}
+
+/// A pair's one WAN lease (#54): a macvlan with the VRRP virtual MAC on
+/// the WAN link, running the DHCP client. networkd leaves it down
+/// (`ActivationPolicy=manual`); the coordinator brings it up on the
+/// master only, so the ISP sees one MAC and one client ID.
+fn lease_link(doc: &Document, name: &str, net: &Network, out: &mut Rendered) {
+    let Some(vrid) = net.vrid else { return };
+    let mut nd = Ini::new();
+    nd.section("NetDev")
+        .set("Name", LEASE_IFACE)
+        .set("Kind", "macvlan")
+        .set("MACAddress", Document::vrrp_mac(vrid))
+        .set("Description", "Sparewall pair WAN lease");
+    nd.section("MACVLAN").set("Mode", "bridge");
+    out.add(
+        Subsystem::Networkd,
+        format!("40-sparewall-{LEASE_IFACE}.netdev"),
+        nd.build(),
+    );
+    let mut nn = Ini::new();
+    nn.section("Match").set("Name", LEASE_IFACE);
+    nn.section("Link")
+        .set("ActivationPolicy", "manual")
+        .set("RequiredForOnline", "no");
+    nn.section("Network")
+        .set("DHCP", "ipv4")
+        .set("LinkLocalAddressing", "no")
+        .set("IPv6AcceptRA", "no");
+    dhcp_client(&mut nn, doc, name, net);
+    // The same client ID from either node, and the lease kept for the
+    // next master when this one stops.
+    nn.set("ClientIdentifier", "mac").set("SendRelease", "no");
+    out.add(
+        Subsystem::Networkd,
+        format!("40-sparewall-{LEASE_IFACE}.network"),
+        nn.build(),
+    );
 }
 
 fn sync_tunnel(doc: &Document, node: &str, out: &mut Rendered) {
