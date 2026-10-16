@@ -30,7 +30,9 @@ networks:
     port: uplink
     vlan: 10
     role: wan
-    addresses: { fw1: 203.0.113.2/29, fw2: 203.0.113.3/29 }
+    # Private node addresses: the public block is held by the master, with
+    # the default route; the backup's own traffic leaves through it.
+    addresses: { fw1: 10.0.10.2/24, fw2: 10.0.10.3/24 }
     vip: 203.0.113.1/29
     # The mail server's public address, moving with the gateway.
     extra_vips: [203.0.113.5/29]

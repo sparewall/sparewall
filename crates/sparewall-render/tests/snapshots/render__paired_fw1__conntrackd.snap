@@ -41,6 +41,8 @@ General {
             ICMP
         }
         Address Ignore {
+            IPv4_address 10.0.10.2
+            IPv4_address 10.0.10.3
             IPv4_address 10.0.99.2
             IPv4_address 10.0.99.3
             IPv4_address 10.255.0.1
@@ -50,8 +52,6 @@ General {
             IPv4_address 169.254.77.2
             IPv4_address 192.0.2.2
             IPv4_address 192.0.2.3
-            IPv4_address 203.0.113.2
-            IPv4_address 203.0.113.3
         }
     }
 }

@@ -27,12 +27,16 @@ networks:
     port: trunk
     vlan: 10
     role: wan
-    addresses: { fw1: 203.0.113.2/24, fw2: 203.0.113.3/24 }
+    # Private node addresses: the public ones and the default route via
+    # sw-isp are the master's, and the backup's own traffic leaves
+    # through it (#54).
+    addresses: { fw1: 10.0.10.2/24, fw2: 10.0.10.3/24 }
     vip: 203.0.113.1/24
     # A service address that moves with the gateway (#47): forwarded in,
     # and the servers network's outbound source.
     extra_vips: [203.0.113.5/24]
     vrid: 10
+    gateway: 203.0.113.254
   users:
     port: trunk
     vlan: 20

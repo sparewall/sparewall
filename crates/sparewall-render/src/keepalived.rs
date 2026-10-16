@@ -115,7 +115,20 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         for a in net.vip.iter().chain(&net.extra_vips) {
             writeln!(s, "        {a} dev {iface}").unwrap();
         }
-        s.push_str("    }\n}\n\n");
+        s.push_str("    }\n");
+        // A WAN with private node addresses: the public default route
+        // moves with the public addresses (#54).
+        if doc.split_wan(name).is_some()
+            && let Some(gw) = net.gateway
+        {
+            writeln!(
+                s,
+                "    virtual_routes {{\n        0.0.0.0/0 via {gw} dev {iface} metric {} onlink\n    }}",
+                crate::networkd::WAN_METRIC
+            )
+            .unwrap();
+        }
+        s.push_str("}\n\n");
     }
     let mut links: Vec<String> = Vec::new();
     for (name, net) in &instances {

@@ -519,6 +519,10 @@ impl Validator<'_> {
                     );
                 }
             }
+            // A pair's static WAN may put its public addresses (the gateway
+            // address, its extras and the ISP's gateway) in a subnet of
+            // their own, the nodes holding private addresses (#54).
+            let mut public: Option<Ipv4Net> = None;
             if let Some(vip) = &net.vip {
                 if net.role == NetworkRole::Sync {
                     self.err(
@@ -529,10 +533,29 @@ impl Validator<'_> {
                 if let Some(s) = subnet
                     && vip.0.trunc() != s
                 {
-                    self.err(
-                        format!("{p}.vip"),
-                        format!("not in the network's subnet {s}"),
-                    );
+                    let v = vip.0.trunc();
+                    let overlaps = v.contains(&s.network()) || s.contains(&v.network());
+                    if pair && net.role == NetworkRole::Wan && !overlaps {
+                        public = Some(v);
+                        if vip.0.prefix_len() < 31
+                            && (vip.0.addr() == v.network() || vip.0.addr() == v.broadcast())
+                        {
+                            self.err(
+                                format!("{p}.vip"),
+                                "is the network or broadcast address of its subnet",
+                            );
+                        }
+                    } else if pair && net.role == NetworkRole::Wan {
+                        self.err(
+                            format!("{p}.vip"),
+                            format!("{v} overlaps the nodes' subnet {s} without being it"),
+                        );
+                    } else {
+                        self.err(
+                            format!("{p}.vip"),
+                            format!("not in the network's subnet {s}"),
+                        );
+                    }
                 }
                 if own.contains(&vip.0.addr()) {
                     self.err(
@@ -564,16 +587,44 @@ impl Validator<'_> {
                     );
                 }
             }
-            if let Some(gw) = net.gateway {
-                if net.dhcp_client {
+            match (net.gateway, public) {
+                (Some(_), _) if net.dhcp_client => {
                     self.err(format!("{p}.gateway"), "a DHCP client learns its gateway");
-                } else if let Some(s) = subnet
-                    && !s.contains(&gw)
-                {
-                    self.err(format!("{p}.gateway"), format!("not inside {s}"));
                 }
+                // The master's default route; the backup's leaves
+                // through the master.
+                (Some(gw), Some(s)) => {
+                    if !s.contains(&gw) {
+                        self.err(
+                            format!("{p}.gateway"),
+                            format!("not inside the gateway address's subnet {s}"),
+                        );
+                    } else if net
+                        .vip
+                        .iter()
+                        .chain(&net.extra_vips)
+                        .any(|v| v.0.addr() == gw)
+                    {
+                        self.err(format!("{p}.gateway"), "is one of the pair's own addresses");
+                    }
+                }
+                (None, Some(s)) => self.err(
+                    format!("{p}.gateway"),
+                    format!("a WAN with private node addresses needs the ISP's gateway, in {s}"),
+                ),
+                (Some(gw), None) => {
+                    if let Some(s) = subnet
+                        && !s.contains(&gw)
+                    {
+                        self.err(format!("{p}.gateway"), format!("not inside {s}"));
+                    }
+                }
+                (None, None) => {}
             }
             if let Some(s) = subnet {
+                subnets.push((s, name));
+            }
+            if let Some(s) = public {
                 subnets.push((s, name));
             }
             if let Some(m) = net.mtu

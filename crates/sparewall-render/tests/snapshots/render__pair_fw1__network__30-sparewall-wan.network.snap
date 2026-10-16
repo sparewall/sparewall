@@ -8,11 +8,11 @@ expression: content
 Name=wan
 
 [Network]
-Address=203.0.113.2/29
+Address=10.0.10.2/24
 KeepConfiguration=yes
 LinkLocalAddressing=ipv6
 IPv6AcceptRA=no
 
 [Route]
-Gateway=203.0.113.6
-Metric=100
+Gateway=10.0.10.3
+Metric=200

@@ -274,3 +274,31 @@ fn extra_vips_standalone_are_static_addresses() {
         .expect("the users .network file");
     assert!(network.contains("Address=192.0.2.5/24"), "{network}");
 }
+
+#[test]
+fn pair_wan_with_public_node_addresses_routes_on_both() {
+    // The pair example's WAN with public node addresses: each node has
+    // its own default route, and keepalived moves none.
+    let mut doc = example("pair.yaml");
+    let wan = doc.networks.get_mut("wan").unwrap();
+    wan.addresses = serde_json::from_value(
+        serde_json::json!({"fw1": "203.0.113.2/29", "fw2": "203.0.113.3/29"}),
+    )
+    .unwrap();
+    let r = render(&doc, "fw1").unwrap();
+    let ka = &r.files[&format!(
+        "{}/{}",
+        Subsystem::Keepalived.dir(),
+        sparewall_render::keepalived::CONF
+    )];
+    assert!(!ka.contains("virtual_routes"), "{ka}");
+    let network = &r.files[&format!("{}/30-sparewall-wan.network", Subsystem::Networkd.dir())];
+    assert!(
+        network.contains("[Route]\nGateway=203.0.113.6\nMetric=100\n"),
+        "{network}"
+    );
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    assert!(!nft.contains("infra:wan-egress"), "{nft}");
+    assert!(!nft.contains("infra:peer-egress"), "{nft}");
+    assert_nft_ok(&r);
+}
