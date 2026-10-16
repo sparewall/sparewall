@@ -98,9 +98,15 @@ squatter() {
     other=$(lease guests2)
     log "ping check: $next squatted, the next client got $other"
     [ "$other" != "$next" ] || fail "Kea offered $next, which a host already uses"
-    vm "sudo grep '^$next,' /var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv" \
-        | tail -1 | awk -F, '{print $10}' | grep -qx 1 \
-        || fail "Kea did not mark the squatted $next declined"
+    local leases=/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv
+    local deadline=$((SECONDS + 15))
+    until vm "sudo grep '^$next,' $leases" | tail -1 | awk -F, '{print $10}' | grep -qx 1; do
+        if [ $SECONDS -ge $deadline ]; then
+            vm "sudo grep '^198\.51\.100\.' $leases; sudo journalctl -b -u sparewall-kea --no-pager | grep -iE 'ping|decline|DHCP4_LEASE|DHCPSRV' | tail -40" || true
+            fail "Kea did not mark the squatted $next declined"
+        fi
+        sleep 1
+    done
     ns guests ip addr del "$next/24" dev eth0
     sudo ip netns del sw-guests2
 }
