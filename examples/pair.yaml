@@ -32,6 +32,8 @@ networks:
     role: wan
     addresses: { fw1: 203.0.113.2/29, fw2: 203.0.113.3/29 }
     vip: 203.0.113.1/29
+    # The mail server's public address, moving with the gateway.
+    extra_vips: [203.0.113.5/29]
     vrid: 10
     gateway: 203.0.113.6
   users:
@@ -61,6 +63,8 @@ policy:
     action: drop
     rules:
       ssh-admin: { order: 100, proto: tcp, dport: 22, src: "@admin_nets", action: accept }
+forwards:
+  mail: { proto: tcp, dport: 25, dst: 203.0.113.5, to: 192.0.2.25 }
 raw:
   notrack-vrrp:
     at: { hook: prerouting-raw }

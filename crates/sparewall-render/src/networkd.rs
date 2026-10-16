@@ -202,6 +202,9 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
     if let Some(vip) = &net.vip {
         if !pair {
             ini.set("Address", vip);
+            for a in &net.extra_vips {
+                ini.set("Address", a);
+            }
         } else {
             // networkd must not remove addresses keepalived added.
             ini.set("KeepConfiguration", "yes");

@@ -622,3 +622,50 @@ fn vpn_extra_ports_must_be_free() {
     );
     assert!(!has_error(&d, "already uses UDP"));
 }
+
+#[test]
+fn extra_vips_are_checked_and_count_as_held() {
+    let x = |v: serde_json::Value| edit(PAIR, json!({"networks": {"wan": {"extra_vips": v}}}));
+    assert_valid(&x(json!(["203.0.113.5/29", "203.0.113.4/29"])));
+    assert!(has_error(
+        &x(json!(["198.51.100.5/29"])),
+        "not in the gateway address's subnet"
+    ));
+    assert!(has_error(
+        &x(json!(["203.0.113.2/29"])),
+        "already used on network wan"
+    ));
+    assert!(has_error(
+        &x(json!(["203.0.113.1/29"])),
+        "already used on network wan"
+    ));
+    assert!(has_error(
+        &x(json!(["203.0.113.7/29"])),
+        "network or broadcast"
+    ));
+    let d = edit(
+        PAIR,
+        json!({"networks": {"users": {"vip": null, "vrid": null, "extra_vips": ["192.0.2.9/24"]}}}),
+    );
+    assert!(has_error(&d, "need a gateway address"));
+
+    // An SNAT target or forward destination inside a static network must
+    // be held by some node: the gateway, an extra or a node address.
+    let snat = |a: &str, extras: serde_json::Value| {
+        edit(
+            PAIR,
+            json!({"networks": {"wan": {"extra_vips": extras}},
+                   "policy": {"users->wan": {"nat": {"snat": a}}}}),
+        )
+    };
+    assert_valid(&snat("203.0.113.5", json!(["203.0.113.5/29"])));
+    assert_valid(&snat("203.0.113.1", json!(["203.0.113.5/29"])));
+    assert!(has_error(
+        &snat("203.0.113.4", json!(["203.0.113.5/29"])),
+        "no node holds 203.0.113.4"
+    ));
+    // Outside every static network (a DHCP WAN's, say): not checked.
+    assert_valid(&snat("100.64.0.9", json!(["203.0.113.5/29"])));
+    let d = edit(PAIR, json!({"forwards": {"mail": {"dst": "203.0.113.4"}}}));
+    assert!(has_error(&d, "forwards.mail.dst"));
+}

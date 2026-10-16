@@ -242,6 +242,11 @@ pub struct Network {
     /// static address on a standalone node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vip: Option<Cidr>,
+    /// More addresses that move with the gateway address (in its VRRP
+    /// instance in a pair; static standalone), for forwards and SNAT, e.g.
+    /// a mail server's public address. In the gateway address's subnet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_vips: Vec<Cidr>,
     /// VRRP virtual router ID (1-255), unique across the deployment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vrid: Option<u8>,

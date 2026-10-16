@@ -52,12 +52,18 @@ struct Target {
     own: Ipv4Addr,
     peer: Ipv4Addr,
     vip: Ipv4Addr,
+    /// The extra gateway addresses, which the master answers for too.
+    extra_vips: Vec<Ipv4Addr>,
 }
 
 impl Target {
     /// A host on the network other than the pair and its gateway address.
     fn is_host(&self, a: Ipv4Addr) -> bool {
-        self.subnet.0.contains(&a) && a != self.own && a != self.peer && a != self.vip
+        self.subnet.0.contains(&a)
+            && a != self.own
+            && a != self.peer
+            && a != self.vip
+            && !self.extra_vips.contains(&a)
     }
 }
 
@@ -77,6 +83,7 @@ fn targets(doc: &Document, node: &str) -> Vec<Target> {
                 own: own.0.addr(),
                 peer: n.addresses.get(peer)?.0.addr(),
                 vip: n.vip?.0.addr(),
+                extra_vips: n.extra_vips.iter().map(|c| c.0.addr()).collect(),
             })
         })
         .collect()
@@ -321,6 +328,7 @@ mod tests {
             own: "10.20.0.2".parse().unwrap(),
             peer: "10.20.0.3".parse().unwrap(),
             vip: "10.20.0.1".parse().unwrap(),
+            extra_vips: vec!["10.20.0.5".parse().unwrap()],
         }
     }
 
@@ -350,6 +358,7 @@ mod tests {
             ("10.20.0.60".parse().unwrap(), true, "STALE".into()),
             ("10.30.0.9".parse().unwrap(), true, "REACHABLE".into()),
             ("10.20.0.70".parse().unwrap(), true, "PERMANENT".into()),
+            ("10.20.0.5".parse().unwrap(), true, "REACHABLE".into()),
         ];
         let k: Vec<String> = known(&t, &table).iter().map(ToString::to_string).collect();
         assert_eq!(k, ["10.20.0.60", "10.20.0.50"]);

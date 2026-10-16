@@ -57,6 +57,7 @@ fn run(doc: &Document, activation: bool) -> Vec<Issue> {
     v.objects();
     v.policy();
     v.forwards();
+    v.held_addresses();
     v.raw();
     v.dhcp();
     v.dns();
@@ -922,6 +923,92 @@ impl Validator<'_> {
         }
     }
 
+    /// Extra gateway addresses, and the addresses NAT translates to: an
+    /// `snat` target, or a forward's literal `dst`, inside a static
+    /// network must be an address some node holds there, or it would
+    /// silently go nowhere.
+    fn held_addresses(&mut self) {
+        let doc = self.doc;
+        let mut seen: BTreeMap<Ipv4Addr, String> = BTreeMap::new();
+        for (name, net) in &doc.networks {
+            for a in net.addresses.values().chain(net.vip.iter()) {
+                seen.entry(a.0.addr()).or_insert_with(|| name.clone());
+            }
+        }
+        for (name, net) in &doc.networks {
+            for (i, x) in net.extra_vips.iter().enumerate() {
+                let p = format!("networks.{name}.extra_vips[{i}]");
+                let Some(vip) = &net.vip else {
+                    self.err(p, "extra gateway addresses need a gateway address (vip)");
+                    continue;
+                };
+                if x.0.trunc() != vip.0.trunc() {
+                    self.err(
+                        p,
+                        format!("not in the gateway address's subnet {}", vip.0.trunc()),
+                    );
+                } else if x.0.addr() == vip.0.trunc().network()
+                    || x.0.addr() == vip.0.trunc().broadcast()
+                {
+                    self.err(p, "is the network or broadcast address of its subnet");
+                } else if let Some(other) = seen.insert(x.0.addr(), name.clone()) {
+                    self.err(
+                        p,
+                        format!("{} is already used on network {other}", x.0.addr()),
+                    );
+                }
+            }
+        }
+        let held = |a: Ipv4Addr| -> Option<bool> {
+            let net = doc.networks.values().find(|n| {
+                n.vip
+                    .iter()
+                    .chain(n.addresses.values())
+                    .any(|c| c.0.trunc().contains(&a))
+            })?;
+            Some(
+                net.vip
+                    .iter()
+                    .chain(&net.extra_vips)
+                    .chain(net.addresses.values())
+                    .any(|c| c.0.addr() == a),
+            )
+        };
+        for (key, pol) in &doc.policy {
+            if let Some(Nat::Snat { snat }) = &pol.nat
+                && held(*snat) == Some(false)
+            {
+                self.err(
+                    format!("policy.{key}.nat.snat"),
+                    format!("no node holds {snat}: add it to the network's extra_vips"),
+                );
+            }
+        }
+        for (name, f) in &doc.forwards {
+            let literal: Vec<&str> = match &f.dst {
+                Some(Match::Text(t)) => vec![t.as_str()],
+                Some(Match::List(items)) => items
+                    .iter()
+                    .filter_map(|i| match i {
+                        MatchItem::Text(t) => Some(t.as_str()),
+                        MatchItem::Number(_) => None,
+                    })
+                    .collect(),
+                _ => vec![],
+            };
+            for t in literal {
+                if let Ok(a) = t.trim_end_matches("/32").parse::<Ipv4Addr>()
+                    && held(a) == Some(false)
+                {
+                    self.err(
+                        format!("forwards.{name}.dst"),
+                        format!("no node holds {a}: add it to the network's extra_vips"),
+                    );
+                }
+            }
+        }
+    }
+
     fn raw(&mut self) {
         let doc = self.doc;
         let mut orders: BTreeMap<(String, u32), &str> = BTreeMap::new();
@@ -979,7 +1066,7 @@ impl Validator<'_> {
             };
             let mut taken: BTreeSet<Ipv4Addr> =
                 net.addresses.values().map(|a| a.0.addr()).collect();
-            taken.extend(net.vip.iter().map(|v| v.0.addr()));
+            taken.extend(net.vip.iter().chain(&net.extra_vips).map(|v| v.0.addr()));
             match parse_range(&dn.pool) {
                 None => self.err(
                     format!("{p}.pool"),
