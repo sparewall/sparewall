@@ -257,6 +257,15 @@ Where the implementation departs from, or settles open questions in,
   endpoints. How token-holding scripts and front ends reach the
   coordinator is decided with the web UI (milestone 7), and per-call role
   checks come with that transport.
+- **Kea pings an address before offering it** (its open-source
+  `ping_check` hook, #52): one echo request, a 200 ms timeout, and no
+  ping for an address leased in the last 60 s. An answer means a host is
+  using it without a lease here (after a restore, or beside the server
+  Sparewall replaced), and Kea declines it and offers another. Kea will
+  not start if the hook cannot open its ICMP socket (the container has
+  `NET_RAW` for it), so the hook is loaded only while some network uses
+  it: `dhcp.ping_check: false` turns it off by default,
+  `dhcp.<network>.ping_check` per network (Kea's subnet `user-context`).
 - **DHCP takeover is driven by VRRP.** Kea's hot-standby standby declares
   its partner down only after `max-unacked-clients` (5) distinct clients
   go unanswered, which a small network may never produce. When a node is

@@ -80,6 +80,31 @@ hairpin() {
     log "hairpin: guests seen as $g, users as 192.0.2.1"
 }
 
+# Kea's ping check: a host using a pool address without a lease (as after
+# a restore, or beside the DHCP server it replaces) is not offered to the
+# next client. Kea hands out guests addresses in order, so the one after
+# $1 is next: the guests client squats on it, and a second client on the
+# same VLAN must get another, while Kea marks the squatted one declined.
+squatter() {
+    local next=198.51.100.$(( ${1##*.} + 1 )) other
+    ns guests ip addr add "$next/24" dev eth0
+    sudo ip netns add sw-guests2
+    sudo ip link add v-guests2 type veth peer name eth0 netns sw-guests2
+    sudo ip link set v-guests2 master swbr up
+    sudo bridge vlan del dev v-guests2 vid 1
+    sudo bridge vlan add dev v-guests2 vid 30 pvid untagged
+    ns guests2 ip link set lo up
+    ns guests2 ip link set eth0 address 02:00:00:00:00:31 up
+    other=$(lease guests2)
+    log "ping check: $next squatted, the next client got $other"
+    [ "$other" != "$next" ] || fail "Kea offered $next, which a host already uses"
+    vm "sudo grep '^$next,' /var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv" \
+        | tail -1 | awk -F, '{print $10}' | grep -qx 1 \
+        || fail "Kea did not mark the squatted $next declined"
+    ns guests ip addr del "$next/24" dev eth0
+    sudo ip netns del sw-guests2
+}
+
 run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
@@ -102,6 +127,8 @@ run_conformance() {
     log "leases: users $u, guests $g"
     [ "$u" = 192.0.2.20 ] || fail "reservation not honoured: users got $u"
     case "$g" in 198.51.100.1[0-4][0-9]|198.51.100.150) ;; *) fail "guests lease $g outside the pool" ;; esac
+
+    squatter "$g"
 
     can users 192.0.2.1 || fail "users cannot ping the gateway"
     can users "$g" || fail "users cannot reach guests"

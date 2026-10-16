@@ -16,6 +16,15 @@ expression: content
         "library": "/usr/lib64/kea/hooks/libdhcp_lease_cmds.so"
       },
       {
+        "library": "/usr/lib64/kea/hooks/libdhcp_ping_check.so",
+        "parameters": {
+          "enable-ping-check": true,
+          "min-ping-requests": 1,
+          "ping-cltt-secs": 60,
+          "reply-timeout": 200
+        }
+      },
+      {
         "library": "/usr/lib64/kea/hooks/libdhcp_ha.so",
         "parameters": {
           "high-availability": [

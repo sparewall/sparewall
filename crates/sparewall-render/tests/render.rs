@@ -302,3 +302,70 @@ fn pair_wan_with_public_node_addresses_routes_on_both() {
     assert!(!nft.contains("infra:peer-egress"), "{nft}");
     assert_nft_ok(&r);
 }
+
+fn kea_conf(doc: &sparewall_config::Document) -> serde_json::Value {
+    let r = render(doc, "fw1").unwrap();
+    let text = &r.files[&format!("{}/kea-dhcp4.conf", Subsystem::Dhcp.dir())];
+    serde_json::from_str(text).unwrap()
+}
+
+fn ping_hook(conf: &serde_json::Value) -> Option<serde_json::Value> {
+    conf["Dhcp4"]["hooks-libraries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| {
+            h["library"]
+                .as_str()
+                .unwrap()
+                .ends_with("libdhcp_ping_check.so")
+        })
+        .cloned()
+}
+
+fn subnet_ping(conf: &serde_json::Value, subnet: &str) -> Option<bool> {
+    conf["Dhcp4"]["subnet4"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["subnet"] == subnet)
+        .unwrap()["user-context"]["ping-check"]["enable-ping-check"]
+        .as_bool()
+}
+
+#[test]
+fn ping_check_default_and_overrides() {
+    // On by default; the example turns it off for guests only.
+    let mut doc = example("standalone.yaml");
+    let conf = kea_conf(&doc);
+    assert_eq!(
+        ping_hook(&conf).unwrap()["parameters"]["enable-ping-check"],
+        true
+    );
+    assert_eq!(subnet_ping(&conf, "192.0.2.0/24"), None);
+    assert_eq!(subnet_ping(&conf, "198.51.100.0/24"), Some(false));
+
+    // Off by default, on for one network: loaded, enabled there only.
+    let dhcp = doc.dhcp.as_mut().unwrap();
+    dhcp.ping_check = Some(false);
+    dhcp.networks.get_mut("users").unwrap().ping_check = Some(true);
+    dhcp.networks.get_mut("guests").unwrap().ping_check = None;
+    let conf = kea_conf(&doc);
+    assert_eq!(
+        ping_hook(&conf).unwrap()["parameters"]["enable-ping-check"],
+        false
+    );
+    assert_eq!(subnet_ping(&conf, "192.0.2.0/24"), Some(true));
+    assert_eq!(subnet_ping(&conf, "198.51.100.0/24"), None);
+
+    // Off everywhere: not loaded at all (Kea cannot start without its
+    // ICMP socket, so nothing should depend on it).
+    doc.dhcp
+        .as_mut()
+        .unwrap()
+        .networks
+        .get_mut("users")
+        .unwrap()
+        .ping_check = None;
+    assert!(ping_hook(&kea_conf(&doc)).is_none());
+}

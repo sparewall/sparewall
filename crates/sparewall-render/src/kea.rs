@@ -21,6 +21,9 @@ pub const HOOKS: &str = "/usr/lib64/kea/hooks";
 /// HA listener port on the sync tunnel.
 pub const HA_PORT: u16 = 8647;
 pub const DEFAULT_LEASE_TIME: u32 = 86_400;
+/// How long the ping check waits for an echo reply, in milliseconds: it
+/// delays every offer of an address not recently leased by this much.
+pub const PING_REPLY_TIMEOUT_MS: u32 = 200;
 
 /// A stable Kea subnet ID for a network: its VLAN ID, or a hash of its name
 /// above the VLAN range. Leases are keyed by subnet ID, so it must not
@@ -67,6 +70,8 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         return Ok(());
     }
     let pair = doc.is_pair();
+    let ping_default = dhcp.ping_check.unwrap_or(true);
+    let mut ping_any = false;
     let mut interfaces = Vec::new();
     let mut subnets = Vec::new();
     for (name, dn) in &dhcp.networks {
@@ -144,11 +149,30 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         if let Some(lt) = dn.lease_time {
             s["valid-lifetime"] = json!(lt);
         }
+        let ping = dn.ping_check.unwrap_or(ping_default);
+        ping_any |= ping;
+        if ping != ping_default {
+            s["user-context"] = json!({"ping-check": {"enable-ping-check": ping}});
+        }
         subnets.push(s);
     }
     subnets.sort_by_key(|s| s["id"].as_u64());
 
     let mut hooks = vec![json!({"library": format!("{HOOKS}/libdhcp_lease_cmds.so")})];
+    // Kea will not start if the hook cannot open its ICMP socket, so it is
+    // loaded only where some network uses it.
+    if ping_any {
+        hooks.push(json!({
+            "library": format!("{HOOKS}/libdhcp_ping_check.so"),
+            "parameters": {
+                "enable-ping-check": ping_default,
+                "min-ping-requests": 1,
+                "reply-timeout": PING_REPLY_TIMEOUT_MS,
+                // An address leased within this many seconds is not pinged.
+                "ping-cltt-secs": 60,
+            },
+        }));
+    }
     let ha = pair && dhcp.ha.unwrap_or(DhcpHa::HotStandby) == DhcpHa::HotStandby;
     if ha {
         let peers: Vec<Value> = doc

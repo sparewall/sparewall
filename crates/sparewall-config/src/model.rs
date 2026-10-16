@@ -550,6 +550,12 @@ pub struct Dhcp {
     /// Default lease time in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_time: Option<u32>,
+    /// Ping an address before offering it, and skip it if something
+    /// answers: a host still using it without a lease here (after a
+    /// restore, or when replacing another DHCP server). Default true; turn
+    /// it off on networks that filter ICMP echo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping_check: Option<bool>,
     /// Served networks, by network name.
     #[serde(flatten)]
     pub networks: BTreeMap<String, DhcpNetwork>,
@@ -576,6 +582,9 @@ pub struct DhcpNetwork {
     /// Options; router, DNS and NTP default to the gateway address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<DhcpOptions>,
+    /// Ping before offering on this network (default: `dhcp.ping_check`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping_check: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
