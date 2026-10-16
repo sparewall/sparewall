@@ -768,7 +768,7 @@ Nothing else listens on the WAN. ICMP is rate-limited and invalid packets are dr
 
 ## Bootstrap
 
-A fresh node boots into a safe built-in default that is reachable only on its management port, and receives its real configuration through the same `sparewall apply` path as every later change. Install time carries only a tiny identity.
+A fresh node boots into a safe built-in default that is reachable only on its management port, and receives its real configuration through the same `sparewall apply` path as every later change. Install time carries only a tiny identity, and optionally a first configuration that the node applies itself through that same path, confirming it once healthy (no secrets, no pairing).
 
 ### 1. Install with a minimal identity
 

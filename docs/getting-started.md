@@ -122,6 +122,34 @@ next boot). On a first apply the management port is usually renamed from
 `mgmt0` to its role name, which may drop the SSH session briefly;
 reconnect and run `sparewall confirm`.
 
+### Unattended: let the node apply it
+
+A node can also take its first configuration at install time and apply
+it by itself, so it comes up configured with no one at the console. Put
+the document next to the identity: `sparewall-config.yaml` (or `.json`)
+on the seed stick, the `sparewall.config` credential on a VM, or
+`sparewall init --config site.yaml` on the console.
+
+While the node is in bootstrap mode (generation 0), it applies a
+configuration it has not tried before, with a ten-minute confirm window,
+and confirms it itself once its health has stayed out of `failed` for
+about fifteen seconds. If health stays failed (a port that does not come
+up, say), the window closes and the node returns to bootstrap mode. A
+document that is refused (invalid, or not for this node) also leaves it
+in bootstrap mode. Either way, `sparewall health --verbose` says why
+under `seed`, and a corrected seed stick can be put back in. Once the
+node is configured, seeds are ignored.
+
+- **Bind ports by PCI path** (`nic: pci-0000:01:00.0`) when the machine's
+  MAC addresses are not known in advance: the path is the same on every
+  unit of one hardware model.
+- **Secrets are not seeded.** Set them afterwards with
+  `sparewall secret set`; until then, health is degraded where one is
+  missing (backups without a password, say).
+- **Pairs** are seeded one node at a time, without `cluster.sync_keys`;
+  pairing stays the manual step in [pairing](pairing.md), since each
+  node's sync key is generated on the node.
+
 ## 5. Check it
 
 ```shell

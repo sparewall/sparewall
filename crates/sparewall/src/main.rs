@@ -248,13 +248,14 @@ enum Cmd {
     /// Manage named contexts (deployments reached over SSH).
     #[command(subcommand)]
     Context(ContextCmd),
-    /// Record this node's install-time identity (run on the node as root).
+    /// Record this node's install-time identity, and optionally a first
+    /// configuration it applies by itself (run on the node as root).
     Init {
         /// Node name, e.g. fw1.
-        #[arg(long, required_unless_present = "from")]
+        #[arg(long, required_unless_present_any = ["from", "config"])]
         node: Option<String>,
         /// Management NIC: permanent MAC address or udev path.
-        #[arg(long, required_unless_present = "from")]
+        #[arg(long, required_unless_present_any = ["from", "config"])]
         mgmt_nic: Option<String>,
         #[arg(long)]
         mgmt_vlan: Option<u16>,
@@ -273,6 +274,13 @@ enum Cmd {
         /// Where to write the identity.
         #[arg(long, default_value = "/etc/sparewall/identity.json")]
         out: PathBuf,
+        /// A configuration document for the node to apply by itself while
+        /// it is in bootstrap mode, confirming it once healthy.
+        #[arg(long, value_name = "FILE")]
+        config: Option<PathBuf>,
+        /// Where to write the configuration.
+        #[arg(long, default_value = "/etc/sparewall/config.json")]
+        config_out: PathBuf,
     },
     /// Restore a backup bundle into the state directory (on the node, as
     /// root, with sparewalld stopped).
@@ -1166,7 +1174,23 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
             ssh_keys,
             from,
             out,
+            config,
+            config_out,
         } => {
+            if let Some(f) = config {
+                let text = std::fs::read_to_string(f)
+                    .map_err(|e| Fail::other(format!("{}: {e}", f.display())))?;
+                let doc = sparewall_config::parse_value(&text, Format::detect(f.to_str(), &text))?;
+                write_init(config_out, &doc)?;
+                eprintln!(
+                    "Wrote {}. In bootstrap mode, sparewalld applies it within seconds and \
+                     confirms it once healthy.",
+                    config_out.display()
+                );
+                if from.is_none() && node.is_none() {
+                    return Ok(true);
+                }
+            }
             let id = match from {
                 Some(f) => {
                     let text = std::fs::read_to_string(f)
@@ -1191,12 +1215,7 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
             let parsed: sparewall_config::identity::Identity =
                 serde_json::from_value(id.clone()).map_err(|e| Fail::invalid(e.to_string()))?;
             parsed.check().map_err(Fail::invalid)?;
-            if let Some(d) = out.parent() {
-                std::fs::create_dir_all(d)
-                    .map_err(|e| Fail::other(format!("{}: {e}", d.display())))?;
-            }
-            std::fs::write(out, sparewall_config::format_value(&id, Format::Json))
-                .map_err(|e| Fail::other(format!("{}: {e}", out.display())))?;
+            write_init(out, &id)?;
             eprintln!(
                 "Wrote {}. A waiting sparewalld records it within seconds.",
                 out.display()
@@ -1290,6 +1309,15 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
         }
         _ => Ok(false),
     }
+}
+
+/// Write what `sparewall init` records, as JSON.
+fn write_init(out: &Path, v: &Value) -> Result<(), Fail> {
+    if let Some(d) = out.parent() {
+        std::fs::create_dir_all(d).map_err(|e| Fail::other(format!("{}: {e}", d.display())))?;
+    }
+    std::fs::write(out, sparewall_config::format_value(v, Format::Json))
+        .map_err(|e| Fail::other(format!("{}: {e}", out.display())))
 }
 
 fn main() -> std::process::ExitCode {

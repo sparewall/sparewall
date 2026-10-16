@@ -1,6 +1,9 @@
 #!/bin/sh
-# Mount a seed stick read-only and record the identity on it with
-# `sparewall init --from`, for sparewalld to pick up.
+# Mount a seed stick read-only and record what it carries with
+# `sparewall init`, for sparewalld to pick up: the identity
+# (sparewall-identity.yaml or .json), and optionally a first
+# configuration (sparewall-config.yaml or .json), which the node applies
+# by itself while it is in bootstrap mode.
 #
 #   seed DEVICE
 set -eu
@@ -8,12 +11,29 @@ dev=${1:?usage: seed DEVICE}
 dir=$(mktemp -d)
 trap 'umount "$dir" 2>/dev/null || true; rmdir "$dir"' EXIT
 mount -o ro,nosuid,nodev,noexec "$dev" "$dir"
+found=
 for f in sparewall-identity.yaml sparewall-identity.yml sparewall-identity.json; do
     if [ -f "$dir/$f" ]; then
-        /usr/bin/sparewall init --from "$dir/$f"
-        echo "recorded the identity in $f from $dev"
-        exit 0
+        found=1
+        # The identity is fixed once the coordinator has recorded one.
+        if [ -e /var/lib/sparewall/identity.json ]; then
+            echo "an identity is already recorded; ignoring $f from $dev"
+        else
+            /usr/bin/sparewall init --from "$dir/$f"
+            echo "recorded the identity in $f from $dev"
+        fi
+        break
     fi
 done
-echo "$dev is labelled SPAREWALL but has no sparewall-identity.yaml or .json" >&2
+# sparewalld applies it only in bootstrap mode, and says so otherwise.
+for f in sparewall-config.yaml sparewall-config.yml sparewall-config.json; do
+    if [ -f "$dir/$f" ]; then
+        /usr/bin/sparewall init --config "$dir/$f"
+        echo "recorded the configuration in $f from $dev"
+        found=1
+        break
+    fi
+done
+[ -n "$found" ] && exit 0
+echo "$dev is labelled SPAREWALL but has no sparewall-identity or sparewall-config file" >&2
 exit 1

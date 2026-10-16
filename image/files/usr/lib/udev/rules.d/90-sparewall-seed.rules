@@ -1,3 +1,4 @@
 # A seed stick: a filesystem labelled SPAREWALL carrying the node identity
-# (design: "Install with a minimal identity"). Read once, at first boot.
+# and optionally a first configuration (design: "Install with a minimal
+# identity"). Read on every insertion; see sparewall-seed@.service.
 SUBSYSTEM=="block", ACTION=="add", ENV{ID_FS_LABEL}=="SPAREWALL", TAG+="systemd", ENV{SYSTEMD_WANTS}+="sparewall-seed@%k.service"
