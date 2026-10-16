@@ -125,6 +125,9 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         }
         s.push_str("    }\n");
         writeln!(s, "    notify \"{NOTIFY_SCRIPT}\"").unwrap();
+        // An instance a reload removes reports DELETED, not FAULT (the
+        // default), which would read as this node's role.
+        s.push_str("    notify_deleted\n");
         // Extra gateway addresses ride in the same instance, so they move
         // in the same step.
         s.push_str("    virtual_ipaddress {\n");
