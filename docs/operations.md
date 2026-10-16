@@ -75,6 +75,23 @@ sparewall set "vpn.roadwarrior.peers.laptop.public_key=<public key>" \
 sparewall vpn client-config laptop --qr
 ```
 
+### Keeping an existing server key
+
+Clients know the server by its public key, so a VPN moved from another
+WireGuard server keeps working for them if Sparewall uses the same
+private key. The coordinator generates a key only for an instance that
+has none, so store the old one before the first apply that defines the
+instance, as the secret named `vpn-<instance>`:
+
+```shell
+sparewall secret set vpn-roadwarrior < server.key   # the base64 private key
+```
+
+It is a cluster secret: in a pair it reaches the other node through the
+sync tunnel. Set it on the node you apply the document to; a generation
+pushed to the peer never generates keys. Peers configured with a
+preshared key cannot connect yet (#49).
+
 After a failover, or the gateway's handover during an upgrade, each
 client is cut off until it makes a new handshake with the new master. A
 client sending traffic recovers after about 16 seconds, or within a few
