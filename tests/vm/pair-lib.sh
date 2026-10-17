@@ -134,6 +134,7 @@ pair_doc() {
 pair_up() {
     local n
     for n in fw1 fw2; do
+        ! declare -F full_audit >/dev/null || full_audit "at $n" "$n"
         at "$n" 'cat > /tmp/pair.yaml' < pair.yaml
         at "$n" 'sudo sparewall apply -f /tmp/pair.yaml --confirm 0' || fail "pairing apply failed on $n"
     done
