@@ -46,8 +46,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Before anything is built or pushed from a tag: a release tag must
-      # be signed by a maintainer (docs/releasing.md).
+      # Before anything is built or pushed from a tag: the tag is this
+      # commit, on main, and a release tag is signed by a maintainer
+      # (docs/releasing.md).
       - name: Check the tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: .github/check-tag.sh "$GITHUB_REF_NAME"
@@ -354,24 +355,57 @@ jobs:
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           v=${GITHUB_REF_NAME#v}
+          docs="https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs"
           prerelease=()
           case $v in *-*) prerelease=(--prerelease) ;; esac
+          if [ ${#prerelease[@]} = 0 ]; then
+            channel="Nodes on the \`stable\` channel are offered it once it is published."
+          else
+            channel="A prerelease: nodes on the \`stable\` channel are not offered it."
+          fi
+          # For readers of the release: what changed (GitHub's list of the
+          # pull requests since the last release), how to get it, and how
+          # to verify the downloads. What publishing does is for the
+          # maintainer, in the run summary.
+          changes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" -q .body)
           cat > notes.md <<NOTES
-          Image: \`$IMAGE@$DIGEST\` (tested as \`$REF\`). Publishing this
-          release tags it \`$IMAGE:$v\`$([ ${#prerelease[@]} = 0 ] && echo " and promotes it to \`stable\`").
+          $changes
 
-          Verify the downloads, then each file against the checksums:
+          ## Installing and upgrading
+
+          The image is \`$IMAGE:$v\` (\`$DIGEST\`). $channel
+          Upgrade a node or a pair with \`sparewall upgrade\` ([operations]($docs/operations.md#upgrades)).
+
+          For a new install ([getting started]($docs/getting-started.md)):
+
+          - \`sparewall-$v-x86_64.iso\` installs unattended to the first fixed
+            disk of the machine it boots, **only if that disk is blank**; it
+            stops at a disk with anything on it.
+          - \`sparewall-$v-x86_64.raw.zst\` is a disk image to write to a disk,
+            and \`.qcow2\` the same for virtual machines.
+          - \`sparewall-$v-x86_64-linux.tar.gz\` is the \`sparewall\` CLI, to
+            manage nodes over SSH from a workstation.
+
+          Files named \`.partNN\` are pieces of one file (GitHub limits a file to
+          2 GiB): \`cat\` them together, in order.
+
+          ## Verifying the downloads
+
+          \`SHA256SUMS\` is signed with the project key (\`cosign.pub\` in the
+          repository) and lists every file, including each split file joined:
 
           \`\`\`shell
           cosign verify-blob --key cosign.pub --bundle SHA256SUMS.sigstore.json SHA256SUMS
           sha256sum -c --ignore-missing SHA256SUMS
           \`\`\`
 
-          Files named \`.partNN\` are pieces of one file: \`cat\` them together.
-          \`SHA256SUMS\` lists the joined file as well as its pieces.
-          The ISO installs unattended to the first fixed disk of the machine
-          it boots on, **if that disk is blank**; it stops at a disk with
-          anything on it. See docs/getting-started.md.
+          The SPDX SBOMs list what is in the image and in the CLI.
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag "${prerelease[@]}" \
             --title "Sparewall $v" --notes-file notes.md assets/*
+          {
+            echo "Drafted the release. Publishing it tags \`$REF\` (\`$DIGEST\`) as \`$IMAGE:$v\`"
+            [ ${#prerelease[@]} != 0 ] || echo "and promotes it to \`stable\`"
+            echo "(release.yml). Edit the notes on the draft first if they need it."
+          } >> "$GITHUB_STEP_SUMMARY"

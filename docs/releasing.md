@@ -9,9 +9,11 @@ For maintainers. A release is a tested commit on `main`, tagged.
    git tag -s v0.1.0 -m "Sparewall 0.1.0"
    git push origin v0.1.0
    ```
-   A tag with a hyphen (`v0.2.0-rc1`) is a prerelease. A release tag (no
-   hyphen) must be signed with a key in `.github/release-signers.asc`;
-   the image workflow checks that before it builds anything. A
+   A tag with a hyphen (`v0.2.0-rc1`) is a prerelease. Before it builds
+   anything, the image workflow checks that the tag is on a commit on
+   `main`, and that a release tag (no hyphen) is signed with a key in
+   `.github/release-signers.asc` as `main` has it now: a tag cannot add
+   its own key, and a key removed from `main` stops counting at once. A
    prerelease need not be signed, so the usual path is an unsigned
    `-rcN` that anyone with push access can tag, then the release signed
    by a maintainer on the same commit once the last rc proves out:
@@ -20,6 +22,12 @@ For maintainers. A release is a tested commit on `main`, tagged.
    ```
    To add a maintainer, append their public key (`gpg --armor --export`)
    to `.github/release-signers.asc` in a reviewed pull request.
+
+   The check runs in the workflow of the commit being tagged, so it holds
+   only for commits whose workflow was reviewed. Someone who can push a
+   tag could tag an unreviewed commit whose workflow skips it, which is
+   why a tag ruleset restricts who may create `v*` tags, and why a human
+   publishes each release (step 4).
 3. The image workflow runs again for the tag: it rebuilds the image, runs
    every VM suite, publishes the image as `sha-<commit>` (and `testing`),
    then the **release assets** job drafts a GitHub release with:
@@ -31,6 +39,11 @@ For maintainers. A release is a tested commit on `main`, tagged.
      cargo-auditable embeds in the binary);
    - `SHA256SUMS`, signed with the project key
      (`SHA256SUMS.sigstore.json`).
+
+   The draft's notes are for its readers: the pull requests merged since
+   the last release (GitHub's generated list), how to install or
+   upgrade, and how to verify the downloads. The run summary says what
+   publishing will do.
 
    Files over GitHub's 2 GiB limit are split into `.partNN` pieces;
    `SHA256SUMS` lists each piece and the joined file.
