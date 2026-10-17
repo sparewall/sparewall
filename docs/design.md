@@ -348,6 +348,7 @@ method Export(id: ?int) -> (config: object)
 method History(limit: ?int) -> (generations: []Generation)
 method Sync(from_node: string) -> (generation: Generation)
 method Health(verbose: ?bool) -> (level: string, role: string, checks: ?[]object)
+method AckHealth(name: string) -> ()  # a check that stays degraded until acknowledged
 method Status() -> (role: string, sync: object, links: object, vrrp: object, conntrack: object, services: object)
 method Backup() -> (path: string, digest: string)
 method Subscribe() -> (event: object)  # called with "more": streams events
@@ -699,7 +700,7 @@ One health model lives in the coordinator as `Health()`; HTTP endpoints, `sparew
 | `/readyz?verbose`, `/readyz/<check>` | Each named check and its result, or one check |
 | `/healthz` | Alias of `/readyz` for tools that expect it |
 
-Results have three levels: **ok** (HTTP 200), **degraded** (HTTP 200 with the reason: sync tunnel down, pair diverged, backup stale), and **failed** (HTTP 503). Only *failed* lowers VRRP priority; *degraded* never triggers failover, because a sync fault affects both nodes equally. The node's VRRP role appears only in the response body, never as a status code. Endpoints share the `/metrics` listener on the management network; unauthenticated requests get only the level, and verbose detail requires authentication.
+Results have three levels: **ok** (HTTP 200), **degraded** (HTTP 200 with the reason: sync tunnel down, pair diverged, backup stale), and **failed** (HTTP 503). A check that records an event rather than a state, such as an SELinux denial for the coordinator, stays degraded, across restarts and reboots, until an admin acknowledges it (`AckHealth`); its `/metrics` counter only ever rises, for alerting. Only *failed* lowers VRRP priority; *degraded* never triggers failover, because a sync fault affects both nodes equally. The node's VRRP role appears only in the response body, never as a status code. Endpoints share the `/metrics` listener on the management network; unauthenticated requests get only the level, and verbose detail requires authentication.
 
 ## Security
 

@@ -234,5 +234,6 @@ can users 192.0.2.1 || fail "users cannot ping the gateway after the restore"
 
 log "the coordinator's SELinux domain"
 selinux_report vm fw1
+selinux_health vm fw1
 selinux_gate || exit 1
 log "PASS"

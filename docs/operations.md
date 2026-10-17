@@ -171,6 +171,7 @@ running system, each repeated on every health request:
 | `replication` | Every replication-only interface (the sync network, and a port carrying nothing else) exists and is up. Losing one is **degraded**, never failed: traffic still flows, so the gateway addresses stay where they are while the pair stops replicating | |
 | `services` | Every provider unit the generation needs (Kea, Unbound, keepalived, conntrackd, ulogd, journal-upload) is active in systemd | That a daemon still runs the files installed for it; those passed the daemon's own config test before they were installed |
 | `pair`, `tls`, `backup` | Sync tunnel and peer state, certificate validity, the last backup | |
+| `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
 
 Any change to the firewall made outside Sparewall (`nft flush`, an extra
 rule, a changed policy) fails `nft` and `applied`, so the node reports

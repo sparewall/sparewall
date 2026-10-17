@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.8.0)
+policy_module(sparewalld, 0.9.0)
 
 ########################################
 #
@@ -86,6 +86,10 @@ allow sparewalld_t self:unix_dgram_socket { connect create getattr getopt ioctl 
 allow sparewalld_t self:unix_stream_socket connectto;
 allow sparewalld_t self:netlink_route_socket { bind create getattr getopt setopt read write nlmsg_read nlmsg_write };
 allow sparewalld_t self:netlink_netfilter_socket { create getopt setopt read write };
+# The audit stream's read-only multicast group, for the selinux health
+# check: its own denials.
+allow sparewalld_t self:capability2 audit_read;
+allow sparewalld_t self:netlink_audit_socket { bind create getattr read setopt };
 allow sparewalld_t self:netlink_kobject_uevent_socket { bind create getattr getopt setopt read };
 # The reach probes: an empty datagram to each address makes the kernel
 # resolve it, from the network's own address.
@@ -175,9 +179,10 @@ corecmd_exec_bin(sparewalld_t)
 allow sparewalld_t { file_context_t default_context_t }:dir search;
 allow sparewalld_t { file_context_t default_context_t }:file { getattr map open read };
 # libselinux, in restorecon and udevadm: the policy type from the
-# config, and the kernel's status page.
+# config, and the kernel's status page; and the selinux health check:
+# the mode (/sys/fs/selinux/enforce).
 allow sparewalld_t selinux_config_t:file { getattr open read };
-allow sparewalld_t security_t:file { map open read };
+allow sparewalld_t security_t:file { getattr map open read };
 fs_getattr_all_fs(sparewalld_t)
 # Walking the mounts it looks into /run/user; search lists nothing.
 allow sparewalld_t user_tmp_t:dir search;
