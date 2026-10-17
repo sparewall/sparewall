@@ -57,9 +57,17 @@ fn records(buf: &[u8]) -> Vec<(u16, String)> {
     out
 }
 
+/// What the stream reader passes on.
+enum Event {
+    /// A denial for the coordinator, and whether it was only logged.
+    Denial(String, bool),
+    /// The socket overflowed: records, maybe denials, were dropped.
+    Lost,
+}
+
 /// Read the stream in a thread of its own, passing on what concerns the
-/// coordinator. Returns only if the socket cannot be opened.
-fn read_stream(tx: mpsc::Sender<(String, bool)>) -> rustix::io::Result<()> {
+/// coordinator. Returns only if the stream cannot be read.
+fn read_stream(tx: mpsc::Sender<Event>) -> rustix::io::Result<()> {
     let fd = rustix::net::socket_with(
         AddressFamily::NETLINK,
         SocketType::RAW,
@@ -67,14 +75,18 @@ fn read_stream(tx: mpsc::Sender<(String, bool)>) -> rustix::io::Result<()> {
         Some(netlink::AUDIT),
     )?;
     rustix::net::bind(&fd, &SocketAddrNetlink::new(0, READLOG))?;
+    // Room for bursts (the kernel caps it at net.core.rmem_max).
+    let _ = rustix::net::sockopt::set_socket_recv_buffer_size(&fd, 1 << 20);
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         let n = match rustix::net::recv(&fd, &mut buf[..], RecvFlags::empty()) {
             Ok((n, _)) => n,
-            // A burst overflowed the socket buffer: records were lost, but
-            // the stream goes on.
+            // A burst overflowed the socket buffer: records were lost, so
+            // a denial may have been; the stream goes on.
             Err(rustix::io::Errno::NOBUFS) => {
-                tracing::warn!("audit records were dropped");
+                if tx.blocking_send(Event::Lost).is_err() {
+                    return Ok(());
+                }
                 continue;
             }
             Err(rustix::io::Errno::INTR) => continue,
@@ -82,8 +94,8 @@ fn read_stream(tx: mpsc::Sender<(String, bool)>) -> rustix::io::Result<()> {
         };
         for (ty, text) in records(&buf[..n]) {
             if (ty == AUDIT_AVC || ty == AUDIT_USER_AVC)
-                && let Some(d) = sparewall_core::selinux::relevant(&text)
-                && tx.blocking_send(d).is_err()
+                && let Some((record, permissive)) = sparewall_core::selinux::relevant(&text)
+                && tx.blocking_send(Event::Denial(record, permissive)).is_err()
             {
                 return Ok(());
             }
@@ -117,16 +129,26 @@ pub async fn watch(core: Core, events: broadcast::Sender<Value>) {
         while let Ok(d) = rx.try_recv() {
             new.push(d);
         }
-        for (record, _) in &new {
-            tracing::warn!(record, "SELinux denial for the coordinator");
+        for e in &new {
+            match e {
+                Event::Denial(record, _) => {
+                    tracing::warn!(record, "SELinux denial for the coordinator")
+                }
+                Event::Lost => tracing::warn!("audit records were dropped"),
+            }
         }
         let _ = with_core_raw(&core, &events, move |c| {
             let root = c.store().root().to_path_buf();
             let mut d = Denials::read(&root);
             if !new.is_empty() {
                 let now = jiff::Timestamp::now().to_string();
-                for (record, permissive) in new {
-                    d.record(record, permissive, now.clone());
+                for e in new {
+                    match e {
+                        Event::Denial(record, permissive) => {
+                            d.record(record, permissive, now.clone())
+                        }
+                        Event::Lost => d.record_lost(now.clone()),
+                    }
                 }
                 if let Err(e) = d.write(&root) {
                     tracing::warn!(error = %e, "cannot record SELinux denials");

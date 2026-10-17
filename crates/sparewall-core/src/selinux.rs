@@ -22,8 +22,18 @@ pub struct Denials {
     pub total: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<Denial>,
+    /// Times the stream overflowed and records were dropped: denials may
+    /// have been missed, so this counts like one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lost: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ack: Option<Ack>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +51,9 @@ pub struct Ack {
     pub at: String,
     /// The total it acknowledged.
     pub total: u64,
+    /// And the overflows.
+    #[serde(default)]
+    pub lost: u64,
 }
 
 /// The denial in an audit record (kernel `AVC` or userspace `USER_AVC`),
@@ -92,9 +105,20 @@ impl Denials {
         });
     }
 
+    /// The stream overflowed: records were dropped.
+    pub fn record_lost(&mut self, at: String) {
+        self.lost += 1;
+        self.lost_at = Some(at);
+    }
+
     /// Denials since the last acknowledgement.
     pub fn unacknowledged(&self) -> u64 {
         self.total - self.ack.as_ref().map_or(0, |a| a.total)
+    }
+
+    /// Overflows since the last acknowledgement.
+    pub fn unacknowledged_lost(&self) -> u64 {
+        self.lost - self.ack.as_ref().map_or(0, |a| a.lost)
     }
 
     pub fn acknowledge(&mut self, by: String, at: String) {
@@ -102,6 +126,7 @@ impl Denials {
             by,
             at,
             total: self.total,
+            lost: self.lost,
         });
     }
 
@@ -137,6 +162,15 @@ impl Denials {
                 } else {
                     ""
                 },
+            ));
+        }
+        let lost = self.unacknowledged_lost();
+        if lost > 0 {
+            problems.push(format!(
+                "audit records were dropped {lost} time{}, the last at {}: denials may have \
+                 been missed (see the journal); acknowledge with: sparewall health ack {CHECK}",
+                if lost == 1 { "" } else { "s" },
+                self.lost_at.as_deref().unwrap_or("?"),
             ));
         }
         if !problems.is_empty() {
@@ -226,6 +260,28 @@ mod tests {
         );
         assert!(c.message.contains("domain is permissive"), "{}", c.message);
         assert_eq!(d.total, 3);
+    }
+
+    #[test]
+    fn dropped_records_count_until_acknowledged() {
+        let mut d = Denials::default();
+        d.record_lost("2026-10-17T20:00:00Z".into());
+        let c = d.check(Some(true), None);
+        assert_eq!(c.level, Level::Degraded);
+        assert!(
+            c.message
+                .starts_with("audit records were dropped 1 time, the last at 2026-10-17T20:00:00Z"),
+            "{}",
+            c.message
+        );
+        d.acknowledge("admin".into(), "t".into());
+        assert_eq!(d.check(Some(true), None).level, Level::Ok);
+        d.record_lost("t2".into());
+        assert_eq!(d.check(Some(true), None).level, Level::Degraded);
+        // An acknowledgement written before overflows were counted.
+        let old: Denials =
+            serde_json::from_str(r#"{"total":1,"ack":{"by":"a","at":"t","total":1}}"#).unwrap();
+        assert_eq!(old.check(Some(true), None).level, Level::Ok);
     }
 
     #[test]
