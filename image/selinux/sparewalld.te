@@ -2,13 +2,14 @@ policy_module(sparewalld, 0.9.0)
 
 ########################################
 #
-# The Sparewall coordinator (design: "Host hardening": its own policy
-# module before 1.0, with only its domain permissive until then).
+# The Sparewall coordinator (design: "Host hardening"), enforcing.
 #
-# The rules below are what the VM suites showed the coordinator doing.
-# The domain is still permissive, so nothing is blocked, but the suites
+# The rules below are what the VM suites showed the coordinator doing,
+# with dontaudit rules off so that hidden denials show too. The suites
 # fail on any sparewalld_t denial: a change that needs a new access adds
-# its rule here. Removing "permissive" is the step to enforcing.
+# its rule here. On a node, a one-line module, (typepermissive
+# sparewalld_t), makes the domain permissive again while a missing rule
+# is found (docs/operations.md).
 #
 # Grants are to the coordinator's own types wherever it owns the
 # objects: its state, runtime and temporary files and its units. Two
@@ -40,8 +41,6 @@ files_tmp_file(sparewalld_tmp_t)
 # it starts and has no type of its own.
 type sparewalld_unit_file_t;
 systemd_unit_file(sparewalld_unit_file_t)
-
-permissive sparewalld_t;
 
 # sparewall-run@ runs the same binary for commands the coordinator's
 # confinement forbids, in unconfined_service_t (SELinuxContext=), so that
@@ -101,6 +100,9 @@ allow sparewalld_t node_t:udp_socket node_bind;
 allow sparewalld_t node_t:tcp_socket node_bind;
 allow sparewalld_t { http_port_t unreserved_port_t }:tcp_socket name_bind;
 corenet_tcp_connect_all_ports(sparewalld_t)
+# Names: ACME directories, backup and log destinations, the DNS-01
+# server. The suites use addresses, so this is granted by interface.
+sysnet_dns_name_resolve(sparewalld_t)
 
 ########################################
 #

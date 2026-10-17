@@ -35,10 +35,9 @@ Where the implementation departs from, or settles open questions in,
   package it), with libnetfilter_log 1.0.2 linked statically because
   Fedora has 1.0.1. node_exporter is likewise not packaged and not yet
   included.
-- **The coordinator has its own SELinux domain, `sparewalld_t`,
-  permissive for now** (`image/selinux`, installed with `semodule` in
-  the image build); permissive means every access is allowed and
-  logged. Its state, runtime and temporary files and its units have their
+- **The coordinator has its own enforcing SELinux domain,
+  `sparewalld_t`** (`image/selinux`, installed with `semodule` in the
+  image build). Its state, runtime and temporary files and its units have their
   own types (`sparewalld_var_lib_t`, `sparewalld_var_run_t`,
   `sparewalld_tmp_t`, `sparewalld_unit_file_t`), and the confined daemons
   that read configs from `/run/sparewall` (ulogd, journal-upload,
@@ -46,10 +45,14 @@ Where the implementation departs from, or settles open questions in,
   at boot. Two grants stay generic: running `bin_t` commands, which run
   in `sparewalld_t` under the same rules; and Quadlet's generated units,
   which share one type. The rules are what the VM suites saw it do, and
-  the suites fail on any denial by `sparewalld_t` or on its types, so a
-  change that needs a new access adds its rule with the code. Enforcing (dropping `permissive`) waits for
-  production nodes to log none: the suites do not exercise everything
-  (ACME issuance on a node, real hardware).
+  the suites fail on any denial by `sparewalld_t` or on its types, with
+  dontaudit rules off (`semodule -DB`), so a change that needs a new
+  access adds its rule with the code. The suites do not exercise
+  everything (ACME issuance on a node, names rather than addresses,
+  real hardware); name resolution is granted by interface for that, and
+  operations.md documents making the domain permissive on a node (a
+  `typepermissive` CIL module through `semodule`: the image has no
+  `semanage`), which the boot suite exercises.
   `sparewall-run@` runs the same binary but stays `unconfined_service_t`
   (`SELinuxContext=`): it runs what the coordinator's confinement forbids.
 - **The installer ISO is bootc-image-builder's `anaconda-iso`**, made

@@ -781,7 +781,7 @@ Nothing else listens on the WAN. ICMP is rate-limited and invalid packets are dr
 
 ### Host hardening
 
-- **SELinux enforcing.** Distribution policy confines networkd, chronyd, keepalived and containers; the coordinator gets its own policy module before 1.0, with only its domain permissive until then.
+- **SELinux enforcing.** Distribution policy confines networkd, chronyd, keepalived and containers; the coordinator runs in its own enforcing domain, `sparewalld_t`, from its own policy module. The VM suites fail on any denial it logs, with dontaudit rules off.
 - **Coordinator sandboxing:** bounded capabilities (network administration, raw sockets), `NoNewPrivileges=`, `RestrictAddressFamilies=` (UNIX, netlink, IPv4, IPv6), `ProtectHome=`, a `@system-service` syscall filter, writes limited to its own state and rendered configs; tracked with `systemd-analyze security` in CI.
 - **Secure Boot and measured boot** are optional and recommended on physical nodes; binding TPM-sealed secrets to the boot state stops a moved disk from unsealing them.
 

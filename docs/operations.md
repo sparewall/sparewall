@@ -300,6 +300,32 @@ Upgrades run only when asked for: scheduled upgrades
 (`updates.mode: windowed`, `updates.window`) are not built yet and are
 rejected.
 
+## SELinux
+
+The coordinator runs confined, in the enforcing SELinux domain
+`sparewalld_t`. If an action fails with a permission error that file
+modes do not explain, look for a denial:
+
+```shell
+sudo journalctl -b _TRANSPORT=audit | grep 'avc:.*denied.*sparewalld'
+sudo ausearch -m avc -ts boot -c sparewalld   # with auditd
+```
+
+To keep the node working while the missing rule is fixed, make only the
+coordinator's domain permissive (the rest of the system stays
+enforcing), and undo it once an image with the rule is installed:
+
+```shell
+echo '(typepermissive sparewalld_t)' > /tmp/sparewalld-permissive.cil
+sudo semodule -i /tmp/sparewalld-permissive.cil   # allowed and logged
+sudo semodule -r sparewalld-permissive            # enforcing again
+```
+
+The module survives reboots and upgrades until it is removed.
+
+Please report the denial lines in an issue: the policy is built from
+what the test suites see, and a denial on a real node is a missing rule.
+
 ## Settings not built yet
 
 `provider_options`, `metrics.mode: local`, `metrics.retention`,
