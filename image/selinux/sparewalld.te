@@ -167,8 +167,8 @@ allow sparewalld_t { file_context_t default_context_t }:file { getattr map open 
 allow sparewalld_t selinux_config_t:file { getattr open read };
 allow sparewalld_t security_t:file { map open read };
 fs_getattr_all_fs(sparewalld_t)
-# Walking the mounts it looks into /run/user; it needs nothing there.
-dontaudit sparewalld_t user_tmp_t:dir search;
+# Walking the mounts it looks into /run/user; search lists nothing.
+allow sparewalld_t user_tmp_t:dir search;
 
 # systemctl, and the units it manages (including Quadlet's). systemctl
 # and udevadm look in /proc/1 (to tell a chroot or container).
