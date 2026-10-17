@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.7.0)
+policy_module(sparewalld, 0.8.0)
 
 ########################################
 #
@@ -28,6 +28,11 @@ files_type(sparewalld_var_lib_t)
 # /run/sparewall: rendered configs, sockets, the helper spool.
 type sparewalld_var_run_t;
 files_pid_file(sparewalld_var_run_t)
+# /run/sparewall/dhcp and dns: the providers' rendered configs, which
+# their containers read. Mounted without relabelling (no ":z"), so they
+# keep this type and the coordinator can still rewrite them.
+type sparewalld_provider_conf_t;
+files_pid_file(sparewalld_provider_conf_t)
 # Its private /tmp (restic's temporary packs).
 type sparewalld_tmp_t;
 files_tmp_file(sparewalld_tmp_t)
@@ -110,6 +115,10 @@ files_pid_filetrans(sparewalld_t, chronyd_var_run_t, dir, "chrony")
 files_pid_filetrans(sparewalld_t, keepalived_var_run_t, dir, "keepalived")
 allow sparewalld_t { chronyd_var_run_t keepalived_var_run_t }:dir { create setattr };
 manage_dirs_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
+filetrans_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_provider_conf_t, dir, "dhcp")
+filetrans_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_provider_conf_t, dir, "dns")
+manage_dirs_pattern(sparewalld_t, sparewalld_provider_conf_t, sparewalld_provider_conf_t)
+manage_files_pattern(sparewalld_t, sparewalld_provider_conf_t, sparewalld_provider_conf_t)
 manage_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
 manage_sock_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
 manage_fifo_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
@@ -124,6 +133,9 @@ files_tmp_filetrans(sparewalld_t, sparewalld_tmp_t, { dir file })
 # keepalived's scripts run unconfined.
 allow { conntrackd_t ulogd_t systemd_journal_upload_t } sparewalld_var_run_t:dir search_dir_perms;
 allow { ulogd_t systemd_journal_upload_t } sparewalld_var_run_t:file read_file_perms;
+# Kea and Unbound, in containers, read theirs.
+allow container_t sparewalld_provider_conf_t:dir list_dir_perms;
+allow container_t sparewalld_provider_conf_t:file read_file_perms;
 allow systemd_journal_upload_t sparewalld_var_run_t:lnk_file read_lnk_file_perms;
 
 ########################################
