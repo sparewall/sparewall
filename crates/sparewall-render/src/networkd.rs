@@ -210,20 +210,24 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
     }
     // A standalone node holds the gateway address statically; in a pair it
     // belongs to keepalived.
-    if let Some(vip) = &net.vip {
-        if !pair {
-            // A held node claims no gateway address, nor the extras that
-            // move with it (cluster.hold).
-            if !doc.cluster.hold {
-                ini.set("Address", vip);
-                for a in &net.extra_vips {
-                    ini.set("Address", a);
-                }
-            }
-        } else {
-            // networkd must not remove addresses keepalived added.
-            ini.set("KeepConfiguration", "yes");
+    if let Some(vip) = &net.vip
+        && !pair
+        // A held node claims no gateway address, nor the extras that move
+        // with it (cluster.hold).
+        && !doc.cluster.hold
+    {
+        ini.set("Address", vip);
+        for a in &net.extra_vips {
+            ini.set("Address", a);
         }
+    }
+    if pair && net.role != NetworkRole::Sync {
+        // networkd must not remove addresses and routes keepalived added,
+        // on any link that may carry them, even with no gateway address
+        // now: a change that takes one away (or makes the WAN leased)
+        // reloads networkd before keepalived, and on the master the
+        // stripped addresses would fail the pair over (#78).
+        ini.set("KeepConfiguration", "yes");
     }
     let leased = doc.leased_wan(name).is_some();
     if leased {

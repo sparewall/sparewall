@@ -487,6 +487,9 @@ fn pair_wan_one_lease_on_the_master() {
         "{base}"
     );
     assert!(!base.contains("DHCP"), "{base}");
+    // No gateway address now, but switching to the lease must not strip
+    // the old one from under keepalived on the master (#78).
+    assert!(base.contains("KeepConfiguration=yes\n"), "{base}");
     // The lease link: the VRRP virtual MAC, down until the coordinator
     // brings it up on the master, one client ID, the lease kept.
     let nd = file("40-sparewall-swwan.netdev");
