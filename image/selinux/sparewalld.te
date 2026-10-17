@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.6.0)
+policy_module(sparewalld, 0.7.0)
 
 ########################################
 #

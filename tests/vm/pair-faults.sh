@@ -235,6 +235,8 @@ unkeyed() { at "$1" 'sudo sparewall export -o json' | jq -S 'del(.cluster.sync_k
 unkeyed fw1 > before.json
 
 log "destroying both nodes"
+# Their reports go with them: take them now.
+selinux_reports
 stop_pair
 for n in fw1 fw2; do rm -f "$n.qcow2"; done
 boot "${FW1[@]}"
@@ -245,6 +247,7 @@ wait_for 300 "fw2 SSH" at fw2 true
 log "restoring both nodes"
 for n in fw1 fw2; do
     [ "$(role "$n")" = bootstrap ] || fail "the reinstalled $n is not in bootstrap mode"
+    full_audit "at $n" "$n"
     at "$n" 'sudo systemctl stop sparewalld.socket sparewalld.service'
     at "$n" "printf '%s\n' '$PASSWORD' > /tmp/pw"
     at "$n" "sudo sparewall restore --repository $REPO --password-file /tmp/pw" 2>&1 | tee "restore-$n.txt"
