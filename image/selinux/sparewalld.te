@@ -50,7 +50,8 @@ gen_require(`
 	type unconfined_t, init_t, kernel_t;
 	type ifconfig_exec_t, iptables_exec_t, systemd_systemctl_exec_t;
 	type udev_exec_t, setfiles_exec_t, conntrackd_exec_t;
-	type file_context_t, default_context_t, security_t;
+	type file_context_t, default_context_t, security_t, selinux_config_t;
+	type user_tmp_t;
 	type net_conf_t, cert_t, passwd_file_t;
 	type user_home_dir_t, ssh_home_t;
 	type init_var_lib_t, init_var_run_t, cgroup_t, nsfs_t, sysfs_t;
@@ -71,8 +72,10 @@ gen_require(`
 #
 
 # fowner: the admin's authorized_keys is chowned to admin, then its mode
-# fixed (the unit grants CAP_FOWNER for this).
-allow sparewalld_t self:capability { chown dac_override fowner net_bind_service };
+# fixed (the unit grants CAP_FOWNER for this). net_admin: nft, ip and
+# its own netlink requests; the base policy hides its denial, so the
+# suites saw it only once dontaudit rules were off (tests/vm full_audit).
+allow sparewalld_t self:capability { chown dac_override fowner net_admin net_bind_service };
 allow sparewalld_t self:tcp_socket { accept bind connect create getattr getopt listen setopt shutdown read write };
 allow sparewalld_t self:unix_dgram_socket { connect create getattr getopt ioctl setattr setopt read write };
 allow sparewalld_t self:unix_stream_socket connectto;
@@ -159,10 +162,17 @@ corecmd_exec_bin(sparewalld_t)
 # restorecon reads the file contexts and walks the mounts.
 allow sparewalld_t { file_context_t default_context_t }:dir search;
 allow sparewalld_t { file_context_t default_context_t }:file { getattr map open read };
-allow sparewalld_t security_t:file map;
+# libselinux, in restorecon and udevadm: the policy type from the
+# config, and the kernel's status page.
+allow sparewalld_t selinux_config_t:file { getattr open read };
+allow sparewalld_t security_t:file { map open read };
 fs_getattr_all_fs(sparewalld_t)
+# Walking the mounts it looks into /run/user; it needs nothing there.
+dontaudit sparewalld_t user_tmp_t:dir search;
 
-# systemctl, and the units it manages (including Quadlet's).
+# systemctl, and the units it manages (including Quadlet's). systemctl
+# and udevadm look in /proc/1 (to tell a chroot or container).
+allow sparewalld_t init_t:dir search;
 allow sparewalld_t init_t:lnk_file read;
 allow sparewalld_t init_var_lib_t:dir { open read search };
 allow sparewalld_t init_var_lib_t:file { getattr open read };
