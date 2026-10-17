@@ -231,6 +231,9 @@ pub trait FirewallProxy {
         &mut self,
         verbose: Option<bool>,
     ) -> zlink::Result<Result<HealthReply, FirewallError>>;
+    /// Acknowledge a check that stays degraded until someone has seen it
+    /// (`selinux`).
+    async fn ack_health(&mut self, name: &str) -> zlink::Result<Result<Empty, FirewallError>>;
     async fn status(&mut self) -> zlink::Result<Result<StatusReply, FirewallError>>;
     async fn backup(&mut self) -> zlink::Result<Result<BackupReply, FirewallError>>;
     #[zlink(more)]

@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.8.0)
+policy_module(sparewalld, 0.9.0)
 
 ########################################
 #
@@ -86,6 +86,10 @@ allow sparewalld_t self:unix_dgram_socket { connect create getattr getopt ioctl 
 allow sparewalld_t self:unix_stream_socket connectto;
 allow sparewalld_t self:netlink_route_socket { bind create getattr getopt setopt read write nlmsg_read nlmsg_write };
 allow sparewalld_t self:netlink_netfilter_socket { create getopt setopt read write };
+# The audit stream's read-only multicast group, for the selinux health
+# check: its own denials.
+allow sparewalld_t self:capability2 audit_read;
+allow sparewalld_t self:netlink_audit_socket { bind create getattr read setopt };
 allow sparewalld_t self:netlink_kobject_uevent_socket { bind create getattr getopt setopt read };
 # The reach probes: an empty datagram to each address makes the kernel
 # resolve it, from the network's own address.

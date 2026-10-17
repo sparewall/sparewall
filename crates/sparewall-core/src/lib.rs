@@ -11,6 +11,7 @@ pub mod nft_state;
 pub mod pair;
 pub mod seal;
 pub mod secrets;
+pub mod selinux;
 pub mod store;
 pub mod system;
 pub mod tokens;

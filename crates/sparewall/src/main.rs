@@ -203,6 +203,8 @@ enum Cmd {
     Health {
         #[arg(short, long)]
         verbose: bool,
+        #[command(subcommand)]
+        cmd: Option<HealthCmd>,
     },
     /// List generations.
     History {
@@ -340,6 +342,13 @@ enum SchemaCmd {
     Upgrade,
     /// Migrate the document to the previous schema.
     Downgrade,
+}
+
+#[derive(Subcommand)]
+enum HealthCmd {
+    /// Acknowledge a check that stays degraded until someone has seen it
+    /// (selinux: denials for the coordinator).
+    Ack { check: String },
 }
 
 #[derive(Subcommand)]
@@ -802,7 +811,14 @@ impl App {
                     }
                 }
             }
-            Cmd::Health { verbose } => {
+            Cmd::Health {
+                cmd: Some(HealthCmd::Ack { check }),
+                ..
+            } => {
+                self.conn().await?.ack_health(&check).await??;
+                println!("acknowledged {check}");
+            }
+            Cmd::Health { verbose, cmd: None } => {
                 let h = self.conn().await?.health(Some(verbose)).await??;
                 match self.output {
                     Some(Output::Json) | Some(Output::Yaml) => {

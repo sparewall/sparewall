@@ -12,6 +12,7 @@ mod peer;
 mod reach;
 mod rules;
 mod seed;
+mod selinux;
 mod service;
 mod upgrade;
 mod varlink;
@@ -377,6 +378,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 lease::lease_loop(core.clone(), tx.clone(), pair.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no audit stream of its own.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                selinux::watch(core.clone(), tx.clone()).await
             } => Ok(()),
             () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone(), vrrp::host_conntrackd()) => Ok(()),
             () = rules::listener(args.socket.with_file_name("rules.sock")) => Ok(()),

@@ -1972,6 +1972,7 @@ dependencies = [
  "jiff",
  "listenfd",
  "rcgen",
+ "rustix",
  "rustls",
  "sd-notify",
  "serde",

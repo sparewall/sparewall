@@ -508,6 +508,16 @@ where
         })
     }
 
+    async fn ack_health(
+        &mut self,
+        name: String,
+        #[zlink(connection)] conn: &mut Connection<Sock>,
+    ) -> Result<Empty, FirewallError> {
+        let by = author::of(conn).await;
+        crate::selinux::acknowledge(&self.core, &self.events, name, by).await?;
+        Ok(Empty {})
+    }
+
     async fn status(&mut self) -> Result<StatusReply, FirewallError> {
         let pair = self.pair.lock().unwrap_or_else(|p| p.into_inner()).clone();
         with_core(&self.core, &self.events, move |c| status(c, &pair)).await

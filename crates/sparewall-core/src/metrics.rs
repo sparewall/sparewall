@@ -133,6 +133,18 @@ impl<S: System> Coordinator<S> {
             );
         }
 
+        // A counter that never goes down: alert on any increase.
+        o.help(
+            "sparewall_selinux_denials_total",
+            "counter",
+            "SELinux denials by or on the coordinator's domain.",
+        );
+        o.sample(
+            "sparewall_selinux_denials_total",
+            &[],
+            crate::selinux::Denials::read(self.store().root()).total,
+        );
+
         let health = self.health()?;
         let level = |l: Level| match l {
             Level::Ok => 0,

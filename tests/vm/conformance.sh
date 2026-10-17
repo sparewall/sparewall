@@ -225,6 +225,20 @@ selinux_report() { # run-command node-name
     fi
 }
 
+# The node's own view: sparewalld watches the audit stream (the selinux
+# check would say it cannot), has seen no denial, and takes an
+# acknowledgement, recording who gave it. $1 runs a command on a node.
+selinux_health() { # run-command node-name
+    local c
+    c=$($1 'sudo sparewall health -v -o json' | jq -c '.checks[] | select(.name == "selinux")')
+    [ -n "$c" ] || fail "$2: no selinux health check"
+    [ "$(jq -r .level <<<"$c")" = ok ] || fail "$2: selinux check: $c"
+    $1 'sudo sparewall health ack selinux' >/dev/null || fail "$2: cannot acknowledge the selinux check"
+    $1 'sudo sparewall health -v -o json' \
+        | jq -e '.checks[] | select(.name == "selinux") | .message | test("since admin .*acknowledged 0 at")' >/dev/null \
+        || fail "$2: the acknowledgement was not recorded"
+}
+
 # Fail if any report found a denial.
 selinux_gate() {
     [ -s "$WORK/selinux-denials" ] || return 0
