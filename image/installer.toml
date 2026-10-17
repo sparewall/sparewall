@@ -2,9 +2,14 @@
 # tests/vm/installer-test.sh). bootc-image-builder adds the command that
 # installs the embedded image; this kickstart makes the install unattended.
 #
-# It erases the first fixed disk: removable disks (the install stick, a
-# seed stick) and optical drives are skipped. With none, the install stops
-# at the storage error.
+# It installs to the first fixed disk (removable disks, such as the
+# install stick or a seed stick, and optical drives are skipped), but
+# only if that disk is blank: no partitions, and no filesystem, LVM or
+# RAID signature on the whole disk. An empty partition table counts as
+# blank. A disk with anything on it stops the install, with a message
+# saying how to go on: wipe it, or add sparewall.erase=DISK (sda,
+# nvme0n1) to the boot entry, which erases the named disk whatever it
+# holds. With no fixed disk, the install stops at the storage error.
 #
 # bootc pulls the logically bound provider images from their registry
 # unless the target's image store (ostree/bootc/storage) has them, so the
@@ -21,15 +26,42 @@ clearpart --all --initlabel --disklabel=gpt
 autopart --noswap --type=plain --fstype=xfs
 reboot --eject
 
-%pre
+%pre --erroronfail
 : > /tmp/sparewall-disk.ks
-for d in /sys/block/*; do
-    n=${d##*/}
-    case $n in loop*|ram*|zram*|sr*|dm-*|md*|nbd*) continue ;; esac
-    [ "$(cat "$d/removable")" = 0 ] && [ "$(cat "$d/size")" -gt 0 ] || continue
-    echo "ignoredisk --only-use=$n" > /tmp/sparewall-disk.ks
-    break
+stop() {
+    { echo; echo "SPAREWALL: $*"; echo; } >&2
+    { echo; echo "SPAREWALL: $*"; echo; } > /dev/console 2>/dev/null || true
+    exit 1
+}
+erase=
+for a in $(cat /proc/cmdline); do
+    case $a in sparewall.erase=*) erase=${a#sparewall.erase=}; erase=${erase#/dev/} ;; esac
 done
+disk=
+if [ -n "$erase" ]; then
+    [ -e "/sys/block/$erase" ] || stop "sparewall.erase=$erase: there is no disk $erase."
+    disk=$erase
+else
+    for d in /sys/block/*; do
+        n=${d##*/}
+        case $n in loop*|ram*|zram*|sr*|dm-*|md*|nbd*) continue ;; esac
+        [ "$(cat "$d/removable")" = 0 ] && [ "$(cat "$d/size")" -gt 0 ] || continue
+        disk=$n
+        break
+    done
+    # Partitions show as /sys/block/DISK/DISK*; blkid -p finds a
+    # filesystem, LVM or RAID member on the whole disk.
+    used=
+    if [ -n "$disk" ]; then
+        ls -d "/sys/block/$disk/$disk"* >/dev/null 2>&1 && used=partitions
+        [ -n "$(blkid -p -o value -s TYPE "/dev/$disk" 2>/dev/null)" ] && used=signature
+    fi
+    if [ -n "$used" ]; then
+        lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL "/dev/$disk" >&2 || true
+        stop "/dev/$disk is not blank, so it was not erased. To install on it anyway, reboot, edit the boot entry and add sparewall.erase=$disk to the kernel arguments, or wipe it first (wipefs -a /dev/$disk)."
+    fi
+fi
+[ -z "$disk" ] || echo "ignoredisk --only-use=$disk" > /tmp/sparewall-disk.ks
 %end
 
 %pre-install --log=/tmp/sparewall-bound-images.log

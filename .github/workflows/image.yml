@@ -124,7 +124,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils jq podman busybox bind9-dnsutils iputils-ping wireguard-tools iptables socat dosfstools mtools xorriso dnsmasq-base
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils jq podman busybox bind9-dnsutils iputils-ping wireguard-tools iptables socat dosfstools mtools xorriso dnsmasq-base fdisk
           sudo chmod 666 /dev/kvm
           sudo podman --version
 
@@ -346,8 +346,9 @@ jobs:
           \`\`\`
 
           Files named \`.partNN\` are pieces of one file: \`cat\` them together.
-          The ISO installs unattended and **erases the first disk** of the
-          machine it boots on. See docs/getting-started.md.
+          The ISO installs unattended to the first fixed disk of the machine
+          it boots on, **if that disk is blank**; it stops at a disk with
+          anything on it. See docs/getting-started.md.
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag "${prerelease[@]}" \
             --title "Sparewall $v" --notes-file notes.md assets/*

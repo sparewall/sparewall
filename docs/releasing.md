@@ -13,8 +13,8 @@ For maintainers. A release is a tested commit on `main`, tagged.
 3. The image workflow runs again for the tag: it rebuilds the image, runs
    every VM suite, publishes the image as `sha-<commit>` (and `testing`),
    then the **release assets** job drafts a GitHub release with:
-   - `sparewall-VERSION-x86_64.iso`: the unattended installer (it erases
-     the first fixed disk);
+   - `sparewall-VERSION-x86_64.iso`: the unattended installer (to the
+     first fixed disk, if it is blank);
    - `sparewall-VERSION-x86_64.raw.zst` and `.qcow2`: disk images;
    - `sparewall-VERSION-x86_64-linux.tar.gz`: the static CLI;
    - SPDX SBOMs of the image and of the CLI (from the dependency list
