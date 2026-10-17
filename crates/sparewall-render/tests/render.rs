@@ -371,6 +371,43 @@ fn ping_check_default_and_overrides() {
 }
 
 #[test]
+fn kea_binds_one_address_per_interface() {
+    // Standalone, beside the gateway address: the node's own address.
+    let mut doc = example("standalone.yaml");
+    let users = doc.networks.get_mut("users").unwrap();
+    assert!(users.vip.is_some());
+    let own = users.addresses["fw1"].0.addr();
+    let iface = doc.network_iface("users").unwrap().to_string();
+    let bound = |doc: &sparewall_config::Document| {
+        kea_conf(doc)["Dhcp4"]["interfaces-config"]["interfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i.as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        bound(&doc).contains(&format!("{iface}/{own}")),
+        "{:?}",
+        bound(&doc)
+    );
+    assert!(
+        bound(&doc).iter().all(|i| i.contains('/')),
+        "{:?}",
+        bound(&doc)
+    );
+    // Only the gateway address: that one.
+    let users = doc.networks.get_mut("users").unwrap();
+    users.addresses.clear();
+    let vip = users.vip.as_ref().unwrap().0.addr();
+    assert!(
+        bound(&doc).contains(&format!("{iface}/{vip}")),
+        "{:?}",
+        bound(&doc)
+    );
+}
+
+#[test]
 fn hold_claims_no_gateway_address() {
     // A pair: keepalived runs, but every instance also tracks a script
     // that always fails, so all stay in FAULT.

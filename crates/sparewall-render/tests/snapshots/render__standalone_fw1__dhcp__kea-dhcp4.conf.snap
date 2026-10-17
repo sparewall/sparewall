@@ -28,8 +28,8 @@ expression: content
     "interfaces-config": {
       "dhcp-socket-type": "raw",
       "interfaces": [
-        "guests",
-        "users"
+        "guests/198.51.100.2",
+        "users/192.0.2.2"
       ],
       "service-sockets-max-retries": 60,
       "service-sockets-require-all": false,
