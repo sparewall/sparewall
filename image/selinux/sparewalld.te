@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.5.0)
+policy_module(sparewalld, 0.6.0)
 
 ########################################
 #
@@ -208,3 +208,18 @@ allow sparewalld_t container_file_t:dir search;
 allow sparewalld_t container_file_t:file { open read };
 allow sparewalld_t container_file_t:sock_file write;
 allow sparewalld_t container_t:unix_stream_socket connectto;
+
+########################################
+#
+# keepalived, which the coordinator configures and reloads.
+#
+
+gen_require(`
+	type keepalived_t, keepalived_unconfined_script_t;
+')
+# On a reload keepalived signals each running script's process group,
+# -getpgid(pid). Fedora's policy lets it getpgid only itself, so for a
+# running track script it got -1 and signalled init instead: systemd
+# re-executed, failing the apply's "systemctl reload" (#66; upstream
+# acassen/keepalived#2743).
+allow keepalived_t keepalived_unconfined_script_t:process getpgid;
