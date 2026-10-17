@@ -9,6 +9,7 @@ Name=mgmt
 
 [Network]
 Address=10.0.99.3/24
+KeepConfiguration=yes
 LinkLocalAddressing=ipv6
 IPv6AcceptRA=no
 IPv4ReversePathFilter=strict
