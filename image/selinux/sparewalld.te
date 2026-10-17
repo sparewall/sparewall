@@ -76,10 +76,12 @@ gen_require(`
 #
 
 # fowner: the admin's authorized_keys is chowned to admin, then its mode
-# fixed (the unit grants CAP_FOWNER for this). net_admin: nft, ip and
-# its own netlink requests; the base policy hides its denial, so the
-# suites saw it only once dontaudit rules were off (tests/vm full_audit).
-allow sparewalld_t self:capability { chown dac_override fowner net_admin net_bind_service };
+# fixed (the unit grants CAP_FOWNER for this). sys_admin: systemd-creds,
+# sealing and unsealing secrets, checks it (the unit grants it); denied,
+# it logs and takes another path the suites do not test. net_admin: nft,
+# ip and its own netlink requests; the base policy hides its denial, so
+# the suites saw it only once dontaudit rules were off (full_audit).
+allow sparewalld_t self:capability { chown dac_override fowner net_admin net_bind_service sys_admin };
 allow sparewalld_t self:tcp_socket { accept bind connect create getattr getopt listen setopt shutdown read write };
 allow sparewalld_t self:unix_dgram_socket { connect create getattr getopt ioctl setattr setopt read write };
 allow sparewalld_t self:unix_stream_socket connectto;
