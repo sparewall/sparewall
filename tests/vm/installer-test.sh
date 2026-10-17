@@ -86,11 +86,20 @@ run_installer() { # disk timeout serial-log
 
 log "a disk that is not blank is not erased"
 disk used.qcow2 $'label: gpt\n,100M'
-run_installer used.qcow2 900 refused.serial || true
-grep -aq "SPAREWALL: /dev/vda is not blank" refused.serial || {
-    sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' refused.serial | tail -40 >&2
-    fail "the installer did not refuse a disk with a partition"
-}
+# Anaconda then waits at its error screen, for someone to read it: stop
+# the VM once the message is out.
+rm -f refused.serial
+run_installer used.qcow2 900 refused.serial &
+deadline=$((SECONDS + 900))
+until sudo grep -aq "SPAREWALL: /dev/vda is not blank" refused.serial 2>/dev/null; do
+    if [ $SECONDS -ge $deadline ] || ! kill -0 $! 2>/dev/null; then
+        sudo sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' refused.serial | tail -40 >&2 || true
+        fail "the installer did not refuse a disk with a partition"
+    fi
+    sleep 5
+done
+sudo pkill -f "file:refused.serial" || true
+wait $! || true
 qemu-img convert -O raw used.qcow2 used.raw
 sfdisk -d used.raw | grep -q 'start=' || fail "the refused disk lost its partition"
 rm -f used.qcow2 used.raw
