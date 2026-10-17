@@ -20,8 +20,13 @@ Each [release](https://github.com/sparewall/sparewall/releases) also has
 ready-made images, with checksums signed by the same key:
 
 - `sparewall-VERSION-x86_64.iso`: an installer for physical machines.
-  It installs **unattended to the first fixed disk it finds, erasing
-  it** (USB sticks are skipped): disconnect any disk you want to keep.
+  It installs **unattended to the first fixed disk it finds** (USB
+  sticks are skipped), but only if that disk is blank: no partitions and
+  no filesystem on it. A disk with anything on it stops the install and
+  is left untouched. To install there anyway, wipe it
+  (`wipefs -a /dev/sdX`), or at the installer's boot menu press `e` and
+  add `sparewall.erase=sdX` (or `nvme0n1`) to the `linux` line: that
+  erases the named disk whatever it holds.
 - `sparewall-VERSION-x86_64.raw.zst`: a disk image to write to the
   machine's disk or a USB stick
   (`zstd -dc sparewall-*.raw.zst | sudo dd of=/dev/sdX bs=4M`).

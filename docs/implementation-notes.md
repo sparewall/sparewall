@@ -53,11 +53,14 @@ Where the implementation departs from, or settles open questions in,
   `sparewall-run@` runs the same binary but stays `unconfined_service_t`
   (`SELinuxContext=`): it runs what the coordinator's confinement forbids.
 - **The installer ISO is bootc-image-builder's `anaconda-iso`**, made
-  unattended by the kickstart in `image/installer.toml`: it erases the
-  first fixed disk (removable and optical drives are skipped) and
-  installs the image embedded in it, with no network. Without a
-  kickstart, Anaconda waits at its interactive screens. The release
-  notes and getting-started say it erases the disk. bootc pulls the
+  unattended by the kickstart in `image/installer.toml`: it installs the
+  image embedded in it to the first fixed disk (removable and optical
+  drives are skipped), with no network, but only if that disk is blank
+  (no partitions, no whole-disk filesystem, LVM or RAID signature; an
+  empty partition table counts as blank). Otherwise its `%pre` stops
+  the install with a message; `sparewall.erase=DISK` on the kernel
+  command line erases the named disk regardless. Without a kickstart,
+  Anaconda waits at its interactive screens. bootc pulls the
   logically bound provider images from their registry during the
   install unless the target's image store already has them, and
   bootc-image-builder does not put them in the ISO, so

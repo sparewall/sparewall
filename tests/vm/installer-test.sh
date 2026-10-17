@@ -1,5 +1,6 @@
 #!/bin/bash
-# Install from the ISO with no network, then boot the installed system
+# The ISO refuses a disk that is not blank. Then install from it with no
+# network, to a disk with an empty partition table, and boot the installed system
 # (design: "To prove in the lab": container images absent after an
 # offline install). The installed node gets its identity and a first
 # configuration from a seed stick, as a physical machine would: it must
@@ -9,7 +10,7 @@
 #   tests/vm/installer-test.sh IMAGE WORKDIR
 #
 # Needs root (podman for bootc-image-builder, KVM), qemu-system-x86_64,
-# xorriso, mkfs.vfat and mcopy.
+# xorriso, sfdisk, mkfs.vfat and mcopy.
 set -euo pipefail
 IMAGE=${1:?usage: installer-test.sh IMAGE WORKDIR}
 WORK=${2:?usage: installer-test.sh IMAGE WORKDIR}
@@ -25,7 +26,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
     local rc=$?
     if [ $rc -ne 0 ]; then
-        for f in install.serial installed.serial; do
+        for f in refused.serial install.serial installed.serial; do
             [ -f "$f" ] && { echo "--- $f"; sudo tail -80 "$f"; }
         done
     fi
@@ -53,9 +54,14 @@ fi
 sudo chown -R "$(id -u):$(id -g)" output
 ls -la output/bootiso/install.iso
 
-log "installing with no network"
-rm -f installed.qcow2
-qemu-img create -q -f qcow2 installed.qcow2 20G
+# A 20 GB disk, with a partition table made by sfdisk from $1.
+disk() { # qcow2 sfdisk-script
+    rm -f "$1" disk.raw
+    truncate -s 20G disk.raw
+    printf '%s\n' "$2" | sfdisk -q disk.raw
+    qemu-img convert -O qcow2 disk.raw "$1"
+    rm -f disk.raw
+}
 # The ISO's own kernel and arguments, plus a serial console, so the
 # install shows in install.serial; the ISO stays attached as the source.
 rm -rf iso && mkdir iso
@@ -69,13 +75,29 @@ args=$(sed -nE 's/^[[:space:]]*linux(efi)?[[:space:]]+[^[:space:]]+[[:space:]]+/
 echo "installer arguments: $args"
 # The kickstart installs unattended to the first fixed disk and reboots;
 # -no-reboot turns that into an exit.
-timeout 2400 sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 3072 -smp 2 \
-    -drive "file=installed.qcow2,if=virtio,format=qcow2" \
-    -cdrom output/bootiso/install.iso \
-    -kernel iso/vmlinuz -initrd iso/initrd.img -append "$args console=ttyS0" \
-    -nic none -no-reboot \
-    -display none -serial "file:install.serial" \
-    || fail "the installer did not finish"
+run_installer() { # disk timeout serial-log
+    timeout "$2" sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 3072 -smp 2 \
+        -drive "file=$1,if=virtio,format=qcow2" \
+        -cdrom output/bootiso/install.iso \
+        -kernel iso/vmlinuz -initrd iso/initrd.img -append "$args console=ttyS0" \
+        -nic none -no-reboot \
+        -display none -serial "file:$3"
+}
+
+log "a disk that is not blank is not erased"
+disk used.qcow2 $'label: gpt\n,100M'
+run_installer used.qcow2 900 refused.serial || true
+grep -aq "SPAREWALL: /dev/vda is not blank" refused.serial || {
+    sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' refused.serial | tail -40 >&2
+    fail "the installer did not refuse a disk with a partition"
+}
+qemu-img convert -O raw used.qcow2 used.raw
+sfdisk -d used.raw | grep -q 'start=' || fail "the refused disk lost its partition"
+rm -f used.qcow2 used.raw
+
+log "installing with no network, to a disk with an empty partition table"
+disk installed.qcow2 'label: gpt'
+run_installer installed.qcow2 2400 install.serial || fail "the installer did not finish"
 if grep -aq "The installer will now terminate" install.serial; then
     sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' install.serial | grep -a -B3 -A8 "exact error message" >&2 || true
     fail "the installer failed"

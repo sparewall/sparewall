@@ -3,8 +3,8 @@
 # with bootc-image-builder (design: "Build, sign, publish"):
 #
 #   sparewall-VERSION-x86_64.iso        unattended installer for physical
-#                                       machines: it erases the first fixed
-#                                       disk (installer.toml)
+#                                       machines, to the first fixed disk
+#                                       if it is blank (installer.toml)
 #   sparewall-VERSION-x86_64.raw.zst    a disk image to write to a disk
 #   sparewall-VERSION-x86_64.qcow2      a disk image for VMs
 #
