@@ -83,10 +83,14 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         let subnet = doc
             .subnet(name, node)
             .ok_or_else(|| Error::Invalid(format!("dhcp.{name}: network has no subnet")))?;
-        // In a pair each Kea binds to its node's own address, not the
-        // gateway address that moves.
-        interfaces.push(match (pair, net.addresses.get(node)) {
-            (true, Some(a)) => format!("{iface}/{}", a.0.addr()),
+        // Kea binds to one address: with raw sockets it opens one per
+        // address on the interface, and each socket sees every broadcast,
+        // so it would answer each DISCOVER twice beside the gateway
+        // address (#71). Its node's own address: in a pair the gateway
+        // address moves.
+        interfaces.push(match (net.addresses.get(node), &net.vip) {
+            (Some(a), _) => format!("{iface}/{}", a.0.addr()),
+            (None, Some(v)) if !pair => format!("{iface}/{}", v.0.addr()),
             _ => iface.to_string(),
         });
         let gw = gateway_addr(doc, name, node);

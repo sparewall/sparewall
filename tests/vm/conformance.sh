@@ -84,7 +84,9 @@ hairpin() {
 # a restore, or beside the DHCP server it replaces) is not offered to the
 # next client. Kea hands out guests addresses in order, so the one after
 # $1 is next: the guests client squats on it, and a second client on the
-# same VLAN must get another, while Kea marks the squatted one declined.
+# same VLAN must get another. Kea declines the squatted one before it
+# offers another, so its declined record is what shows the check ran: an
+# address skipped for any other reason has none (#71).
 squatter() {
     local next=198.51.100.$(( ${1##*.} + 1 )) other
     ns guests ip addr add "$next/24" dev eth0
@@ -99,14 +101,15 @@ squatter() {
     log "ping check: $next squatted, the next client got $other"
     [ "$other" != "$next" ] || fail "Kea offered $next, which a host already uses"
     local leases=/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv
-    local deadline=$((SECONDS + 15))
-    until vm "sudo grep '^$next,' $leases" | tail -1 | awk -F, '{print $10}' | grep -qx 1; do
-        if [ $SECONDS -ge $deadline ]; then
-            vm "sudo grep '^198\.51\.100\.' $leases; sudo journalctl -b -u sparewall-kea --no-pager | grep -iE 'ping|decline|DHCP4_LEASE|DHCPSRV' | tail -40" || true
-            fail "Kea did not mark the squatted $next declined"
-        fi
-        sleep 1
-    done
+    # Its latest record (state 1 is declined), polled on the node.
+    if ! vm "for i in \$(seq 60); do sudo awk -F, '\$1 == \"$next\" { s = \$10 } END { exit s != 1 }' $leases && exit; sleep 1; done; exit 1"; then
+        vm "sudo grep '^198\.51\.100\.' $leases; sudo journalctl -b -u sparewall-kea --no-pager | grep -iE 'ping|decline|DHCP4_LEASE|DHCPSRV' | tail -40" || true
+        fail "Kea did not mark the squatted $next declined"
+    fi
+    # One socket per interface: with one per address, Kea answers each
+    # DISCOVER twice and skips addresses without a ping (#71).
+    ! vm 'sudo journalctl -b -u sparewall-kea --no-pager | grep -q DHCPSRV_MULTIPLE_RAW_SOCKETS_PER_IFACE' \
+        || fail "Kea opened more than one socket on an interface"
     ns guests ip addr del "$next/24" dev eth0
     sudo ip netns del sw-guests2
 }
