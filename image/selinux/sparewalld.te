@@ -170,15 +170,18 @@ fs_getattr_all_fs(sparewalld_t)
 # Walking the mounts it looks into /run/user; search lists nothing.
 allow sparewalld_t user_tmp_t:dir search;
 
-# systemctl, and the units it manages (including Quadlet's). systemctl
-# and udevadm look in /proc/1 (to tell a chroot or container).
+# systemctl, and the units it manages (including Quadlet's). systemctl,
+# udevadm and systemd-creds look in /proc/1 (to tell a chroot or
+# container: systemd-creds reads its environment).
 allow sparewalld_t init_t:dir search;
+allow sparewalld_t init_t:file { getattr ioctl open read };
 allow sparewalld_t init_t:lnk_file read;
 allow sparewalld_t init_var_lib_t:dir { open read search };
 allow sparewalld_t init_var_lib_t:file { getattr open read };
 allow sparewalld_t init_var_run_t:file { getattr open read };
 allow sparewalld_t cgroup_t:dir search;
-allow sparewalld_t cgroup_t:file read;
+# Its own cgroup: restic (Go) reads its CPU quota, cpu.max.
+allow sparewalld_t cgroup_t:file { open read };
 allow sparewalld_t { sparewalld_unit_file_t chronyd_unit_file_t keepalived_unit_file_t conntrackd_unit_file_t }:service { start stop status reload };
 # Quadlet generates sparewall-kea and sparewall-unbound at boot, and the
 # generator gives every unit it writes this one type, whatever its
