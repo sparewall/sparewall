@@ -5,7 +5,8 @@
 #
 #   tests/vm/boot-test.sh IMAGE [WORKDIR]
 #
-# Needs root (podman for bootc-image-builder, KVM), qemu-system-x86_64.
+# Needs root (podman for bootc-image-builder, KVM), qemu-system-x86_64,
+# swtpm (the node has a TPM 2.0, so secrets are sealed to it).
 set -euo pipefail
 
 IMAGE=${1:?usage: boot-test.sh IMAGE [WORKDIR]}
@@ -35,7 +36,21 @@ cat > identity.json <<JSON
 {"node": "fw1", "ssh_keys": ["$(cat id_ed25519.pub)"], "management": {"nic": "$MAC"}}
 JSON
 CRED=$(base64 -w0 identity.json)
+# A software TPM 2.0 for the node; it ends when QEMU does. A new state
+# directory is a new TPM, as on reinstalled hardware.
+start_tpm() {
+    rm -rf tpm tpm.sock
+    mkdir tpm
+    swtpm socket --tpm2 --tpmstate dir="$WORK/tpm" \
+        --ctrl type=unixio,path="$WORK/tpm.sock" --terminate --daemon
+    local deadline=$((SECONDS + 10))
+    until [ -S tpm.sock ]; do
+        [ $SECONDS -lt $deadline ] || fail "swtpm did not start"
+        sleep 0.2
+    done
+}
 start_vm() {
+    start_tpm
     sudo qemu-system-x86_64 \
         -machine q35,accel=kvm -cpu host -m 2048 -smp 2 \
         -drive file=vm.qcow2,if=virtio,format=qcow2 \
@@ -43,6 +58,8 @@ start_vm() {
         -device "virtio-net-pci,netdev=n0,mac=$MAC" \
         -netdev tap,id=n1,ifname=swtap0,script=no,downscript=no \
         -device virtio-net-pci,netdev=n1,mac=52:54:00:12:34:57 \
+        -chardev "socket,id=chrtpm,path=$WORK/tpm.sock" \
+        -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-crb,tpmdev=tpm0 \
         -smbios "type=11,value=io.systemd.credential.binary:sparewall.identity=$CRED" \
         -display none -serial file:serial.log \
         -pidfile qemu.pid -daemonize
@@ -55,6 +72,7 @@ cleanup() {
         vm 'systemctl --failed --no-legend; sudo journalctl -b -u sparewall-early -u sparewalld -u systemd-networkd --no-pager | tail -80' 2>/dev/null || true
     fi
     if [ -f qemu.pid ]; then sudo kill "$(sudo cat qemu.pid)" 2>/dev/null || true; fi
+    pkill -f "tpmstate dir=$WORK/tpm" 2>/dev/null || true
     if [ -f rest-server.pid ]; then kill "$(cat rest-server.pid)" 2>/dev/null || true; fi
     sudo chmod a+r serial.log 2>/dev/null || true
 }
@@ -125,6 +143,10 @@ sleep 25
 vm 'sudo sparewall get "policy.mgmt->self.action"' | grep -q drop || fail "change not reverted"
 vm 'sudo sparewall history'
 
+log "a secret sealed to the TPM"
+vm 'sudo systemd-creds has-tpm2' || fail "the node does not see its TPM"
+printf %s 's3cret' | vm 'sudo sparewall secret set log-token'
+
 log "the configuration survives a reboot"
 vm 'sudo systemctl reboot' || true
 sleep 15
@@ -178,11 +200,12 @@ start_rest_server
 REPO=rest:http://10.0.2.2:8000/fw1
 PASSWORD="ci backup password"
 vm "printf %s '$PASSWORD' | sudo sparewall secret set backup-password"
-printf %s 's3cret' | vm 'sudo sparewall secret set log-token'
 vm "sudo sparewall set backup.enabled=true backup.repository=$REPO 'backup.schedule=*:0/15' --confirm 0"
 vm 'sudo sparewall backup' 2>&1 | tee backup.txt
 grep -q snapshot backup.txt || fail "the bundle was not sent to the repository"
 grep -q 'no cluster secrets' backup.txt && fail "the bundle left out the secrets"
+# The bundle carries the secrets decrypted: log-token, sealed before the
+# reboot, was unsealed by the coordinator.
 deadline=$((SECONDS + 120))
 until vm 'systemctl list-timers --all --no-legend sparewall-backup.timer' | grep -q sparewall-backup; do
     [ $SECONDS -lt $deadline ] || fail "no backup timer"
@@ -231,6 +254,10 @@ vm 'sudo sparewall health --verbose'
 dhcp_script
 [ "$(lease users)" = 192.0.2.20 ] || fail "users lost its reservation after the restore"
 can users 192.0.2.1 || fail "users cannot ping the gateway after the restore"
+# The restored secrets were sealed to the new node's own TPM; a backup
+# unseals them.
+vm 'sudo sparewall backup' 2>&1 | tee backup-after.txt
+grep -q snapshot backup-after.txt || fail "no backup after the restore"
 
 log "the coordinator's SELinux domain"
 selinux_report vm fw1
