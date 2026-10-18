@@ -23,11 +23,13 @@ For maintainers. A release is a tested commit on `main`, tagged.
    To add a maintainer, append their public key (`gpg --armor --export`)
    to `.github/release-signers.asc` in a reviewed pull request.
 
-   The check runs in the workflow of the commit being tagged, so it holds
-   only for commits whose workflow was reviewed. Someone who can push a
-   tag could tag an unreviewed commit whose workflow skips it, which is
-   why a tag ruleset restricts who may create `v*` tags, and why a human
-   publishes each release (step 4).
+   The check catches mistakes, not someone with push access: it runs in
+   the workflow of the commit being tagged, so a tag on an unreviewed
+   commit could carry a workflow that skips it (and push access can
+   already reach the repository's secrets). While only the maintainer can
+   push, that is enough. Before giving anyone else push access, add a tag
+   ruleset limiting who may create `v*` tags, and move the signing key
+   into a `release` environment that needs a maintainer's approval.
 3. The image workflow runs again for the tag: it rebuilds the image, runs
    every VM suite, publishes the image as `sha-<commit>` (and `testing`),
    then the **release assets** job drafts a GitHub release with:
