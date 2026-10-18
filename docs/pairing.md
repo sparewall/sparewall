@@ -25,6 +25,11 @@ tunnel between the nodes. See [`examples/pair.yaml`](../examples/pair.yaml).
 4. The tunnel comes up and the nodes find each other. From then on a
    change applied on either node is pushed to the other once confirmed.
 
+Until both keys are in, a node of a pair offers no DHCP leases: Kea's
+HA runs through the tunnel, and two unpaired nodes would otherwise hand
+out the same pool. To serve DHCP from the first node before the second
+is keyed, set `dhcp.ha: off` until then.
+
 Private keys never leave their node; only public keys are in the document.
 Cluster secrets (such as the remote-access VPN server key) are sent through
 the tunnel and re-encrypted by the receiving node.

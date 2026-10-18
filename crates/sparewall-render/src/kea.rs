@@ -70,6 +70,19 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         return Ok(());
     }
     let pair = doc.is_pair();
+    let want_ha = pair && dhcp.ha.unwrap_or(DhcpHa::HotStandby) == DhcpHa::HotStandby;
+    // A pair is seeded one node at a time, and its sync tunnel, which
+    // carries Kea's HA traffic, comes up only once both sync keys are in
+    // the document. Until then HA cannot bind its listener, and two
+    // unpaired nodes must not both offer the same pools: they offer
+    // nothing, as when held. (With HA off, the operator has chosen.)
+    let unpaired = want_ha
+        && !doc
+            .cluster
+            .nodes
+            .iter()
+            .all(|n| doc.cluster.sync_keys.contains_key(n));
+    let offer = !doc.cluster.hold && !unpaired;
     let ping_default = dhcp.ping_check.unwrap_or(true);
     let mut ping_any = false;
     let mut interfaces = Vec::new();
@@ -140,9 +153,9 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 })
             })
             .collect();
-        // Held (cluster.hold): the subnets are known, so HA runs, but
+        // Held (cluster.hold) or unpaired: the subnets are known, but
         // nothing is offered.
-        let (pools, reservations) = if doc.cluster.hold {
+        let (pools, reservations) = if !offer {
             (vec![], vec![])
         } else {
             (
@@ -187,7 +200,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             },
         }));
     }
-    let ha = pair && dhcp.ha.unwrap_or(DhcpHa::HotStandby) == DhcpHa::HotStandby;
+    let ha = want_ha && !unpaired;
     if ha {
         let peers: Vec<Value> = doc
             .cluster
@@ -236,7 +249,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             "valid-lifetime": dhcp.lease_time.unwrap_or(DEFAULT_LEASE_TIME),
             // Held beside another server, it must not answer that
             // server's clients with DHCPNAKs.
-            "authoritative": !doc.cluster.hold,
+            "authoritative": offer,
             "subnet4": subnets,
             "hooks-libraries": hooks,
             "loggers": [{
