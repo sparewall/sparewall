@@ -672,12 +672,13 @@ async fn sync_once(
                     && !h.pending
                     && adopt_peer_base(&local, &pv)
                 {
-                    match take_from_peer(core, events).await {
-                        Ok(g) => tracing::info!(
-                            id = g.id,
+                    match adopt_common_base(core, events, link, pv.active, &local.desired).await {
+                        Ok(true) => tracing::info!(
+                            id = pv.active,
                             peer,
                             "took the peer's generation as the pair's common base"
                         ),
+                        Ok(false) => {}
                         Err(e) => {
                             tracing::warn!(peer, error = %e, "taking the peer's generation failed");
                             status.last_error = Some(e);
@@ -934,6 +935,40 @@ pub async fn take_from_peer(
     .await
     .map_err(|e| e.to_string())?;
     Ok(g)
+}
+
+/// Take the peer's generation `id` as the pair's common base, only if it
+/// still holds `hash`, the content this node runs, and this node still
+/// runs it with nothing pending: either side may have changed since the
+/// views were compared, and a change must never be taken this way.
+/// Whether it was taken.
+async fn adopt_common_base(
+    core: &Core,
+    events: &broadcast::Sender<Value>,
+    link: Link,
+    id: u64,
+    hash: &str,
+) -> Result<bool, String> {
+    let mut conn = connect(link).await?;
+    let f = conn
+        .fetch(Some(id as i64))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let g = from_peer(&f.generation);
+    if g.id != id || g.hash != hash {
+        return Ok(false);
+    }
+    let hash = hash.to_string();
+    with_core_raw(core, events, move |c| {
+        if c.state()?.pending.is_some() || c.view()?.desired != hash {
+            return Ok(false);
+        }
+        // The content runs here already: installing it changes nothing.
+        c.adopt(&g, f.config, PeerGate::Immediate).map(|()| true)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// `sync --from <this node>`: make the peer adopt this node's generation.
