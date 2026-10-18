@@ -29,6 +29,9 @@ cleanup() {
         for f in refused.serial install.serial installed.serial; do
             [ -f "$f" ] && { echo "--- $f"; sudo tail -80 "$f"; }
         done
+        # The installed node's denials, from its console: they show
+        # there even when SSH does not.
+        [ -f installed.serial ] && { echo "--- denials on the installed node"; sudo grep -a 'avc: *denied' installed.serial || echo none; }
     fi
     [ -f installed.pid ] && sudo kill "$(sudo cat installed.pid)" 2>/dev/null || true
 }
@@ -168,6 +171,10 @@ until vm true 2>/dev/null; do
     [ $SECONDS -lt $deadline ] || fail "no SSH on the installed system"
     sleep 5
 done
+# Every denial, hidden or not, on the console without rate limiting, so
+# that a failure that cuts SSH still shows what was denied.
+vm 'sudo semodule -DB && sudo sysctl -q -w kernel.printk_ratelimit=0 kernel.printk_ratelimit_burst=100000' \
+    || fail "cannot set up auditing on the installed system"
 vm 'sudo journalctl -b -u "sparewall-seed@*" --no-pager' | grep -q "recorded the identity" \
     || fail "the identity did not come from the seed stick"
 

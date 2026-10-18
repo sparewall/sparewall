@@ -1,14 +1,15 @@
-policy_module(sparewalld, 0.9.0)
+policy_module(sparewalld, 0.10.0)
 
 ########################################
 #
-# The Sparewall coordinator (design: "Host hardening": its own policy
-# module before 1.0, with only its domain permissive until then).
+# The Sparewall coordinator (design: "Host hardening"), enforcing.
 #
-# The rules below are what the VM suites showed the coordinator doing.
-# The domain is still permissive, so nothing is blocked, but the suites
+# The rules below are what the VM suites showed the coordinator doing,
+# with dontaudit rules off so that hidden denials show too. The suites
 # fail on any sparewalld_t denial: a change that needs a new access adds
-# its rule here. Removing "permissive" is the step to enforcing.
+# its rule here. On a node, a one-line module, (typepermissive
+# sparewalld_t), makes the domain permissive again while a missing rule
+# is found (docs/operations.md).
 #
 # Grants are to the coordinator's own types wherever it owns the
 # objects: its state, runtime and temporary files and its units. Two
@@ -40,8 +41,6 @@ files_tmp_file(sparewalld_tmp_t)
 # it starts and has no type of its own.
 type sparewalld_unit_file_t;
 systemd_unit_file(sparewalld_unit_file_t)
-
-permissive sparewalld_t;
 
 # sparewall-run@ runs the same binary for commands the coordinator's
 # confinement forbids, in unconfined_service_t (SELinuxContext=), so that
@@ -77,10 +76,12 @@ gen_require(`
 #
 
 # fowner: the admin's authorized_keys is chowned to admin, then its mode
-# fixed (the unit grants CAP_FOWNER for this). net_admin: nft, ip and
-# its own netlink requests; the base policy hides its denial, so the
-# suites saw it only once dontaudit rules were off (tests/vm full_audit).
-allow sparewalld_t self:capability { chown dac_override fowner net_admin net_bind_service };
+# fixed (the unit grants CAP_FOWNER for this). sys_admin: systemd-creds,
+# sealing and unsealing secrets, checks it (the unit grants it); denied,
+# it logs and takes another path the suites do not test. net_admin: nft,
+# ip and its own netlink requests; the base policy hides its denial, so
+# the suites saw it only once dontaudit rules were off (full_audit).
+allow sparewalld_t self:capability { chown dac_override fowner net_admin net_bind_service sys_admin };
 allow sparewalld_t self:tcp_socket { accept bind connect create getattr getopt listen setopt shutdown read write };
 allow sparewalld_t self:unix_dgram_socket { connect create getattr getopt ioctl setattr setopt read write };
 allow sparewalld_t self:unix_stream_socket connectto;
@@ -101,6 +102,9 @@ allow sparewalld_t node_t:udp_socket node_bind;
 allow sparewalld_t node_t:tcp_socket node_bind;
 allow sparewalld_t { http_port_t unreserved_port_t }:tcp_socket name_bind;
 corenet_tcp_connect_all_ports(sparewalld_t)
+# Names: ACME directories, backup and log destinations, the DNS-01
+# server. The suites use addresses, so this is granted by interface.
+sysnet_dns_name_resolve(sparewalld_t)
 
 ########################################
 #
@@ -205,8 +209,10 @@ allow sparewalld_t { sparewalld_unit_file_t chronyd_unit_file_t keepalived_unit_
 # source; file contexts cannot tell them apart.
 allow sparewalld_t systemd_generator_unit_file_t:service { start stop status reload };
 
-# udevadm settle.
+# udevadm settle, and udevadm info, which reads a device's properties
+# from /run/udev/data to match a .link file's Path= to an interface.
 allow sparewalld_t udev_var_run_t:dir { getattr search };
+allow sparewalld_t udev_var_run_t:file { getattr open read };
 allow sparewalld_t udev_var_run_t:lnk_file read;
 allow sparewalld_t udev_var_run_t:sock_file write;
 allow sparewalld_t udev_t:unix_stream_socket connectto;

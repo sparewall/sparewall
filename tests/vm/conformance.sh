@@ -189,8 +189,8 @@ full_audit() { # run-command node-name
 }
 
 # The coordinator's SELinux domain and its denials, for the job summary:
-# what sparewalld_t was denied (permissive, so not blocked) and what any
-# domain was denied on the coordinator's types (enforcing, so blocked).
+# what sparewalld_t was denied and what any domain was denied on the
+# coordinator's types (all enforcing, so blocked).
 # Either means image/selinux lacks a rule: it is recorded in
 # $WORK/selinux-denials and fails the suite (selinux_gate).
 # $1 runs a command on a node.
@@ -205,7 +205,7 @@ selinux_report() { # run-command node-name
     denials=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
         | grep -oE 'avc: +denied .*' \
         | grep -E 'scontext=[^ ]*:sparewalld_t:|tcontext=[^ ]*:sparewalld_[a-z_]*:' \
-        | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=1//' \
+        | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=[01]//' \
         | sort | uniq -c | sort -rn) || true
     echo "$node: $(printf '%s' "$denials" | grep -c . || true) distinct sparewalld denials"
     printf '%s\n' "$denials"
@@ -237,6 +237,16 @@ selinux_health() { # run-command node-name
     $1 'sudo sparewall health -v -o json' \
         | jq -e '.checks[] | select(.name == "selinux") | .message | test("since admin .*acknowledged 0 at")' >/dev/null \
         || fail "$2: the acknowledgement was not recorded"
+}
+
+# The escape hatch operations.md documents: a module that makes only
+# sparewalld_t permissive, then its removal. $1 runs a command on a node.
+permissive_drill() { # run-command node-name
+    $1 "echo '(typepermissive sparewalld_t)' > /tmp/sparewalld-permissive.cil && sudo semodule -i /tmp/sparewalld-permissive.cil" \
+        || fail "$2: cannot make sparewalld_t permissive"
+    $1 'sudo semodule -l | grep -qx sparewalld-permissive' || fail "$2: the permissive module is not installed"
+    $1 'sudo semodule -r sparewalld-permissive' || fail "$2: cannot make sparewalld_t enforcing again"
+    ! $1 'sudo semodule -l | grep -qx sparewalld-permissive' || fail "$2: the permissive module is still installed"
 }
 
 # Fail if any report found a denial.
