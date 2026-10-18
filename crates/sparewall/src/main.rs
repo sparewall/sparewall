@@ -542,6 +542,20 @@ fn generation_line(g: &Generation) -> String {
     )
 }
 
+/// The hash the node gives the document a change request produces from
+/// `config` (the active document), or None where the CLI cannot tell.
+fn expected_hash(kind: &str, mut config: Value, body: &Value) -> Option<String> {
+    match kind {
+        "apply" => config = body.clone(),
+        "merge" => sparewall_config::merge_patch(&mut config, body),
+        "patch" => sparewall_config::json_patch(&mut config, body).ok()?,
+        _ => return None,
+    }
+    sparewall_config::from_value(config)
+        .ok()
+        .map(|d| sparewall_config::hash(&d))
+}
+
 /// How long to keep reconnecting after a change cut the connection.
 const RECONNECT_SECONDS: u64 = 60;
 
@@ -573,7 +587,7 @@ impl App {
 
     /// Send a mutation and handle the confirm window.
     async fn change(&self, c: &ChangeOpts, kind: &str, body: Value) -> Result<(), Fail> {
-        let (_, current) = self.current().await?;
+        let (config, current) = self.current().await?;
         let window = if c.dry_run {
             None
         } else {
@@ -595,31 +609,41 @@ impl App {
             // have cut itself off (the first apply renames the management
             // port), and is then pending on the node.
             Err(e) if self.target.is_remote() && window.is_some_and(|w| w > 0) => {
-                self.recover(e, current.id, c).await
+                let expected = expected_hash(kind, config, &body);
+                self.recover(e, &current, expected, c).await
             }
             Err(e) => Err(e.into()),
         }
     }
 
     /// Reconnect after losing the connection mid-change, and find out
-    /// whether the change is pending on the node.
-    async fn recover(&self, e: zlink::Error, before: i64, c: &ChangeOpts) -> Result<(), Fail> {
+    /// whether the change is pending on the node. A generation found
+    /// there is this change only if it extends `before` with the document
+    /// the request produces (`expected`, its hash).
+    async fn recover(
+        &self,
+        e: zlink::Error,
+        before: &Generation,
+        expected: Option<String>,
+        c: &ChangeOpts,
+    ) -> Result<(), Fail> {
         self.say(format!(
             "The connection was lost after the change was sent ({e}); reconnecting..."
         ));
         let lost = |m: String| {
             Fail::unreachable(format!(
                 "{m}; the change may be pending on the node: reconnect, check \
-                 `sparewall status` and run `sparewall confirm <generation>` before it reverts"
+                 `sparewall status` and `sparewall history`, and run \
+                 `sparewall confirm <generation>` before it reverts"
             ))
         };
         let deadline = Instant::now() + Duration::from_secs(RECONNECT_SECONDS);
-        let s = loop {
+        let (s, mut conn) = loop {
             // Over SSH, a node that is not back yet fails the call, not
             // the connect.
             if let Ok(mut conn) = self.conn().await {
                 match conn.status().await {
-                    Ok(Ok(s)) => break s,
+                    Ok(Ok(s)) => break (s, conn),
                     Ok(Err(e)) => return Err(e.into()),
                     Err(_) => {}
                 }
@@ -631,22 +655,46 @@ impl App {
             }
             tokio::time::sleep(Duration::from_secs(3)).await;
         };
-        let pending = s.sync.get("pending").filter(|p| !p.is_null());
-        match pending.and_then(|p| Some((p["id"].as_i64()?, p["reverts_in"].as_u64()?))) {
-            Some((id, reverts_in)) if id > before => {
+        let active = s.sync["active"].as_i64().unwrap_or(0);
+        let pending = s
+            .sync
+            .get("pending")
+            .filter(|p| !p.is_null())
+            .and_then(|p| Some((p["id"].as_i64()?, p["reverts_in"].as_u64()?)));
+        let Some(expected) = expected else {
+            return Err(lost(
+                "reconnected, but cannot tell which change is this one".into(),
+            ));
+        };
+        if expected == before.hash && pending.is_none() && active == before.id {
+            self.say("Reconnected: the node already had this configuration.");
+            return Ok(());
+        }
+        let candidate = match pending {
+            Some((id, _)) if id > before.id => id,
+            _ if active > before.id => active,
+            _ => {
+                return Err(Fail::other(format!(
+                    "reconnected, but the change did not take effect: generation {active} is active"
+                )));
+            }
+        };
+        let g = conn.get_config(Some(candidate)).await??.generation;
+        if g.base != Some(before.id) || g.hash != expected {
+            return Err(lost(format!(
+                "reconnected, but generation {candidate} is not this change (another \
+                 change was made meanwhile?)"
+            )));
+        }
+        drop(conn);
+        match pending {
+            Some((id, reverts_in)) if id == candidate => {
                 self.keep(id, reverts_in, "Reconnected: generation", c)
                     .await
             }
             _ => {
-                let active = s.sync["active"].as_i64().unwrap_or(0);
-                if active > before {
-                    self.say(format!("Reconnected: generation {active} is active."));
-                    Ok(())
-                } else {
-                    Err(Fail::other(format!(
-                        "reconnected, but no change is pending: generation {active} is active"
-                    )))
-                }
+                self.say(format!("Reconnected: generation {candidate} is active."));
+                Ok(())
             }
         }
     }
