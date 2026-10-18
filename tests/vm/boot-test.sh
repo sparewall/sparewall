@@ -154,7 +154,7 @@ vm 'sudo sparewall get "policy.mgmt->self.action"' | grep -q drop || fail "chang
 vm 'sudo sparewall history'
 
 log "a secret sealed to the TPM"
-vm 'systemd-analyze has-tpm2' || fail "the node cannot seal to its TPM"
+vm 'sudo systemd-analyze has-tpm2' || fail "the node cannot seal to its TPM"
 printf %s 's3cret' | vm 'sudo sparewall secret set log-token'
 
 log "the configuration survives a reboot"
