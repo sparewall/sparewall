@@ -805,6 +805,12 @@ impl System for Linux {
         run("networkctl", &["reload"], None).map(|_| ())
     }
 
+    fn set_admin_password(&mut self, hash: &str) -> Result<(), Error> {
+        // usermod edits shadow as the account tools do, outside this
+        // domain (sparewall-run@), so the policy grants no shadow access.
+        host_run("usermod", &["-p", hash, "admin"]).map(|_| ())
+    }
+
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
         // WireGuard keys go where networkd may read them (see KEY_DIR).
         let dir = PathBuf::from(sparewall_render::KEY_DIR);

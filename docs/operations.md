@@ -55,6 +55,22 @@ sparewall token revoke prometheus
 Roles: `monitor` (health and metrics), `viewer`, `operator` (change,
 confirm, roll back, sync) and `admin`.
 
+### The admin console password
+
+`admin` has no password by default: SSH takes keys only, and root is
+locked. For a break-glass login at the console, give it one:
+
+```shell
+sparewall passwd           # asks twice; only the hash leaves your machine
+sparewall passwd --lock    # back to keys only
+```
+
+The hash is the `admin-password` cluster secret: both nodes of a pair
+set it (a node that was down catches up when it rejoins), the encrypted
+backup carries it, and a restore or reinstall sets it again. Log in as
+`admin` on the console, then `sudo` as usual. Password logins over SSH
+stay off.
+
 **What a token can do today.** Every `sparewall` command goes through
 the coordinator's root-only socket, locally or over SSH with
 `sudo sparewall bridge`, and acts with full rights; no command takes a

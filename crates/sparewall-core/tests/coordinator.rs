@@ -10,6 +10,7 @@ fn identity() -> Identity {
     Identity {
         node: "fw1".into(),
         ssh_keys: vec![],
+        password_hash: None,
         management: BootstrapPort {
             nic: "52:54:00:aa:00:01".into(),
             vlan: None,
@@ -2990,4 +2991,42 @@ fn pairing_by_applying_on_each_node_leaves_a_common_base() {
         SyncState::InSync
     );
     assert_eq!(b.c.active().unwrap(), 4);
+}
+
+#[test]
+fn admin_password_seeded_synced_and_locked() {
+    use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
+    const SEED: &str = "$6$rounds=5000$saltsaltsaltsalt$seeded";
+    const SET: &str = "$6$rounds=5000$othersaltothersa$changed";
+    // Seeded on fw1 at first boot: version 1, set on the account.
+    let dir = tempfile::tempdir().unwrap();
+    let mut id = identity();
+    id.password_hash = Some(SEED.into());
+    let mut a = Coordinator::new(Store::open(dir.path()).unwrap(), Fake::default(), id);
+    a.boot(false).unwrap();
+    a.seed_admin_password().unwrap();
+    a.apply_admin_password().unwrap();
+    assert_eq!(a.secret_info(ADMIN_PASSWORD).unwrap().unwrap().version, 1);
+    assert_eq!(a.system().admin_password.as_deref(), Some(SEED));
+
+    // Changed later (sparewall passwd): a seed at the next boot keeps it.
+    a.secret_set(ADMIN_PASSWORD, SET.as_bytes(), SecretClass::Cluster)
+        .unwrap();
+    a.seed_admin_password().unwrap();
+    a.apply_admin_password().unwrap();
+    assert_eq!(a.system().admin_password.as_deref(), Some(SET));
+
+    // The peer takes it with the cluster secrets, and so does a lock.
+    let mut b = pair_node("fw2");
+    b.c.apply_admin_password().unwrap();
+    assert_eq!(b.c.system().admin_password, None, "no secret: left alone");
+    let changed = b.c.receive_secrets(a.cluster_secrets().unwrap()).unwrap();
+    assert!(changed.iter().any(|n| n == ADMIN_PASSWORD));
+    b.c.apply_admin_password().unwrap();
+    assert_eq!(b.c.system().admin_password.as_deref(), Some(SET));
+    a.secret_set(ADMIN_PASSWORD, b"!", SecretClass::Cluster)
+        .unwrap();
+    b.c.receive_secrets(a.cluster_secrets().unwrap()).unwrap();
+    b.c.apply_admin_password().unwrap();
+    assert_eq!(b.c.system().admin_password.as_deref(), Some("!"));
 }

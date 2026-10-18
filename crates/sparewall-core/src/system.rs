@@ -84,6 +84,10 @@ pub trait System: Send {
 
     /// Delete and recreate a netdev from its (unchanged) files.
     fn netdev_recreate(&mut self, name: &str) -> Result<(), Error>;
+
+    /// Set the `admin` account's password hash, as shadow holds it
+    /// (`!` locks the account).
+    fn set_admin_password(&mut self, hash: &str) -> Result<(), Error>;
 }
 
 /// An injected failure's message, cleared after use with `once`.
@@ -142,6 +146,8 @@ pub struct Fake {
     pub keys_made: u32,
     /// Keys installed for daemons, by file name.
     pub runtime_keys: BTreeMap<String, Vec<u8>>,
+    /// The admin account's password hash, as last set.
+    pub admin_password: Option<String>,
 }
 
 impl System for Fake {
@@ -323,6 +329,11 @@ impl System for Fake {
         Ok(())
     }
 
+    fn set_admin_password(&mut self, hash: &str) -> Result<(), Error> {
+        self.admin_password = Some(hash.to_string());
+        Ok(())
+    }
+
     fn install_key(&mut self, file: &str, content: &[u8], _group: &str) -> Result<(), Error> {
         self.runtime_keys.insert(file.to_string(), content.to_vec());
         Ok(())
@@ -399,5 +410,8 @@ impl System for Box<dyn System> {
     }
     fn netdev_recreate(&mut self, name: &str) -> Result<(), Error> {
         (**self).netdev_recreate(name)
+    }
+    fn set_admin_password(&mut self, hash: &str) -> Result<(), Error> {
+        (**self).set_admin_password(hash)
     }
 }

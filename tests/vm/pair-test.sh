@@ -63,6 +63,12 @@ gen=$(at fw1 'sudo sparewall status -o json' | jq .sync.active)
 fw2_gen() { [ "$(at fw2 'sudo sparewall status -o json' | jq .sync.active)" = "$gen" ]; }
 wait_for 120 "fw2 at generation $gen" fw2_gen
 
+log "the admin password reaches the peer (#89)"
+printf 'console only\n' | at fw1 'sudo sparewall passwd'
+takes_password "$(shadow_hash fw1)" 'console only' || fail "fw1's admin password is not set"
+fw2_password() { [ "$(shadow_hash fw2)" = "$(shadow_hash fw1)" ]; }
+wait_for 60 "fw2 has fw1's admin password" fw2_password
+
 # A change to the sync link goes to the peer first, through the current
 # link; each node keeps it once the peer confirms over the new one (#25).
 move_sync() { # fw1-address fw2-address
@@ -301,10 +307,15 @@ vpn_after_move "master loss"
 [ -n "${IMAGE:-}" ] || { vpn_summary; log "pair PASS (no IMAGE: rolling upgrade skipped)"; exit 0; }
 
 log "fw1 returns and rejoins as the backup"
+# Locked while fw1 is down: it follows when it rejoins.
+at fw2 'sudo sparewall passwd --lock'
+[ "$(shadow_hash fw2)" = '!' ] || fail "fw2's admin password is not locked"
 start "${FW1[@]}"
 wait_for 300 "fw1 SSH" at fw1 true
 wait_for 300 "fw1 in sync" in_sync fw1
 wait_for 120 "fw2 in sync" in_sync fw2
+fw1_locked() { [ "$(shadow_hash fw1)" = '!' ]; }
+wait_for 60 "fw1 follows the lock made while it was down" fw1_locked
 wait_for 60 "fw1 backup" is_backup fw1
 is_master fw2 || fail "fw2 gave up the gateway when fw1 returned (nopreempt)"
 check_wan fw2 fw1

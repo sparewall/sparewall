@@ -21,6 +21,12 @@ pub struct Identity {
     pub ssh_keys: Vec<String>,
     /// The management port: the only interface bootstrap mode brings up.
     pub management: BootstrapPort,
+    /// A crypt(3) hash for the `admin` account's console password, the
+    /// break-glass path before the network is right. Stored as the
+    /// `admin-password` cluster secret at first boot, unless one exists;
+    /// `sparewall passwd` replaces it later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -69,6 +75,26 @@ impl Identity {
         if m.address.is_none() && (m.gateway.is_some() || !m.dns.is_empty()) {
             return Err("management.gateway and dns need a static address".into());
         }
+        if let Some(h) = &self.password_hash
+            && (h == LOCKED_PASSWORD || !password_hash_ok(h))
+        {
+            return Err("password_hash must be a crypt(3) hash ($y$..., $6$...)".into());
+        }
         Ok(())
     }
+}
+
+/// The `admin-password` value that locks the account: no password works.
+pub const LOCKED_PASSWORD: &str = "!";
+
+/// Whether a value may be stored as the admin password: a crypt(3) hash
+/// (`$id$...`, as shadow holds it), or [`LOCKED_PASSWORD`]. Nothing that
+/// could break the shadow line or a command line.
+pub fn password_hash_ok(v: &str) -> bool {
+    v == LOCKED_PASSWORD
+        || (v.starts_with('$')
+            && v.len() <= 512
+            && v[1..].contains('$')
+            && v.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "$./=,-".contains(c)))
 }

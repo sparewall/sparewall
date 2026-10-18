@@ -503,3 +503,30 @@ fn login_banner_follows_health() {
     let text = wait_for("generation 1, health");
     assert!(text.contains("(as of "), "{text}");
 }
+
+#[test]
+fn admin_password_set_and_locked() {
+    let Some(d) = start() else { return };
+    let version = |d: &Daemon| -> Option<u64> {
+        let l: serde_json::Value =
+            serde_json::from_str(&ok(d, &["secret", "list", "-o", "json"])).unwrap();
+        l.as_array()?
+            .iter()
+            .find(|s| s["name"] == "admin-password")?["version"]
+            .as_u64()
+    };
+    assert_eq!(version(&d), None);
+    let o = sw_stdin(&d, &["passwd"], "correct horse\n");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(version(&d), Some(1));
+    // Only a hash is stored: anything else through `secret set` is refused.
+    let o = sw_stdin(&d, &["secret", "set", "admin-password"], "correct horse\n");
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("sparewall passwd"));
+    // Deleting would not reach the peer: locking is a new version.
+    let o = sw(&d, &["secret", "delete", "admin-password"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("passwd --lock"));
+    ok(&d, &["passwd", "--lock"]);
+    assert_eq!(version(&d), Some(2));
+}

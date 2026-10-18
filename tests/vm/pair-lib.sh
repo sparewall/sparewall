@@ -120,6 +120,13 @@ roles_are() { # fw1-role fw2-role description
         || fail "$3: fw1 is $(role fw1), fw2 is $(role fw2)"
 }
 
+# The admin account's password field in shadow, and whether it takes a
+# password (checked with crypt(3) here, as PAM checks it there).
+shadow_hash() { at "$1" 'sudo getent shadow admin' </dev/null | cut -d: -f2; }
+takes_password() { # hash password
+    H="$1" P="$2" perl -e 'exit(crypt($ENV{P}, $ENV{H}) eq $ENV{H} ? 0 : 1)'
+}
+
 # The pair document on stdin, with both nodes' sync keys filled in.
 pair_doc() {
     local k1 k2

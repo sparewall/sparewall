@@ -277,6 +277,7 @@ zones:
         let id = Identity {
             node: "fw1".into(),
             ssh_keys: vec![],
+            password_hash: None,
             management: BootstrapPort {
                 nic: "52:54:00:aa:00:01".into(),
                 vlan: None,
