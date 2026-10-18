@@ -61,7 +61,7 @@ gen_require(`
 	type init_var_lib_t, init_var_run_t, cgroup_t, nsfs_t, sysfs_t;
 	type chronyd_var_run_t, keepalived_var_run_t, conntrackd_conf_t;
 	type conntrackd_t, conntrackd_var_run_t, ulogd_t, systemd_journal_upload_t;
-	type udev_t, udev_var_run_t, tpm_device_t;
+	type udev_t, udev_var_run_t, tpm_device_t, efivarfs_t;
 	type systemd_networkd_t, systemd_networkd_var_run_t;
 	type container_t, container_file_t, container_var_lib_t;
 	type systemd_generator_unit_file_t;
@@ -218,9 +218,18 @@ allow sparewalld_t udev_var_run_t:sock_file write;
 allow sparewalld_t udev_t:unix_stream_socket connectto;
 
 # systemd-creds seals secrets to the TPM through the resource manager,
-# /dev/tpmrm0, where a node has one (--with-key=auto).
+# /dev/tpmrm0, where a node has one (--with-key=auto). Found with the
+# domain permissive on a node with a TPM: it also reads the PCR banks
+# the boot loader activated from an EFI variable, credits the kernel's
+# entropy pool from the TPM's generator once per boot, and marks that
+# done in /run/systemd/tpm-rng-credited.
 dev_list_all_dev_nodes(sparewalld_t)
 allow sparewalld_t tpm_device_t:chr_file { getattr ioctl open read write };
+allow sparewalld_t efivarfs_t:dir { getattr search open read };
+allow sparewalld_t efivarfs_t:file { getattr open read };
+dev_write_urand(sparewalld_t)
+allow sparewalld_t init_var_run_t:dir { add_name write };
+allow sparewalld_t init_var_run_t:file { create write };
 
 # Kernel state: net sysctls, sysfs, network namespaces.
 kernel_rw_net_sysctls(sparewalld_t)
