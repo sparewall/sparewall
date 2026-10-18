@@ -280,9 +280,10 @@ Where the implementation departs from, or settles open questions in,
   to the coordinator is its root-only socket (directly, or through SSH
   and `sparewall bridge`), and every caller there is admin. API tokens,
   with their roles, are checked only by the HTTPS health and metrics
-  endpoints. How token-holding scripts and front ends reach the
-  coordinator is decided with the web UI (milestone 7), and per-call role
-  checks come with that transport.
+  endpoints. Scripts and front ends will reach the coordinator through a
+  restricted socket with per-call role checks, and over HTTPS through
+  `sparewall-httpd` (design: "Web UI and HTTP API"); both come with
+  milestone 7.
 - **Kea pings an address before offering it** (its open-source
   `ping_check` hook, #52): one echo request, a 200 ms timeout, and no
   ping for an address leased in the last 60 s. An answer means a host is

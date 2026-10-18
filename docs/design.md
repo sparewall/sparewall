@@ -29,7 +29,7 @@ Sparewall turns a Linux box or VM into a firewall appliance that is upgraded and
 | Zone-based firewall with raw nftables rules | IPsec, captive portal, multi-tenancy |
 | WireGuard remote-access VPN | Site-to-site beyond static WireGuard peers |
 | Optional recursive DNS (Unbound), NTP, logging, metrics, health endpoints | DHCP-to-DNS updates (DDNS), IDS/IPS (Suricata), dynamic routing (BGP, OSPF) |
-| `sparewall` CLI and the Varlink API | Web UI and HTTP API |
+| `sparewall` CLI and the Varlink API | Web UI and HTTP API (milestone 7, which 1.0 waits for) |
 
 ### Design principles
 
@@ -327,7 +327,7 @@ Adapters shell out to `nft` and `conntrackd` rather than reimplementing their ne
 
 - Rust, using [zlink](https://github.com/z-galaxy/zlink) (MIT) for Varlink services and clients, with bindings generated from `.varlink` IDL, including for systemd's interfaces.
 - One Cargo workspace for `sparewalld`, `sparewall`, the schema, the renderers and the providers.
-- Socket-activated from a `.socket` unit at `/run/sparewall/org.sparewall.Firewall`, mode 0600, root only. A second, restricted socket can be added for a future front end. The peer never uses this socket; it talks through the sync tunnel.
+- Socket-activated from a `.socket` unit at `/run/sparewall/org.sparewall.Firewall`, mode 0600, root only. A second, restricted socket serves unprivileged clients such as `sparewall-httpd`, with every call checked against the caller's role ([Web UI and HTTP API](#web-ui-and-http-api)). The peer never uses either socket; it talks through the sync tunnel.
 - Interface names follow the project domain in reverse: `org.sparewall.*`.
 
 ### Interface sketch
@@ -711,7 +711,8 @@ The coordinator is the single authority: it holds users and tokens, checks every
 | Who | How |
 | --- | --- |
 | Admin at a shell | SSH keys; `sparewall` talks to the root-only local socket. A console root password set at install is the break-glass path |
-| Scripts, CI, future front ends | API tokens |
+| Scripts and CI | API tokens, over HTTPS or the restricted socket |
+| A browser (the web UI) | A password login, then a session cookie (see [Web UI and HTTP API](#web-ui-and-http-api)) |
 | Prometheus and health checks | A `monitor`-role token or a TLS client certificate |
 | Peer node | WireGuard keys on the sync tunnel |
 
@@ -946,18 +947,34 @@ Standard Linux runners for public repositories (4 vCPUs, 16 GB RAM, 14 GB SSD, w
 
 Self-hosted runners, if added for benchmarks or capacity, never run workflows triggered by pull requests from forks; they are limited to protected-branch pushes, releases and manual runs.
 
-## Web UI (later)
+## Web UI and HTTP API
 
-A web UI and HTTP API will be developed as a separate effort, in their own repository, once the Varlink API and the core components are stable and tested. The UI will be deployed as a container on the nodes and will talk to the core only through the versioned Varlink API.
+The web UI and the HTTP API are milestone 7. Nothing in them is built until milestone 6 is done, that is, until 0.x releases have run in production at real sites, and 1.0 waits for them. The UI will be the Varlink API's first client not built alongside it, and the gaps it finds (live events for status pages, errors that name the field at fault, schema metadata for forms, concurrent edits) should be closed before 1.0 freezes the schema, the Varlink API and the HTTP API together.
 
-What the core provides now so that effort can start cleanly:
+### Off until enabled
 
-- Every action is available through the coordinator's Varlink API; the `sparewall` CLI is simply its first client.
-- The API is versioned, so a front end targets a stable contract.
-- Users, API tokens and roles live in the coordinator, so any front end inherits the same authorization.
-- The coordinator can expose a second, restricted socket for a front end, separate from the root-only admin socket.
+A node serves no web UI and no HTTP API until the document enables them (`management.web`). Enabling it is an ordinary change, validated, applied, confirmed and recorded in the history, and so is turning it off again. It listens only on the management network, enforced by systemd and nftables like the health and metrics listener, with the `mgmt` certificate from `tls.certificates` or the node's self-signed one. SSH, the console and the anti-lockout rule never depend on it, so a broken UI cannot lock anyone out.
 
-Everything else (frontend technology, the HTTP API's shape, browser-facing authentication, how the container is isolated) is decided in that effort.
+### Three pieces
+
+| Piece | Where | Role |
+| --- | --- | --- |
+| The coordinator | This repository | Serves a restricted socket next to the root-only one. A client binds its connection to a principal with a token before anything else, and the coordinator checks every call against that principal's role and logs every mutation with it (#11). The root-only socket is unchanged |
+| `sparewall-httpd` | This repository | An unprivileged, sandboxed Rust service with its own SELinux domain. It terminates TLS, authenticates browsers and API clients, calls the restricted socket on their behalf, and serves the UI's files |
+| The UI | Its own repository | Angular with Angular Material, built into a static bundle; the image includes a pinned, signed release of it. No container, since `sparewall-httpd` serves the files |
+
+The HTTP API follows the conventions of systemd's [varlink-http-bridge](https://github.com/systemd/varlink-http-bridge): `POST /call/<interface.Method>` with the parameters as JSON, and streamed replies (`more`) as `application/json-seq`. Generic Varlink-over-HTTP clients then work with a token, and an OpenAPI description generated from the same interfaces serves the UI and scripts. The bridge itself is not used: it authenticates callers but does not authorize them, runs as root, and connects to each socket as itself, so the coordinator could not tell an `admin` from a `viewer`, and it has no login or session model for browsers.
+
+### Browser authentication
+
+- A user logs in with a password (the `admin` account's, rate-limited) and gets a short-lived, opaque session token from the coordinator's token store, so ending a session or revoking it takes effect at once.
+- The session travels in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie, and every request must also carry a custom header, which a cross-site form cannot send.
+- Scripts use API tokens in an `Authorization: Bearer` header instead.
+- Single sign-on (OpenID Connect) can follow later and maps onto the same roles.
+
+### The UI
+
+Much of the configuration editor is generated from the document's JSON Schema (`sparewall schema show`), with JSON Forms' Angular Material renderers, so a schema change reaches the UI without a hand-built form. Hand-built screens cover what needs real design: the zone policy matrix, status and health, apply with its confirm countdown, history and rollback, and the pair's sync state. In a pair the UI is reached through either node or the management gateway address; changes go through the coordinator, which pushes them to the peer as it does for the CLI.
 
 ## Project
 
@@ -969,7 +986,7 @@ Sparewall lives at [github.com/sparewall](https://github.com/sparewall); `sparew
 | --- | --- |
 | `sparewall/sparewall` | Cargo workspace (`sparewalld`, `sparewall`, schema, renderers, providers), Containerfile and Quadlet units, VM test suites, example documents, and the documentation under `docs/` |
 | `sparewall/.github` | Organization profile, shared workflows, security policy, contributing guide |
-| Web UI repository (later) | Created when that effort starts |
+| Web UI repository | The Angular UI, released as a signed static bundle that the image includes; created when milestone 7 starts |
 
 The schema, coordinator, providers and image live in one repository because they change in lockstep: the image pins the daemon versions the providers render for, and one release tag means one tested image. Documentation lives beside the code so it changes in the same pull request. Rust crates stay unpublished on crates.io until there is a reason to publish them, since crate names cannot be reclaimed.
 
@@ -977,8 +994,8 @@ The schema, coordinator, providers and image live in one repository because they
 
 | Component | License |
 | --- | --- |
-| Coordinator, CLI, providers, schema (built here) | GPL-3.0 |
-| Web UI (built here, later) | AGPL-3.0, as a network service |
+| Coordinator, CLI, `sparewall-httpd`, providers, schema (built here) | GPL-3.0 |
+| Web UI (built here, milestone 7) | AGPL-3.0, as a network service |
 | Kea | MPL-2.0. All hooks are open source since 3.0 except RBAC and the Configuration Backend, which Sparewall does not use |
 | systemd | LGPL-2.1+ (some tools GPL-2.0) |
 | nftables, conntrack-tools, keepalived, chrony, ulogd2 | GPL-2.0 family |
@@ -1003,8 +1020,8 @@ Build bottom-up: a bootable image, then a standalone firewall, then services, th
 | 3 | High availability | Sync VLAN and WireGuard tunnel; keepalived and conntrackd; Kea HA; peer push, hashes and divergence handling; health-driven VRRP priority | Two-node suite: failover scenarios, flow survival, lease continuity, `sync --from` |
 | 4 | Access and secrets | Secret store; users, tokens and roles; ACME (RFC 2136 and lego) with self-signed fallback; remote-access WireGuard | Token and role tests; certificate issuance against a test CA; VPN client survives failover |
 | 5 | Releases and upgrades | `sparewall upgrade` with channels and health gates; signature enforcement on nodes; schema versioning and migrations; installer images on GitHub Releases | Rolling upgrade from the previous release; schema upgrade and downgrade; unsigned image refused |
-| 6 | First production deployments | Hardening pass (SELinux module, sandboxing score), benchmarks on real hardware, documentation | Runs in production at two sites; restore drill passes on real hardware; 1.0 released |
-| 7 | Web UI | Separate repository against the versioned API | Defined when that effort starts |
+| 6 | First production deployments | 0.x releases: hardening pass (SELinux module, sandboxing score), benchmarks on real hardware, documentation | Runs in production at two sites; restore drill passes on real hardware |
+| 7 | Web UI and HTTP API | Role checks on a restricted socket (#11); `sparewall-httpd`; the UI in its own repository; opt-in through the document | The UI and the HTTP API drive every operation the CLI does, under each role's limits; 1.0 released, freezing the schema, the Varlink API and the HTTP API |
 
 Later features (multiple WANs and WAN failover, IPv6 routing, DDNS, IDS/IPS, dynamic routing) follow 1.0 and slot in as providers or schema additions.
 
