@@ -17,7 +17,7 @@ use sparewall_api::{
     PEER_PROTOCOL, PeerError, PeerGeneration, PeerProxy, PeerSecret, PeerSecretsProxy, PushReply,
     PutSecretsReply, UpgradeReply,
 };
-use sparewall_core::pair::{NodeView, SyncState, push_plan, sync_state};
+use sparewall_core::pair::{NodeView, SyncState, adopt_peer_base, push_plan, sync_state};
 use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
 use sparewall_core::{Check, Error, Generation, Level, PeerGate};
 use tokio::net::{TcpListener, TcpSocket};
@@ -553,7 +553,10 @@ fn set_checks(pair: &PairStatus) -> Vec<Check> {
         Some(SyncState::LocalBehind) => (Level::Degraded, format!("this node is behind {peer}")),
         Some(SyncState::Diverged) => (
             Level::Degraded,
-            format!("diverged from {peer}: resolve with sparewall sync --from <node>"),
+            format!(
+                "diverged from {peer}: resolve with sparewall sync --from <node>, naming the \
+                 node whose configuration should win (the other's is kept on disk)"
+            ),
         ),
         Some(SyncState::PeerUnreachable) | None => (
             Level::Degraded,
@@ -658,6 +661,29 @@ async fn sync_once(
                 {
                     tracing::warn!(peer, error = %e, "push to peer failed");
                     status.last_error = Some(e);
+                }
+                // Paired with the same content under unrelated histories:
+                // the node with the lower id takes the peer's generation,
+                // which runs nothing new, so the next change is pushed
+                // rather than reported as divergence (#101).
+                if state == SyncState::InSync
+                    && pending.is_none()
+                    && doubt.is_none()
+                    && !h.pending
+                    && adopt_peer_base(&local, &pv)
+                {
+                    match adopt_common_base(core, events, link, pv.active, &local.desired).await {
+                        Ok(true) => tracing::info!(
+                            id = pv.active,
+                            peer,
+                            "took the peer's generation as the pair's common base"
+                        ),
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::warn!(peer, error = %e, "taking the peer's generation failed");
+                            status.last_error = Some(e);
+                        }
+                    }
                 }
                 // The peer runs our generation, waiting for our confirmation
                 // (a first attempt failed, or this node restarted): confirm.
@@ -909,6 +935,40 @@ pub async fn take_from_peer(
     .await
     .map_err(|e| e.to_string())?;
     Ok(g)
+}
+
+/// Take the peer's generation `id` as the pair's common base, only if it
+/// still holds `hash`, the content this node runs, and this node still
+/// runs it with nothing pending: either side may have changed since the
+/// views were compared, and a change must never be taken this way.
+/// Whether it was taken.
+async fn adopt_common_base(
+    core: &Core,
+    events: &broadcast::Sender<Value>,
+    link: Link,
+    id: u64,
+    hash: &str,
+) -> Result<bool, String> {
+    let mut conn = connect(link).await?;
+    let f = conn
+        .fetch(Some(id as i64))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let g = from_peer(&f.generation);
+    if g.id != id || g.hash != hash {
+        return Ok(false);
+    }
+    let hash = hash.to_string();
+    with_core_raw(core, events, move |c| {
+        if c.state()?.pending.is_some() || c.view()?.desired != hash {
+            return Ok(false);
+        }
+        // The content runs here already: installing it changes nothing.
+        c.adopt(&g, f.config, PeerGate::Immediate).map(|()| true)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// `sync --from <this node>`: make the peer adopt this node's generation.

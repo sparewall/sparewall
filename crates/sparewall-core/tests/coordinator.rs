@@ -2941,3 +2941,53 @@ fn hold_is_reported_and_released_like_any_change() {
     assert!(t.c.health().unwrap().check("held").is_none());
     t.c.confirm(2).unwrap();
 }
+
+#[test]
+fn pairing_by_applying_on_each_node_leaves_a_common_base() {
+    // #101: fw1 reaches the pairing document at generation 3, fw2 at 1.
+    use sparewall_core::pair::{SyncState, adopt_peer_base, push_plan, sync_state};
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(0, None)).unwrap();
+    v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1300);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    a.c.apply(pair_example(), &opts(2, None)).unwrap();
+    b.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let (va, vb) = (a.c.view().unwrap(), b.c.view().unwrap());
+    assert_eq!(sync_state(&va, Some(&vb)), SyncState::InSync);
+
+    // fw2, with the lower id, takes fw1's generation: nothing new runs.
+    assert!(adopt_peer_base(&vb, &va) && !adopt_peer_base(&va, &vb));
+    b.c.adopt(
+        &a.c.generation(3).unwrap(),
+        a.c.document_value(3).unwrap(),
+        PeerGate::Immediate,
+    )
+    .unwrap();
+    let vb = b.c.view().unwrap();
+    assert_eq!((vb.active, &vb.desired), (3, &va.desired));
+    assert!(!adopt_peer_base(&vb, &va) && !adopt_peer_base(&va, &vb));
+
+    // The next change on fw1 is pushed, not diverged.
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1200);
+    a.c.apply(v, &opts(3, None)).unwrap();
+    let va = a.c.view().unwrap();
+    assert_eq!(sync_state(&va, Some(&vb)), SyncState::PeerBehind);
+    for id in push_plan(&va, vb.active, &vb.desired).unwrap() {
+        b.c.receive(
+            &a.c.generation(id).unwrap(),
+            a.c.document_value(id).unwrap(),
+            PeerGate::Immediate,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        sync_state(&a.c.view().unwrap(), Some(&b.c.view().unwrap())),
+        SyncState::InSync
+    );
+    assert_eq!(b.c.active().unwrap(), 4);
+}

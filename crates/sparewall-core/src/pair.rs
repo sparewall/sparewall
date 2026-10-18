@@ -105,6 +105,20 @@ pub fn sync_state(local: &NodeView, peer: Option<&NodeView>) -> SyncState {
     }
 }
 
+/// Whether this node should take the peer's active generation, id and
+/// all, to give the two a common history: both run the same content
+/// under unrelated generations (each node applied the pairing document on
+/// its own), so the next change on either would otherwise look like
+/// divergence, since descent matches ids as well as hashes. The node with
+/// the lower id takes the other's, so exactly one of them does; taking it
+/// changes nothing that runs.
+pub fn adopt_peer_base(local: &NodeView, peer: &NodeView) -> bool {
+    local.desired == peer.desired
+        && local.active < peer.active
+        && !descends(local, peer)
+        && !descends(peer, local)
+}
+
 /// The generations to push, oldest first, to bring a peer at `peer_active`
 /// up to `local`: those after `peer_active` in the local lineage. `None`
 /// when the peer is not an ancestor.
@@ -163,6 +177,24 @@ mod tests {
         assert_eq!(push_plan(&a, 1, "a"), Some(vec![2, 3]));
         assert_eq!(push_plan(&a, 0, ""), Some(vec![1, 2, 3]));
 
+        // Paired by applying the same document on each node (#101): in
+        // sync, and the node with the lower id takes the other's.
+        let a = view("fw1", &[(3, "x"), (2, "b"), (1, "a")], Some("x"));
+        let b = view("fw2", &[(1, "x")], Some("x"));
+        assert_eq!(sync_state(&a, Some(&b)), SyncState::InSync);
+        assert!(adopt_peer_base(&b, &a));
+        assert!(!adopt_peer_base(&a, &b));
+        // Once it has, a change on either side is pushed as usual.
+        let b = view("fw2", &[(3, "x")], Some("x"));
+        assert!(!adopt_peer_base(&b, &a) && !adopt_peer_base(&a, &b));
+        let a = view("fw1", &[(4, "y"), (3, "x"), (2, "b"), (1, "a")], Some("y"));
+        assert_eq!(sync_state(&a, Some(&b)), SyncState::PeerBehind);
+        assert_eq!(push_plan(&a, 3, "x"), Some(vec![4]));
+        // A shared history at different points is not a base to adopt.
+        let behind = view("fw2", &[(2, "b"), (1, "a")], Some("b"));
+        assert!(!adopt_peer_base(&behind, &a));
+
+        let a = view("fw1", &[(3, "c"), (2, "b"), (1, "a")], Some("c"));
         let forked = view("fw2", &[(3, "x"), (2, "b"), (1, "a")], Some("x"));
         assert_eq!(sync_state(&a, Some(&forked)), SyncState::Diverged);
         assert_eq!(push_plan(&a, 3, "x"), None);
