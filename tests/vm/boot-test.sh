@@ -6,7 +6,8 @@
 #   tests/vm/boot-test.sh IMAGE [WORKDIR]
 #
 # Needs root (podman for bootc-image-builder, KVM), qemu-system-x86_64,
-# swtpm (the node has a TPM 2.0, so secrets are sealed to it).
+# swtpm and OVMF (the node boots UEFI with a TPM 2.0, so secrets are
+# sealed to it).
 set -euo pipefail
 
 IMAGE=${1:?usage: boot-test.sh IMAGE [WORKDIR]}
@@ -49,10 +50,19 @@ start_tpm() {
         sleep 0.2
     done
 }
+# UEFI, as on real nodes: the firmware's TPM event log is part of what
+# systemd checks before it seals to the TPM.
+OVMF_CODE=${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}
+OVMF_VARS=${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}
 start_vm() {
     start_tpm
+    # The firmware's variables are the machine's own: fresh for a new
+    # install, kept across a reboot (QEMU keeps running).
+    cp "$OVMF_VARS" efivars.fd
     sudo qemu-system-x86_64 \
         -machine q35,accel=kvm -cpu host -m 2048 -smp 2 \
+        -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE" \
+        -drive if=pflash,format=raw,file=efivars.fd \
         -drive file=vm.qcow2,if=virtio,format=qcow2 \
         -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
         -device "virtio-net-pci,netdev=n0,mac=$MAC" \
@@ -144,7 +154,7 @@ vm 'sudo sparewall get "policy.mgmt->self.action"' | grep -q drop || fail "chang
 vm 'sudo sparewall history'
 
 log "a secret sealed to the TPM"
-vm 'sudo systemd-creds has-tpm2' || fail "the node does not see its TPM"
+vm 'systemd-analyze has-tpm2' || fail "the node cannot seal to its TPM"
 printf %s 's3cret' | vm 'sudo sparewall secret set log-token'
 
 log "the configuration survives a reboot"
