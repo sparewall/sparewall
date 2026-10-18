@@ -98,6 +98,10 @@ the `admin` user, and nothing is forwarded.
 ssh admin@10.0.99.2 sudo sparewall status
 ```
 
+This first `ssh` also asks you to accept the node's host key. Do it
+before using the `sparewall` CLI from your workstation: the CLI runs ssh
+non-interactively, so it cannot ask, and stops at an unknown host key.
+
 ## 3. Write the configuration document
 
 Start from [`examples/standalone.yaml`](../examples/standalone.yaml). Use

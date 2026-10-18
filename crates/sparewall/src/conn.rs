@@ -114,6 +114,7 @@ async fn ssh(ctx: &Context) -> Result<Connection<Stream>, Fail> {
         .arg(remote)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| Fail::unreachable(format!("cannot run ssh: {e}")))?;
@@ -128,6 +129,8 @@ async fn ssh(ctx: &Context) -> Result<Connection<Stream>, Fail> {
         tokio::net::UnixStream::from_std(theirs).map_err(|e| Fail::other(e.to_string()))?;
     let mut stdin = child.stdin.take().expect("piped");
     let mut stdout = child.stdout.take().expect("piped");
+    let stderr = child.stderr.take().expect("piped");
+    let hint = host_key_hint(&ctx.ssh_options, host);
     tokio::spawn(async move {
         let (mut rd, mut wr) = theirs.into_split();
         let up = async {
@@ -136,6 +139,10 @@ async fn ssh(ctx: &Context) -> Result<Connection<Stream>, Fail> {
         };
         let down = async {
             let _ = tokio::io::copy(&mut stdout, &mut wr).await;
+            // Hold the stream open until ssh's messages are out, so a
+            // hint comes before the caller's own error about the EOF.
+            relay_stderr(stderr, &hint).await;
+            drop(wr);
         };
         tokio::join!(up, down);
         let _ = child.wait().await;
@@ -145,6 +152,40 @@ async fn ssh(ctx: &Context) -> Result<Connection<Stream>, Fail> {
         .try_into()
         .map_err(|e: zlink::Error| Fail::other(e.to_string()))?;
     Ok(Connection::new(stream))
+}
+
+/// Pass ssh's stderr through, and explain BatchMode's refusal of an
+/// unknown host key, which every new node meets on first contact.
+async fn relay_stderr(stderr: tokio::process::ChildStderr, hint: &str) {
+    use std::io::Write;
+    use tokio::io::AsyncBufReadExt;
+    let mut rd = tokio::io::BufReader::new(stderr);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match rd.read_until(b'\n', &mut line).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let mut err = std::io::stderr().lock();
+                let _ = err.write_all(&line);
+                if line.starts_with(b"Host key verification failed") {
+                    let _ = writeln!(err, "{hint}");
+                }
+            }
+        }
+    }
+}
+
+fn host_key_hint(options: &[String], host: &str) -> String {
+    let ssh = std::iter::once("ssh")
+        .chain(options.iter().map(String::as_str))
+        .chain([host])
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "hint: ssh does not know {host}'s host key (or it changed). Run \
+         `{ssh}` once to check the fingerprint and accept it, then retry."
+    )
 }
 
 /// `sparewall bridge`: connect stdin/stdout to the local socket, for a

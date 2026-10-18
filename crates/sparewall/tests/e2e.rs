@@ -308,3 +308,65 @@ fn init_from_a_seed_file() {
         .unwrap();
     assert_eq!(o.status.code(), Some(2));
 }
+
+/// A fake `ssh` first in PATH: SCRIPT runs with ssh's arguments.
+fn fake_ssh(dir: &Path, script: &str) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let ssh = bin.join("ssh");
+    std::fs::write(&ssh, format!("#!/bin/sh\n{script}\n")).unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = bin.into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    path
+}
+
+#[test]
+fn over_ssh_through_the_bridge() {
+    let Some(d) = start() else { return };
+    // Stands in for `ssh host sudo -n sparewall bridge`.
+    let path = fake_ssh(
+        d.dir.path(),
+        &format!(
+            "exec '{}' --socket '{}' bridge",
+            env!("CARGO_BIN_EXE_sparewall"),
+            d.dir.path().join("fw.sock").display()
+        ),
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+        .args(["--host", "admin@fw1", "status"])
+        .env("PATH", path)
+        .env("XDG_CONFIG_HOME", d.dir.path())
+        .env_remove("SPAREWALL_SOCKET")
+        .env_remove("SSH_CONNECTION")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("fw1"));
+}
+
+#[test]
+fn unknown_host_key_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fake_ssh(
+        dir.path(),
+        "echo 'Host key verification failed.' >&2; exit 255",
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+        .args(["--host", "admin@fw1", "status"])
+        .env("PATH", path)
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env_remove("SPAREWALL_SOCKET")
+        .env_remove("SSH_CONNECTION")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    let (ssh, hint) = (
+        err.find("Host key verification failed.").expect(&err),
+        err.find("`ssh admin@fw1` once").expect(&err),
+    );
+    assert!(ssh < hint, "{err}");
+}
