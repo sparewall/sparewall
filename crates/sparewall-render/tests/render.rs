@@ -82,8 +82,8 @@ fn pair_both_nodes() {
     }
 }
 
-#[test]
-fn pair_with_sync_keys_renders_tunnel() {
+/// The pair example with both sync keys: paired, with its tunnel.
+fn paired() -> sparewall_config::Document {
     let mut doc = example("pair.yaml");
     doc.cluster.sync_keys.insert(
         "fw1".into(),
@@ -93,6 +93,44 @@ fn pair_with_sync_keys_renders_tunnel() {
         "fw2".into(),
         "ZmVkY2JhWllYV1ZVVFNSUVBPTk1MS0pJSEdGRURDQkE=".into(),
     );
+    doc
+}
+
+fn kea_ha(conf: &serde_json::Value) -> bool {
+    conf["Dhcp4"]["hooks-libraries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|h| h["library"].as_str().unwrap().ends_with("libdhcp_ha.so"))
+}
+
+#[test]
+fn kea_waits_for_the_pair() {
+    // Unpaired (the example has no sync keys): no tunnel, so no HA, whose
+    // listener binds the tunnel address; and nothing offered, so that two
+    // unpaired nodes do not both hand out the same pool.
+    let conf = kea_conf(&example("pair.yaml"));
+    assert!(!kea_ha(&conf));
+    assert_eq!(conf["Dhcp4"]["authoritative"], false);
+    for s in conf["Dhcp4"]["subnet4"].as_array().unwrap() {
+        assert!(s["pools"].as_array().unwrap().is_empty(), "{s}");
+    }
+    // Paired: HA over the tunnel, and the pools offered.
+    let conf = kea_conf(&paired());
+    assert!(kea_ha(&conf));
+    assert_eq!(conf["Dhcp4"]["authoritative"], true);
+    assert!(
+        conf["Dhcp4"]["subnet4"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| !s["pools"].as_array().unwrap().is_empty())
+    );
+}
+
+#[test]
+fn pair_with_sync_keys_renders_tunnel() {
+    let doc = paired();
     let r = render(&doc, "fw1").unwrap();
     let nd = &r.files["network/40-sparewall-swsync.netdev"];
     assert!(
@@ -411,7 +449,7 @@ fn kea_binds_one_address_per_interface() {
 fn hold_claims_no_gateway_address() {
     // A pair: keepalived runs, but every instance also tracks a script
     // that always fails, so all stay in FAULT.
-    let mut doc = example("pair.yaml");
+    let mut doc = paired();
     doc.cluster.hold = true;
     let r = render(&doc, "fw1").unwrap();
     let ka = &r.files[&format!(
@@ -433,6 +471,7 @@ fn hold_claims_no_gateway_address() {
         serde_json::from_str(&r.files[&format!("{}/kea-dhcp4.conf", Subsystem::Dhcp.dir())])
             .unwrap();
     assert_eq!(kea["Dhcp4"]["authoritative"], false);
+    assert!(kea_ha(&kea));
     // On a WAN with private node addresses, no route via the peer: with
     // no master it would bounce between the two.
     let wan = &r.files[&format!("{}/30-sparewall-wan.network", Subsystem::Networkd.dir())];

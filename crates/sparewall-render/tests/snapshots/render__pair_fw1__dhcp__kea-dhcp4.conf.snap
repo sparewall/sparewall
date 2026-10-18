@@ -4,7 +4,7 @@ expression: content
 ---
 {
   "Dhcp4": {
-    "authoritative": true,
+    "authoritative": false,
     "control-sockets": [
       {
         "socket-name": "kea4-ctrl-socket",
@@ -22,35 +22,6 @@ expression: content
           "min-ping-requests": 1,
           "ping-cltt-secs": 60,
           "reply-timeout": 200
-        }
-      },
-      {
-        "library": "/usr/lib64/kea/hooks/libdhcp_ha.so",
-        "parameters": {
-          "high-availability": [
-            {
-              "heartbeat-delay": 10000,
-              "max-ack-delay": 5000,
-              "max-response-delay": 60000,
-              "max-unacked-clients": 5,
-              "mode": "hot-standby",
-              "peers": [
-                {
-                  "auto-failover": true,
-                  "name": "fw1",
-                  "role": "primary",
-                  "url": "http://169.254.77.1:8647/"
-                },
-                {
-                  "auto-failover": true,
-                  "name": "fw2",
-                  "role": "standby",
-                  "url": "http://169.254.77.2:8647/"
-                }
-              ],
-              "this-server-name": "fw1"
-            }
-          ]
         }
       }
     ],
@@ -94,11 +65,7 @@ expression: content
             "name": "domain-name-servers"
           }
         ],
-        "pools": [
-          {
-            "pool": "192.0.2.100 - 192.0.2.199"
-          }
-        ],
+        "pools": [],
         "reservations": [],
         "subnet": "192.0.2.0/24"
       }

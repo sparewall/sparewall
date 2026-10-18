@@ -535,7 +535,7 @@ fn set_checks(pair: &PairStatus) -> Vec<Check> {
                 "pair",
                 Level::Degraded,
                 format!(
-                    "not paired with {p}: add both nodes' sync keys (from sparewall status) to cluster.sync_keys"
+                    "not paired with {p}: add both nodes' sync keys (from sparewall status) to cluster.sync_keys; until then DHCP offers nothing"
                 ),
             )],
             None => vec![],
