@@ -3,14 +3,15 @@
 #   - it names a version;
 #   - it is the commit this workflow builds ($GITHUB_SHA), and that commit
 #     is on main, so the workflow and this script were reviewed there;
-#   - a release (no hyphen) is an annotated tag signed with a key in
-#     .github/release-signers.asc as main has it now, never as the tag
-#     has it, so a tag cannot bring its own key and revoking a key on main
-#     takes effect at once.
+#   - a release (no hyphen) is an annotated tag signed with a GPG key on
+#     the GitHub account of one of RELEASE_SIGNERS (user names, which the
+#     workflow takes from the collaborators with push access), fetched now,
+#     so a tag cannot bring its own key and a key revoked on GitHub stops
+#     counting.
 # A prerelease (a hyphen: v0.2.0-rc1) need not be signed, so a maintainer
 # can sign the release tag on the commit of the last prerelease.
 #
-#   GITHUB_SHA=COMMIT .github/check-tag.sh TAG
+#   GITHUB_SHA=COMMIT RELEASE_SIGNERS="user ..." .github/check-tag.sh TAG
 set -euo pipefail
 tag=${1:?usage: check-tag.sh TAG}
 sha=${GITHUB_SHA:?GITHUB_SHA must name the commit being built}
@@ -34,8 +35,15 @@ case $tag in *-*)
 esac
 [ "$(git cat-file -t "refs/tags/$tag")" = tag ] \
     || die "not an annotated tag; a release tag must be signed (git tag -s)"
+[ -n "${RELEASE_SIGNERS:-}" ] || die "no RELEASE_SIGNERS"
 GNUPGHOME=$(mktemp -d)
 export GNUPGHOME
 trap 'rm -rf "$GNUPGHOME"' EXIT
-git show refs/remotes/origin/main:.github/release-signers.asc | gpg -q --batch --import
-git verify-tag "$tag" || die "not signed by a key in main's .github/release-signers.asc"
+for u in $RELEASE_SIGNERS; do
+    keys=$(curl -fsSL "${KEYS_URL:-https://github.com}/$u.gpg") || die "cannot fetch $u's GPG keys"
+    # An account without keys gets an armored note, which gpg "imports".
+    gpg --batch --with-colons --show-keys <<<"$keys" 2>/dev/null | grep -q '^pub:' \
+        || die "$u has no GPG keys on GitHub"
+    gpg -q --batch --import <<<"$keys"
+done
+git verify-tag "$tag" || die "not signed by a GPG key of $RELEASE_SIGNERS"
