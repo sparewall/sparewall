@@ -348,6 +348,32 @@ fn over_ssh_through_the_bridge() {
 }
 
 #[test]
+fn ssh_stderr_does_not_stall_the_relay() {
+    let Some(d) = start() else { return };
+    // Far more than a pipe holds, before ssh's stdout carries anything.
+    let path = fake_ssh(
+        d.dir.path(),
+        &format!(
+            "head -c 1000000 /dev/zero | tr '\\0' x >&2; echo >&2\n\
+             exec '{}' --socket '{}' bridge",
+            env!("CARGO_BIN_EXE_sparewall"),
+            d.dir.path().join("fw.sock").display()
+        ),
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+        .args(["--host", "admin@fw1", "status"])
+        .env("PATH", path)
+        .env("XDG_CONFIG_HOME", d.dir.path())
+        .env_remove("SPAREWALL_SOCKET")
+        .env_remove("SSH_CONNECTION")
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    assert!(o.stderr.len() > 1_000_000);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("fw1"));
+}
+
+#[test]
 fn unknown_host_key_hint() {
     let dir = tempfile::tempdir().unwrap();
     let path = fake_ssh(

@@ -131,6 +131,8 @@ async fn ssh(ctx: &Context) -> Result<Connection<Stream>, Fail> {
     let mut stdout = child.stdout.take().expect("piped");
     let stderr = child.stderr.take().expect("piped");
     let hint = host_key_hint(&ctx.ssh_options, host);
+    // Drained alongside stdout: ssh blocks on a full stderr pipe.
+    let errors = tokio::spawn(async move { relay_stderr(stderr, &hint).await });
     tokio::spawn(async move {
         let (mut rd, mut wr) = theirs.into_split();
         let up = async {
@@ -141,7 +143,7 @@ async fn ssh(ctx: &Context) -> Result<Connection<Stream>, Fail> {
             let _ = tokio::io::copy(&mut stdout, &mut wr).await;
             // Hold the stream open until ssh's messages are out, so a
             // hint comes before the caller's own error about the EOF.
-            relay_stderr(stderr, &hint).await;
+            let _ = errors.await;
             drop(wr);
         };
         tokio::join!(up, down);
