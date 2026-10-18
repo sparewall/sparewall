@@ -38,6 +38,8 @@ jobs:
       - run: cargo test --workspace --locked
       - name: VM test helpers
         run: tests/vm/vpn-check-test.sh
+      - name: Release tag checks
+        run: tests/ci/release-tags.sh
 
   deny:
     name: licenses and advisories

@@ -44,7 +44,7 @@ const ADMIN_HOME: &str = "/var/home/admin";
 const IDENTITY_CREDENTIAL: &str = "sparewall.identity";
 
 #[derive(Parser)]
-#[command(version, about = "The Sparewall coordinator")]
+#[command(version = sparewall_core::VERSION, about = "The Sparewall coordinator")]
 struct Args {
     /// State directory (generations, identity, keys).
     #[arg(long, env = "SPAREWALL_STATE", default_value = "/var/lib/sparewall")]

@@ -25,6 +25,15 @@ pub use health::{Check, Health, Level};
 pub use store::{Generation, Store};
 pub use system::System;
 
+/// The release version: CI sets `SPAREWALL_VERSION` from the tag (or from
+/// `git describe` between tags), so a build says which release it is
+/// without anyone editing Cargo.toml. A local build falls back to Cargo's
+/// (as does an image built without the build argument, which sets it empty).
+pub const VERSION: &str = match option_env!("SPAREWALL_VERSION") {
+    Some(v) if !v.is_empty() => v,
+    _ => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("validation failed: {}", .0.join("; "))]

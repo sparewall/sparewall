@@ -17,6 +17,8 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
 COPY examples examples
+# The version the binaries report; CI passes .github/version.sh's.
+ARG SPAREWALL_VERSION=
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p sparewalld -p sparewall \
