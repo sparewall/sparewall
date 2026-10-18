@@ -23,7 +23,7 @@ mkdir "$t/github"
 key maintainer > "$t/github/maintainer.gpg"
 key stranger > "$t/github/stranger.gpg"
 
-git init -q --bare "$t/origin.git"
+git init -q --bare -b main "$t/origin.git"
 git init -q -b main "$t/work"
 cd "$t/work"
 git config user.name test

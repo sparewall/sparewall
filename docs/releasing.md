@@ -12,12 +12,12 @@ For maintainers. A release is a tested commit on `main`, tagged.
    A tag with a hyphen (`v0.2.0-rc1`) is a prerelease. Before it builds
    anything, the image workflow checks that the tag is on a commit on
    `main`, and that a release tag (no hyphen) is signed with a GPG key on
-   the GitHub account of someone with push access to the repository. The
-   keys are fetched from GitHub (`https://github.com/USER.gpg`) at that
-   moment: add your signing key to your account, and a key you remove
+   the GitHub account of whoever pushed it, who has push access or could
+   not have pushed. The keys are fetched from GitHub
+   (`https://github.com/USER.gpg`) at that moment: add your signing key to your account, and a key you remove
    stops counting. A prerelease need not be signed, so the usual path is
    an unsigned `-rcN` that anyone with push access can tag, then the
-   release signed by a maintainer on the same commit once the last rc
+   release signed and pushed by a maintainer on the same commit once the last rc
    proves out:
    ```shell
    git tag -s v0.2.0 -m "Sparewall 0.2.0" v0.2.0-rc2^{}

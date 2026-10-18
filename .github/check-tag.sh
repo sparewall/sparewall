@@ -4,10 +4,9 @@
 #   - it is the commit this workflow builds ($GITHUB_SHA), and that commit
 #     is on main, so the workflow and this script were reviewed there;
 #   - a release (no hyphen) is an annotated tag signed with a GPG key on
-#     the GitHub account of one of RELEASE_SIGNERS (user names, which the
-#     workflow takes from the collaborators with push access), fetched now,
-#     so a tag cannot bring its own key and a key revoked on GitHub stops
-#     counting.
+#     the GitHub account of one of RELEASE_SIGNERS (user names: the
+#     workflow passes whoever pushed the tag), fetched now, so a tag
+#     cannot bring its own key and a key revoked on GitHub stops counting.
 # A prerelease (a hyphen: v0.2.0-rc1) need not be signed, so a maintainer
 # can sign the release tag on the commit of the last prerelease.
 #
