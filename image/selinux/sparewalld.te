@@ -221,15 +221,19 @@ allow sparewalld_t udev_t:unix_stream_socket connectto;
 # /dev/tpmrm0, where a node has one (--with-key=auto). Found with the
 # domain permissive on a node with a TPM: it also reads the PCR banks
 # the boot loader activated from an EFI variable, credits the kernel's
-# entropy pool from the TPM's generator once per boot, and marks that
-# done in /run/systemd/tpm-rng-credited.
+# entropy pool from the TPM's generator, and marks that done in
+# /run/systemd/tpm-rng-credited (best effort: without the marker it only
+# mixes TPM entropy in again next time). The marker is created with the
+# coordinator's own run type, so that it adds a name to /run/systemd but
+# writes, renames and removes nothing of init's there.
 dev_list_all_dev_nodes(sparewalld_t)
 allow sparewalld_t tpm_device_t:chr_file { getattr ioctl open read write };
 allow sparewalld_t efivarfs_t:dir { getattr search open read };
 allow sparewalld_t efivarfs_t:file { getattr open read };
 dev_write_urand(sparewalld_t)
+type_transition sparewalld_t init_var_run_t:file sparewalld_var_run_t "tpm-rng-credited";
 allow sparewalld_t init_var_run_t:dir { add_name write };
-allow sparewalld_t init_var_run_t:file { create write };
+allow sparewalld_t sparewalld_var_run_t:file { create getattr open write };
 
 # Kernel state: net sysctls, sysfs, network namespaces.
 kernel_rw_net_sysctls(sparewalld_t)
