@@ -396,3 +396,41 @@ fn unknown_host_key_hint() {
     );
     assert!(ssh < hint, "{err}");
 }
+
+#[test]
+fn reconnects_after_the_change_cuts_the_session() {
+    let Some(d) = start() else { return };
+    // The second session carries the apply (the first reads the current
+    // generation): it reaches the node, but the reply is lost and the
+    // session ends, as when the change renames the management port.
+    let path = fake_ssh(
+        d.dir.path(),
+        &format!(
+            "n=$(($(cat '{dir}/n' 2>/dev/null || echo 0) + 1)); echo $n > '{dir}/n'\n\
+             if [ $n = 2 ]; then timeout 2 '{cli}' --socket '{sock}' bridge >/dev/null; exit 255; fi\n\
+             exec '{cli}' --socket '{sock}' bridge",
+            dir = d.dir.path().display(),
+            cli = env!("CARGO_BIN_EXE_sparewall"),
+            sock = d.dir.path().join("fw.sock").display()
+        ),
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+        .args(["--host", "admin@fw1", "apply", "-f", &example()])
+        .args(["--confirm", "60", "--no-prompt"])
+        .env("PATH", path)
+        .env("XDG_CONFIG_HOME", d.dir.path())
+        .env_remove("SPAREWALL_SOCKET")
+        .env_remove("SSH_CONNECTION")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("connection was lost"), "{err}");
+    assert!(
+        err.contains("Reconnected: generation 1; it reverts in"),
+        "{err}"
+    );
+    let s = ok(&d, &["status", "-o", "json"]);
+    let s: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert_eq!(s["sync"]["pending"]["id"], 1);
+}

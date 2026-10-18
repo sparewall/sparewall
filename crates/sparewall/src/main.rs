@@ -4,7 +4,7 @@ mod conn;
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use futures_util::{StreamExt, pin_mut};
@@ -542,6 +542,9 @@ fn generation_line(g: &Generation) -> String {
     )
 }
 
+/// How long to keep reconnecting after a change cut the connection.
+const RECONNECT_SECONDS: u64 = 60;
+
 impl App {
     async fn conn(&self) -> Result<zlink::Connection<zlink::tokio::unix::Stream>, Fail> {
         conn::connect(&self.target).await
@@ -579,14 +582,73 @@ impl App {
         let mut conn = self.conn().await?;
         let dry = Some(c.dry_run);
         let div = Some(c.allow_diverge);
-        let r: ApplyReply = match kind {
-            "apply" => conn.apply(&body, current.id, window, dry, div).await??,
-            "merge" => conn.merge(&body, current.id, window, dry, div).await??,
-            "patch" => conn.patch(&body, current.id, window, dry, div).await??,
+        let sent = match kind {
+            "apply" => conn.apply(&body, current.id, window, dry, div).await,
+            "merge" => conn.merge(&body, current.id, window, dry, div).await,
+            "patch" => conn.patch(&body, current.id, window, dry, div).await,
             _ => unreachable!(),
         };
         drop(conn);
-        self.report(&r, c).await
+        match sent {
+            Ok(r) => self.report(&r?, c).await,
+            // The connection went down with the change in flight: it may
+            // have cut itself off (the first apply renames the management
+            // port), and is then pending on the node.
+            Err(e) if self.target.is_remote() && window.is_some_and(|w| w > 0) => {
+                self.recover(e, current.id, c).await
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Reconnect after losing the connection mid-change, and find out
+    /// whether the change is pending on the node.
+    async fn recover(&self, e: zlink::Error, before: i64, c: &ChangeOpts) -> Result<(), Fail> {
+        self.say(format!(
+            "The connection was lost after the change was sent ({e}); reconnecting..."
+        ));
+        let lost = |m: String| {
+            Fail::unreachable(format!(
+                "{m}; the change may be pending on the node: reconnect, check \
+                 `sparewall status` and run `sparewall confirm <generation>` before it reverts"
+            ))
+        };
+        let deadline = Instant::now() + Duration::from_secs(RECONNECT_SECONDS);
+        let s = loop {
+            // Over SSH, a node that is not back yet fails the call, not
+            // the connect.
+            if let Ok(mut conn) = self.conn().await {
+                match conn.status().await {
+                    Ok(Ok(s)) => break s,
+                    Ok(Err(e)) => return Err(e.into()),
+                    Err(_) => {}
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(lost(format!(
+                    "could not reconnect within {RECONNECT_SECONDS}s"
+                )));
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        };
+        let pending = s.sync.get("pending").filter(|p| !p.is_null());
+        match pending.and_then(|p| Some((p["id"].as_i64()?, p["reverts_in"].as_u64()?))) {
+            Some((id, reverts_in)) if id > before => {
+                self.keep(id, reverts_in, "Reconnected: generation", c)
+                    .await
+            }
+            _ => {
+                let active = s.sync["active"].as_i64().unwrap_or(0);
+                if active > before {
+                    self.say(format!("Reconnected: generation {active} is active."));
+                    Ok(())
+                } else {
+                    Err(Fail::other(format!(
+                        "reconnected, but no change is pending: generation {active} is active"
+                    )))
+                }
+            }
+        }
     }
 
     async fn report(&self, r: &ApplyReply, c: &ChangeOpts) -> Result<(), Fail> {
@@ -627,21 +689,23 @@ impl App {
             ));
             return Ok(());
         }
+        self.keep(id, r.confirm_seconds.max(0) as u64, "Applied generation", c)
+            .await
+    }
+
+    /// Generation ID is pending: ask whether to keep it, or say how to.
+    async fn keep(&self, id: i64, seconds: u64, what: &str, c: &ChangeOpts) -> Result<(), Fail> {
         let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
         if c.no_prompt || !interactive || self.quiet {
             self.say(format!(
-                "Applied generation {id}; it reverts in {}s unless you run `sparewall confirm {id}`.",
-                r.confirm_seconds
+                "{what} {id}; it reverts in {seconds}s unless you run `sparewall confirm {id}`."
             ));
             return Ok(());
         }
-        eprint!(
-            "Applied generation {id}. Keep it? It reverts in {}s otherwise. [y/N] ",
-            r.confirm_seconds
-        );
+        eprint!("{what} {id}. Keep it? It reverts in {seconds}s otherwise. [y/N] ");
         let _ = std::io::stderr().flush();
         let answer = tokio::time::timeout(
-            Duration::from_secs(r.confirm_seconds.max(1) as u64),
+            Duration::from_secs(seconds.max(1)),
             tokio::task::spawn_blocking(|| {
                 let mut s = String::new();
                 let _ = std::io::stdin().read_line(&mut s);

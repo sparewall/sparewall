@@ -110,6 +110,12 @@ async fn ssh(ctx: &Context) -> Result<Connection<Stream>, Fail> {
         .args(&ctx.ssh_options)
         .arg("-T")
         .arg("-oBatchMode=yes")
+        // A session cut by the change it carried (a renamed management
+        // port) fails in seconds instead of leaving the CLI waiting. The
+        // context's options come first, so they win.
+        .arg("-oServerAliveInterval=5")
+        .arg("-oServerAliveCountMax=3")
+        .arg("-oConnectTimeout=10")
         .arg(host)
         .arg(remote)
         .stdin(std::process::Stdio::piped())
