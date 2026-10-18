@@ -77,9 +77,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // unpaired nodes must not both offer the same pools: they offer
     // nothing, as when held. (With HA off, the operator has chosen.)
     let unpaired = want_ha
-        && doc
-            .peer_of(node)
-            .is_some_and(|p| !doc.cluster.sync_keys.contains_key(p));
+        && !doc
+            .cluster
+            .nodes
+            .iter()
+            .all(|n| doc.cluster.sync_keys.contains_key(n));
     let offer = !doc.cluster.hold && !unpaired;
     let ping_default = dhcp.ping_check.unwrap_or(true);
     let mut ping_any = false;

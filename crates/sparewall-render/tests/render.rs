@@ -115,6 +115,12 @@ fn kea_waits_for_the_pair() {
     for s in conf["Dhcp4"]["subnet4"].as_array().unwrap() {
         assert!(s["pools"].as_array().unwrap().is_empty(), "{s}");
     }
+    // Only the peer's key (the node's own is missing): still unpaired.
+    let mut doc = paired();
+    doc.cluster.sync_keys.remove("fw1");
+    let conf = kea_conf(&doc);
+    assert!(!kea_ha(&conf));
+    assert_eq!(conf["Dhcp4"]["authoritative"], false);
     // HA off: the operator's choice, served without waiting.
     let mut doc = example("pair.yaml");
     doc.dhcp.as_mut().unwrap().ha = Some(sparewall_config::model::DhcpHa::Off);
