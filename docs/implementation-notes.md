@@ -201,6 +201,13 @@ Where the implementation departs from, or settles open questions in,
   gateway; the node's address standalone without one). Other hairpinned
   clients keep their address. The listed zones reach the server only
   through the forward, not past their own zone-pair policy.
+- **A forward's outside address and port are the server's** (#102):
+  input rejects traffic to a forward's `dst` on its `dport` (TCP with a
+  reset), ahead of every zone's `->self` rules. The forward's own zones
+  are DNATed before input and never meet the rule; any other zone would
+  otherwise reach the node's own service on that address and port (the
+  coordinator's HTTPS, with its self-signed certificate) and now gets a
+  refusal. To use the forward from such a zone, add it to `hairpin`.
 - **Remote access on extra ports** (`vpn.<instance>.extra_ports`, #50)
   is a prerouting NAT rule on the WAN interfaces. In a pair it is
   `ip daddr <vip> ... dnat ip to <vip>:<listen_port>`, not `redirect`:

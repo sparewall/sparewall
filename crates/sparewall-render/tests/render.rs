@@ -585,3 +585,20 @@ fn pair_wan_one_lease_on_the_master() {
     let base = &r.files[&format!("{}/30-sparewall-wan.network", Subsystem::Networkd.dir())];
     assert!(!base.contains("[Route]"), "{base}");
 }
+
+#[test]
+fn forward_destination_refused_from_other_zones() {
+    // #102: a zone the forward does not apply from (mgmt here) reaching
+    // the forward's outside address and port must not get the node's own
+    // service there: refused in input, before any zone's ->self rules.
+    let doc = example("standalone.yaml");
+    let r = render(&doc, "fw1").unwrap();
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    let input = &nft[nft.find("chain input").unwrap()..];
+    let reject = input
+        .find("ip daddr @wan_address tcp dport @web counter reject with tcp reset comment \"forward:web-server:not-here\"")
+        .unwrap_or_else(|| panic!("{input}"));
+    let dispatch = input.find("iifname vmap").unwrap();
+    assert!(reject < dispatch, "{input}");
+    assert_nft_ok(&r);
+}
