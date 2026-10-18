@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.11.0)
+policy_module(sparewalld, 0.10.0)
 
 ########################################
 #
@@ -259,7 +259,3 @@ gen_require(`
 # re-executed, failing the apply's "systemctl reload" (#66; upstream
 # acassen/keepalived#2743).
 allow keepalived_t keepalived_unconfined_script_t:process getpgid;
-# At startup keepalived runs `ip -V` (popen, so through sh) to learn
-# iproute2's version and so where its rt_tables and friends live. Fedora's
-# policy lets it run the shell but not ip; run it as ip runs elsewhere.
-sysnet_domtrans_ifconfig(keepalived_t)
