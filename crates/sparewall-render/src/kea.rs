@@ -70,12 +70,13 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         return Ok(());
     }
     let pair = doc.is_pair();
+    let want_ha = pair && dhcp.ha.unwrap_or(DhcpHa::HotStandby) == DhcpHa::HotStandby;
     // A pair is seeded one node at a time, and its sync tunnel, which
     // carries Kea's HA traffic, comes up only once both sync keys are in
     // the document. Until then HA cannot bind its listener, and two
     // unpaired nodes must not both offer the same pools: they offer
-    // nothing, as when held.
-    let unpaired = pair
+    // nothing, as when held. (With HA off, the operator has chosen.)
+    let unpaired = want_ha
         && doc
             .peer_of(node)
             .is_some_and(|p| !doc.cluster.sync_keys.contains_key(p));
@@ -197,7 +198,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             },
         }));
     }
-    let ha = pair && !unpaired && dhcp.ha.unwrap_or(DhcpHa::HotStandby) == DhcpHa::HotStandby;
+    let ha = want_ha && !unpaired;
     if ha {
         let peers: Vec<Value> = doc
             .cluster

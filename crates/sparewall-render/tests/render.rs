@@ -115,6 +115,12 @@ fn kea_waits_for_the_pair() {
     for s in conf["Dhcp4"]["subnet4"].as_array().unwrap() {
         assert!(s["pools"].as_array().unwrap().is_empty(), "{s}");
     }
+    // HA off: the operator's choice, served without waiting.
+    let mut doc = example("pair.yaml");
+    doc.dhcp.as_mut().unwrap().ha = Some(sparewall_config::model::DhcpHa::Off);
+    let conf = kea_conf(&doc);
+    assert!(!kea_ha(&conf));
+    assert_eq!(conf["Dhcp4"]["authoritative"], true);
     // Paired: HA over the tunnel, and the pools offered.
     let conf = kea_conf(&paired());
     assert!(kea_ha(&conf));
