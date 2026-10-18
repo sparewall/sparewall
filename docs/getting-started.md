@@ -128,8 +128,12 @@ The CLI shows the diff, applies it, and asks whether to keep it. Your
 answer travels over a **new** connection, so if the change cut you off,
 you cannot confirm and it reverts by itself after 120 seconds (or at the
 next boot). On a first apply the management port is usually renamed from
-`mgmt0` to its role name, which may drop the SSH session briefly;
-reconnect and run `sparewall confirm`.
+`mgmt0` to its role name, which may drop the SSH session briefly. The CLI
+notices within seconds, reconnects for up to a minute, and asks again
+about the pending generation. If it cannot reconnect, run
+`sparewall status` and `sparewall confirm <generation>` yourself before
+the window closes. A longer window (`--confirm 300`) leaves more room
+for that.
 
 ### Unattended: let the node apply it
 
