@@ -8,6 +8,7 @@ mod http;
 #[cfg(test)]
 mod isolation_tests;
 mod lease;
+mod motd;
 mod peer;
 mod reach;
 mod rules;
@@ -65,6 +66,10 @@ struct Args {
     /// Run a spooled command (the body of sparewall-run@.service).
     #[arg(long, hide = true, value_name = "ID")]
     run: Option<String>,
+    /// The login banner (pam_motd drop-in); default /run/motd.d/50-sparewall,
+    /// none with a fake system.
+    #[arg(long)]
+    motd: Option<PathBuf>,
     /// Use an in-memory fake system instead of the real one (testing only).
     #[arg(long, hide = true, env = "SPAREWALL_FAKE_SYSTEM")]
     fake_system: bool,
@@ -271,6 +276,10 @@ fn run(args: Args) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
+    let motd = args
+        .motd
+        .clone()
+        .or_else(|| (!args.fake_system).then(|| PathBuf::from(motd::PATH)));
     rt.block_on(async move {
         // Publish anything boot did (a revert of an unconfirmed change).
         let _ = with_core(&core, &tx, |_| Ok(())).await;
@@ -386,10 +395,19 @@ fn run(args: Args) -> Result<(), String> {
                 }
                 selinux::watch(core.clone(), tx.clone()).await
             } => Ok(()),
+            () = async {
+                match &motd {
+                    Some(path) => motd::motd_loop(core.clone(), tx.clone(), pair.clone(), path.clone()).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => Ok(()),
             () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone(), vrrp::host_conntrackd()) => Ok(()),
             () = rules::listener(args.socket.with_file_name("rules.sock")) => Ok(()),
             _ = term.recv() => {
                 tracing::info!("terminating");
+                if let Some(path) = &motd {
+                    motd::remove(path);
+                }
                 Ok(())
             }
             _ = tokio::signal::ctrl_c() => Ok(()),

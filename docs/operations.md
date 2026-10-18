@@ -157,6 +157,13 @@ curl -k -H "Authorization: Bearer $TOKEN" https://fw1/metrics
 There is no local Prometheus yet: `metrics.mode: local` and
 `metrics.retention` are rejected.
 
+**At login**, the node says how it is: a line with its role, generation
+and health, and one line per check that is not ok, with what to do
+about it (a pending change to confirm, SELinux denials to acknowledge).
+The coordinator rewrites the banner (`/run/motd.d/50-sparewall`) within
+seconds of a change and removes it when it stops; each version shows
+when it was written.
+
 ### What health verifies
 
 Readiness (`/readyz`, the VRRP health check, the applied hash the pair

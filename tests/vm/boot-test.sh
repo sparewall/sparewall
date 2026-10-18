@@ -121,6 +121,21 @@ vm 'sudo sparewall status -o json' > status.json
 [ "$(jq -r .role status.json)" = bootstrap ] || fail "expected bootstrap role"
 vm 'sudo nft list table inet sparewall' | grep -q anti-lockout || fail "no anti-lockout rule"
 vm 'ip -br link' | grep -q '^mgmt0 ' || fail "management port not named mgmt0"
+
+# The login banner (#83): written within seconds of a change, and shown
+# by pam_motd to an interactive login.
+banner() { vm 'cat /run/motd.d/50-sparewall' 2>/dev/null; }
+wait_banner() { # what (a fixed string), [not]
+    local deadline=$((SECONDS + 30))
+    while :; do
+        if [ "${2:-}" = not ]; then ! banner | grep -qF "$1" && return; else banner | grep -qF "$1" && return; fi
+        [ $SECONDS -lt $deadline ] || fail "login banner: ${2:+no }'$1' expected, got: $(banner)"
+        sleep 2
+    done
+}
+wait_banner "Sparewall fw1: bootstrap, generation 0"
+echo exit | "${SSH[@]}" -tt 2>/dev/null | tr -d '\r' | grep -q '^Sparewall fw1: bootstrap' \
+    || fail "an interactive login does not show the banner"
 if ! vm 'sudo podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists $(sed -n "s/^Image=//p" /usr/share/containers/systemd/sparewall-kea.container)'; then
     vm 'set -x; sed -n "s/^Image=//p" /usr/share/containers/systemd/sparewall-kea.container
         ls -la /usr/lib/bootc/ /sysroot/ostree/bootc/ 2>&1; sudo ls -la /usr/lib/bootc/storage/ 2>&1
@@ -145,12 +160,15 @@ vm 'sudo sparewall status -o json' > status.json
 [ "$(jq -r .health.level status.json)" = ok ] || fail "health not ok: $(jq -c .health status.json)"
 vm 'ip -br link' | grep -q '^uplink ' || fail "port not renamed to uplink"
 vm 'sudo nft list chain inet sparewall in_mgmt' | grep -q 'rule:mgmt->self:ping' || fail "policy not loaded"
+wait_banner "Sparewall fw1: standalone, generation 1, health ok"
 
 log "an unconfirmed change reverts"
 vm 'sudo sparewall set "policy.mgmt->self.action=reject" --confirm 15 --no-prompt'
 vm 'sudo sparewall get "policy.mgmt->self.action"' | grep -q reject || fail "change not applied"
+wait_banner "generation 2 (pending confirmation)"
 sleep 25
 vm 'sudo sparewall get "policy.mgmt->self.action"' | grep -q drop || fail "change not reverted"
+wait_banner "pending confirmation" not
 vm 'sudo sparewall history'
 
 log "a secret sealed to the TPM"
