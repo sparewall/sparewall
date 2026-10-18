@@ -89,7 +89,7 @@ enum Output {
 #[derive(Parser)]
 #[command(
     name = "sparewall",
-    version,
+    version = sparewall_core::VERSION,
     about = "Manage a Sparewall firewall",
     after_help = "Exit codes: 0 ok, 1 error, 2 usage, 3 validation failed, 4 conflict, 5 unreachable"
 )]

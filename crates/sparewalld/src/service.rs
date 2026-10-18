@@ -284,7 +284,7 @@ fn opts(
 #[service(
     vendor = "Sparewall",
     product = "sparewalld",
-    version = env!("CARGO_PKG_VERSION"),
+    version = sparewall_core::VERSION,
     url = "https://sparewall.org"
 )]
 impl<Sock> Firewall
