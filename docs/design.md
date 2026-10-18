@@ -967,10 +967,12 @@ The HTTP API follows the conventions of systemd's [varlink-http-bridge](https://
 
 ### Browser authentication
 
-- A user logs in with a password (the `admin` account's, rate-limited) and gets a short-lived, opaque session token from the coordinator's token store, so ending a session or revoking it takes effect at once.
+- People log in as named local users. Each user has one role (`admin`, `operator`, `viewer` or `monitor`), and an admin manages them (`sparewall user add alice --role operator`). The built-in `admin` account is one of these users. Password hashes (Argon2id) are cluster secrets, like the `admin` hash, and logins are rate-limited.
+- The coordinator checks the password (`org.sparewall.Auth.Login`) and issues a short-lived, opaque session token for that user from its token store, so ending a session, revoking it or removing the user takes effect at once.
+- `sparewall-httpd` holds no authority of its own. It binds each call's connection with the caller's session or API token, and the coordinator derives the principal and role from that token alone, so `sparewall-httpd` cannot act as anyone other than the caller or with more than the caller's role. Without a token, the restricted socket allows only `Login`.
 - The session travels in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie, and every request must also carry a custom header, which a cross-site form cannot send.
 - Scripts use API tokens in an `Authorization: Bearer` header instead.
-- Single sign-on (OpenID Connect) can follow later and maps onto the same roles.
+- Single sign-on (OpenID Connect) can follow later; it maps an identity provider's users or groups onto the same roles, and local users keep working.
 
 ### The UI
 
