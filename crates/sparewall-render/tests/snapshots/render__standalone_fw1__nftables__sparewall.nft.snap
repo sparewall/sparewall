@@ -39,6 +39,7 @@ table inet sparewall {
 		meta nfproto ipv6 drop
 		icmp type echo-request limit rate over 50/second burst 100 packets drop comment "icmp-flood"
 		iifname "wan" udp sport 67 udp dport 68 accept comment "infra:dhcp-client"
+		ip daddr @wan_address tcp dport @web counter reject with tcp reset comment "forward:web-server:not-here"
 		iifname { "guests", "users" } udp dport 67 accept comment "service:dhcp"
 		iifname { "guests", "users" } meta l4proto { tcp, udp } th dport 53 accept comment "service:dns"
 		iifname { "guests", "users" } udp dport 123 accept comment "service:ntp"

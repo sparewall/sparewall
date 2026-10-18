@@ -570,6 +570,26 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             .unwrap();
         }
     }
+    // A forward's outside address and ports belong to the server behind
+    // it. Its own zones are DNATed before input; from any other zone the
+    // node would answer itself (the coordinator's HTTPS, say), so refuse.
+    for (name, f) in &doc.forwards {
+        let Some(d) = &f.dst else { continue };
+        let how = if f.proto == "tcp" {
+            " with tcp reset"
+        } else {
+            ""
+        };
+        writeln!(
+            input,
+            "ip daddr {} {} dport {} counter reject{how} comment {}",
+            match_expr(d),
+            f.proto,
+            match_expr(&f.dport),
+            q(&format!("forward:{name}:not-here"))
+        )
+        .unwrap();
+    }
     service_rules(doc, &mut input);
     input.push_str(&raw_at_hook(doc, RawHook::Input));
     let mut in_map: Vec<String> = Vec::new();
