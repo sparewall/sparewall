@@ -189,8 +189,9 @@ full_audit() { # run-command node-name
 }
 
 # The coordinator's SELinux domain and its denials, for the job summary:
-# what sparewalld_t was denied and what any domain was denied on the
-# coordinator's types (all enforcing, so blocked).
+# what sparewalld_t and the daemons it configures were denied, and what
+# any domain was denied on the coordinator's types (all enforcing, so
+# blocked).
 # Either means image/selinux lacks a rule: it is recorded in
 # $WORK/selinux-denials and fails the suite (selinux_gate).
 # $1 runs a command on a node.
@@ -200,14 +201,18 @@ selinux_report() { # run-command node-name
         || fail "$node: sparewalld does not run in sparewalld_t"
     # Kernel log and journald's audit transport: with auditd running, or
     # kauditd rate-limiting printk, either one alone misses records.
-    # The coordinator denied anything, or any domain denied the
-    # coordinator's own files (a consumer of /run/sparewall, say).
+    # The coordinator, or a daemon it configures (keepalived and its
+    # scripts, conntrackd), denied anything, or any domain denied the
+    # coordinator's own files (a consumer of /run/sparewall, say). Not
+    # the checks of a domain transition's environment scrubbing, which
+    # the policy hides (dontaudit, off here): they are denied by design.
     denials=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
         | grep -oE 'avc: +denied .*' \
-        | grep -E 'scontext=[^ ]*:sparewalld_t:|tcontext=[^ ]*:sparewalld_[a-z_]*:' \
+        | grep -E 'scontext=[^ ]*:(sparewalld|keepalived|keepalived_unconfined_script|conntrackd)_t:|tcontext=[^ ]*:sparewalld_[a-z_]*:' \
+        | grep -vE 'denied +\{ (noatsecure|siginh|rlimitinh) \}' \
         | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=[01]//' \
         | sort | uniq -c | sort -rn) || true
-    echo "$node: $(printf '%s' "$denials" | grep -c . || true) distinct sparewalld denials"
+    echo "$node: $(printf '%s' "$denials" | grep -c . || true) distinct denials"
     printf '%s\n' "$denials"
     # keepalived signals init when it may not getpgid a running script
     # (the keepalived rule in sparewalld.te).
@@ -217,7 +222,7 @@ selinux_report() { # run-command node-name
     [ -z "$denials" ] || printf '%s\n' "$denials" | sed "s/^/$node: /" >> "$WORK/selinux-denials"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         {
-            echo "### SELinux: sparewalld_t on $node"
+            echo "### SELinux: sparewalld_t, keepalived_t, conntrackd_t on $node"
             echo '```'
             printf '%s\n' "${denials:-none}"
             echo '```'
