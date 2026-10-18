@@ -17,7 +17,7 @@ use sparewall_api::{
     PEER_PROTOCOL, PeerError, PeerGeneration, PeerProxy, PeerSecret, PeerSecretsProxy, PushReply,
     PutSecretsReply, UpgradeReply,
 };
-use sparewall_core::pair::{NodeView, SyncState, push_plan, sync_state};
+use sparewall_core::pair::{NodeView, SyncState, adopt_peer_base, push_plan, sync_state};
 use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
 use sparewall_core::{Check, Error, Generation, Level, PeerGate};
 use tokio::net::{TcpListener, TcpSocket};
@@ -553,7 +553,10 @@ fn set_checks(pair: &PairStatus) -> Vec<Check> {
         Some(SyncState::LocalBehind) => (Level::Degraded, format!("this node is behind {peer}")),
         Some(SyncState::Diverged) => (
             Level::Degraded,
-            format!("diverged from {peer}: resolve with sparewall sync --from <node>"),
+            format!(
+                "diverged from {peer}: resolve with sparewall sync --from <node>, naming the \
+                 node whose configuration should win (the other's is kept on disk)"
+            ),
         ),
         Some(SyncState::PeerUnreachable) | None => (
             Level::Degraded,
@@ -658,6 +661,28 @@ async fn sync_once(
                 {
                     tracing::warn!(peer, error = %e, "push to peer failed");
                     status.last_error = Some(e);
+                }
+                // Paired with the same content under unrelated histories:
+                // the node with the lower id takes the peer's generation,
+                // which runs nothing new, so the next change is pushed
+                // rather than reported as divergence (#101).
+                if state == SyncState::InSync
+                    && pending.is_none()
+                    && doubt.is_none()
+                    && !h.pending
+                    && adopt_peer_base(&local, &pv)
+                {
+                    match take_from_peer(core, events).await {
+                        Ok(g) => tracing::info!(
+                            id = g.id,
+                            peer,
+                            "took the peer's generation as the pair's common base"
+                        ),
+                        Err(e) => {
+                            tracing::warn!(peer, error = %e, "taking the peer's generation failed");
+                            status.last_error = Some(e);
+                        }
+                    }
                 }
                 // The peer runs our generation, waiting for our confirmation
                 // (a first attempt failed, or this node restarted): confirm.
