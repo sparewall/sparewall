@@ -85,7 +85,7 @@ jobs:
             if [ "$PUSH" = true ]; then
               podman push --digestfile "$p.digest" "$repo:ci" "docker://$ref"
               podman push "$repo:ci" "docker://$repo:testing"
-              cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$repo@$(cat "$p.digest")"
+              .github/sign-image.sh "$repo@$(cat "$p.digest")"
             else
               # Pull requests boot with the provider images they build,
               # handed to the VM jobs as an artifact (nothing is pushed).
@@ -245,7 +245,7 @@ jobs:
         run: |
           echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
           ref="$IMAGE@$DIGEST"
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$ref"
+          .github/sign-image.sh "$ref"
           sudo podman save --format oci-archive -o image.tar "$LOCAL"
           sudo chown "$(id -u)" image.tar
           syft scan oci-archive:image.tar -o spdx-json=sbom.spdx.json

@@ -46,5 +46,6 @@ jobs:
           for t in "${tags[@]}"; do
             skopeo copy --all --preserve-digests "docker://$src" "docker://$IMAGE:$t"
             cosign verify --key cosign.pub "$IMAGE:$t" > /dev/null
+            .github/check-sigpolicy.sh "$IMAGE:$t"
             echo "$src is now $IMAGE:$t" >> "$GITHUB_STEP_SUMMARY"
           done

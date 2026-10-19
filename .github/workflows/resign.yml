@@ -1,0 +1,47 @@
+name: Re-sign
+
+# Signs a published release's images again, in the format nodes check
+# (.github/sign-image.sh): the OS image and its bound provider images, by
+# digest, so no tag moves. For releases signed before that format was used.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, e.g. v0.1.1
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  resign:
+    name: re-sign a release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign and check
+        env:
+          TAG: ${{ inputs.tag }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
+          echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
+          short=$(git rev-parse --short=12 "refs/tags/$TAG^{commit}")
+          for repo in sparewall kea unbound lego; do
+            src="ghcr.io/sparewall/$repo:sha-$short"
+            ref="ghcr.io/sparewall/$repo@$(skopeo inspect --format '{{.Digest}}' "docker://$src")"
+            cosign verify --key cosign.pub "$ref" > /dev/null
+            .github/sign-image.sh "$ref"
+            echo "Re-signed $src ($ref)" >> "$GITHUB_STEP_SUMMARY"
+          done
