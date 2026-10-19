@@ -221,17 +221,21 @@ selinux_report() { # run-command node-name
         echo "$node: keepalived signalled systemd" | tee -a "$WORK/selinux-denials"
     fi
     # bootc run by sparewall-run@ outside install_t: its probe for
-    # mac_admin, a chcon to an undefined label, is denied (#110).
+    # mac_admin, a chcon to an undefined label, is denied (#110). In
+    # install_t the probe succeeds, and the kernel logs the label as
+    # unmapped, so only the denial counts.
     # (Counted, not grep -q, which would cut the pipe short.)
     local probes unlabelled
     probes=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
-        | grep -c 'invalid_bootcinstall_testlabel_t' || true)
+        | grep -cE 'avc: +denied +\{ mac_admin \} .*comm="chcon"' || true)
     [ "$probes" = 0 ] \
         || echo "$node: bootc ran outside install_t (its mac_admin probe was denied)" | tee -a "$WORK/selinux-denials"
     # Files in /boot as the policy labels them (sparewall-label-boot, #111).
     unlabelled=$($run 'sudo restorecon -Rnvx /boot' | grep -c 'Would relabel' || true)
-    [ "$unlabelled" = 0 ] \
-        || echo "$node: $unlabelled files in /boot are mislabelled" | tee -a "$WORK/selinux-denials"
+    if [ "$unlabelled" != 0 ]; then
+        echo "$node: $unlabelled files in /boot are mislabelled" | tee -a "$WORK/selinux-denials"
+        $run 'findmnt /boot; systemctl status --no-pager sparewall-label-boot.service' || true
+    fi
     [ -z "$denials" ] || printf '%s\n' "$denials" | sed "s/^/$node: /" >> "$WORK/selinux-denials"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         {
