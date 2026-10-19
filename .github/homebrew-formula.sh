@@ -63,10 +63,17 @@ $blocks
     # Homebrew installs the binary read-only, and removing an attribute
     # needs write permission.
     f = prefix/"bin/sparewall"
+    quarantined = -> { quiet_system "xattr", "-p", "com.apple.quarantine", f }
+    return unless quarantined.call
+
     mode = f.stat.mode
-    f.chmod(mode | 0200)
-    quiet_system "xattr", "-d", "com.apple.quarantine", f
-    f.chmod(mode)
+    begin
+      f.chmod(mode | 0200)
+      system "xattr", "-d", "com.apple.quarantine", f
+    ensure
+      f.chmod(mode)
+    end
+    odie "#{f} is still quarantined: run xattr -d com.apple.quarantine #{f}" if quarantined.call
   end
 
   test do
