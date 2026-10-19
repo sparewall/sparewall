@@ -11,7 +11,7 @@ use sparewall_api::{
     UpgradeStartReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
-use sparewall_core::secrets::SecretClass;
+use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
 use sparewall_core::tokens::Role;
 use sparewall_core::{ApplyOptions, ApplyResult, Coordinator, Error, Generation, System};
 use tokio::sync::{Notify, broadcast};
@@ -576,10 +576,26 @@ where
             SecretClass::Node
         };
         let info = with_core(&self.core, &self.events, move |c| {
+            let admin_password = name == ADMIN_PASSWORD;
+            if admin_password {
+                if !sparewall_config::identity::password_hash_ok(&value) {
+                    return Err(Error::Validation(vec![format!(
+                        "{ADMIN_PASSWORD} takes a crypt(3) hash or \"!\": use sparewall passwd"
+                    )]));
+                }
+                if class != SecretClass::Cluster {
+                    return Err(Error::Validation(vec![format!(
+                        "{ADMIN_PASSWORD} is a cluster secret"
+                    )]));
+                }
+            }
             let info = c.secret_set(&name, value.as_bytes(), class)?;
             // A key the live remote-access VPN uses (a server key, or a
             // peer's preshared key) takes effect now.
             c.refresh_vpn_keys(std::slice::from_ref(&name))?;
+            if admin_password {
+                c.apply_admin_password()?;
+            }
             Ok(info)
         })
         .await?;
@@ -701,6 +717,12 @@ where
 
     #[zlink(interface = "org.sparewall.Secrets", rename = "Delete")]
     async fn secret_delete(&mut self, name: String) -> Result<Empty, FirewallError> {
+        // A deletion would neither reach the peer nor lock the account.
+        if name == ADMIN_PASSWORD {
+            return Err(FirewallError::NotSupported {
+                message: format!("{ADMIN_PASSWORD} is removed with sparewall passwd --lock"),
+            });
+        }
         let existed = with_core(&self.core, &self.events, move |c| c.secret_delete(&name)).await?;
         if !existed {
             return Err(FirewallError::NotSupported {
@@ -812,6 +834,7 @@ mod tests {
         let id = Identity {
             node: "fw1".into(),
             ssh_keys: vec![],
+            password_hash: None,
             management: BootstrapPort {
                 nic: "52:54:00:aa:00:01".into(),
                 vlan: None,

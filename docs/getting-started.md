@@ -68,6 +68,12 @@ A fresh node needs its name, an admin SSH key and its management NIC:
 Omit `address` to use DHCP on the management port, and `vlan` if
 management is untagged.
 
+For a way in at the console before the network is right, add a password
+hash for `admin`, made with `openssl passwd -6` (it prompts):
+`"password_hash": "$6$..."`. It becomes the cluster's admin password
+([operations](operations.md#the-admin-console-password)) unless one is
+set already. SSH stays keys-only either way.
+
 - **VMs:** pass it as the `sparewall.identity` credential. With libvirt,
   add to the domain XML:
   ```xml

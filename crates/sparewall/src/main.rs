@@ -241,6 +241,13 @@ enum Cmd {
     /// The write-only secret store.
     #[command(subcommand)]
     Secret(SecretCmd),
+    /// Set the `admin` account's console password on every node of the
+    /// cluster (hashed here; only the hash is sent). SSH stays keys-only.
+    Passwd {
+        /// Remove the password: the account takes SSH keys only again.
+        #[arg(long)]
+        lock: bool,
+    },
     /// Remote-access VPN.
     #[command(subcommand)]
     Vpn(VpnCmd),
@@ -485,6 +492,39 @@ fn fetch_bundle(
         )));
     }
     Ok(out)
+}
+
+/// A new password: asked twice without echo on a terminal, or read from
+/// stdin.
+fn read_new_password() -> Result<String, Fail> {
+    if !std::io::stdin().is_terminal() {
+        return read_secret("the admin password");
+    }
+    let first = read_secret("the new admin password")?;
+    let again = read_secret("the new admin password again")?;
+    if first != again {
+        return Err(Fail::usage("the passwords do not match"));
+    }
+    Ok(first)
+}
+
+/// A SHA-512 crypt(3) hash, as shadow holds it. The salt is 16
+/// characters, the most crypt(3) uses: a longer one would be cut short
+/// when PAM re-hashes the password, and never match.
+fn hash_password(password: &str) -> Result<String, Fail> {
+    use sha_crypt::password_hash::CustomizedPasswordHasher;
+    let mut salt = [0u8; 12];
+    getrandom::fill(&mut salt).map_err(|e| Fail::other(format!("random salt: {e}")))?;
+    sha_crypt::ShaCrypt::SHA512
+        .hash_password_customized(
+            password.as_bytes(),
+            &salt,
+            None,
+            None,
+            sha_crypt::Params::RECOMMENDED,
+        )
+        .map(|h| h.to_string())
+        .map_err(|e| Fail::other(format!("hashing the password: {e}")))
 }
 
 /// A secret from stdin, or a prompt without echo on a terminal.
@@ -1037,6 +1077,22 @@ impl App {
                     r.secret.name, r.secret.version, r.secret.class
                 ));
             }
+            Cmd::Passwd { lock } => {
+                let value = if lock {
+                    "!".to_string()
+                } else {
+                    hash_password(&read_new_password()?)?
+                };
+                self.conn()
+                    .await?
+                    .set("admin-password", &value, Some(true))
+                    .await??;
+                self.say(if lock {
+                    "Locked the admin password on this node; the peer follows."
+                } else {
+                    "Set the admin password on this node; the peer follows."
+                });
+            }
             Cmd::Secret(SecretCmd::List) => {
                 let r = self.conn().await?.list().await??;
                 match self.output {
@@ -1509,5 +1565,28 @@ fn main() -> std::process::ExitCode {
             }
             std::process::ExitCode::from(f.code)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hash_password;
+
+    #[test]
+    fn password_hash_is_what_crypt_makes() {
+        // `$6$rounds=5000$<16-character salt>$<digest>`: crypt(3) cuts
+        // salts at 16, so a longer one would never match at login.
+        let h = hash_password("correct horse").unwrap();
+        let f: Vec<&str> = h.split('$').collect();
+        assert_eq!(f[..3], ["", "6", "rounds=5000"], "{h}");
+        assert_eq!(f[3].len(), 16, "{h}");
+        assert!(sparewall_config::identity::password_hash_ok(&h), "{h}");
+        use sha_crypt::password_hash::PasswordVerifier;
+        assert!(
+            sha_crypt::ShaCrypt::default()
+                .verify_password(b"correct horse", h.as_str())
+                .is_ok()
+        );
+        assert_ne!(h, hash_password("correct horse").unwrap(), "salted");
     }
 }

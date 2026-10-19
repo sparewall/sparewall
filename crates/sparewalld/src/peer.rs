@@ -18,7 +18,7 @@ use sparewall_api::{
     PutSecretsReply, UpgradeReply,
 };
 use sparewall_core::pair::{NodeView, SyncState, adopt_peer_base, push_plan, sync_state};
-use sparewall_core::secrets::{SecretClass, SecretInfo, SharedSecret};
+use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass, SecretInfo, SharedSecret};
 use sparewall_core::{Check, Error, Generation, Level, PeerGate};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::sync::{Notify, broadcast};
@@ -294,6 +294,9 @@ impl PeerService {
             // Keys for the live generation may have just arrived.
             if !changed.is_empty() {
                 c.refresh_vpn_keys(&changed)?;
+            }
+            if changed.iter().any(|n| n == ADMIN_PASSWORD) {
+                c.apply_admin_password()?;
             }
             Ok(changed.len())
         })

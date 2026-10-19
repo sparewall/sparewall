@@ -266,6 +266,14 @@ fn run(args: Args) -> Result<(), String> {
     if args.early {
         return Ok(());
     }
+    // The admin password: a seeded one is stored first, then whatever the
+    // secret holds is set (again: a restore or reinstall brings it back).
+    if let Err(e) = coordinator
+        .seed_admin_password()
+        .and_then(|()| coordinator.apply_admin_password())
+    {
+        tracing::error!(error = %e, "cannot set the admin password");
+    }
 
     let core: Core = Arc::new(Mutex::new(coordinator));
     let (tx, _) = broadcast::channel::<Value>(256);

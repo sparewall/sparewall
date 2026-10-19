@@ -588,6 +588,7 @@ mod tests {
         let id = sparewall_config::identity::Identity {
             node: "fw1".into(),
             ssh_keys: vec![],
+            password_hash: None,
             management: sparewall_config::identity::BootstrapPort {
                 nic: "52:54:00:aa:00:01".into(),
                 vlan: None,

@@ -117,10 +117,13 @@ fi
 
 log "booting the installed system with a seed stick, still offline"
 [ -f id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f id_ed25519
+# A console password for admin, seeded with the identity (#89).
+SEED_HASH=$(openssl passwd -6 'seeded console')
 cat > sparewall-identity.yaml <<YAML
 node: fw1
 ssh_keys: ["$(cat id_ed25519.pub)"]
 management: { nic: "$MAC" }
+password_hash: '$SEED_HASH'
 YAML
 # And a first configuration, applied by the node itself. Its port is
 # bound by PCI path, as for hardware not seen before (the NIC is placed at
@@ -177,6 +180,14 @@ vm 'sudo semodule -DB && sudo sysctl -q -w kernel.printk_ratelimit=0 kernel.prin
     || fail "cannot set up auditing on the installed system"
 vm 'sudo journalctl -b -u "sparewall-seed@*" --no-pager' | grep -q "recorded the identity" \
     || fail "the identity did not come from the seed stick"
+seeded() { [ "$(vm 'sudo getent shadow admin' | cut -d: -f2)" = "$SEED_HASH" ]; }
+deadline=$((SECONDS + 60))
+until seeded; do
+    [ $SECONDS -lt $deadline ] || fail "the seeded admin password is not set"
+    sleep 3
+done
+vm 'sudo sparewall secret list' | grep -q '^admin-password ' \
+    || fail "the seeded admin password is not the admin-password secret"
 
 log "a seed for another node is refused, and says so"
 refused() {

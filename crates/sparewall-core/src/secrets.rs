@@ -51,6 +51,11 @@ pub fn name_ok(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
 }
 
+/// The cluster secret holding the `admin` account's password hash (or
+/// [`sparewall_config::identity::LOCKED_PASSWORD`]). Locking stores a new
+/// version rather than deleting it, so the peer follows.
+pub const ADMIN_PASSWORD: &str = "admin-password";
+
 /// The secret holding a remote-access instance's server private key.
 pub fn vpn_secret(instance: &str) -> String {
     format!("vpn-{instance}")
@@ -198,6 +203,41 @@ impl<S: System> Coordinator<S> {
             }
         }
         Ok(changed)
+    }
+
+    /// Store the identity's seeded password hash as the admin password,
+    /// at version 1, unless one exists: a later `sparewall passwd` is a
+    /// higher version, so a seed never undoes it.
+    pub fn seed_admin_password(&mut self) -> Result<(), Error> {
+        let Some(hash) = self.identity().password_hash.clone() else {
+            return Ok(());
+        };
+        if self.secret_info(ADMIN_PASSWORD)?.is_some() {
+            return Ok(());
+        }
+        self.secret_set(ADMIN_PASSWORD, hash.as_bytes(), SecretClass::Cluster)?;
+        tracing::info!("stored the seeded admin password");
+        Ok(())
+    }
+
+    /// Set the admin account's password from the secret, if there is one.
+    /// Without one the account stays as installed: SSH keys only.
+    pub fn apply_admin_password(&mut self) -> Result<(), Error> {
+        let Some(v) = self.secret_get(ADMIN_PASSWORD)? else {
+            return Ok(());
+        };
+        let hash = String::from_utf8(v).unwrap_or_default();
+        if !sparewall_config::identity::password_hash_ok(&hash) {
+            return Err(Error::Validation(vec![format!(
+                "the {ADMIN_PASSWORD} secret is not a password hash"
+            )]));
+        }
+        self.system().set_admin_password(&hash)?;
+        tracing::info!(
+            locked = hash == sparewall_config::identity::LOCKED_PASSWORD,
+            "set the admin password"
+        );
+        Ok(())
     }
 
     /// Generate the server key of every remote-access instance that lacks

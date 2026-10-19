@@ -710,13 +710,13 @@ The coordinator is the single authority: it holds users and tokens, checks every
 
 | Who | How |
 | --- | --- |
-| Admin at a shell | SSH keys; `sparewall` talks to the root-only local socket. A console root password set at install is the break-glass path |
+| Admin at a shell | SSH keys; `sparewall` talks to the root-only local socket. An optional console password for `admin` (`sparewall passwd`, or seeded with the identity) is the break-glass path; root stays locked |
 | Scripts and CI | API tokens, over HTTPS or the restricted socket |
 | A browser (the web UI) | A password login, then a session cookie (see [Web UI and HTTP API](#web-ui-and-http-api)) |
 | Prometheus and health checks | A `monitor`-role token or a TLS client certificate |
 | Peer node | WireGuard keys on the sync tunnel |
 
-- **A built-in `admin` account** has its password set at install; its Argon2id hash is a cluster secret. Password logins are rate-limited.
+- **A built-in `admin` account** may have a password (`sparewall passwd`, or seeded with the node identity); its crypt(3) hash is a cluster secret, which console logins check and the web UI will check too. Password logins are rate-limited.
 - **API tokens** are random opaque strings, not JWTs, so revocation is immediate. `sparewall token create --role operator --expires 90d` shows a token once; the coordinator stores only its hash with name, role, expiry and last use.
 - **Single sign-on** (OpenID Connect) can be added later and mapped onto the same roles; the local `admin` account always keeps working, so an identity provider reached through the firewall can never lock anyone out of it.
 
@@ -967,7 +967,7 @@ The HTTP API follows the conventions of systemd's [varlink-http-bridge](https://
 
 ### Browser authentication
 
-- People log in as named local users. Each user has one role (`admin`, `operator`, `viewer` or `monitor`), and an admin manages them (`sparewall user add alice --role operator`). The built-in `admin` account is one of these users. Password hashes (Argon2id) are cluster secrets, like the `admin` hash, and logins are rate-limited.
+- People log in as named local users. Each user has one role (`admin`, `operator`, `viewer` or `monitor`), and an admin manages them (`sparewall user add alice --role operator`). The built-in `admin` account is one of these users. Password hashes (crypt(3), as shadow keeps them) are cluster secrets, like the `admin` hash, and logins are rate-limited.
 - The coordinator checks the password (`org.sparewall.Auth.Login`) and issues a short-lived, opaque session token for that user from its token store, so ending a session, revoking it or removing the user takes effect at once.
 - `sparewall-httpd` holds no authority of its own. It binds each call's connection with the caller's session or API token, and the coordinator derives the principal and role from that token alone, so `sparewall-httpd` cannot act as anyone other than the caller or with more than the caller's role. Without a token, the restricted socket allows only `Login`.
 - The session travels in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie, and every request must also carry a custom header, which a cross-site form cannot send.

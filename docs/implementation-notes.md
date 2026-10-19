@@ -91,9 +91,10 @@ Where the implementation departs from, or settles open questions in,
   labelled `SPAREWALL` with `sparewall-identity.yaml` (or `.json`). A udev
   rule starts `sparewall-seed@.service`, which mounts it read-only and
   runs `sparewall init --from`, until an identity is recorded. The
-  unattended ISO sets no root password, so the console route
-  (`sparewall init`) needs one set by other means. A custom kickstart
-  could write the identity too; the release ISO has none.
+  unattended ISO locks root, so the console route (`sparewall init`)
+  needs an admin password, which only an identity can seed
+  (`password_hash`). A custom kickstart could write the identity too;
+  the release ISO has none.
 - **Releases are drafted, then published by a maintainer**
   ([releasing.md](releasing.md)). A `v*` tag reruns every VM suite; the
   draft carries the ISO, raw and qcow2 images, the static (musl) CLI,
@@ -134,6 +135,15 @@ Where the implementation departs from, or settles open questions in,
 - **Admin SSH keys** are written to `~admin/.ssh/authorized_keys`: with
   SELinux enforcing, sshd cannot read keys under `/var/lib`. The `admin`
   account has passwordless sudo; root cannot log in over SSH.
+- **The admin password is a cluster secret holding a crypt(3) hash**
+  (`admin-password`, #89): `sparewall passwd` hashes on the client
+  (SHA-512 crypt with a 16-character salt, the longest crypt(3) keeps),
+  and `--lock` stores `!` as a new version, since a deleted secret would
+  not reach the peer. Each node sets it with `usermod -p` through
+  `sparewall-run@`, outside the coordinator's domain, after a change,
+  on receiving it from the peer, and at start-up; an identity's
+  `password_hash` is stored as version 1 when there is none. Without the
+  secret the account is left as installed.
 
 ## Coordinator
 

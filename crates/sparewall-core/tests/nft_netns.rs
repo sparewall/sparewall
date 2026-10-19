@@ -156,6 +156,7 @@ fn bootstrap_to_full_and_back() {
     let id = sparewall_config::identity::Identity {
         node: "fw1".into(),
         ssh_keys: vec![],
+        password_hash: None,
         management: sparewall_config::identity::BootstrapPort {
             nic: "52:54:00:aa:00:01".into(),
             vlan: None,
@@ -274,6 +275,9 @@ impl System for RealNft {
     fn netdev_recreate(&mut self, name: &str) -> Result<(), sparewall_core::Error> {
         self.rest.netdev_recreate(name)
     }
+    fn set_admin_password(&mut self, hash: &str) -> Result<(), sparewall_core::Error> {
+        self.rest.set_admin_password(hash)
+    }
 }
 
 /// Issue #5 against the real kernel: change the live rules without
@@ -370,6 +374,7 @@ fn applied(doc: serde_json::Value) -> (tempfile::TempDir, sparewall_core::Coordi
     let id = sparewall_config::identity::Identity {
         node: "fw1".into(),
         ssh_keys: vec![],
+        password_hash: None,
         management: sparewall_config::identity::BootstrapPort {
             nic: "52:54:00:aa:00:01".into(),
             vlan: None,

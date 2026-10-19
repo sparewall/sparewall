@@ -223,6 +223,21 @@ done
 
 run_conformance
 
+log "the admin console password (#89)"
+admin_hash() { vm 'sudo getent shadow admin' | cut -d: -f2; }
+takes_password() { # hash password
+    H="$1" P="$2" perl -e 'exit(crypt($ENV{P}, $ENV{H}) eq $ENV{H} ? 0 : 1)'
+}
+printf 'console only\n' | vm 'sudo sparewall passwd'
+takes_password "$(admin_hash)" 'console only' || fail "the admin password is not set"
+! takes_password "$(admin_hash)" 'something else' || fail "the admin password takes anything"
+# Not over SSH: the password is for the console.
+! sshpass -p 'console only' ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o ConnectTimeout=5 \
+    admin@127.0.0.1 true 2>/dev/null || fail "SSH took the admin password"
+vm 'sudo systemctl restart sparewalld'
+takes_password "$(admin_hash)" 'console only' || fail "the admin password changed on restart"
+
 log "backup to a restic REST server"
 start_rest_server
 REPO=rest:http://10.0.2.2:8000/fw1
@@ -257,7 +272,7 @@ vm 'sudo sparewall status -o json' > status.json
 vm 'sudo systemctl stop sparewalld.socket sparewalld.service'
 vm "printf '%s\n' '$PASSWORD' > /tmp/pw"
 vm "sudo sparewall restore --repository $REPO --password-file /tmp/pw" 2>&1 | tee restore.txt
-grep -q '2 secrets' restore.txt || fail "the secrets were not restored"
+grep -q '3 secrets' restore.txt || fail "the secrets were not restored"
 vm 'sudo test -s /var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv' \
     || fail "the DHCP leases were not restored"
 vm 'sudo systemctl start sparewalld.socket sparewalld.service' || true
@@ -282,6 +297,7 @@ vm 'sudo sparewall health --verbose'
 dhcp_script
 [ "$(lease users)" = 192.0.2.20 ] || fail "users lost its reservation after the restore"
 can users 192.0.2.1 || fail "users cannot ping the gateway after the restore"
+takes_password "$(admin_hash)" 'console only' || fail "the admin password was not restored"
 # The restored secrets were sealed to the new node's own TPM; a backup
 # unseals them.
 vm 'sudo sparewall backup' 2>&1 | tee backup-after.txt

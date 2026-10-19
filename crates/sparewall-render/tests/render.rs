@@ -166,6 +166,7 @@ fn bootstrap_untagged_and_tagged() {
     let mut id = Identity {
         node: "fw1".into(),
         ssh_keys: vec!["ssh-ed25519 AAAA test".into()],
+        password_hash: None,
         management: BootstrapPort {
             nic: "52:54:00:aa:00:01".into(),
             vlan: None,
