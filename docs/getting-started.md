@@ -33,10 +33,15 @@ ready-made images, with checksums signed by the same key:
 - `sparewall-VERSION-x86_64.qcow2`: a disk image for VMs.
 - `sparewall-VERSION-x86_64-linux.tar.gz`: the `sparewall` CLI for your
   workstation (a static Linux binary).
+- `sparewall-VERSION-aarch64-darwin.tar.gz` and
+  `sparewall-VERSION-x86_64-darwin.tar.gz`: the CLI for a Mac (Apple
+  silicon and Intel). It is signed ad hoc, not notarized, so macOS
+  quarantines a downloaded copy and refuses to run it; after unpacking,
+  clear that with `xattr -d com.apple.quarantine sparewall`.
 
 ```shell
 cosign verify-blob --key cosign.pub --bundle SHA256SUMS.sigstore.json SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS       # on macOS: shasum -a 256 -c --ignore-missing SHA256SUMS
 ```
 
 Files named `.partNN` are pieces of one file: `cat` them together first.

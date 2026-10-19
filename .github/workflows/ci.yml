@@ -41,6 +41,32 @@ jobs:
       - name: Release tag checks
         run: tests/ci/release-tags.sh
 
+  macos-cli:
+    # The CLI is released for macOS too (image.yml, cli-macos): it must
+    # build there, and its own tests pass. Its end-to-end tests run
+    # sparewalld, which is Linux only.
+    name: macOS CLI
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-apple-darwin
+          rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy -p sparewall --bins --locked -- -D warnings
+      - run: cargo test -p sparewall --bins --locked
+      - run: cargo check -p sparewall --locked --target x86_64-apple-darwin
+      - name: Node-only commands say so
+        run: |
+          set +e
+          out=$(cargo run -q -p sparewall --locked -- restore --file /dev/null 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          [ "$rc" = 2 ] && grep -q 'runs on a Sparewall node' <<<"$out"
+
   deny:
     name: licenses and advisories
     runs-on: ubuntu-latest
