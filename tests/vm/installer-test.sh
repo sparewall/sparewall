@@ -239,4 +239,13 @@ for f in $(vm 'ls /usr/lib/bootc/bound-images.d/'); do
 done
 vm 'sudo bootc status --format=json' | jq -r '.status.booted.image.image.image'
 [ $missing = 0 ] || fail "bound images are missing after an offline install"
+
+log "/boot labelled on first boot, and bootupd not denied (#111)"
+vm 'systemctl is-active sparewall-label-boot.service' >/dev/null \
+    || fail "sparewall-label-boot did not run: $(vm 'systemctl status sparewall-label-boot.service' || true)"
+mislabelled=$(vm 'sudo restorecon -Rnvx /boot' | grep -c 'Would relabel' || true)
+[ "$mislabelled" = 0 ] || fail "$mislabelled files in /boot are mislabelled"
+bootupd=$(vm 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
+    | grep -cE 'avc: +denied .*scontext=[^ ]*:bootupd_t:' || true)
+[ "$bootupd" = 0 ] || fail "bootupd was denied $bootupd times"
 log "installer PASS"

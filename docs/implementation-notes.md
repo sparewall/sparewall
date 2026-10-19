@@ -55,6 +55,11 @@ Where the implementation departs from, or settles open questions in,
   `semanage`), which the boot suite exercises.
   `sparewall-run@` runs the same binary but stays `unconfined_service_t`
   (`SELinuxContext=`): it runs what the coordinator's confinement forbids.
+  bootc, executed from there, enters `install_t` as it does from an
+  admin's shell (a transition in sparewalld.te): left in
+  `unconfined_service_t`, its probe for `mac_admin` is denied and logged
+  on every run. `systemd-run --pipe -p SELinuxContext=` does not work
+  instead: systemd may not use the helper's pipes.
 - **The installer ISO is bootc-image-builder's `anaconda-iso`**, made
   unattended by the kickstart in `image/installer.toml`: it installs the
   image embedded in it to the first fixed disk (removable and optical

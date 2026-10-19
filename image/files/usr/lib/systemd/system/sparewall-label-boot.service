@@ -1,0 +1,21 @@
+[Unit]
+Description=Sparewall: label the files bootupd installed in /boot
+Documentation=https://github.com/sparewall/sparewall
+# bootc's installer leaves bootupd's files in /boot (grub2/, the state
+# file) unlabelled, and bootupd (bootloader-update.service) is denied
+# reading them (#111). Relabelling is a no-op once they are right; it
+# fixes a fresh install on its first boot and an older node after an
+# upgrade.
+RequiresMountsFor=/boot
+Before=bootloader-update.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A mount namespace of its own, where the script remounts /boot
+# read-write without changing the system's mount.
+PrivateMounts=yes
+ExecStart=/usr/libexec/sparewall/label-boot
+
+[Install]
+WantedBy=multi-user.target

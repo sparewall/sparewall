@@ -46,6 +46,7 @@ configuration with `sparewall apply -f site.yaml --confirm 120` over SSH.
 | Path | Purpose |
 | --- | --- |
 | `files/usr/lib/systemd/system/sparewall-early.service` | Installs the live generation (links, nft, sysctl) before udev and networkd |
+| `files/usr/lib/systemd/system/sparewall-label-boot.service` | Labels the files bootupd installed in `/boot`, which bootc's installer leaves unlabelled |
 | `files/usr/lib/systemd/system/sparewalld.{service,socket}` | The coordinator and its root-only Varlink socket |
 | `files/etc/ssh/sshd_config.d/40-sparewall.conf` | Keys only, no root login; admin keys from the identity |
 | `files/etc/containers/policy.json` | Requires the project's cosign signature for `ghcr.io/sparewall` |

@@ -1,0 +1,23 @@
+#!/bin/sh
+# Label the files in /boot as the policy does (#111), for
+# sparewall-label-boot.service, which runs it in a mount namespace of its
+# own. /boot is mounted read-only, and on a disk image its filesystem
+# (the superblock) is too, so a read-write remount of the mount alone
+# leaves restorecon refusing. Remount both read-write in this namespace,
+# where the system's mount stays read-only, and put the filesystem back
+# as it was. -x: not the ESP, which is vfat and has no labels.
+set -eu
+sb=$(findmnt -no FS-OPTIONS /boot)
+mount -o remount,rw /boot
+rc=0
+restorecon -Rx /boot || rc=$?
+case ",$sb," in
+*,ro,*) mount -o remount,ro /boot || echo "/boot: filesystem left read-write" >&2 ;;
+esac
+# restorecon reports a file it could not relabel and still exits 0.
+left=$(restorecon -Rnvx /boot | grep -c 'Would relabel' || true)
+if [ "$left" != 0 ]; then
+    echo "$left files in /boot are still mislabelled" >&2
+    rc=1
+fi
+exit "$rc"
