@@ -62,6 +62,10 @@ OCI-referrer bundles go unseen and a node refuses the image. Releases up
 to 0.1.1 were signed only in the newer format: the **Re-sign** workflow
 (run it from the Actions tab with the release tag) signs a release's OS
 and provider images again by digest, without moving any tag.
+CI's **image signing path** job runs the same scripts against a
+throwaway registry and key on every pull request
+(`tests/ci/signing.sh`), and checks that a default-format signature is
+refused.
 
 A failed suite stops at step 3 with no release. Delete the tag, fix
 `main`, and tag again.
