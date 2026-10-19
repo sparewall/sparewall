@@ -254,7 +254,10 @@ jobs:
           # the image signature itself is.
           cosign attest --yes --key env://COSIGN_PRIVATE_KEY --use-signing-config=false --tlog-upload=false \
             --type spdxjson --predicate sbom.spdx.json "$ref"
-          cosign verify --key cosign.pub "$ref" > /dev/null
+          # The legacy signature (sign-image.sh): in its default mode cosign
+          # reads only OCI-referrer bundles, takes the SBOM's for a
+          # signature, and refuses it for want of a log entry.
+          cosign verify --key cosign.pub --new-bundle-format=false "$ref" > /dev/null
           cosign verify-attestation --key cosign.pub --insecure-ignore-tlog=true \
             --type spdxjson "$ref" > /dev/null
           echo "Published and verified $ref" >> "$GITHUB_STEP_SUMMARY"
@@ -298,7 +301,7 @@ jobs:
           echo "$TOKEN" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
           echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
           ref="$IMAGE:sha-$(git rev-parse --short=12 HEAD)"
-          cosign verify --key cosign.pub "$ref" > /dev/null
+          cosign verify --key cosign.pub --new-bundle-format=false "$ref" > /dev/null
           sudo podman pull "$ref"
           [ "$(sudo podman run --rm --entrypoint sparewall "$ref" --version)" = "sparewall ${GITHUB_REF_NAME#v}" ] \
             || { echo "$ref does not report version ${GITHUB_REF_NAME#v}" >&2; exit 1; }

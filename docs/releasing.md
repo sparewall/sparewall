@@ -58,7 +58,9 @@ For maintainers. A release is a tested commit on `main`, tagged.
 
 Images are signed in cosign's legacy format, the `sha256-DIGEST.sig`
 tag, because that is the only one bootc and podman read; cosign's newer
-OCI-referrer bundles go unseen and a node refuses the image. Releases up
+OCI-referrer bundles go unseen and a node refuses the image. `cosign
+verify` needs `--new-bundle-format=false` to check it: by default cosign 3
+reads only the referrers, where the SBOM attestation is. Releases up
 to 0.1.1 were signed only in the newer format: the **Re-sign** workflow
 (run it from the Actions tab with the release tag) signs a release's OS
 and provider images again by digest, without moving any tag.
