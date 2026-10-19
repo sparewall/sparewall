@@ -292,7 +292,14 @@ fn run(args: Args) -> Result<(), String> {
         // Publish anything boot did (a revert of an unconfirmed change).
         let _ = with_core(&core, &tx, |_| Ok(())).await;
         let l = listener(&args.socket).map_err(|e| format!("socket: {e}"))?;
-        let firewall = Firewall::new(core.clone(), tx.clone(), pair.clone(), wake.clone());
+        let changes = service::Changes::default();
+        let firewall = Firewall::new(
+            core.clone(),
+            tx.clone(),
+            pair.clone(),
+            wake.clone(),
+            changes.clone(),
+        );
         let server = varlink::serve(l, firewall.clone());
         // keepalived's health check, on a socket of its own (see
         // HEALTH_SOCKET).
@@ -309,7 +316,7 @@ fn run(args: Args) -> Result<(), String> {
                 tokio::net::UnixListener::from_std(root_only(&peer_socket)?)
                     .map_err(|e| e.to_string())?,
             ),
-            peer::PeerService::new(core.clone(), tx.clone(), wake.clone(), pair.clone()),
+            peer::PeerService::new(core.clone(), tx.clone(), wake.clone(), pair.clone(), changes),
         );
         let fifo = if args.fake_system {
             args.socket.with_file_name("keepalived.fifo")

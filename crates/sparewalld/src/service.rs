@@ -69,8 +69,12 @@ pub struct Firewall {
     /// Held for the whole of a call that changes the configuration, so
     /// changes still run one at a time: a sync-link change must not have
     /// another land between the peer taking it and it running here.
-    changes: Arc<tokio::sync::Mutex<()>>,
+    changes: Changes,
 }
+
+/// The lock that runs changes one at a time, shared with the peer service
+/// (an upgrade the backup forwards takes it on the master).
+pub type Changes = Arc<tokio::sync::Mutex<()>>;
 
 impl Firewall {
     pub fn new(
@@ -78,13 +82,14 @@ impl Firewall {
         events: broadcast::Sender<Value>,
         pair: Pair,
         sync: Arc<Notify>,
+        changes: Changes,
     ) -> Self {
         Firewall {
             core,
             events,
             pair,
             sync,
-            changes: Default::default(),
+            changes,
         }
     }
 
@@ -662,16 +667,10 @@ where
         image: Option<String>,
     ) -> Result<UpgradeStartReply, FirewallError> {
         let _change = self.changes.lock().await;
-        let (target, peer, plan) =
-            crate::upgrade::plan(&self.core, &self.events, &self.pair, channel, image)
+        let plan =
+            crate::upgrade::start(&self.core, &self.events, &self.pair, channel, image, true)
                 .await
                 .map_err(|message| FirewallError::ApplyFailed { message })?;
-        tokio::spawn(crate::upgrade::run(
-            self.core.clone(),
-            self.events.clone(),
-            target,
-            peer,
-        ));
         Ok(UpgradeStartReply { plan })
     }
 

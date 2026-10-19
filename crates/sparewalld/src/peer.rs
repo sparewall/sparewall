@@ -10,10 +10,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures_util::Stream;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sparewall_api::{
-    FetchReply, HelloReply, LineageEntry, LinkDecisionReply, NetworkReach, PEER_PORT,
+    EventReply, FetchReply, HelloReply, LineageEntry, LinkDecisionReply, NetworkReach, PEER_PORT,
     PEER_PROTOCOL, PeerError, PeerGeneration, PeerProxy, PeerSecret, PeerSecretsProxy, PushReply,
     PutSecretsReply, UpgradeReply,
 };
@@ -22,10 +23,11 @@ use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass, SecretInfo, SharedSec
 use sparewall_core::{Check, Error, Generation, Level, PeerGate};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::sync::{Notify, broadcast};
-use zlink::Connection;
-use zlink::service;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
+use zlink::{Connection, Reply, service};
 
-use crate::service::{Core, with_core_raw};
+use crate::service::{Changes, Core, with_core_raw};
 
 /// What the daemon knows about the pair, for status and health.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -122,6 +124,7 @@ pub struct PeerService {
     events: broadcast::Sender<Value>,
     sync: Arc<Notify>,
     pair: Pair,
+    changes: Changes,
 }
 
 impl PeerService {
@@ -130,12 +133,14 @@ impl PeerService {
         events: broadcast::Sender<Value>,
         sync: Arc<Notify>,
         pair: Pair,
+        changes: Changes,
     ) -> Self {
         PeerService {
             core,
             events,
             sync,
             pair,
+            changes,
         }
     }
 }
@@ -323,7 +328,57 @@ impl PeerService {
         HostUpgrade
             .reboot_soon()
             .map_err(|message| PeerError::Rejected { message })?;
+        // For `sparewall upgrade` run here, on the backup: its command
+        // ends with this node's reboot.
+        crate::upgrade::REBOOTING.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.events.send(json!({
+            "type": "upgrade",
+            "step": "reboot",
+            "detail": format!("staged {staged}; rebooting this node into it"),
+        }));
         Ok(UpgradeReply { staged })
+    }
+
+    /// An upgrade started on the backup: run it here, the master, and
+    /// stream its plan and events back (`crate::upgrade::start`).
+    #[zlink(more)]
+    async fn start_upgrade(
+        &mut self,
+        more: bool,
+        channel: Option<String>,
+        image: Option<String>,
+    ) -> impl Stream<Item = Reply<EventReply>> + Unpin + 'static {
+        let rx = self.events.subscribe();
+        let first = {
+            let _change = self.changes.lock().await;
+            match crate::upgrade::start(&self.core, &self.events, &self.pair, channel, image, false)
+                .await
+            {
+                Ok(plan) => json!({"type": "upgrade", "step": "plan", "plan": plan}),
+                Err(detail) => json!({"type": "upgrade", "step": "failed", "detail": detail}),
+            }
+        };
+        let go_on = more && first["step"] == "plan";
+        let head = Reply::new(Some(EventReply { event: first })).set_continues(Some(go_on));
+        let rest = BroadcastStream::new(rx)
+            .filter_map(|e| e.ok().filter(|e| e["type"] == "upgrade"))
+            .map_while({
+                // Through the last event, which says it is the last.
+                let mut ended = false;
+                move |event| {
+                    if ended {
+                        return None;
+                    }
+                    ended = crate::upgrade::ends(&event);
+                    Some(Reply::new(Some(EventReply { event })).set_continues(Some(!ended)))
+                }
+            });
+        let rest: std::pin::Pin<Box<dyn Stream<Item = Reply<EventReply>> + Send>> = if go_on {
+            Box::pin(rest)
+        } else {
+            Box::pin(tokio_stream::empty())
+        };
+        tokio_stream::once(head).chain(rest)
     }
 
     async fn fetch(&mut self, id: Option<i64>) -> Result<FetchReply, PeerError> {

@@ -327,7 +327,7 @@ enum Cmd {
     /// Connect stdin/stdout to the local socket (used over SSH).
     #[command(hide = true)]
     Bridge,
-    /// Rolling, health-gated OS upgrade (run on the master of a pair).
+    /// Rolling, health-gated OS upgrade (the master of a pair runs it).
     Upgrade {
         /// stable or testing; default the document's updates.channel.
         #[arg(long, conflicts_with = "image")]

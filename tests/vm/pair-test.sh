@@ -7,7 +7,7 @@
 # then returns, an unsigned image is refused, and `sparewall upgrade`
 # rolls the pair onto a derived image served from a local registry,
 # handing the gateway over between the reboots, then again onto new
-# content under the same reference. Remote-access VPN clients
+# content under the same reference, started on the backup. Remote-access VPN clients
 # (vpn.sh) measure tunnel recovery and inner-flow continuity across the
 # master loss and the rolling upgrade.
 #
@@ -373,13 +373,18 @@ after=$(echoes) || fail "the connection stalled in the upgrade: $(tail -5 flow.l
 [ "$after" -gt "$before" ] || fail "the connection stalled in the upgrade ($before, $after)"
 vpn_after_move "rolling upgrade"
 
-log "a second rolling upgrade, to the reference the pair already tracks (#116)"
+log "a second rolling upgrade, started on the backup, to the reference the pair already tracks (#116, #117)"
 # New content under the same tag: bootc switch would do nothing.
 printf 'FROM localhost/sparewall:next\nRUN echo again > /usr/share/sparewall/upgrade-marker-2\n' \
     | sudo podman build -t localhost/sparewall:next -f - "$(mktemp -d)"
 sudo podman push --tls-verify=false localhost/sparewall:next docker://127.0.0.1:5000/sparewall:next
 upgraded2() { at "$1" 'test -e /usr/share/sparewall/upgrade-marker-2'; }
-AT_TIMEOUT=1800 at fw1 "sudo sparewall upgrade --image $NEXT" || fail "the second upgrade failed"
+is_backup fw2 || fail "fw2 is $(role fw2) before the second upgrade, not BACKUP"
+# fw1, the master, runs it; fw2's command follows it until fw2 reboots.
+out=$(AT_TIMEOUT=1800 at fw2 "sudo sparewall upgrade --image $NEXT") \
+    || fail "the second upgrade, started on the backup, failed: $out"
+printf '%s\n' "$out"
+grep -q '^\[reboot\]' <<<"$out" || fail "fw2's upgrade command did not follow it to fw2's reboot"
 wait_for 900 "fw2 on the second image" upgraded2 fw2
 wait_for 600 "fw1 on the second image" upgraded2 fw1
 wait_for 300 "fw1 in sync" in_sync fw1
