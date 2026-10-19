@@ -22,6 +22,9 @@ export COSIGN_PRIVATE_KEY COSIGN_PASSWORD=''
 COSIGN_PRIVATE_KEY=$(cat "$tmp/cosign.key")
 export SIGPOLICY_SCOPE=$reg/sparewall SIGPOLICY_KEY=$tmp/cosign.pub SIGPOLICY_TLS_VERIFY=false
 export SIGN_TLOG_UPLOAD=false
+# As on the image job, where `sudo podman login` leaves the default auth
+# file root's: the policy check must not depend on reading it.
+install -m 000 /dev/null "$tmp/unreadable-auth.json"
 
 push() {
   skopeo copy --quiet --dest-tls-verify=false docker://quay.io/libpod/registry:2.8.2 "docker://$reg/sparewall/$1:t"
@@ -31,7 +34,7 @@ push() {
 ref=$(push legacy)
 "$root/.github/sign-image.sh" "$ref"
 cosign verify --key "$tmp/cosign.pub" --insecure-ignore-tlog=true "$ref" >/dev/null
-"$root/.github/check-sigpolicy.sh" "$reg/sparewall/legacy:t"
+REGISTRY_AUTH_FILE=$tmp/unreadable-auth.json "$root/.github/check-sigpolicy.sh" "$reg/sparewall/legacy:t"
 
 ref=$(push referrer)
 # cosign 3's default: a bundle stored as an OCI referrer (with no

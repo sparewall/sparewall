@@ -22,7 +22,11 @@ mkdir "$tmp/registries.d"
 sed "s|ghcr.io/sparewall:|$scope:|" \
   "$root/image/files/etc/containers/registries.d/sparewall.yaml" \
   > "$tmp/registries.d/sparewall.yaml"
-skopeo copy --quiet --src-tls-verify="${SIGPOLICY_TLS_VERIFY:-true}" --policy "$tmp/policy.json" \
+# Anonymous, as a node pulls the public images: a runner's default auth
+# file may be root's, left by an earlier `sudo podman login`.
+echo '{}' > "$tmp/auth.json"
+skopeo copy --quiet --src-authfile "$tmp/auth.json" \
+  --src-tls-verify="${SIGPOLICY_TLS_VERIFY:-true}" --policy "$tmp/policy.json" \
   --registries.d "$tmp/registries.d" \
   "docker://$ref" "dir:$tmp/image"
 echo "$ref: accepted by the node's signature policy"
