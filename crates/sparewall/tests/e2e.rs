@@ -46,6 +46,8 @@ fn start_in(dir: tempfile::TempDir) -> Option<Daemon> {
         .arg("--identity")
         .arg(dir.path().join("id.yaml"))
         .arg("--fake-system")
+        .arg("--motd")
+        .arg(dir.path().join("motd"))
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
@@ -470,4 +472,34 @@ fn reconnect_does_not_claim_another_change() {
     assert!(!o.status.success(), "{err}");
     assert!(err.contains("generation 1 is not this change"), "{err}");
     assert!(!err.contains("Reconnected: generation"), "{err}");
+}
+
+#[test]
+fn login_banner_follows_health() {
+    let Some(d) = start() else { return };
+    let motd = d.dir.path().join("motd");
+    let wait_for = |want: &str| {
+        let t0 = Instant::now();
+        loop {
+            let text = std::fs::read_to_string(&motd).unwrap_or_default();
+            if text.contains(want) {
+                return text;
+            }
+            assert!(
+                t0.elapsed() < Duration::from_secs(20),
+                "no {want:?} in: {text}"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    let text = wait_for("Sparewall fw1: bootstrap, generation 0");
+    assert!(text.contains("bootstrap mode"), "{text}");
+    ok(
+        &d,
+        &["apply", "-f", &example(), "--confirm", "60", "--no-prompt"],
+    );
+    wait_for("generation 1 (pending confirmation)");
+    ok(&d, &["confirm", "1"]);
+    let text = wait_for("generation 1, health");
+    assert!(text.contains("(as of "), "{text}");
 }

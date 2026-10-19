@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.11.0)
+policy_module(sparewalld, 0.12.0)
 
 ########################################
 #
@@ -234,6 +234,13 @@ dev_write_urand(sparewalld_t)
 type_transition sparewalld_t init_var_run_t:file sparewalld_var_run_t "tpm-rng-credited";
 allow sparewalld_t init_var_run_t:dir { add_name write };
 allow sparewalld_t sparewalld_var_run_t:file { create getattr open write };
+
+# The login banner, /run/motd.d/50-sparewall (#83), written in place.
+gen_require(`
+	type motd_var_run_t;
+')
+allow sparewalld_t motd_var_run_t:dir { getattr search open read write add_name remove_name };
+allow sparewalld_t motd_var_run_t:file { create getattr open write setattr unlink };
 
 # Kernel state: net sysctls, sysfs, network namespaces.
 kernel_rw_net_sysctls(sparewalld_t)
