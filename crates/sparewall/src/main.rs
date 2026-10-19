@@ -1513,9 +1513,29 @@ fn write_init(out: &Path, v: &Value) -> Result<(), Fail> {
         .map_err(|e| Fail::other(format!("{}: {e}", out.display())))
 }
 
+/// The subcommands that work on a node itself (its state directory, its
+/// systemd credentials, its socket), which a build for a workstation OS
+/// cannot do. Elsewhere they say so before trying.
+fn node_only(cmd: &Cmd, linux: bool) -> Option<&'static str> {
+    if linux {
+        return None;
+    }
+    match cmd {
+        Cmd::Init { .. } => Some("init"),
+        Cmd::Restore { .. } => Some("restore"),
+        Cmd::Bridge => Some("bridge"),
+        _ => None,
+    }
+}
+
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = (|| -> Result<(), Fail> {
+        if let Some(name) = node_only(&cli.cmd, cfg!(target_os = "linux")) {
+            return Err(Fail::usage(format!(
+                "`sparewall {name}` runs on a Sparewall node, not here: run it there (over ssh)"
+            )));
+        }
         if local(&cli.cmd)? {
             return Ok(());
         }
@@ -1570,7 +1590,22 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::hash_password;
+    use super::{Cli, hash_password, node_only};
+    use clap::Parser;
+
+    #[test]
+    fn node_only_commands_are_refused_off_linux() {
+        let cmd = |args: &[&str]| {
+            Cli::try_parse_from([&["sparewall"], args].concat())
+                .unwrap()
+                .cmd
+        };
+        let init = cmd(&["init", "--node", "fw1", "--mgmt-nic", "52:54:00:12:34:56"]);
+        assert_eq!(node_only(&init, false), Some("init"));
+        assert_eq!(node_only(&init, true), None);
+        assert_eq!(node_only(&cmd(&["bridge"]), false), Some("bridge"));
+        assert_eq!(node_only(&cmd(&["status"]), false), None);
+    }
 
     #[test]
     fn password_hash_is_what_crypt_makes() {

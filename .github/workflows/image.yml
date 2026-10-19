@@ -262,12 +262,66 @@ jobs:
             --type spdxjson "$ref" > /dev/null
           echo "Published and verified $ref" >> "$GITHUB_STEP_SUMMARY"
 
+  cli-macos:
+    # The CLI for macOS, Apple silicon and Intel, packaged as the release
+    # packages it on every run so a tag finds no surprise; the release job
+    # takes the tarballs and SBOMs from a tag's run. Signed ad hoc, not
+    # with a Developer ID or notarized: a downloaded tarball carries the
+    # quarantine attribute, to remove by hand (getting-started.md).
+    name: macOS CLI
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # for .github/version.sh
+
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      - name: Build, sign, package
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo install --locked cargo-auditable --version 0.7.6
+          v=$(.github/version.sh)
+          mkdir assets
+          for arch in aarch64 x86_64; do
+            t=$arch-apple-darwin
+            SPAREWALL_VERSION=$v cargo auditable build --release --locked --target "$t" -p sparewall
+            b=target/$t/release/sparewall
+            codesign --force --sign - "$b"
+            codesign --verify --verbose "$b"
+            want=$arch; [ "$arch" = aarch64 ] && want=arm64
+            [ "$(lipo -archs "$b")" = "$want" ] || { echo "$b is not $want" >&2; exit 1; }
+            d=sparewall-$v-$arch-darwin
+            mkdir "$d"
+            cp "$b" LICENSE README.md "$d/"
+            tar -czf "assets/$d.tar.gz" "$d"
+            sbom=assets/sparewall-cli-$v-$arch-darwin.spdx.json
+            syft scan "file:$d/sparewall" -q -o spdx-json="$sbom"
+            jq -e '[.packages[].name] | index("sparewall-core") and index("serde")' "$sbom" >/dev/null \
+              || { echo "the $arch CLI SBOM does not list the binary's crates" >&2; exit 1; }
+          done
+          # The runner is Apple silicon: the arm64 build runs here.
+          [ "$(target/aarch64-apple-darwin/release/sparewall --version)" = "sparewall $v" ] \
+            || { echo "the CLI does not report version $v" >&2; exit 1; }
+          ls -l assets
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: cli-macos
+          path: assets/
+          retention-days: 1
+
   release:
     # A v* tag that passed the VM suites: installer and disk images, the
     # CLI, checksums and SBOMs, in a draft GitHub release. Publishing the
     # draft promotes the image (release.yml).
     name: release assets
-    needs: image
+    needs: [image, cli-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -331,6 +385,11 @@ jobs:
           jq -e '[.packages[].name] | index("sparewall-core") and index("serde")' "$sbom" >/dev/null \
             || { echo "the CLI SBOM does not list the binary's crates" >&2; exit 1; }
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cli-macos
+          path: assets
+
       - name: Image SBOM
         run: |
           sudo podman save --format oci-archive -o image.tar "${{ steps.image.outputs.ref }}"
@@ -392,7 +451,8 @@ jobs:
           - \`sparewall-$v-x86_64.raw.zst\` is a disk image to write to a disk,
             and \`.qcow2\` the same for virtual machines.
           - \`sparewall-$v-x86_64-linux.tar.gz\` is the \`sparewall\` CLI, to
-            manage nodes over SSH from a workstation.
+            manage nodes over SSH from a workstation; \`-aarch64-darwin\` and
+            \`-x86_64-darwin\` are the same for a Mac (Apple silicon, Intel).
 
           Files named \`.partNN\` are pieces of one file (GitHub limits a file to
           2 GiB): \`cat\` them together, in order.
@@ -407,7 +467,11 @@ jobs:
           sha256sum -c --ignore-missing SHA256SUMS
           \`\`\`
 
-          The SPDX SBOMs list what is in the image and in the CLI.
+          The macOS CLI is signed ad hoc, not notarized: after unpacking a
+          downloaded tarball, clear its quarantine attribute with
+          \`xattr -d com.apple.quarantine sparewall\`.
+
+          The SPDX SBOMs list what is in the image and in each CLI build.
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag "${prerelease[@]}" \
             --title "Sparewall $v" --notes-file notes.md assets/*
