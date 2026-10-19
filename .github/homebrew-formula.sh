@@ -56,9 +56,17 @@ $blocks
   end
 
   def post_install
+    return unless OS.mac?
+
     # The macOS build is signed ad hoc, not notarized: should the download
     # carry the quarantine attribute, macOS would refuse to run it.
-    quiet_system "xattr", "-d", "com.apple.quarantine", prefix/"bin/sparewall" if OS.mac?
+    # Homebrew installs the binary read-only, and removing an attribute
+    # needs write permission.
+    f = prefix/"bin/sparewall"
+    mode = f.stat.mode
+    f.chmod(mode | 0200)
+    quiet_system "xattr", "-d", "com.apple.quarantine", f
+    f.chmod(mode)
   end
 
   test do

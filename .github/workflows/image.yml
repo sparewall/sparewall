@@ -332,11 +332,19 @@ jobs:
             sparewall completion "$s" >/dev/null
           done
           test -e "$(brew --prefix)/share/zsh/site-functions/_sparewall"
+          # Quarantined as a download would be (Homebrew installs it
+          # read-only), then post_install clears it, leaving the mode.
           bin=$(brew --prefix sparewall)/bin/sparewall
+          mode=$(stat -f %Lp "$bin")
+          chmod u+w "$bin"
           xattr -w com.apple.quarantine '0081;00000000;Safari;' "$bin"
+          chmod "$mode" "$bin"
           brew postinstall sparewall-ci/tap/sparewall
           ! xattr -p com.apple.quarantine "$bin" 2>/dev/null \
             || { echo "post_install left the quarantine attribute" >&2; exit 1; }
+          [ "$(stat -f %Lp "$bin")" = "$mode" ] \
+            || { echo "post_install changed the mode from $mode" >&2; exit 1; }
+          "$bin" --version
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: startsWith(github.ref, 'refs/tags/v')
