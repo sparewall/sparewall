@@ -53,6 +53,15 @@ For maintainers. A release is a tested commit on `main`, tagged.
 4. Review the draft, edit its notes, and publish it. Publishing runs the
    release workflow: it tags the tested image `VERSION` and, unless it is a
    prerelease, `stable`, so nodes following the stable channel see it.
+   It then checks each tag as a node would, under the image's own
+   signature policy (`.github/check-sigpolicy.sh`).
+
+Images are signed in cosign's legacy format, the `sha256-DIGEST.sig`
+tag, because that is the only one bootc and podman read; cosign's newer
+OCI-referrer bundles go unseen and a node refuses the image. Releases up
+to 0.1.1 were signed only in the newer format: the **Re-sign** workflow
+(run it from the Actions tab with the release tag) signs a release's OS
+and provider images again by digest, without moving any tag.
 
 A failed suite stops at step 3 with no release. Delete the tag, fix
 `main`, and tag again.
