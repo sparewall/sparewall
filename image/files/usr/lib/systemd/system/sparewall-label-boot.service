@@ -12,12 +12,10 @@ Before=bootloader-update.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# /boot is mounted read-only, but its filesystem is not: a read-write
-# remount in this unit's own mount namespace lets restorecon write the
-# labels without changing the system's mount. -x: not the ESP, which is
-# vfat and has no labels.
+# A mount namespace of its own, where the script remounts /boot
+# read-write without changing the system's mount.
 PrivateMounts=yes
-ExecStart=/bin/sh -c 'mount -o remount,rw,bind /boot && restorecon -Rx /boot'
+ExecStart=/usr/libexec/sparewall/label-boot
 
 [Install]
 WantedBy=multi-user.target
