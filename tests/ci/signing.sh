@@ -33,7 +33,12 @@ push() {
 
 ref=$(push legacy)
 "$root/.github/sign-image.sh" "$ref"
-cosign verify --key "$tmp/cosign.pub" --insecure-ignore-tlog=true "$ref" >/dev/null
+# An SBOM attestation as the image job attaches it, unlogged; the
+# legacy signature still verifies beside it.
+echo '{"spdxVersion":"SPDX-2.3"}' > "$tmp/sbom.json"
+cosign attest --yes --key env://COSIGN_PRIVATE_KEY --use-signing-config=false --tlog-upload=false \
+  --type spdxjson --predicate "$tmp/sbom.json" "$ref"
+cosign verify --key "$tmp/cosign.pub" --new-bundle-format=false --insecure-ignore-tlog=true "$ref" >/dev/null
 REGISTRY_AUTH_FILE=$tmp/unreadable-auth.json "$root/.github/check-sigpolicy.sh" "$reg/sparewall/legacy:t"
 
 ref=$(push referrer)

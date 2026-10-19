@@ -38,14 +38,14 @@ jobs:
           echo "$TOKEN" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
           echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
           src="$IMAGE:sha-$(git rev-parse --short=12 HEAD)"
-          cosign verify --key cosign.pub "$src" > /dev/null
+          cosign verify --key cosign.pub --new-bundle-format=false "$src" > /dev/null
           # The same manifest under new tags: its signature and SBOM,
           # attached by digest, carry over.
           tags=("${TAG#v}")
           [ "$PRERELEASE" = true ] || tags+=(stable)
           for t in "${tags[@]}"; do
             skopeo copy --all --preserve-digests "docker://$src" "docker://$IMAGE:$t"
-            cosign verify --key cosign.pub "$IMAGE:$t" > /dev/null
+            cosign verify --key cosign.pub --new-bundle-format=false "$IMAGE:$t" > /dev/null
             .github/check-sigpolicy.sh "$IMAGE:$t"
             echo "$src is now $IMAGE:$t" >> "$GITHUB_STEP_SUMMARY"
           done
