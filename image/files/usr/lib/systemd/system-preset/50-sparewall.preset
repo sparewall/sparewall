@@ -1,4 +1,5 @@
 enable sparewall-early.service
+enable sparewall-label-boot.service
 enable sparewalld.socket
 enable sparewalld.service
 enable systemd-networkd.service

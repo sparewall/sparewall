@@ -1,0 +1,23 @@
+[Unit]
+Description=Sparewall: label the files bootupd installed in /boot
+Documentation=https://github.com/sparewall/sparewall
+# bootc's installer leaves bootupd's files in /boot (grub2/, the state
+# file) unlabelled, and bootupd (bootloader-update.service) is denied
+# reading them (#111). Relabelling is a no-op once they are right; it
+# fixes a fresh install on its first boot and an older node after an
+# upgrade.
+RequiresMountsFor=/boot
+Before=bootloader-update.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# /boot is mounted read-only, but its filesystem is not: a read-write
+# remount in this unit's own mount namespace lets restorecon write the
+# labels without changing the system's mount. -x: not the ESP, which is
+# vfat and has no labels.
+PrivateMounts=yes
+ExecStart=/bin/sh -c 'mount -o remount,rw,bind /boot && restorecon -Rx /boot'
+
+[Install]
+WantedBy=multi-user.target

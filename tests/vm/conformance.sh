@@ -202,13 +202,14 @@ selinux_report() { # run-command node-name
     # Kernel log and journald's audit transport: with auditd running, or
     # kauditd rate-limiting printk, either one alone misses records.
     # The coordinator, or a daemon it configures (keepalived and its
-    # scripts, conntrackd), denied anything, or any domain denied the
-    # coordinator's own files (a consumer of /run/sparewall, say). Not
-    # the checks of a domain transition's environment scrubbing, which
-    # the policy hides (dontaudit, off here): they are denied by design.
+    # scripts, conntrackd), or bootupd (#111) denied anything, or any
+    # domain denied the coordinator's own files (a consumer of
+    # /run/sparewall, say). Not the checks of a domain transition's
+    # environment scrubbing, which the policy hides (dontaudit, off
+    # here): they are denied by design.
     denials=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
         | grep -oE 'avc: +denied .*' \
-        | grep -E 'scontext=[^ ]*:(sparewalld|keepalived|keepalived_unconfined_script|conntrackd)_t:|tcontext=[^ ]*:sparewalld_[a-z_]*:' \
+        | grep -E 'scontext=[^ ]*:(sparewalld|keepalived|keepalived_unconfined_script|conntrackd|bootupd)_t:|tcontext=[^ ]*:sparewalld_[a-z_]*:' \
         | grep -vE 'denied +\{ (noatsecure|siginh|rlimitinh) \}' \
         | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=[01]//' \
         | sort | uniq -c | sort -rn) || true
@@ -219,10 +220,22 @@ selinux_report() { # run-command node-name
     if $run 'sudo journalctl -b --no-pager _PID=1' | grep -q 'Received SIG[A-Z]* from PID [0-9]* (keepalived)'; then
         echo "$node: keepalived signalled systemd" | tee -a "$WORK/selinux-denials"
     fi
+    # bootc run by sparewall-run@ outside install_t: its probe for
+    # mac_admin, a chcon to an undefined label, is denied (#110).
+    # (Counted, not grep -q, which would cut the pipe short.)
+    local probes unlabelled
+    probes=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
+        | grep -c 'invalid_bootcinstall_testlabel_t' || true)
+    [ "$probes" = 0 ] \
+        || echo "$node: bootc ran outside install_t (its mac_admin probe was denied)" | tee -a "$WORK/selinux-denials"
+    # Files in /boot as the policy labels them (sparewall-label-boot, #111).
+    unlabelled=$($run 'sudo restorecon -Rnvx /boot' | grep -c 'Would relabel' || true)
+    [ "$unlabelled" = 0 ] \
+        || echo "$node: $unlabelled files in /boot are mislabelled" | tee -a "$WORK/selinux-denials"
     [ -z "$denials" ] || printf '%s\n' "$denials" | sed "s/^/$node: /" >> "$WORK/selinux-denials"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         {
-            echo "### SELinux: sparewalld_t, keepalived_t, conntrackd_t on $node"
+            echo "### SELinux: sparewalld_t, keepalived_t, conntrackd_t, bootupd_t on $node"
             echo '```'
             printf '%s\n' "${denials:-none}"
             echo '```'

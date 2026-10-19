@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.12.0)
+policy_module(sparewalld, 0.13.0)
 
 ########################################
 #
@@ -284,3 +284,30 @@ gen_require(`
 # re-executed, failing the apply's "systemctl reload" (#66; upstream
 # acassen/keepalived#2743).
 allow keepalived_t keepalived_unconfined_script_t:process getpgid;
+
+########################################
+#
+# bootc, which sparewall-run@ (unconfined_service_t) runs for upgrades.
+#
+
+gen_require(`
+	type unconfined_service_t, install_t, install_exec_t;
+')
+# Into install_t, as from an admin's shell (unconfined_t). Left in
+# unconfined_service_t, bootc lacks mac_admin, and its probe for it (a
+# chcon to an undefined label) is denied and logged on every run (#110).
+# install_exec_t is bootc, ostree and rpm-ostree; the only other
+# unconfined service on a node, node_exporter, runs none of them.
+domtrans_pattern(unconfined_service_t, install_exec_t, install_t)
+
+########################################
+#
+# bootupd, which updates the bootloader at boot (bootloader-update.service).
+#
+
+gen_require(`
+	type bootupd_t, default_t;
+')
+# bootupctl reads /sysroot/.bootc-aleph.json, which bootc's installer
+# writes and Fedora's policy labels default_t (#111).
+allow bootupd_t default_t:file { getattr open read };
