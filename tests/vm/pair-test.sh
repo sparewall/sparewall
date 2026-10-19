@@ -6,7 +6,8 @@
 # it. With IMAGE set (the image the disk was built from), the failed node
 # then returns, an unsigned image is refused, and `sparewall upgrade`
 # rolls the pair onto a derived image served from a local registry,
-# handing the gateway over between the reboots. Remote-access VPN clients
+# handing the gateway over between the reboots, then again onto new
+# content under the same reference. Remote-access VPN clients
 # (vpn.sh) measure tunnel recovery and inner-flow continuity across the
 # master loss and the rolling upgrade.
 #
@@ -371,5 +372,18 @@ grep -q broken flow.log && fail "the connection broke in the upgrade: $(tail -5 
 after=$(echoes) || fail "the connection stalled in the upgrade: $(tail -5 flow.log)"
 [ "$after" -gt "$before" ] || fail "the connection stalled in the upgrade ($before, $after)"
 vpn_after_move "rolling upgrade"
+
+log "a second rolling upgrade, to the reference the pair already tracks (#116)"
+# New content under the same tag: bootc switch would do nothing.
+printf 'FROM localhost/sparewall:next\nRUN echo again > /usr/share/sparewall/upgrade-marker-2\n' \
+    | sudo podman build -t localhost/sparewall:next -f - "$(mktemp -d)"
+sudo podman push --tls-verify=false localhost/sparewall:next docker://127.0.0.1:5000/sparewall:next
+upgraded2() { at "$1" 'test -e /usr/share/sparewall/upgrade-marker-2'; }
+AT_TIMEOUT=1800 at fw1 "sudo sparewall upgrade --image $NEXT" || fail "the second upgrade failed"
+wait_for 900 "fw2 on the second image" upgraded2 fw2
+wait_for 600 "fw1 on the second image" upgraded2 fw1
+wait_for 300 "fw1 in sync" in_sync fw1
+wait_for 120 "fw2 in sync" in_sync fw2
+is_master fw2 || fail "fw2 is $(role fw2) after the second upgrade, not MASTER"
 vpn_summary
-log "pair PASS (with a rolling upgrade)"
+log "pair PASS (with two rolling upgrades)"

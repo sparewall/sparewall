@@ -427,9 +427,25 @@ pub fn bootc_status() -> Option<serde_json::Value> {
     serde_json::from_str(&host("bootc", &["status", "--format=json"]).ok()?).ok()
 }
 
+/// The bootc command that stages `image`, given `bootc status`. `switch`
+/// to a reference the node already tracks does nothing ("Image
+/// specification is unchanged"), so a node that tracks it, with the
+/// signature policy enforced, `upgrade`s instead (#116).
+pub fn stage_args<'a>(status: Option<&serde_json::Value>, image: &'a str) -> Vec<&'a str> {
+    let spec = status.map(|s| &s["spec"]["image"]);
+    let tracked = spec.is_some_and(|s| {
+        s["image"].as_str() == Some(image) && s["signature"].as_str() == Some("containerPolicy")
+    });
+    if tracked {
+        vec!["upgrade"]
+    } else {
+        vec!["switch", "--enforce-container-sigpolicy", image]
+    }
+}
+
 impl UpgradeHost for HostUpgrade {
     fn stage(&self, image: &str) -> Result<Option<String>, String> {
-        host("bootc", &["switch", "--enforce-container-sigpolicy", image])?;
+        host("bootc", &stage_args(bootc_status().as_ref(), image))?;
         let st = bootc_status().ok_or("cannot read bootc status")?;
         let staged = &st["status"]["staged"]["image"];
         Ok(staged["imageDigest"]
@@ -464,5 +480,49 @@ impl UpgradeHost for HostUpgrade {
 
     fn start_keepalived(&self) -> Result<(), String> {
         host("systemctl", &["start", "keepalived.service"]).map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const STABLE: &str = "ghcr.io/sparewall/sparewall:stable";
+
+    fn status(image: &str, signature: &str) -> serde_json::Value {
+        json!({"spec": {"image": {"image": image, "signature": signature, "transport": "registry"}}})
+    }
+
+    #[test]
+    fn a_tracked_reference_is_upgraded() {
+        let st = status(STABLE, "containerPolicy");
+        assert_eq!(stage_args(Some(&st), STABLE), ["upgrade"]);
+    }
+
+    #[test]
+    fn another_reference_is_switched_to() {
+        let st = status(
+            "ghcr.io/sparewall/sparewall:sha-f940ddacccb9",
+            "containerPolicy",
+        );
+        assert_eq!(
+            stage_args(Some(&st), STABLE),
+            ["switch", "--enforce-container-sigpolicy", STABLE]
+        );
+    }
+
+    #[test]
+    fn a_tracked_reference_without_the_policy_is_switched_to() {
+        // switch with the flag turns enforcement on.
+        let st = status(STABLE, "insecure");
+        assert_eq!(
+            stage_args(Some(&st), STABLE),
+            ["switch", "--enforce-container-sigpolicy", STABLE]
+        );
+        assert_eq!(
+            stage_args(None, STABLE),
+            ["switch", "--enforce-container-sigpolicy", STABLE]
+        );
     }
 }
