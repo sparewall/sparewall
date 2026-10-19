@@ -31,8 +31,9 @@ ready-made images, with checksums signed by the same key:
   machine's disk or a USB stick
   (`zstd -dc sparewall-*.raw.zst | sudo dd of=/dev/sdX bs=4M`).
 - `sparewall-VERSION-x86_64.qcow2`: a disk image for VMs.
-- `sparewall-VERSION-x86_64-linux.tar.gz`: the `sparewall` CLI for your
-  workstation (a static Linux binary).
+- `sparewall-VERSION-x86_64-linux.tar.gz` and
+  `sparewall-VERSION-aarch64-linux.tar.gz`: the `sparewall` CLI for your
+  workstation (a static Linux binary, x86_64 or arm64).
 - `sparewall-VERSION-aarch64-darwin.tar.gz` and
   `sparewall-VERSION-x86_64-darwin.tar.gz`: the CLI for a Mac (Apple
   silicon and Intel). It is signed ad hoc, not notarized, so macOS

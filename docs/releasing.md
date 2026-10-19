@@ -37,7 +37,9 @@ For maintainers. A release is a tested commit on `main`, tagged.
    - `sparewall-VERSION-x86_64.iso`: the unattended installer (to the
      first fixed disk, if it is blank);
    - `sparewall-VERSION-x86_64.raw.zst` and `.qcow2`: disk images;
-   - `sparewall-VERSION-x86_64-linux.tar.gz`: the static CLI;
+   - `sparewall-VERSION-ARCH-linux.tar.gz` and
+     `sparewall-VERSION-ARCH-darwin.tar.gz`: the CLI, for Linux (static)
+     and macOS, each on x86_64 and aarch64;
    - SPDX SBOMs of the image and of the CLI (from the dependency list
      cargo-auditable embeds in the binary);
    - `SHA256SUMS`, signed with the project key

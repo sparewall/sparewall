@@ -11,15 +11,24 @@ cat > "$tmp/all" <<'SUMS'
 1111  sparewall-0.2.0-x86_64-linux.tar.gz
 2222  sparewall-0.2.0-aarch64-darwin.tar.gz
 3333  sparewall-0.2.0-x86_64-darwin.tar.gz
+5555  sparewall-0.2.0-aarch64-linux.tar.gz
 4444  sparewall-0.2.0-x86_64.iso
 SUMS
 f=$("$gen" 0.2.0 "$tmp/all")
 grep -q '^  version "0.2.0"$' <<<"$f" || fail "no version"
-for want in "1111" "2222" "3333"; do
+for want in "1111" "2222" "3333" "5555"; do
     grep -q "sha256 \"$want\"" <<<"$f" || fail "no sha256 $want"
 done
 grep -q 'sha256 "4444"' <<<"$f" && fail "the ISO is in the formula"
 grep -q 'releases/download/v0.2.0/sparewall-0.2.0-aarch64-darwin.tar.gz"' <<<"$f" || fail "no default URL"
+# Each tarball under its own OS and architecture.
+for pair in "on_macos on_arm 2222" "on_macos on_intel 3333" "on_linux on_intel 1111" "on_linux on_arm 5555"; do
+    read -r os arch sum <<<"$pair"
+    awk -v os="$os" -v arch="$arch" -v sum="$sum" '
+        $1 == os { inos = 1 } inos && $1 == "end" && /^  end/ { inos = 0 }
+        inos && $1 == arch { inarch = 1 } inarch && $1 == "sha256" { found = found || index($0, sum); inarch = 0 }
+        END { exit !found }' <<<"$f" || fail "$sum is not under $os $arch"
+done
 if command -v ruby >/dev/null; then
     ruby -c <<<"$f" >/dev/null || fail "not valid Ruby"
 fi
