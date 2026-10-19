@@ -39,6 +39,13 @@ ready-made images, with checksums signed by the same key:
   quarantines a downloaded copy and refuses to run it; after unpacking,
   clear that with `xattr -d com.apple.quarantine sparewall`.
 
+Or install the CLI with Homebrew, on macOS or Linux; it follows releases
+with `brew upgrade`, and needs no quarantine step:
+
+```shell
+brew install sparewall/tap/sparewall
+```
+
 ```shell
 cosign verify-blob --key cosign.pub --bundle SHA256SUMS.sigstore.json SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS       # on macOS: shasum -a 256 -c --ignore-missing SHA256SUMS

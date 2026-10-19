@@ -308,6 +308,35 @@ jobs:
           [ "$(target/aarch64-apple-darwin/release/sparewall --version)" = "sparewall $v" ] \
             || { echo "the CLI does not report version $v" >&2; exit 1; }
           ls -l assets
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+        id: build
+
+      - name: Homebrew formula
+        # The formula the release workflow pushes to sparewall/homebrew-tap,
+        # for these tarballs: it installs from a tap, passes its test, and
+        # clears a quarantine attribute.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_FROM_API: 1
+          V: ${{ steps.build.outputs.version }}
+        run: |
+          (cd assets && shasum -a 256 -- *.tar.gz) > sums
+          tap=$(brew --repository)/Library/Taps/sparewall-ci/homebrew-tap
+          brew tap-new --no-git sparewall-ci/tap
+          .github/homebrew-formula.sh "$V" sums "file://$PWD/assets" > "$tap/Formula/sparewall.rb"
+          cat "$tap/Formula/sparewall.rb"
+          brew style sparewall-ci/tap/sparewall
+          brew install --formula sparewall-ci/tap/sparewall
+          brew test sparewall-ci/tap/sparewall
+          for s in bash zsh fish; do
+            sparewall completion "$s" >/dev/null
+          done
+          test -e "$(brew --prefix)/share/zsh/site-functions/_sparewall"
+          bin=$(brew --prefix sparewall)/bin/sparewall
+          xattr -w com.apple.quarantine '0081;00000000;Safari;' "$bin"
+          brew postinstall sparewall-ci/tap/sparewall
+          ! xattr -p com.apple.quarantine "$bin" 2>/dev/null \
+            || { echo "post_install left the quarantine attribute" >&2; exit 1; }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: startsWith(github.ref, 'refs/tags/v')
@@ -453,6 +482,7 @@ jobs:
           - \`sparewall-$v-x86_64-linux.tar.gz\` is the \`sparewall\` CLI, to
             manage nodes over SSH from a workstation; \`-aarch64-darwin\` and
             \`-x86_64-darwin\` are the same for a Mac (Apple silicon, Intel).
+            Homebrew installs it on either: \`brew install sparewall/tap/sparewall\`.
 
           Files named \`.partNN\` are pieces of one file (GitHub limits a file to
           2 GiB): \`cat\` them together, in order.
@@ -469,7 +499,7 @@ jobs:
 
           The macOS CLI is signed ad hoc, not notarized: after unpacking a
           downloaded tarball, clear its quarantine attribute with
-          \`xattr -d com.apple.quarantine sparewall\`.
+          \`xattr -d com.apple.quarantine sparewall\` (Homebrew does this itself).
 
           The SPDX SBOMs list what is in the image and in each CLI build.
           NOTES

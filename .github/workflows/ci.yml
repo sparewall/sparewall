@@ -40,6 +40,8 @@ jobs:
         run: tests/vm/vpn-check-test.sh
       - name: Release tag checks
         run: tests/ci/release-tags.sh
+      - name: Homebrew formula
+        run: tests/ci/homebrew-formula.sh
 
   macos-cli:
     # The CLI is released for macOS too (image.yml, cli-macos): it must
