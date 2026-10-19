@@ -1,22 +1,28 @@
 //! Rolling, health-gated OS upgrades (design: "Upgrade policy").
 //!
-//! Run on the pair's master: the standby stages the new image (bootc, with
+//! Run by the pair's master: the standby stages the new image (bootc, with
 //! the containers signature policy enforced) and reboots; once it is back,
 //! healthy and in sync, the master hands over the gateway addresses and
-//! upgrades itself. A standalone node stages and reboots, accepting one
-//! reboot of downtime. A failed gate stops the upgrade; `bootc rollback`
-//! returns a node.
+//! upgrades itself. Started on the backup, the request goes to the master,
+//! whose progress the backup relays as its own events. A standalone node
+//! stages and reboots, accepting one reboot of downtime. A failed gate
+//! stops the upgrade; `bootc rollback` returns a node.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
 use sparewall_api::{HelloReply, PEER_PROTOCOL, PeerProxy, PeerUpgradeProxy};
 use sparewall_core::host::{HostUpgrade, UpgradeHost, bootc_status};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 
 use crate::peer::{Link, Pair, connect, tunnel_addrs};
 use crate::service::{Core, with_core_raw};
+
+/// Set once this node has staged an upgrade and is about to reboot.
+pub static REBOOTING: AtomicBool = AtomicBool::new(false);
 
 pub const IMAGE_REPO: &str = "ghcr.io/sparewall/sparewall";
 pub const DEFAULT_CHANNEL: &str = "testing";
@@ -167,15 +173,27 @@ fn event(events: &broadcast::Sender<Value>, step: &str, detail: impl Into<String
     let _ = events.send(json!({"type": "upgrade", "step": step, "detail": detail}));
 }
 
+/// A planned upgrade.
+pub enum Planned {
+    /// Run it here: upgrade `peer` first, if there is one.
+    Run {
+        target: String,
+        peer: Option<Link>,
+        steps: Vec<String>,
+    },
+    /// This node is the backup: the master runs it.
+    Forward { link: Link, master: String },
+}
+
 /// Plan an upgrade and check its preconditions; the work happens in
-/// [`run`].
+/// [`run`], or on the master.
 pub async fn plan(
     core: &Core,
     events: &broadcast::Sender<Value>,
     pair: &Pair,
     channel: Option<String>,
     image: Option<String>,
-) -> Result<(String, Option<Link>, Vec<String>), String> {
+) -> Result<Planned, String> {
     let (doc, node) = with_core_raw(core, events, |c| {
         Ok((c.active_document()?, c.node().to_string()))
     })
@@ -195,14 +213,18 @@ pub async fn plan(
         tracked.as_deref(),
     );
     let Some((own, peer_addr, peer)) = doc.as_ref().and_then(|d| tunnel_addrs(d, &node)) else {
-        return Ok((
-            target.clone(),
-            None,
-            vec![
+        return Ok(Planned::Run {
+            target: target.clone(),
+            peer: None,
+            steps: vec![
                 format!("stage {target} on {node}"),
                 "reboot (one reboot of downtime)".into(),
             ],
-        ));
+        });
+    };
+    let link = Link {
+        own,
+        peer: peer_addr,
     };
     let p = pair.lock().unwrap_or_else(|p| p.into_inner()).clone();
     if p.state.as_ref().map(|s| s.name()) != Some("in-sync") {
@@ -211,25 +233,161 @@ pub async fn plan(
             p.state.map(|s| s.name())
         ));
     }
-    if p.role.as_deref() != Some("MASTER") {
-        return Err(format!(
-            "run the upgrade on the master; this node is {}",
-            p.role.unwrap_or("unknown".into())
-        ));
+    match p.role.as_deref() {
+        Some("MASTER") => {}
+        Some("BACKUP") => return Ok(Planned::Forward { link, master: peer }),
+        role => {
+            return Err(format!(
+                "run the upgrade on the master; this node is {}",
+                role.unwrap_or("unknown")
+            ));
+        }
     }
-    Ok((
-        target.clone(),
-        Some(Link {
-            own,
-            peer: peer_addr,
-        }),
-        vec![
+    Ok(Planned::Run {
+        target: target.clone(),
+        peer: Some(link),
+        steps: vec![
             format!("stage {target} on {peer} (standby) and reboot it"),
             format!("wait for {peer} to return healthy and in sync"),
             format!("hand the gateway addresses to {peer}"),
             format!("stage {target} on {node} and reboot it"),
         ],
-    ))
+    })
+}
+
+/// Plan an upgrade and start it. On the backup, `forward` sends it to the
+/// master (a master that is asked never forwards it back). Returns the
+/// plan, in words.
+pub async fn start(
+    core: &Core,
+    events: &broadcast::Sender<Value>,
+    pair: &Pair,
+    channel: Option<String>,
+    image: Option<String>,
+    forward: bool,
+) -> Result<Vec<String>, String> {
+    match plan(core, events, pair, channel.clone(), image.clone()).await? {
+        Planned::Run {
+            target,
+            peer,
+            steps,
+        } => {
+            tokio::spawn(run(core.clone(), events.clone(), target, peer));
+            Ok(steps)
+        }
+        Planned::Forward { link, master } if forward => {
+            forward_to(link, master, channel, image, events.clone()).await
+        }
+        Planned::Forward { master, .. } => Err(format!(
+            "{master} asked this node to run the upgrade, but this node is the backup"
+        )),
+    }
+}
+
+/// Whether an upgrade event is its last.
+pub fn ends(event: &Value) -> bool {
+    matches!(event["step"].as_str(), Some("failed" | "done" | "reboot"))
+}
+
+type Started = oneshot::Sender<Result<Vec<String>, String>>;
+
+/// Have the master run the upgrade, and relay its events here, named,
+/// until it ends or the connection does (when this node reboots).
+async fn forward_to(
+    link: Link,
+    master: String,
+    channel: Option<String>,
+    image: Option<String>,
+    events: broadcast::Sender<Value>,
+) -> Result<Vec<String>, String> {
+    let (tx, rx) = oneshot::channel();
+    let name = master.clone();
+    // The proxy's stream is not Send: the relay runs on a thread of its
+    // own.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        rt.block_on(async move {
+            let mut tx = Some(tx);
+            let why = relay(link, &name, channel, image, &events, &mut tx).await;
+            match tx.take() {
+                // The master never answered with a plan.
+                Some(t) => {
+                    let _ = t.send(Err(why));
+                }
+                // This node going down for its own upgrade ends the relay too.
+                None if why.is_empty() || REBOOTING.load(Ordering::SeqCst) => {}
+                None => event(
+                    &events,
+                    "failed",
+                    format!("lost {name}, which runs the upgrade: {why}"),
+                ),
+            }
+        })
+    });
+    rx.await
+        .map_err(|_| format!("{master} did not answer"))?
+        .map_err(|e| format!("{master} did not start the upgrade: {e}"))
+}
+
+/// The relay itself. Sends the plan on `tx` (taking it), then the events;
+/// returns why it stopped, or "" at the upgrade's end.
+async fn relay(
+    link: Link,
+    name: &str,
+    channel: Option<String>,
+    image: Option<String>,
+    events: &broadcast::Sender<Value>,
+    tx: &mut Option<Started>,
+) -> String {
+    let mut conn = match connect(link).await {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    let stream = match conn
+        .start_upgrade(channel.as_deref(), image.as_deref())
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => return e.to_string(),
+    };
+    pin_mut!(stream);
+    while let Some(item) = stream.next().await {
+        let ev = match item {
+            Ok(Ok(r)) => r.event,
+            Ok(Err(e)) => return e.to_string(),
+            Err(e) => return e.to_string(),
+        };
+        if ev["type"] != "upgrade" {
+            continue;
+        }
+        let detail = ev["detail"].as_str().unwrap_or("");
+        if let Some(t) = tx.take() {
+            if ev["step"] != "plan" {
+                *tx = Some(t);
+                return if detail.is_empty() { "refused" } else { detail }.to_string();
+            }
+            let steps = ev["plan"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect();
+            let _ = t.send(Ok(steps));
+            continue;
+        }
+        event(
+            events,
+            ev["step"].as_str().unwrap_or(""),
+            format!("{name}: {detail}"),
+        );
+        if ends(&ev) {
+            return String::new();
+        }
+    }
+    "the connection closed".into()
 }
 
 /// Carry out a planned upgrade.
@@ -397,6 +555,16 @@ mod tests {
             target_ref(Some("r/x:1"), Some("stable"), None, ghcr),
             "r/x:1"
         );
+    }
+
+    #[test]
+    fn the_last_event_ends_a_relay() {
+        for step in ["failed", "done", "reboot"] {
+            assert!(ends(&json!({"type": "upgrade", "step": step})), "{step}");
+        }
+        for step in ["plan", "stage-peer", "peer-ready", "failover", "stage"] {
+            assert!(!ends(&json!({"type": "upgrade", "step": step})), "{step}");
+        }
     }
 
     use std::sync::Mutex;

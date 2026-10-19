@@ -515,6 +515,16 @@ pub struct UpgradeReply {
 pub trait PeerUpgradeProxy {
     /// Stage `image` with bootc (signature enforced) and reboot into it.
     async fn upgrade(&mut self, image: &str) -> zlink::Result<Result<UpgradeReply, PeerError>>;
+    /// Run a rolling upgrade on the callee, the master, for a caller that
+    /// is the backup (`sparewall upgrade` run there). The first event is
+    /// `{"type": "upgrade", "step": "plan", "plan": [...]}`, or a `failed`
+    /// step; the upgrade's own events follow until it ends.
+    #[zlink(more)]
+    async fn start_upgrade(
+        &mut self,
+        channel: Option<&str>,
+        image: Option<&str>,
+    ) -> zlink::Result<impl futures_util::Stream<Item = zlink::Result<Result<EventReply, PeerError>>>>;
 }
 
 pub const UPGRADE_INTERFACE: &str = "org.sparewall.Upgrade";

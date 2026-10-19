@@ -309,10 +309,13 @@ sparewall upgrade --image mirror.example:5000/sparewall:stable
 ```
 
 On a standalone node this stages the image and reboots (one reboot of
-downtime). In a pair, run it on the master: the standby is upgraded and
-rebooted first, and once it is back on the new image, healthy and in sync,
-the master hands it the gateway addresses (established connections carry
-over through conntrackd) and upgrades itself. A failed gate stops the
+downtime). In a pair the master runs it, whichever node you start it on:
+the standby is upgraded and rebooted first, and once it is back on the new
+image, healthy and in sync, the master hands it the gateway addresses
+(established connections carry over through conntrackd) and upgrades
+itself. Started on the standby, the command shows the master's progress
+until the standby reboots; follow the rest with `sparewall status` or the
+master's journal. A failed gate stops the
 upgrade and the master keeps the addresses; `bootc rollback` and a reboot
 return a node to its previous image. The containers signature policy
 rejects images from anywhere but `ghcr.io/sparewall`, whose images must
