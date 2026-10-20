@@ -49,3 +49,64 @@ jobs:
             .github/check-sigpolicy.sh "$IMAGE:$t"
             echo "$src is now $IMAGE:$t" >> "$GITHUB_STEP_SUMMARY"
           done
+
+  homebrew:
+    # The tap's formula follows each release, so `brew upgrade` does too.
+    # Pushed over SSH with HOMEBREW_TAP_DEPLOY_KEY, the private half of a
+    # write deploy key on sparewall/homebrew-tap: it reaches nothing else.
+    name: Homebrew tap
+    needs: promote
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Update the formula
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -z "$TAP_KEY" ]; then
+            echo "::warning::HOMEBREW_TAP_DEPLOY_KEY is not set: sparewall/homebrew-tap was not updated"
+            exit 0
+          fi
+          # The key, and GitHub's published host key, so nothing is trusted
+          # on first use.
+          install -m 0700 -d ~/.ssh
+          (umask 077 && printf '%s\n' "$TAP_KEY" > ~/.ssh/tap)
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' \
+            > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/tap -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          v=${TAG#v}
+          gh release download "$TAG" -p SHA256SUMS -p SHA256SUMS.sigstore.json
+          cosign verify-blob --key cosign.pub --bundle SHA256SUMS.sigstore.json SHA256SUMS
+          git clone -q git@github.com:sparewall/homebrew-tap.git tap
+          f=tap/Formula/sparewall.rb
+          # A release of an older line (a backport) leaves the tap alone.
+          if [ -f "$f" ]; then
+            cur=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$f")
+            if [ "$(printf '%s\n%s\n' "$cur" "$v" | sort -V | tail -1)" != "$v" ]; then
+              echo "The tap has $cur, newer than $v: left alone" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+          mkdir -p tap/Formula
+          .github/homebrew-formula.sh "$v" SHA256SUMS > "$f"
+          cd tap
+          git add Formula/sparewall.rb
+          if git diff --cached --quiet; then
+            echo "The tap already has $v" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "sparewall $v"
+          git push -q origin HEAD:main
+          echo "sparewall/homebrew-tap now installs $v" >> "$GITHUB_STEP_SUMMARY"

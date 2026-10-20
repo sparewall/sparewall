@@ -31,13 +31,21 @@ ready-made images, with checksums signed by the same key:
   machine's disk or a USB stick
   (`zstd -dc sparewall-*.raw.zst | sudo dd of=/dev/sdX bs=4M`).
 - `sparewall-VERSION-x86_64.qcow2`: a disk image for VMs.
-- `sparewall-VERSION-x86_64-linux.tar.gz`: the `sparewall` CLI for your
-  workstation (a static Linux binary).
+- `sparewall-VERSION-x86_64-linux.tar.gz` and
+  `sparewall-VERSION-aarch64-linux.tar.gz`: the `sparewall` CLI for your
+  workstation (a static Linux binary, x86_64 or arm64).
 - `sparewall-VERSION-aarch64-darwin.tar.gz` and
   `sparewall-VERSION-x86_64-darwin.tar.gz`: the CLI for a Mac (Apple
   silicon and Intel). It is signed ad hoc, not notarized, so macOS
   quarantines a downloaded copy and refuses to run it; after unpacking,
   clear that with `xattr -d com.apple.quarantine sparewall`.
+
+Or install the CLI with Homebrew, on macOS or Linux; it follows releases
+with `brew upgrade`, and needs no quarantine step:
+
+```shell
+brew install sparewall/tap/sparewall
+```
 
 ```shell
 cosign verify-blob --key cosign.pub --bundle SHA256SUMS.sigstore.json SHA256SUMS

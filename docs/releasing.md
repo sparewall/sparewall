@@ -37,7 +37,9 @@ For maintainers. A release is a tested commit on `main`, tagged.
    - `sparewall-VERSION-x86_64.iso`: the unattended installer (to the
      first fixed disk, if it is blank);
    - `sparewall-VERSION-x86_64.raw.zst` and `.qcow2`: disk images;
-   - `sparewall-VERSION-x86_64-linux.tar.gz`: the static CLI;
+   - `sparewall-VERSION-ARCH-linux.tar.gz` and
+     `sparewall-VERSION-ARCH-darwin.tar.gz`: the CLI, for Linux (static)
+     and macOS, each on x86_64 and aarch64;
    - SPDX SBOMs of the image and of the CLI (from the dependency list
      cargo-auditable embeds in the binary);
    - `SHA256SUMS`, signed with the project key
@@ -68,6 +70,17 @@ CI's **image signing path** job runs the same scripts against a
 throwaway registry and key on every pull request
 (`tests/ci/signing.sh`), and checks that a default-format signature is
 refused.
+
+Publishing a release (not a prerelease) also updates the Homebrew tap,
+[`sparewall/homebrew-tap`](https://github.com/sparewall/homebrew-tap):
+the release workflow writes `Formula/sparewall.rb` from the release's
+signed `SHA256SUMS` (`.github/homebrew-formula.sh`) and pushes it, so
+`brew upgrade` follows. It pushes over SSH with the
+`HOMEBREW_TAP_DEPLOY_KEY` secret, the private half of a write deploy key
+on the tap (the organization must allow deploy keys); without the secret
+it warns and leaves the tap alone. It never moves the
+tap back to an older version. The image workflow's macOS CLI job
+installs the formula it would write, from a local tap, on every run.
 
 A failed suite stops at step 3 with no release. Delete the tag, fix
 `main`, and tag again.
