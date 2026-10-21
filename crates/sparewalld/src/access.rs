@@ -68,6 +68,22 @@ pub enum Need {
     Role(Role),
 }
 
+#[cfg(test)]
+impl Need {
+    /// As the HTTP API's description shows it (`x-sparewall-role`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Need::Nothing => "none",
+            Need::Role(r) => r.as_str(),
+        }
+    }
+}
+
+/// The HTTP API description's version: the API's, not a release's, so
+/// the committed description changes only with the interfaces.
+#[cfg(test)]
+pub const OPENAPI_VERSION: &str = "0.1";
+
 /// The role each method needs on the restricted socket; `None` for a
 /// method it does not serve. Every method of the coordinator's
 /// interfaces is listed (a test holds this to the interface
@@ -430,6 +446,60 @@ mod tests {
             FirewallError::PermissionDenied { role, .. } => role,
             e => panic!("not a refusal: {e}"),
         }
+    }
+
+    /// docs/api/openapi.json is the description generated from the
+    /// interfaces this socket serves (`SPAREWALL_UPDATE_OPENAPI=1`
+    /// rewrites it).
+    #[tokio::test(flavor = "current_thread")]
+    async fn openapi_description_is_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_core, f) = firewall(dir.path());
+        let server = serve(dir.path(), f);
+        let test = async {
+            let mut c = connect(dir.path(), "root.sock").await;
+            let mut idls = vec![];
+            for i in c.get_info().await.unwrap().unwrap().interfaces {
+                idls.push(
+                    c.get_interface_description(&i)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .description,
+                );
+            }
+            idls
+        };
+        let idls = tokio::select! {
+            () = server => unreachable!(),
+            i = test => i,
+        };
+        let idls: Vec<&str> = idls.iter().map(String::as_str).collect();
+        let doc = sparewall_api::openapi::document(
+            &idls,
+            &sparewall_api::openapi::Options {
+                version: OPENAPI_VERSION,
+                role: &|m| needed(m).map(Need::name),
+                document: Some(sparewall_config::schema::json_schema()),
+                fields: &[
+                    ("org.sparewall.Firewall.Apply", "config", "Document"),
+                    ("org.sparewall.Firewall.GetConfig", "config", "Document"),
+                    ("org.sparewall.Firewall.Export", "config", "Document"),
+                ],
+            },
+        )
+        .unwrap();
+        let text = serde_json::to_string_pretty(&doc).unwrap() + "\n";
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/openapi.json");
+        if std::env::var_os("SPAREWALL_UPDATE_OPENAPI").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &text).unwrap();
+        }
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            have == text,
+            "docs/api/openapi.json is out of date: run SPAREWALL_UPDATE_OPENAPI=1 cargo test -p sparewalld openapi"
+        );
     }
 
     /// `$6$` crypt(3) of "not a password".

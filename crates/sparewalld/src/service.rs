@@ -346,12 +346,19 @@ impl<Sock> Firewall
 where
     Sock::ReadHalf: FetchPeerCredentials,
 {
+    /// Check a document without applying it: errors (as ValidationFailed,
+    /// each naming its path) or warnings.
     #[zlink(interface = "org.sparewall.Firewall", types = [sparewall_api::Generation, HealthCheck])]
     async fn validate(&mut self, config: Value) -> Result<ValidateReply, FirewallError> {
         let warnings = with_core(&self.core, &self.events, move |c| c.validate(config)).await?;
         Ok(ValidateReply { warnings })
     }
 
+    /// Replace the configuration with `config`. `base` is the generation it
+    /// was derived from: Conflict if another change landed meanwhile. With
+    /// `confirm_seconds`, the change reverts unless confirmed (`Confirm`) in
+    /// time. `dry_run` validates, renders and checks it without running it.
+    /// In a pair the peer must be reachable, or `allow_diverge` set.
     async fn apply(
         &mut self,
         config: Value,
@@ -375,6 +382,8 @@ where
         self.finish(r, confirm_seconds).await
     }
 
+    /// Change the configuration with a JSON merge patch (RFC 7396) on
+    /// generation `base`, as `Apply` does.
     async fn merge(
         &mut self,
         patch: Value,
@@ -398,6 +407,8 @@ where
         self.finish(r, confirm_seconds).await
     }
 
+    /// Change the configuration with a JSON patch (RFC 6902) on generation
+    /// `base`, as `Apply` does.
     async fn patch(
         &mut self,
         ops: Value,
@@ -421,6 +432,7 @@ where
         self.finish(r, confirm_seconds).await
     }
 
+    /// Keep generation `id`, which waits for confirmation.
     async fn confirm(&mut self, id: i64) -> Result<Empty, FirewallError> {
         let _change = self.changes.lock().await;
         with_core(&self.core, &self.events, move |c| {
@@ -432,6 +444,8 @@ where
         Ok(Empty {})
     }
 
+    /// Return to generation `id` (default: the one before the active one) as
+    /// a new generation; an unconfirmed change is discarded instead.
     async fn rollback(
         &mut self,
         id: Option<i64>,
@@ -458,6 +472,7 @@ where
         })
     }
 
+    /// A generation's document and record (default: the active one).
     async fn get_config(&mut self, id: Option<i64>) -> Result<ConfigReply, FirewallError> {
         with_core(&self.core, &self.events, move |c| {
             let id = match id {
@@ -473,6 +488,7 @@ where
         .await
     }
 
+    /// A generation's document alone (default: the active one).
     async fn export(&mut self, id: Option<i64>) -> Result<ExportReply, FirewallError> {
         with_core(&self.core, &self.events, move |c| {
             let id = match id {
@@ -486,6 +502,7 @@ where
         .await
     }
 
+    /// Generations, newest first, up to `limit`.
     async fn history(&mut self, limit: Option<i64>) -> Result<HistoryReply, FirewallError> {
         with_core(&self.core, &self.events, move |c| {
             let gens = c.history(limit.map(|l| l.max(0) as usize))?;
@@ -499,6 +516,8 @@ where
         .await
     }
 
+    /// In a pair, make both nodes run the configuration of `from_node`: this
+    /// node (push it to the peer) or the peer (take the peer's).
     async fn sync(&mut self, from_node: String) -> Result<GenerationReply, FirewallError> {
         let _change = self.changes.lock().await;
         let (node, peer) = with_core(&self.core, &self.events, |c| {
@@ -536,6 +555,7 @@ where
         })
     }
 
+    /// This node's health level and VRRP role; with `verbose`, each check.
     async fn health(&mut self, verbose: Option<bool>) -> Result<HealthReply, FirewallError> {
         let vrrp = self
             .pair
@@ -567,6 +587,8 @@ where
         })
     }
 
+    /// Acknowledge a check that stays degraded until someone has seen it
+    /// (`selinux`).
     async fn ack_health(
         &mut self,
         name: String,
@@ -577,15 +599,23 @@ where
         Ok(Empty {})
     }
 
+    /// The node's state: generations and hashes, pair sync, links, VRRP,
+    /// connection tracking, the certificate it serves, and health.
     async fn status(&mut self) -> Result<StatusReply, FirewallError> {
         let pair = self.pair.lock().unwrap_or_else(|p| p.into_inner()).clone();
         with_core(&self.core, &self.events, move |c| status(c, &pair)).await
     }
 
+    /// Write a backup bundle now, and send it to `backup.repository` if one
+    /// is set.
     async fn backup(&mut self) -> Result<BackupReply, FirewallError> {
         crate::backup::run(&self.core, &self.events).await
     }
 
+    /// Events as they happen: applied and rolled-back generations, peer
+    /// and health changes, upgrade steps. The first reply confirms the
+    /// subscription.
+    /// [Requires 'more' flag]
     #[zlink(more)]
     async fn subscribe(
         &mut self,
@@ -608,6 +638,8 @@ where
         tokio_stream::once(hello).chain(rest)
     }
 
+    /// A WireGuard client configuration for remote-access peer `peer`
+    /// (on `port`, one of the instance's ports, if given).
     async fn vpn_client_config(
         &mut self,
         instance: Option<String>,
@@ -622,6 +654,8 @@ where
         Ok(VpnConfigReply { config })
     }
 
+    /// Store a secret (a cluster secret unless `cluster` is false). Values
+    /// can never be read back.
     #[zlink(interface = "org.sparewall.Secrets", types = [SecretInfo], rename = "Set")]
     async fn secret_set(
         &mut self,
@@ -670,6 +704,7 @@ where
         })
     }
 
+    /// Secrets' names, classes and versions, never their values.
     #[zlink(rename = "List")]
     async fn secret_list(&mut self) -> Result<SecretListReply, FirewallError> {
         let list = with_core(&self.core, &self.events, |c| c.secret_list()).await?;
@@ -678,6 +713,8 @@ where
         })
     }
 
+    /// Whether a newer image is available on the channel (or `image`, a full
+    /// reference).
     #[zlink(interface = "org.sparewall.Upgrade", rename = "Check")]
     async fn upgrade_check(
         &mut self,
@@ -720,6 +757,8 @@ where
         })
     }
 
+    /// Start a rolling, health-gated upgrade; progress arrives as events
+    /// (`Subscribe`).
     #[zlink(rename = "Start")]
     async fn upgrade_start(
         &mut self,
@@ -734,6 +773,9 @@ where
         Ok(UpgradeStartReply { plan })
     }
 
+    /// Move a pair's gateway addresses to `to` (default: the node with the
+    /// higher VRRP priority). Returns when the move is done, or why it did
+    /// not happen.
     #[zlink(interface = "org.sparewall.Cluster", rename = "Failover")]
     async fn failover(&mut self, to: Option<String>) -> Result<FailoverReply, FirewallError> {
         crate::failover::failover(&self.core, &self.events, &self.pair, to.as_deref())
@@ -741,6 +783,8 @@ where
             .map_err(|message| FirewallError::ApplyFailed { message })
     }
 
+    /// Create an API token with `role`, expiring after `expires_days` if
+    /// given. The token is shown once.
     #[zlink(interface = "org.sparewall.Auth", types = [TokenInfo])]
     async fn create_token(
         &mut self,
@@ -760,6 +804,8 @@ where
         })
     }
 
+    /// Bind this connection to a token (an API token or a session's): later
+    /// calls act with its role. Needed first on the restricted socket.
     async fn bind(&mut self, token: String) -> Result<BindReply, FirewallError> {
         let Some(session) = self.session.clone() else {
             return Err(FirewallError::NotSupported {
@@ -788,6 +834,8 @@ where
         })
     }
 
+    /// Check a user's password and open a session of 12 hours; the
+    /// connection is bound to it. Failed logins are rate-limited per user.
     async fn login(&mut self, user: String, password: String) -> Result<LoginReply, FirewallError> {
         let refused = |reason: &str| FirewallError::PermissionDenied {
             role: "none".into(),
@@ -817,6 +865,7 @@ where
         })
     }
 
+    /// End the session this connection is bound to.
     async fn logout(&mut self) -> Result<Empty, FirewallError> {
         let Some(p) = self.principal().filter(|p| p.user.is_some()) else {
             return Err(FirewallError::NotSupported {
@@ -835,6 +884,8 @@ where
         Ok(Empty {})
     }
 
+    /// Add a user, or change its role or password (a crypt(3) hash; `!`
+    /// locks it, empty keeps it). Ends the user's sessions.
     #[zlink(types = [UserInfo])]
     async fn set_user(
         &mut self,
@@ -851,6 +902,7 @@ where
         Ok(Empty {})
     }
 
+    /// Users and their roles, `admin` first.
     async fn list_users(&mut self) -> Result<UserListReply, FirewallError> {
         let users = with_core(&self.core, &self.events, |c| c.users()).await?;
         Ok(UserListReply {
@@ -866,6 +918,7 @@ where
         })
     }
 
+    /// Remove a user and end its sessions.
     async fn remove_user(&mut self, name: String) -> Result<Empty, FirewallError> {
         let existed = with_core(&self.core, &self.events, move |c| c.user_remove(&name)).await?;
         if !existed {
@@ -877,6 +930,7 @@ where
         Ok(Empty {})
     }
 
+    /// API tokens (never their values).
     async fn list_tokens(&mut self) -> Result<TokenListReply, FirewallError> {
         let t = with_core(&self.core, &self.events, |c| c.tokens()).await?;
         Ok(TokenListReply {
@@ -889,6 +943,7 @@ where
         })
     }
 
+    /// Revoke an API token at once.
     async fn revoke_token(&mut self, name: String) -> Result<Empty, FirewallError> {
         let existed = with_core(&self.core, &self.events, move |c| c.token_revoke(&name)).await?;
         if !existed {
@@ -899,6 +954,7 @@ where
         Ok(Empty {})
     }
 
+    /// Delete a secret on this node.
     #[zlink(interface = "org.sparewall.Secrets", rename = "Delete")]
     async fn secret_delete(&mut self, name: String) -> Result<Empty, FirewallError> {
         if name.starts_with(USER_PREFIX) {
