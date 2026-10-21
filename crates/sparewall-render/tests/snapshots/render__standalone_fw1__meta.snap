@@ -57,4 +57,10 @@ services:
     subsystem: logging
     reload: false
     check: ~
+  ssh:
+    provider: openssh
+    unit: sshd.service
+    subsystem: ssh
+    reload: true
+    check: ~
 bootstrap: false

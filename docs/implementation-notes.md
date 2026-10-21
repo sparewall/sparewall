@@ -148,7 +148,11 @@ Where the implementation departs from, or settles open questions in,
   `sparewall-run@`, outside the coordinator's domain, after a change,
   on receiving it from the peer, and at start-up; an identity's
   `password_hash` is stored as version 1 when there is none. Without the
-  secret the account is left as installed.
+  secret the account is left as installed. `management.ssh.password`
+  renders `/run/sparewall/ssh/sparewall.conf` (its own SELinux type,
+  which sshd may read), which the image's sshd drop-in includes ahead of
+  its `PasswordAuthentication no`; it is rendered in every generation,
+  bootstrap included, so turning it off or reverting reloads sshd too.
 
 ## Coordinator
 

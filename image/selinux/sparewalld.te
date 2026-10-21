@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.13.0)
+policy_module(sparewalld, 0.14.0)
 
 ########################################
 #
@@ -34,6 +34,10 @@ files_pid_file(sparewalld_var_run_t)
 # keep this type and the coordinator can still rewrite them.
 type sparewalld_provider_conf_t;
 files_pid_file(sparewalld_provider_conf_t)
+# /run/sparewall/ssh: whether sshd accepts the admin password, which
+# sshd reads.
+type sparewalld_sshd_conf_t;
+files_pid_file(sparewalld_sshd_conf_t)
 # Its private /tmp (restic's temporary packs).
 type sparewalld_tmp_t;
 files_tmp_file(sparewalld_tmp_t)
@@ -66,6 +70,7 @@ gen_require(`
 	type container_t, container_file_t, container_var_lib_t;
 	type systemd_generator_unit_file_t;
 	type chronyd_unit_file_t, keepalived_unit_file_t, conntrackd_unit_file_t;
+	type sshd_t, sshd_unit_file_t;
 	type http_port_t, unreserved_port_t, node_t;
 	class service { start stop status reload };
 ')
@@ -125,6 +130,12 @@ allow sparewalld_t { chronyd_var_run_t keepalived_var_run_t }:dir { create setat
 manage_dirs_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
 filetrans_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_provider_conf_t, dir, "dhcp")
 filetrans_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_provider_conf_t, dir, "dns")
+filetrans_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_sshd_conf_t, dir, "ssh")
+manage_dirs_pattern(sparewalld_t, sparewalld_sshd_conf_t, sparewalld_sshd_conf_t)
+manage_files_pattern(sparewalld_t, sparewalld_sshd_conf_t, sparewalld_sshd_conf_t)
+allow sshd_t sparewalld_var_run_t:dir search_dir_perms;
+allow sshd_t sparewalld_sshd_conf_t:dir list_dir_perms;
+allow sshd_t sparewalld_sshd_conf_t:file read_file_perms;
 manage_dirs_pattern(sparewalld_t, sparewalld_provider_conf_t, sparewalld_provider_conf_t)
 manage_files_pattern(sparewalld_t, sparewalld_provider_conf_t, sparewalld_provider_conf_t)
 manage_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
@@ -204,6 +215,8 @@ allow sparewalld_t cgroup_t:dir search;
 # Its own cgroup: restic (Go) reads its CPU quota, cpu.max.
 allow sparewalld_t cgroup_t:file { open read };
 allow sparewalld_t { sparewalld_unit_file_t chronyd_unit_file_t keepalived_unit_file_t conntrackd_unit_file_t }:service { start stop status reload };
+# sshd: reloaded when management.ssh.password changes, never stopped.
+allow sparewalld_t sshd_unit_file_t:service { start status reload };
 # Quadlet generates sparewall-kea and sparewall-unbound at boot, and the
 # generator gives every unit it writes this one type, whatever its
 # source; file contexts cannot tell them apart.

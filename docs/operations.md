@@ -68,8 +68,20 @@ sparewall passwd --lock    # back to keys only
 The hash is the `admin-password` cluster secret: both nodes of a pair
 set it (a node that was down catches up when it rejoins), the encrypted
 backup carries it, and a restore or reinstall sets it again. Log in as
-`admin` on the console, then `sudo` as usual. Password logins over SSH
-stay off.
+`admin` on the console, then `sudo` as usual.
+
+Password logins over SSH stay off unless the document opts in, which is
+applied and confirmed like any change (and warned about by `validate`):
+
+```yaml
+management:
+  network: mgmt
+  ssh:
+    password: true    # keys still work
+```
+
+The firewall still limits SSH to what the policy allows (the
+anti-lockout rule opens it on the management network only).
 
 **What a token can do today.** Every `sparewall` command goes through
 the coordinator's root-only socket, locally or over SSH with

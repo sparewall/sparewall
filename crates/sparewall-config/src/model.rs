@@ -158,6 +158,19 @@ pub struct Management {
     /// Only an `admin` may turn this off.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub anti_lockout: bool,
+    /// SSH to the node.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub ssh: ManagementSsh,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ManagementSsh {
+    /// Also accept the `admin` password (`sparewall passwd`) over SSH, not
+    /// only keys. Off by default: the password is the console's
+    /// break-glass path.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub password: bool,
 }
 
 // ---------------------------------------------------------------------------

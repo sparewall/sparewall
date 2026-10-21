@@ -711,7 +711,7 @@ The coordinator is the single authority: it holds users and tokens, checks every
 
 | Who | How |
 | --- | --- |
-| Admin at a shell | SSH keys; `sparewall` talks to the root-only local socket. An optional console password for `admin` (`sparewall passwd`, or seeded with the identity) is the break-glass path; root stays locked |
+| Admin at a shell | SSH keys; `sparewall` talks to the root-only local socket. An optional console password for `admin` (`sparewall passwd`, or seeded with the identity) is the break-glass path; over SSH only if the document opts in (`management.ssh.password`); root stays locked |
 | Scripts and CI | API tokens, over HTTPS or the restricted socket |
 | A browser (the web UI) | A password login, then a session cookie (see [Web UI and HTTP API](#web-ui-and-http-api)) |
 | Prometheus and health checks | A `monitor`-role token or a TLS client certificate |

@@ -231,10 +231,21 @@ takes_password() { # hash password
 printf 'console only\n' | vm 'sudo sparewall passwd'
 takes_password "$(admin_hash)" 'console only' || fail "the admin password is not set"
 ! takes_password "$(admin_hash)" 'something else' || fail "the admin password takes anything"
+ssh_password() {
+    sshpass -p 'console only' ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o ConnectTimeout=5 \
+        admin@127.0.0.1 true 2>/dev/null
+}
 # Not over SSH: the password is for the console.
-! sshpass -p 'console only' ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o ConnectTimeout=5 \
-    admin@127.0.0.1 true 2>/dev/null || fail "SSH took the admin password"
+! ssh_password || fail "SSH took the admin password"
+# Unless the document opts in. sshd is reloaded; a key login shows it is
+# listening again before the password is tried.
+vm 'sudo sparewall set management.ssh.password=true --confirm 0'
+vm true
+ssh_password || fail "SSH refused the admin password after management.ssh.password=true"
+vm 'sudo sparewall set management.ssh.password=false --confirm 0'
+vm true
+! ssh_password || fail "SSH still takes the admin password after opting out"
 vm 'sudo systemctl restart sparewalld'
 takes_password "$(admin_hash)" 'console only' || fail "the admin password changed on restart"
 
