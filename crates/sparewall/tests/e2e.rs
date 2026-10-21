@@ -43,6 +43,8 @@ fn start_in(dir: tempfile::TempDir) -> Option<Daemon> {
         .arg(dir.path().join("state"))
         .arg("--socket")
         .arg(dir.path().join("fw.sock"))
+        .arg("--api-socket")
+        .arg(dir.path().join("api.sock"))
         .arg("--identity")
         .arg(dir.path().join("id.yaml"))
         .arg("--fake-system")
@@ -117,6 +119,45 @@ fn apply_set_get_rollback() {
     std::fs::write(&exported, ok(&d, &["export"])).unwrap();
     let o = sw(&d, &["apply", "-f", exported.to_str().unwrap()]);
     assert!(String::from_utf8_lossy(&o.stderr).contains("No change"));
+}
+
+/// With `SPAREWALL_TOKEN`, the CLI works through the restricted socket
+/// with the token's role (#11).
+#[test]
+fn tokens_on_the_restricted_socket() {
+    let Some(d) = start() else { return };
+    let token = |name: &str, role: &str| {
+        ok(&d, &["token", "create", name, "--role", role, "-q"])
+            .trim()
+            .to_string()
+    };
+    let (viewer, operator) = (token("ro", "viewer"), token("ci", "operator"));
+    let as_token = |t: &str, args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_sparewall"))
+            .args(args)
+            .env("SPAREWALL_SOCKET", d.dir.path().join("api.sock"))
+            .env("SPAREWALL_TOKEN", t)
+            .env("XDG_CONFIG_HOME", d.dir.path())
+            .env_remove("SSH_CONNECTION")
+            .output()
+            .unwrap()
+    };
+    let o = as_token(&viewer, &["apply", "-f", &example(), "--confirm", "0"]);
+    assert_eq!(o.status.code(), Some(6), "{o:?}");
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("needs the operator role"),
+        "{o:?}"
+    );
+    let o = as_token(&operator, &["apply", "-f", &example(), "--confirm", "0"]);
+    assert!(o.status.success(), "{o:?}");
+    let o = as_token(&viewer, &["history", "-o", "json"]);
+    let h: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(h[0]["author"], "token ci");
+    let o = as_token("swt_wrong", &["status"]);
+    assert_eq!(o.status.code(), Some(6), "{o:?}");
+    // The token commands themselves are an admin's.
+    let o = as_token(&operator, &["token", "list"]);
+    assert_eq!(o.status.code(), Some(6), "{o:?}");
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //! zlink's `Server` handles one method call at a time across all its
 //! connections, so a call that waits on the network (a peer push, `sync
 //! --from`, an upgrade plan) would hold up every other client. Here each
-//! connection gets a server of its own, with its own clone of the
+//! connection gets a server of its own, with its own instance of the
 //! service; calls on one connection still run in order.
 
 use futures_util::StreamExt;
@@ -11,11 +11,12 @@ use futures_util::stream::FuturesUnordered;
 use tokio::net::UnixListener;
 use zlink::tokio::unix::Stream;
 
-/// Accept connections on `listener` and serve each with a clone of
-/// `service`. Returns only if accepting fails.
-pub async fn serve<S>(listener: UnixListener, service: S) -> std::io::Result<()>
+/// Accept connections on `listener` and serve each with a service from
+/// `service` (a clone of one, or one with per-connection state). Returns
+/// only if accepting fails.
+pub async fn serve<S>(listener: UnixListener, service: impl Fn() -> S) -> std::io::Result<()>
 where
-    S: zlink::Service<Stream> + Clone,
+    S: zlink::Service<Stream>,
 {
     // Server::run is not Send, so the connections are driven here
     // rather than spawned.
@@ -26,7 +27,7 @@ where
                 let (stream, _) = r?;
                 match Stream::try_from(stream) {
                     Ok(s) => conns.push(
-                        zlink::Server::new(zlink::ReadyListener::new(s), service.clone()).run(),
+                        zlink::Server::new(zlink::ReadyListener::new(s), service()).run(),
                     ),
                     Err(e) => tracing::debug!(error = %e, "dropping a Varlink connection"),
                 }
@@ -93,7 +94,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sock");
         let listener = UnixListener::bind(&path).unwrap();
-        let server = serve(listener, Slow);
+        let server = serve(listener, || Slow);
         let clients = async {
             let mut a = zlink::tokio::unix::connect(&path).await.unwrap();
             let mut b = zlink::tokio::unix::connect(&path).await.unwrap();

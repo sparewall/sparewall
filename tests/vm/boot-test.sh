@@ -261,6 +261,25 @@ vm true
 vm 'sudo systemctl restart sparewalld'
 takes_password "$(admin_hash)" 'console only' || fail "the admin password changed on restart"
 
+log "API tokens on the restricted socket"
+# admin (not root) with a token: the token's role, not sudo, decides.
+VIEWER=$(vm 'sudo sparewall token create ci-viewer --role viewer -q')
+OPERATOR=$(vm 'sudo sparewall token create ci-operator --role operator -q')
+vm "SPAREWALL_TOKEN=$VIEWER sparewall status" >/dev/null || fail "a viewer token cannot read status"
+rc=0; vm "SPAREWALL_TOKEN=$VIEWER sparewall set management.ssh.password=true --confirm 0" || rc=$?
+[ "$rc" = 6 ] || fail "a viewer token changed the configuration (exit $rc)"
+vm "SPAREWALL_TOKEN=$OPERATOR sparewall set management.ssh.password=true --confirm 0" \
+    || fail "an operator token cannot change the configuration"
+vm 'sudo sparewall history -o json' | grep -q '"author": *"token ci-operator"' \
+    || fail "the change is not recorded with its token"
+vm 'sudo sparewall set management.ssh.password=false --confirm 0'
+rc=0; vm "SPAREWALL_TOKEN=$OPERATOR sparewall token list" || rc=$?
+[ "$rc" = 6 ] || fail "an operator token listed tokens (exit $rc)"
+vm 'sudo sparewall token revoke ci-operator'
+rc=0; vm "SPAREWALL_TOKEN=$OPERATOR sparewall status" || rc=$?
+[ "$rc" = 6 ] || fail "a revoked token still works (exit $rc)"
+vm 'sudo sparewall token revoke ci-viewer'
+
 log "backup to a restic REST server"
 start_rest_server
 REPO=rest:http://10.0.2.2:8000/fw1

@@ -129,6 +129,7 @@ fn step<S: System>(
                             dry_run: false,
                             note: Some(format!("seeded from {}", s.source)),
                             stage_sync_link: false,
+                            role: None,
                         },
                     )
                 });

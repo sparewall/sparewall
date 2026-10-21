@@ -302,14 +302,18 @@ Where the implementation departs from, or settles open questions in,
   (each applied the pairing document) converge on the one created first.
 - **Health endpoint detail and `/metrics`** need an API token, except
   `/metrics` when `metrics.mode` is `external`.
-- **Roles are not enforced per call yet** (#11). The only client path
-  to the coordinator is its root-only socket (directly, or through SSH
-  and `sparewall bridge`), and every caller there is admin. API tokens,
-  with their roles, are checked only by the HTTPS health and metrics
-  endpoints. Scripts and front ends will reach the coordinator through a
-  restricted socket with per-call role checks, and over HTTPS through
-  `sparewall-httpd` (design: "Web UI and HTTP API"); both come with
-  milestone 7.
+- **Roles are checked per call on the restricted socket** (#11),
+  `/run/sparewall-api/org.sparewall.Api`. A connection binds a token
+  first (`org.sparewall.Auth.Bind`). A wrapper around the service on
+  each connection reads the method name as the call is decoded and
+  checks it against one table (`access::needed`) before the service
+  runs; a method missing from the table is refused, and a test holds the
+  table to the interface descriptions. The token is looked up again on
+  every call, from `tokens.json` without the coordinator's lock, so a
+  revoked token stops working on bound connections at once. Turning
+  `management.anti_lockout` off is checked in the coordinator, since it
+  depends on the document, for apply and rollback alike. The root-only
+  sockets are unchanged and take no token.
 - **Kea pings an address before offering it** (its open-source
   `ping_check` hook, #52): one echo request, a 200 ms timeout, and no
   ping for an address leased in the last 60 s. An answer means a host is

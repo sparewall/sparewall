@@ -14,6 +14,7 @@ use crate::health::{Check, Health, Level};
 use crate::store::{Generation, Pending, State, Store};
 use crate::store::{LinkDecision, WriteFailure};
 use crate::system::{Files, System};
+use crate::tokens::Role;
 
 /// Subsystems whose files a provider service reads from /run/sparewall.
 const PROVIDER_SUBSYSTEMS: &[Subsystem] = &[
@@ -53,6 +54,8 @@ pub struct ApplyOptions {
     /// running it ([`ApplyResult::staged`]): it must reach the peer first,
     /// through the link it changes ([`Coordinator::activate_staged`]).
     pub stage_sync_link: bool,
+    /// The role of a caller on the restricted socket; `None` for root.
+    pub role: Option<Role>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -478,6 +481,7 @@ impl<S: System> Coordinator<S> {
         let state = self.check_base(opts.base)?;
         self.link_change_in_progress(&state)?;
         let (doc, mut warnings, rendered) = self.check(value)?;
+        self.check_anti_lockout(&doc, opts.role)?;
         if let Some(old) = self.active_document()? {
             warnings.extend(sparewall_config::providers::switch_warnings(&old, &doc));
         }
@@ -824,6 +828,24 @@ impl<S: System> Coordinator<S> {
     /// this node's, waiting for the peer and the admin (they confirm or
     /// roll it back), or the peer's, which only the peer decides (`sync
     /// --from` is the explicit way out).
+    /// Only an admin may turn the anti-lockout rule off (design: "Roles").
+    /// Bootstrap counts as on.
+    fn check_anti_lockout(&self, doc: &Document, role: Option<Role>) -> Result<(), Error> {
+        let Some(role) = role.filter(|r| !r.allows(Role::Admin)) else {
+            return Ok(());
+        };
+        let was_on = self
+            .active_document()?
+            .is_none_or(|d| d.management.anti_lockout);
+        if was_on && !doc.management.anti_lockout {
+            return Err(Error::Denied {
+                role: role.as_str().into(),
+                reason: "only an admin may turn off management.anti_lockout".into(),
+            });
+        }
+        Ok(())
+    }
+
     fn link_change_in_progress(&self, state: &State) -> Result<(), Error> {
         match &state.pending {
             Some(p) if p.decides_link => Err(Error::Validation(vec![format!(
@@ -1060,16 +1082,20 @@ impl<S: System> Coordinator<S> {
     }
 
     pub fn rollback(&mut self, id: Option<u64>, author: &str) -> Result<Generation, Error> {
-        self.rollback_staging(id, author, false).map(|(g, _)| g)
+        self.rollback_staging(id, author, false, None)
+            .map(|(g, _)| g)
     }
 
     /// [`Self::rollback`], staging it like [`ApplyOptions::stage_sync_link`]
     /// when it changes the sync link; returns whether it was staged.
+    /// `role` is the caller's on the restricted socket, as in
+    /// [`ApplyOptions::role`].
     pub fn rollback_staging(
         &mut self,
         id: Option<u64>,
         author: &str,
         stage_sync_link: bool,
+        role: Option<Role>,
     ) -> Result<(Generation, bool), Error> {
         let state = self.store.state()?;
         if state.pending.as_ref().is_some_and(|p| p.link_change) {
@@ -1116,6 +1142,7 @@ impl<S: System> Coordinator<S> {
                 author: author.to_string(),
                 note: Some(format!("rollback to generation {target}")),
                 stage_sync_link,
+                role,
                 ..Default::default()
             },
         )?;

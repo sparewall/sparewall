@@ -950,7 +950,7 @@ Self-hosted runners, if added for benchmarks or capacity, never run workflows tr
 
 ## Web UI and HTTP API
 
-The web UI and the HTTP API are milestone 7. Nothing in them is built until milestone 6 is done, that is, until 0.x releases have run in production at real sites, and 1.0 waits for them. The UI will be the Varlink API's first client not built alongside it, and the gaps it finds (live events for status pages, errors that name the field at fault, schema metadata for forms, concurrent edits) should be closed before 1.0 freezes the schema, the Varlink API and the HTTP API together.
+The web UI and the HTTP API are milestone 7. Work on them began while milestone 6's 0.x releases were still proving themselves at real sites, and 1.0 waits for both. The UI will be the Varlink API's first client not built alongside it, and the gaps it finds (live events for status pages, errors that name the field at fault, schema metadata for forms, concurrent edits) should be closed before 1.0 freezes the schema, the Varlink API and the HTTP API together.
 
 ### Off until enabled
 
@@ -970,7 +970,7 @@ The HTTP API follows the conventions of systemd's [varlink-http-bridge](https://
 
 - People log in as named local users. Each user has one role (`admin`, `operator`, `viewer` or `monitor`), and an admin manages them (`sparewall user add alice --role operator`). The built-in `admin` account is one of these users. Password hashes (crypt(3), as shadow keeps them) are cluster secrets, like the `admin` hash, and logins are rate-limited.
 - The coordinator checks the password (`org.sparewall.Auth.Login`) and issues a short-lived, opaque session token for that user from its token store, so ending a session, revoking it or removing the user takes effect at once.
-- `sparewall-httpd` holds no authority of its own. It binds each call's connection with the caller's session or API token, and the coordinator derives the principal and role from that token alone, so `sparewall-httpd` cannot act as anyone other than the caller or with more than the caller's role. Without a token, the restricted socket allows only `Login`.
+- `sparewall-httpd` holds no authority of its own. It binds each call's connection with the caller's session or API token, and the coordinator derives the principal and role from that token alone, so `sparewall-httpd` cannot act as anyone other than the caller or with more than the caller's role. Without a token, the restricted socket allows only `Bind` and `Login`.
 - The session travels in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie, and every request must also carry a custom header, which a cross-site form cannot send.
 - Scripts use API tokens in an `Authorization: Bearer` header instead.
 - Single sign-on (OpenID Connect) can follow later; it maps an identity provider's users or groups onto the same roles, and local users keep working.
@@ -1013,7 +1013,7 @@ MIT and Apache-2.0 dependencies are compatible with GPL-3.0 and AGPL-3.0. CI enf
 
 ## Development milestones
 
-Build bottom-up: a bootable image, then a standalone firewall, then services, then HA, then everything around it. Each milestone ends with tests that run in CI, and nothing starts on the web UI until milestone 6 is done.
+Build bottom-up: a bootable image, then a standalone firewall, then services, then HA, then everything around it. Each milestone ends with tests that run in CI.
 
 | # | Milestone | Delivers | Exit criteria |
 | --- | --- | --- | --- |
