@@ -314,6 +314,17 @@ Where the implementation departs from, or settles open questions in,
   `management.anti_lockout` off is checked in the coordinator, since it
   depends on the document, for apply and rollback alike. The root-only
   sockets are unchanged and take no token.
+- **Users and sessions.** A user is the cluster secret `user.<name>`
+  (role and crypt hash); removing one stores a tombstone, since secret
+  deletions do not reach the peer. `admin` is the `admin-password`
+  secret. `Auth.Login` checks SHA-crypt hashes only (`$5$`, `$6$`), as
+  `sparewall passwd` and `sparewall user` make them; another kind seeded
+  with the identity works at the console but not for a login until the
+  password is set again. Sessions are tokens in the node's token store,
+  tied to the user and ending after 12 hours. They are not synced, so
+  after a failover the UI asks for the password again. Failed logins are
+  counted per user name in memory, at most five in 15 minutes, and each
+  failure answers a second late.
 - **Kea pings an address before offering it** (its open-source
   `ping_check` hook, #52): one echo request, a 200 ms timeout, and no
   ping for an address leased in the last 60 s. An answer means a host is

@@ -67,9 +67,15 @@ pub struct TokenInfo {
     pub last_used: Option<String>,
     /// SHA-256 of the token.
     pub hash: String,
+    /// A browser session's user ([`crate::users`]); `None` for an API
+    /// token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
 }
 
 const PREFIX: &str = "swt_";
+/// Names of session tokens, which API tokens cannot take.
+pub const SESSION_PREFIX: &str = "session-";
 
 fn hash(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
@@ -113,7 +119,7 @@ impl<S: System> Coordinator<S> {
         role: Role,
         ttl_days: Option<u32>,
     ) -> Result<(String, TokenInfo), Error> {
-        if !crate::secrets::name_ok(name) {
+        if !crate::secrets::name_ok(name) || name.starts_with(SESSION_PREFIX) {
             return Err(Error::Validation(vec![format!(
                 "invalid token name {name:?}"
             )]));
@@ -133,11 +139,69 @@ impl<S: System> Coordinator<S> {
             expires: ttl_days.map(|d| now.as_second() + i64::from(d) * 86_400),
             last_used: None,
             hash: hash(&token),
+            user: None,
         };
         all.push(info.clone());
         self.save_tokens(&all)?;
         tracing::info!(name, role = role.as_str(), "created API token");
         Ok((token, info))
+    }
+
+    /// A session token for `user`, lasting `ttl_s` seconds.
+    pub(crate) fn session_create(
+        &mut self,
+        user: &str,
+        role: Role,
+        ttl_s: i64,
+    ) -> Result<(String, TokenInfo), Error> {
+        let token = random_token()?;
+        let now = jiff::Timestamp::now();
+        let info = TokenInfo {
+            name: format!("{SESSION_PREFIX}{}", &hash(&token)[..12]),
+            role,
+            created: now.to_string(),
+            expires: Some(now.as_second() + ttl_s),
+            last_used: None,
+            hash: hash(&token),
+            user: Some(user.into()),
+        };
+        let mut all = self.tokens()?;
+        all.push(info.clone());
+        self.save_tokens(&all)?;
+        Ok((token, info))
+    }
+
+    /// End every session of `user`.
+    pub(crate) fn end_sessions(&mut self, user: &str) -> Result<(), Error> {
+        let mut all = self.tokens()?;
+        let before = all.len();
+        all.retain(|t| t.user.as_deref() != Some(user));
+        if all.len() != before {
+            self.save_tokens(&all)?;
+            tracing::info!(user, "ended sessions");
+        }
+        Ok(())
+    }
+
+    /// Forget expired sessions (API tokens stay listed, as expired).
+    pub(crate) fn prune_tokens(&mut self) -> Result<(), Error> {
+        let now = jiff::Timestamp::now().as_second();
+        let mut all = self.tokens()?;
+        let before = all.len();
+        all.retain(|t| t.user.is_none() || t.expires.is_none_or(|e| e > now));
+        if all.len() != before {
+            self.save_tokens(&all)?;
+        }
+        Ok(())
+    }
+
+    /// Revoke the token with SHA-256 `hash` (logging out a session).
+    pub fn token_revoke_hash(&mut self, hash: &str) -> Result<bool, Error> {
+        let mut all = self.tokens()?;
+        let before = all.len();
+        all.retain(|t| t.hash != hash);
+        self.save_tokens(&all)?;
+        Ok(all.len() != before)
     }
 
     pub fn token_revoke(&mut self, name: &str) -> Result<bool, Error> {

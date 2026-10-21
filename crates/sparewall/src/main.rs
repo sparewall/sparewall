@@ -254,6 +254,9 @@ enum Cmd {
     /// API tokens for scripts, monitoring and front ends.
     #[command(subcommand)]
     Token(TokenCmd),
+    /// Named users, who log in to the web UI with a password.
+    #[command(subcommand)]
+    User(UserCmd),
     /// Manage named contexts (deployments reached over SSH).
     #[command(subcommand)]
     Context(ContextCmd),
@@ -404,6 +407,34 @@ enum TokenCmd {
 }
 
 #[derive(Subcommand)]
+enum UserCmd {
+    /// Add a user; asks for its password (only the hash leaves this
+    /// machine).
+    Add {
+        name: String,
+        /// monitor, viewer, operator or admin.
+        #[arg(long, default_value = "viewer")]
+        role: String,
+    },
+    /// Set a user's password, or lock it.
+    Passwd {
+        name: String,
+        #[arg(long)]
+        lock: bool,
+    },
+    /// Change a user's role (its password stays).
+    Role {
+        name: String,
+        role: String,
+    },
+    List,
+    /// Remove a user and end its sessions.
+    Remove {
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum VpnCmd {
     /// Print a WireGuard client configuration (and a QR code with
     /// --qr, using qrencode) for one peer.
@@ -510,12 +541,12 @@ fn fetch_bundle(
 
 /// A new password: asked twice without echo on a terminal, or read from
 /// stdin.
-fn read_new_password() -> Result<String, Fail> {
+fn read_new_password(user: &str) -> Result<String, Fail> {
     if !std::io::stdin().is_terminal() {
-        return read_secret("the admin password");
+        return read_secret(&format!("the {user} password"));
     }
-    let first = read_secret("the new admin password")?;
-    let again = read_secret("the new admin password again")?;
+    let first = read_secret(&format!("the new {user} password"))?;
+    let again = read_secret(&format!("the new {user} password again"))?;
     if first != again {
         return Err(Fail::usage("the passwords do not match"));
     }
@@ -620,6 +651,11 @@ impl App {
             c.bind(t).await??;
         }
         Ok(c)
+    }
+
+    async fn find_user(&self, name: &str) -> Result<Option<sparewall_api::UserInfo>, Fail> {
+        let r = self.conn().await?.list_users().await??;
+        Ok(r.users.into_iter().find(|u| u.name == name))
     }
 
     fn say(&self, s: impl AsRef<str>) {
@@ -1099,7 +1135,7 @@ impl App {
                 let value = if lock {
                     "!".to_string()
                 } else {
-                    hash_password(&read_new_password()?)?
+                    hash_password(&read_new_password("admin")?)?
                 };
                 self.conn()
                     .await?
@@ -1184,6 +1220,65 @@ impl App {
             Cmd::Token(TokenCmd::Revoke { name }) => {
                 self.conn().await?.revoke_token(&name).await??;
                 self.say(format!("Revoked {name}."));
+            }
+            Cmd::User(UserCmd::Add { name, role }) => {
+                if self.find_user(&name).await?.is_some() {
+                    return Err(Fail::usage(format!(
+                        "{name} exists: sparewall user passwd or sparewall user role"
+                    )));
+                }
+                let hash = hash_password(&read_new_password(&name)?)?;
+                self.conn().await?.set_user(&name, &role, &hash).await??;
+                self.say(format!("Added {name} ({role}); the peer follows."));
+            }
+            Cmd::User(UserCmd::Passwd { name, lock }) => {
+                let u = self
+                    .find_user(&name)
+                    .await?
+                    .ok_or_else(|| Fail::usage(format!("no user named {name}")))?;
+                let hash = if lock {
+                    "!".to_string()
+                } else {
+                    hash_password(&read_new_password(&name)?)?
+                };
+                self.conn().await?.set_user(&name, &u.role, &hash).await??;
+                self.say(format!(
+                    "{} {name}'s password; its sessions ended.",
+                    if lock { "Locked" } else { "Set" }
+                ));
+            }
+            Cmd::User(UserCmd::Role { name, role }) => {
+                if self.find_user(&name).await?.is_none() {
+                    return Err(Fail::usage(format!("no user named {name}")));
+                }
+                // The coordinator keeps the password when given none.
+                self.conn().await?.set_user(&name, &role, "").await??;
+                self.say(format!("{name} is now {role}; its sessions ended."));
+            }
+            Cmd::User(UserCmd::List) => {
+                let r = self.conn().await?.list_users().await??;
+                match self.output {
+                    Some(Output::Json) | Some(Output::Yaml) => print_value(
+                        &serde_json::to_value(&r.users).unwrap_or_default(),
+                        self.output,
+                    ),
+                    _ => {
+                        println!("{:<24} {:<9} {:<7} UPDATED", "NAME", "ROLE", "LOCKED");
+                        for u in &r.users {
+                            println!(
+                                "{:<24} {:<9} {:<7} {}",
+                                u.name,
+                                u.role,
+                                if u.locked { "yes" } else { "no" },
+                                u.updated
+                            );
+                        }
+                    }
+                }
+            }
+            Cmd::User(UserCmd::Remove { name }) => {
+                self.conn().await?.remove_user(&name).await??;
+                self.say(format!("Removed {name}; its sessions ended."));
             }
             Cmd::Vpn(VpnCmd::ClientConfig {
                 peer,

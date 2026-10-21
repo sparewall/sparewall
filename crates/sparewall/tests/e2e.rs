@@ -160,6 +160,38 @@ fn tokens_on_the_restricted_socket() {
     assert_eq!(o.status.code(), Some(6), "{o:?}");
 }
 
+/// `sparewall user` adds, lists, changes and removes users.
+#[test]
+fn users_add_list_and_remove() {
+    let Some(d) = start() else { return };
+    let o = sw_stdin(&d, &["user", "add", "alice", "--role", "operator"], "pw\n");
+    assert!(o.status.success(), "{o:?}");
+    let o = sw_stdin(&d, &["user", "add", "alice"], "pw\n");
+    assert_eq!(o.status.code(), Some(2), "exists: {o:?}");
+    let users = |d: &Daemon| -> serde_json::Value {
+        serde_json::from_str(&ok(d, &["user", "list", "-o", "json"])).unwrap()
+    };
+    let u = users(&d);
+    assert_eq!(u[1]["name"], "alice");
+    assert_eq!(
+        (u[1]["role"].as_str(), u[1]["locked"].as_bool()),
+        (Some("operator"), Some(false))
+    );
+    ok(&d, &["user", "role", "alice", "viewer"]);
+    ok(&d, &["user", "passwd", "alice", "--lock"]);
+    let u = users(&d);
+    assert_eq!(
+        (u[1]["role"].as_str(), u[1]["locked"].as_bool()),
+        (Some("viewer"), Some(true))
+    );
+    ok(&d, &["user", "remove", "alice"]);
+    assert_eq!(users(&d).as_array().unwrap().len(), 1);
+    assert_eq!(
+        sw(&d, &["user", "passwd", "alice", "--lock"]).status.code(),
+        Some(2)
+    );
+}
+
 #[test]
 fn validation_errors_exit_3() {
     let Some(d) = start() else { return };

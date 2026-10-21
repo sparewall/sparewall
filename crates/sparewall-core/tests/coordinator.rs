@@ -3124,3 +3124,70 @@ fn hostname_is_the_node_name() {
     b.c.apply_hostname().unwrap();
     assert_eq!(b.c.system().hostname.as_deref(), Some("fw2"));
 }
+
+/// `$6$` crypt(3) of "not a password".
+const NOT_A_PASSWORD: &str = "$6$saltsaltsaltsalt$xBi0h9JAwekg0C/DjMgN2QuqkLmpxS6oSlGvlfbpVmNU6BoD2CIlyMob7DONgVGP/f3HoIdRtnZQ3hEVYIRer.";
+
+/// Users log in with their password and get a session with their role;
+/// changing or removing a user ends its sessions.
+#[test]
+fn users_log_in_to_sessions() {
+    use sparewall_core::tokens::{Role, current};
+    let mut t = setup();
+    let root = t.c.store().root().to_path_buf();
+    let users = t.c.users().unwrap();
+    assert_eq!((users.len(), users[0].name.as_str()), (1, "admin"));
+    assert!(users[0].locked, "no admin password yet");
+
+    t.c.user_set("alice", Role::Operator, NOT_A_PASSWORD)
+        .unwrap();
+    assert!(t.c.login("alice", "wrong").unwrap().is_none());
+    assert!(t.c.login("bob", "not a password").unwrap().is_none());
+    assert!(t.c.login("../x", "not a password").unwrap().is_none());
+    let (tok, s) = t.c.login("alice", "not a password").unwrap().unwrap();
+    assert_eq!((s.user.as_deref(), s.role), (Some("alice"), Role::Operator));
+    assert!(s.name.starts_with("session-") && s.expires.is_some());
+    assert_eq!(t.c.token_use(&tok).unwrap().unwrap().hash, s.hash);
+
+    // A new password (or role) ends the session.
+    t.c.user_set("alice", Role::Viewer, NOT_A_PASSWORD).unwrap();
+    assert!(current(&root, &s.hash).unwrap().is_none());
+    let (_, s) = t.c.login("alice", "not a password").unwrap().unwrap();
+    assert_eq!(s.role, Role::Viewer);
+
+    // Removed: a tombstone, which the peer receives, and no sessions.
+    assert!(t.c.user_remove("alice").unwrap());
+    assert!(current(&root, &s.hash).unwrap().is_none());
+    assert!(t.c.login("alice", "not a password").unwrap().is_none());
+    assert_eq!(t.c.users().unwrap().len(), 1);
+    assert!(
+        t.c.cluster_secrets()
+            .unwrap()
+            .iter()
+            .any(|s| s.info.name == "user.alice" && s.info.version == 3)
+    );
+    assert!(!t.c.user_remove("alice").unwrap());
+
+    // admin is the admin password, and stays an admin.
+    t.c.user_set("admin", Role::Admin, NOT_A_PASSWORD).unwrap();
+    assert_eq!(t.c.system().admin_password.as_deref(), Some(NOT_A_PASSWORD));
+    let (_, s) = t.c.login("admin", "not a password").unwrap().unwrap();
+    assert_eq!(s.role, Role::Admin);
+    assert!(t.c.user_set("admin", Role::Viewer, NOT_A_PASSWORD).is_err());
+    assert!(t.c.user_remove("admin").is_err());
+    assert!(t.c.user_set("Bad", Role::Viewer, NOT_A_PASSWORD).is_err());
+    assert!(t.c.user_set("carol", Role::Viewer, "plaintext").is_err());
+    assert!(
+        t.c.user_set("carol", Role::Viewer, "").is_err(),
+        "no password to keep"
+    );
+    t.c.user_set("carol", Role::Viewer, NOT_A_PASSWORD).unwrap();
+    t.c.user_set("carol", Role::Admin, "").unwrap();
+    let (_, s2) = t.c.login("carol", "not a password").unwrap().unwrap();
+    assert_eq!(s2.role, Role::Admin, "role changed, password kept");
+    // A change from the peer ends sessions here too.
+    t.c.users_changed(&["admin-password".into()]).unwrap();
+    assert!(current(&root, &s.hash).unwrap().is_none());
+    // API tokens cannot pose as sessions.
+    assert!(t.c.token_create("session-x", Role::Admin, None).is_err());
+}
