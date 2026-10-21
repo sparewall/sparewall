@@ -77,11 +77,12 @@ pub fn needed(method: &str) -> Option<Need> {
         | "org.sparewall.Firewall.Confirm"
         | "org.sparewall.Firewall.Rollback"
         | "org.sparewall.Firewall.Sync"
-        | "org.sparewall.Firewall.AckHealth"
         | "org.sparewall.Cluster.Failover" => Operator,
         // The bundle carries the cluster secrets, and a client
-        // configuration a peer's keys.
+        // configuration a peer's keys. A check that stays degraded until
+        // seen (an SELinux denial) is an admin's to acknowledge.
         "org.sparewall.Firewall.Backup"
+        | "org.sparewall.Firewall.AckHealth"
         | "org.sparewall.Firewall.VpnClientConfig"
         | "org.sparewall.Upgrade.Start"
         | "org.sparewall.Secrets.Set"
@@ -500,6 +501,8 @@ mod tests {
                 .unwrap_err();
             assert!(e.to_string().contains("anti_lockout"), "{e}");
             let e = c.list_tokens().await.unwrap().unwrap_err();
+            assert_eq!(role_of(e), "operator");
+            let e = c.ack_health("selinux").await.unwrap().unwrap_err();
             assert_eq!(role_of(e), "operator");
             let e = c
                 .create_token("mine", "admin", None)

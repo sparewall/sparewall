@@ -101,8 +101,8 @@ SPAREWALL_TOKEN=$(cat ci.token) sparewall set networks.users.mtu=1400
 | --- | --- |
 | `monitor` | Health (and over HTTPS, verbose health and `/metrics`) |
 | `viewer` | Also read the configuration, history, status and events; validate; check for upgrades |
-| `operator` | Also apply, confirm, roll back, sync, fail over, and acknowledge health checks |
-| `admin` | Also secrets, tokens, backups, VPN client configurations and upgrades, and turning `management.anti_lockout` off |
+| `operator` | Also apply, confirm, roll back, sync and fail over |
+| `admin` | Also secrets, tokens, backups, VPN client configurations, upgrades, acknowledging health checks, and turning `management.anti_lockout` off |
 
 A refused call exits with code 6. Changes made with a token are
 recorded as `token <name>` in the history and in the journal. Revoking
