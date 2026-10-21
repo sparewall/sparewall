@@ -712,6 +712,12 @@ impl Validator<'_> {
                 "the anti-lockout rule is disabled",
             );
         }
+        if m.ssh.password {
+            self.warn(
+                "management.ssh.password",
+                "SSH accepts the admin password as well as keys",
+            );
+        }
     }
 
     fn zones(&mut self) {

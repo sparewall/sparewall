@@ -23,6 +23,7 @@ const PROVIDER_SUBSYSTEMS: &[Subsystem] = &[
     Subsystem::Keepalived,
     Subsystem::Conntrackd,
     Subsystem::Logging,
+    Subsystem::Ssh,
 ];
 
 fn subsystem_files(r: &Rendered, s: Subsystem) -> Files {

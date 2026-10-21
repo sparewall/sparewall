@@ -16,6 +16,7 @@ pub mod keepalived;
 pub mod logging;
 pub mod networkd;
 pub mod nft;
+pub mod ssh;
 pub mod sysctl;
 pub mod unbound;
 
@@ -54,6 +55,7 @@ pub enum Subsystem {
     Dns,
     Ntp,
     Logging,
+    Ssh,
 }
 
 impl Subsystem {
@@ -70,6 +72,7 @@ impl Subsystem {
             Subsystem::Dns => "dns",
             Subsystem::Ntp => "ntp",
             Subsystem::Logging => "logging",
+            Subsystem::Ssh => "ssh",
         }
     }
 
@@ -84,6 +87,7 @@ impl Subsystem {
             Subsystem::Dns,
             Subsystem::Ntp,
             Subsystem::Logging,
+            Subsystem::Ssh,
         ]
     }
 }
@@ -203,6 +207,7 @@ pub fn render(doc: &Document, node: &str) -> Result<Rendered, Error> {
     keepalived::render(doc, node, &mut out);
     conntrackd::render(doc, node, &mut out);
     logging::render(doc, &mut out);
+    ssh::render(doc, &mut out);
     Ok(out)
 }
 
@@ -214,6 +219,7 @@ pub fn render_bootstrap(id: &Identity) -> Rendered {
     nft::render_bootstrap(id, &mut out);
     sysctl::render_bootstrap(&mut out);
     chrony::render_bootstrap(&mut out);
+    ssh::render_bootstrap(&mut out);
     out.meta.bootstrap = true;
     out
 }

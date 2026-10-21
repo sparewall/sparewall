@@ -21,4 +21,10 @@ services:
         - "-p"
         - "-f"
         - /run/chrony/sparewall.conf
+  ssh:
+    provider: openssh
+    unit: sshd.service
+    subsystem: ssh
+    reload: true
+    check: ~
 bootstrap: true

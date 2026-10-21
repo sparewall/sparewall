@@ -701,8 +701,8 @@ fn provider_check_failure_blocks_apply() {
 #[test]
 fn services_follow_generations() {
     let mut t = setup();
-    // Bootstrap runs only chrony.
-    assert_eq!(t.c.system().running, ["chronyd.service"]);
+    // Bootstrap runs only chrony, and sshd (as installed) for its keys.
+    assert_eq!(t.c.system().running, ["chronyd.service", "sshd.service"]);
     t.c.apply(example(), &opts(0, Some(30))).unwrap();
     assert_eq!(
         t.c.system().running,
@@ -710,7 +710,8 @@ fn services_follow_generations() {
             "chronyd.service",
             "sparewall-kea.service",
             "sparewall-ulogd.service",
-            "sparewall-unbound.service"
+            "sparewall-unbound.service",
+            "sshd.service"
         ]
     );
     let dhcp = &t.c.system().installed[&sparewall_render::Subsystem::Dhcp];
@@ -725,7 +726,31 @@ fn services_follow_generations() {
     assert!(last.ends_with("changed dhcp"), "{last}");
     // Back to bootstrap: the providers stop.
     t.c.rollback(Some(0), "admin").unwrap();
-    assert_eq!(t.c.system().running, ["chronyd.service"]);
+    assert_eq!(t.c.system().running, ["chronyd.service", "sshd.service"]);
+}
+
+#[test]
+fn ssh_password_opt_in_reloads_sshd() {
+    use sparewall_render::Subsystem;
+    let mut t = setup();
+    let conf = |t: &mut T| t.c.system().installed[&Subsystem::Ssh]["sparewall.conf"].clone();
+    assert!(conf(&mut t).contains("PasswordAuthentication no"));
+    t.c.apply(example(), &opts(0, None)).unwrap();
+    assert!(conf(&mut t).contains("PasswordAuthentication no"));
+    // Opting in is a change like any other, with a confirm window.
+    t.c.merge(
+        &json!({"management": {"ssh": {"password": true}}}),
+        &opts(1, Some(30)),
+    )
+    .unwrap();
+    assert!(conf(&mut t).contains("PasswordAuthentication yes"));
+    let last = t.c.system().log.last().unwrap().clone();
+    assert!(last.ends_with("changed ssh"), "{last}");
+    // Rolling back turns it off, and sshd is reloaded again.
+    t.c.rollback(Some(1), "admin").unwrap();
+    assert!(conf(&mut t).contains("PasswordAuthentication no"));
+    let last = t.c.system().log.last().unwrap().clone();
+    assert!(last.ends_with("changed ssh"), "{last}");
 }
 
 #[test]
