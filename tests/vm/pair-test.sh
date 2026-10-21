@@ -323,6 +323,8 @@ check_wan fw2 fw1
 
 log "failback on request: sparewall failover (#122)"
 ! at fw2 'sudo sparewall failover --to fw3' || fail "a failover to a node not in the pair went ahead"
+healthy() { [ "$(level "$1")" = ok ]; }
+wait_for 120 "fw1 healthy, as a failover to it requires" healthy fw1
 before=$(echoes) || fail "the connection is gone before the failback: $(tail -3 flow.log)"
 # On the master, to the preferred node (fw1, the higher priority).
 out=$(at fw2 'sudo sparewall failover' 2>&1) || fail "the failback failed: $out"
