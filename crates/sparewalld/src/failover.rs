@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use sparewall_api::{FailoverReply, PeerFailoverProxy};
-use sparewall_render::keepalived::{YIELD_FILE, preferred};
+use sparewall_render::keepalived::{YIELD_FILE, YIELD_MAX_S, preferred};
 use tokio::sync::broadcast;
 
 use crate::peer::{Link, Pair, connect, tunnel_addrs};
@@ -51,11 +51,20 @@ impl Yield {
     }
 
     /// End a yield (one left by an earlier run of the coordinator, too).
-    pub fn clear(&self) {
+    /// An error means the node stays in FAULT until the track script
+    /// ignores the request ([`YIELD_MAX_S`]).
+    pub fn clear(&self) -> Result<(), String> {
         match std::fs::remove_file(&self.0) {
-            Ok(()) => tracing::info!("failover: no longer yielding"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::error!(error = %e, "failover: cannot end the yield"),
+            Ok(()) => {
+                tracing::info!("failover: no longer yielding");
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!(
+                "cannot end this node's yield ({}: {e}); it stays in FAULT, claiming no \
+                 gateway address, for up to {YIELD_MAX_S}s",
+                self.0.display()
+            )),
         }
     }
 }
@@ -207,7 +216,13 @@ pub async fn run_with<P: UpgradePeer>(
         }
         tokio::time::sleep(t.poll).await;
     };
-    y.clear();
+    // Ending the yield is part of the result: on a failed handover it is
+    // what gives the addresses back.
+    let r = match (r, y.clear()) {
+        (r, Ok(())) => r,
+        (Ok(m), Err(e)) => Err(format!("{m}, but {e}")),
+        (Err(m), Err(e)) => Err(format!("{m}; but {e}, so neither node may hold them")),
+    };
     match &r {
         Ok(m) => tracing::info!("failover: {m}"),
         Err(e) => tracing::error!("failover: {e}"),
@@ -359,11 +374,18 @@ mod tests {
         hello: Mutex<HelloReply>,
         takes_over: bool,
         yield_file: PathBuf,
+        /// Make the yield impossible to end: a directory with something
+        /// in it, which remove_file refuses.
+        stick: bool,
     }
 
     impl UpgradePeer for FakePeer {
         async fn hello(&self) -> Result<HelloReply, String> {
             let mut h = self.hello.lock().unwrap();
+            if self.stick && self.yield_file.is_file() {
+                std::fs::remove_file(&self.yield_file).unwrap();
+                std::fs::create_dir_all(self.yield_file.join("x")).unwrap();
+            }
             if self.takes_over && self.yield_file.exists() {
                 h.role = Some("MASTER".into());
             }
@@ -395,6 +417,7 @@ mod tests {
             hello: Mutex::new(h),
             takes_over,
             yield_file: dir.join("yield"),
+            stick: false,
         }
     }
 
@@ -421,6 +444,25 @@ mod tests {
         let e = run_with(&p, &y, "h", &FAST).await.unwrap_err();
         assert!(e.contains("stay here"), "{e}");
         assert!(!y.0.exists());
+    }
+
+    #[tokio::test]
+    async fn a_yield_that_cannot_end_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("yield");
+        let y = Yield(path.clone());
+        for takes_over in [true, false] {
+            let mut p = peer(dir.path(), takes_over, |_| {});
+            p.stick = true;
+            let e = run_with(&p, &y, "h", &FAST).await.unwrap_err();
+            assert!(e.contains("cannot end this node's yield"), "{e}");
+            if takes_over {
+                assert!(e.starts_with("fw2 holds"), "{e}");
+            } else {
+                assert!(e.contains("neither node"), "{e}");
+            }
+            std::fs::remove_dir_all(&path).unwrap();
+        }
     }
 
     #[tokio::test]

@@ -268,8 +268,10 @@ fn run(args: Args) -> Result<(), String> {
         return Ok(());
     }
     // A failover this coordinator was making when it stopped is over.
-    if !args.fake_system {
-        failover::Yield::default().clear();
+    if !args.fake_system
+        && let Err(e) = failover::Yield::default().clear()
+    {
+        tracing::error!("failover: {e}");
     }
     // The admin password: a seeded one is stored first, then whatever the
     // secret holds is set (again: a restore or reinstall brings it back).
