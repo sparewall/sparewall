@@ -321,6 +321,28 @@ wait_for 60 "fw1 backup" is_backup fw1
 is_master fw2 || fail "fw2 gave up the gateway when fw1 returned (nopreempt)"
 check_wan fw2 fw1
 
+log "failback on request: sparewall failover (#122)"
+! at fw2 'sudo sparewall failover --to fw3' || fail "a failover to a node not in the pair went ahead"
+before=$(echoes) || fail "the connection is gone before the failback: $(tail -3 flow.log)"
+# On the master, to the preferred node (fw1, the higher priority).
+out=$(at fw2 'sudo sparewall failover' 2>&1) || fail "the failback failed: $out"
+is_master fw1 || fail "fw1 is $(role fw1) after the failback, not MASTER"
+wait_for 30 "fw2 back to BACKUP after yielding" is_backup fw2
+at fw2 'test ! -e /run/sparewall/failover-yield' || fail "fw2 still yields after the failback"
+sleep 10
+roles_are MASTER BACKUP "after the failback (nopreempt keeps it there)"
+check_wan fw1 fw2
+grep -q broken flow.log && fail "the connection broke in the failback: $(tail -5 flow.log)"
+after=$(echoes) || fail "the connection stalled in the failback: $(tail -5 flow.log)"
+[ "$after" -gt "$before" ] || fail "the connection stalled in the failback ($before, $after)"
+# Already there: nothing to do.
+at fw1 'sudo sparewall failover --to fw1' 2>&1 | grep -q 'already' || fail "a failover to the master did something"
+# On the backup, for itself: the master hands over.
+out=$(at fw2 'sudo sparewall failover --to fw2' 2>&1) || fail "the failover asked from the backup failed: $out"
+is_master fw2 || fail "fw2 is $(role fw2) after asking for the addresses, not MASTER"
+wait_for 30 "fw1 back to BACKUP" is_backup fw1
+check_wan fw2 fw1
+
 log "a derived image in a local registry"
 # QEMU user networking reaches the host at 10.0.2.2.
 REGISTRY=sw-registry

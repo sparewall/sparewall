@@ -144,3 +144,47 @@ A node whose health is **failed** puts its VRRP instances into FAULT and
 the other node takes over the gateway addresses; *degraded* never causes a
 failover. On becoming master, a node commits the connection-tracking state
 it received from its peer, so established flows continue.
+
+### Moving the addresses back: `sparewall failover`
+
+The pair does not fail back by itself (`nopreempt`): a node that returns
+finds a master and stays the backup, even if it is the larger one. So
+the priority you configured decides the master only when both nodes
+start together. To move the gateway addresses where you want them, run
+on either node:
+
+```shell
+sparewall failover             # to the node with the higher priority
+sparewall failover --to fw2    # to a named node
+```
+
+The master yields and the target takes over as it would from a failed
+node, connection tracking included. The old master then returns as
+BACKUP and stays there. The command returns once the target is master.
+It refuses if the target is not the backup, its health is not `ok`
+(degraded, failed, or a required link down), it is not running the same
+configuration, or the pair is held or not in sync. If the target does
+not take over within a minute, the addresses stay where they were.
+
+Use it:
+
+- after a planned upgrade or restart of both nodes, when the smaller one
+  came back first;
+- after replacing a node;
+- before maintenance on the current master, to move the addresses off it
+  first.
+
+**Automatic failback.** To have the higher-priority node take the
+addresses back by itself, set a delay:
+
+```yaml
+cluster:
+  vrrp:
+    preempt_delay_s: 300
+```
+
+The node then takes over once it has been up and eligible for that long.
+This gives up the guarantee that the pair never bounces: if the node
+flaps, the delay is the only thing between it and the gateway addresses.
+`validate` warns while it is set. With it set, a `sparewall failover` to
+the lower-priority node lasts only until the delay has passed.

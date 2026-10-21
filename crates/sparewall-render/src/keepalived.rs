@@ -2,7 +2,10 @@
 //!
 //! Every gateway address is a VRRPv3 instance in one sync group, so they
 //! move together. All instances start as BACKUP with `nopreempt`, so the
-//! pair does not bounce when the preferred node returns. The health check
+//! pair does not bounce when the preferred node returns (unless
+//! `cluster.vrrp.preempt_delay_s` asks for automatic failback); `sparewall
+//! failover` moves them on request, through the `sparewall_yield` track
+//! script. The health check
 //! uses weight 0: a *failed* coordinator health puts the instances in
 //! FAULT (with `nopreempt`, lowering priority would not move them), and
 //! `fall`/`rise` give a hold-down so a briefly failing check cannot flap.
@@ -28,11 +31,47 @@ pub const HEALTH_SCRIPT: &str = "/usr/libexec/keepalived/sparewall-health";
 /// A track script that always fails, for `cluster.hold`: every instance
 /// stays in FAULT and claims no address.
 pub const HELD_SCRIPT: &str = "/usr/libexec/keepalived/sparewall-held";
+/// A track script that fails while [`YIELD_FILE`] asks this node to hand
+/// over the gateway addresses (`sparewall failover`).
+pub const YIELD_SCRIPT: &str = "/usr/libexec/keepalived/sparewall-yield";
+/// Present while the coordinator makes this node yield; ignored once
+/// older than [`YIELD_MAX_S`], so a coordinator that dies mid-failover
+/// cannot leave the node in FAULT.
+pub const YIELD_FILE: &str = "/run/sparewall/failover-yield";
+pub const YIELD_MAX_S: u64 = 120;
 pub const SYNC_GROUP: &str = "SPAREWALL";
 pub const DEFAULT_PRIORITY: [u8; 2] = [150, 100];
 
 pub fn instance_name(network: &str) -> String {
     format!("VI_{network}")
+}
+
+/// A node's VRRP priority: `cluster.vrrp.priority`, else the default for
+/// its place in `cluster.nodes`.
+pub fn priority(doc: &Document, node: &str) -> u8 {
+    let idx = doc
+        .cluster
+        .nodes
+        .iter()
+        .position(|n| n == node)
+        .unwrap_or(0);
+    doc.cluster
+        .vrrp
+        .as_ref()
+        .and_then(|v| v.priority.get(node).copied())
+        .unwrap_or(DEFAULT_PRIORITY[idx.min(1)])
+}
+
+/// The node the operator sized for the job: the higher priority (the
+/// first listed, on a tie).
+pub fn preferred(doc: &Document) -> Option<&str> {
+    let mut best: Option<&str> = None;
+    for n in &doc.cluster.nodes {
+        if best.is_none_or(|b| priority(doc, n) > priority(doc, b)) {
+            best = Some(n);
+        }
+    }
+    best
 }
 
 pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
@@ -41,15 +80,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
     }
     let peer = doc.peer_of(node).expect("pair");
     let vrrp = doc.cluster.vrrp.as_ref();
-    let idx = doc
-        .cluster
-        .nodes
-        .iter()
-        .position(|n| n == node)
-        .unwrap_or(0);
-    let priority = vrrp
-        .and_then(|v| v.priority.get(node).copied())
-        .unwrap_or(DEFAULT_PRIORITY[idx.min(1)]);
+    let priority = priority(doc, node);
+    let preempt = match vrrp.and_then(|v| v.preempt_delay_s) {
+        Some(d) => format!("preempt_delay {d}"),
+        None => "nopreempt".into(),
+    };
     let advert = f64::from(vrrp.and_then(|v| v.advert_interval_cs).unwrap_or(100)) / 100.0;
     let unicast = vrrp.and_then(|v| v.unicast).unwrap_or(false);
     let vmac = vrrp.and_then(|v| v.use_vmac).unwrap_or(false);
@@ -65,6 +100,12 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         s,
         "vrrp_script sparewall_health {{\n    script \"{HEALTH_SCRIPT}\"\n    \
          interval 2\n    timeout 5\n    fall 3\n    rise 2\n}}\n"
+    )
+    .unwrap();
+    writeln!(
+        s,
+        "vrrp_script sparewall_yield {{\n    script \"{YIELD_SCRIPT}\"\n    \
+         interval 1\n    fall 1\n    rise 1\n}}\n"
     )
     .unwrap();
     let hold = doc.cluster.hold;
@@ -96,7 +137,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         let iface = doc.network_iface(name).expect("exists");
         let port = &net.port;
         writeln!(s, "vrrp_instance {} {{", instance_name(name)).unwrap();
-        writeln!(s, "    state BACKUP\n    nopreempt\n    interface {iface}").unwrap();
+        writeln!(s, "    state BACKUP\n    {preempt}\n    interface {iface}").unwrap();
         writeln!(s, "    virtual_router_id {}", net.vrid.expect("filtered")).unwrap();
         writeln!(s, "    priority {priority}\n    advert_int {advert}").unwrap();
         s.push_str("    garp_master_delay 1\n");
@@ -119,7 +160,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         if port != iface {
             writeln!(s, "    track_interface {{\n        {port}\n    }}").unwrap();
         }
-        s.push_str("    track_script {\n        sparewall_health\n");
+        s.push_str("    track_script {\n        sparewall_health\n        sparewall_yield\n");
         if hold {
             s.push_str("        sparewall_held\n");
         }

@@ -1,0 +1,10 @@
+#!/bin/sh
+# keepalived's track script for `sparewall failover`: it fails while the
+# coordinator asks this node to hand over the gateway addresses, which
+# puts every instance in FAULT so the peer takes them. A request older
+# than two minutes (YIELD_MAX_S) is ignored, so a coordinator that stops
+# mid-failover cannot strand the node in FAULT. It lives here so SELinux
+# runs it unconfined, like sparewall-health.
+f=/run/sparewall/failover-yield
+[ -e "$f" ] || exit 0
+[ $(($(date +%s) - $(stat -c %Y "$f"))) -gt 120 ]

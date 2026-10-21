@@ -524,6 +524,7 @@ A pair is active/standby: keepalived moves the gateway addresses, conntrackd mov
 
 - One `vrrp_sync_group` holds every VRRP instance, so all gateway addresses move together; a split would break stateful filtering.
 - VRRPv3; `track_interface` on every member link; `nopreempt`; optional `use_vmac`.
+- **`nopreempt` stays the default.** A larger node that returns would otherwise take the gateway addresses back as soon as it could, and a node that flaps would move them each time. Failback is an operator's decision instead (`sparewall failover`: the master yields through a track script that fails while the coordinator asks it to, and `nopreempt` then keeps it the backup). A site that wants automatic failback sets `cluster.vrrp.preempt_delay_s`, which replaces `nopreempt` with keepalived's `preempt_delay`, the delay being its only flap protection.
 - A `track_script` calls the coordinator's `Health()` over Varlink. Only a **failed** result lowers priority, with a hold-down so a briefly failing check cannot flap the pair.
 - State changes reach the coordinator through `notify_fifo`, so transitions are serialized and logged in one place.
 
