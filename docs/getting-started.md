@@ -78,8 +78,10 @@ A fresh node needs its name, an admin SSH key and its management NIC:
                 "address": "10.0.99.2/24", "gateway": "10.0.99.1"}}
 ```
 
-Omit `address` to use DHCP on the management port, and `vlan` if
-management is untagged.
+The node's name is its hostname too, and the one it has in the
+configuration document: up to 31 lowercase letters, digits and `-`,
+starting with a letter and not ending with `-`. Omit `address` to use
+DHCP on the management port, and `vlan` if management is untagged.
 
 For a way in at the console before the network is right, add a password
 hash for `admin`, made with `openssl passwd -6` (it prompts):

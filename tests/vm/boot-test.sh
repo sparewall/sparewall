@@ -121,6 +121,12 @@ vm 'sudo sparewall status -o json' > status.json
 [ "$(jq -r .role status.json)" = bootstrap ] || fail "expected bootstrap role"
 vm 'sudo nft list table inet sparewall' | grep -q anti-lockout || fail "no anti-lockout rule"
 vm 'ip -br link' | grep -q '^mgmt0 ' || fail "management port not named mgmt0"
+# The node name is the hostname (#109): running, static, in the journal.
+[ "$(vm hostname)" = fw1 ] || fail "hostname is $(vm hostname), not fw1"
+[ "$(vm 'hostnamectl hostname --static')" = fw1 ] || fail "the static hostname is not fw1"
+vm 'logger -t sparewall-hostname-check here'
+host=$(vm 'sudo journalctl -b -t sparewall-hostname-check -o json -n 1' | jq -r ._HOSTNAME)
+[ "$host" = fw1 ] || fail "the journal records hostname $host, not fw1"
 
 # The login banner (#83): written within seconds of a change, and shown
 # by pam_motd to an interactive login.
@@ -136,6 +142,8 @@ wait_banner() { # what (a fixed string), [not]
 wait_banner "Sparewall fw1: bootstrap, generation 0"
 echo exit | "${SSH[@]}" -tt 2>/dev/null | tr -d '\r' | grep -q '^Sparewall fw1: bootstrap' \
     || fail "an interactive login does not show the banner"
+echo exit | "${SSH[@]}" -tt 2>/dev/null | tr -d '\r' | grep -q 'admin@fw1' \
+    || fail "the shell prompt does not show the node name"
 if ! vm 'sudo podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists $(sed -n "s/^Image=//p" /usr/share/containers/systemd/sparewall-kea.container)'; then
     vm 'set -x; sed -n "s/^Image=//p" /usr/share/containers/systemd/sparewall-kea.container
         ls -la /usr/lib/bootc/ /sysroot/ostree/bootc/ 2>&1; sudo ls -la /usr/lib/bootc/storage/ 2>&1
@@ -182,6 +190,10 @@ wait_ssh 600
 vm 'sudo sparewall status -o json' > status.json
 [ "$(jq -r .sync.active status.json)" = 1 ] || fail "generation 1 not active after reboot"
 vm 'ip -br link' | grep -q '^uplink ' || fail "port not named uplink after reboot"
+# From /etc/hostname at boot, before sparewalld runs: the early unit,
+# which starts before it, logs under the node name already.
+host=$(vm 'sudo journalctl -b -u sparewall-early -o json | head -1' | jq -r ._HOSTNAME)
+[ "$host" = fw1 ] || fail "sparewall-early logged under hostname $host, not fw1"
 # udev names the port at coldplug; sparewalld should not have to.
 if vm 'sudo journalctl -b -u sparewalld --no-pager' | grep -q 'renaming interface'; then
     fail "the port was renamed late, by sparewalld, not at coldplug"

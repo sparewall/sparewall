@@ -796,3 +796,34 @@ fn preempt_delay_is_bounded_and_warned_about() {
     assert!(!at(with(300), Severity::Error));
     assert!(at(with(300), Severity::Warning));
 }
+
+#[test]
+fn node_names_are_hostnames() {
+    use crate::identity::{BootstrapPort, Identity};
+    let id = |node: &str| Identity {
+        node: node.into(),
+        ssh_keys: vec![],
+        management: BootstrapPort {
+            nic: "52:54:00:aa:00:01".into(),
+            vlan: None,
+            address: None,
+            gateway: None,
+            dns: vec![],
+        },
+        password_hash: None,
+    };
+    let long = format!("fw{}", "1".repeat(29));
+    for good in ["fw1", "edge-a", long.as_str()] {
+        assert!(id(good).check().is_ok(), "{good}");
+        let mut doc = load(STANDALONE);
+        doc.cluster.nodes = vec![good.into()];
+        assert!(!has_error(&doc, "invalid node name"), "{good}");
+    }
+    let too_long = format!("{long}1");
+    for bad in ["fw1-", "1fw", "Fw1", "fw_1", "fw.1", "", too_long.as_str()] {
+        assert!(id(bad).check().is_err(), "{bad:?}");
+        let mut doc = load(STANDALONE);
+        doc.cluster.nodes = vec![bad.into()];
+        assert!(has_error(&doc, "invalid node name"), "{bad:?}");
+    }
+}

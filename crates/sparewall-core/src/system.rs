@@ -88,6 +88,10 @@ pub trait System: Send {
     /// Set the `admin` account's password hash, as shadow holds it
     /// (`!` locks the account).
     fn set_admin_password(&mut self, hash: &str) -> Result<(), Error>;
+
+    /// Make `name` the hostname (static and running), if it is not
+    /// already; whether it changed.
+    fn set_hostname(&mut self, name: &str) -> Result<bool, Error>;
 }
 
 /// An injected failure's message, cleared after use with `once`.
@@ -148,6 +152,8 @@ pub struct Fake {
     pub runtime_keys: BTreeMap<String, Vec<u8>>,
     /// The admin account's password hash, as last set.
     pub admin_password: Option<String>,
+    /// The hostname, as last set.
+    pub hostname: Option<String>,
 }
 
 impl System for Fake {
@@ -334,6 +340,12 @@ impl System for Fake {
         Ok(())
     }
 
+    fn set_hostname(&mut self, name: &str) -> Result<bool, Error> {
+        let changed = self.hostname.as_deref() != Some(name);
+        self.hostname = Some(name.to_string());
+        Ok(changed)
+    }
+
     fn install_key(&mut self, file: &str, content: &[u8], _group: &str) -> Result<(), Error> {
         self.runtime_keys.insert(file.to_string(), content.to_vec());
         Ok(())
@@ -413,5 +425,8 @@ impl System for Box<dyn System> {
     }
     fn set_admin_password(&mut self, hash: &str) -> Result<(), Error> {
         (**self).set_admin_password(hash)
+    }
+    fn set_hostname(&mut self, name: &str) -> Result<bool, Error> {
+        (**self).set_hostname(name)
     }
 }

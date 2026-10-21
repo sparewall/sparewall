@@ -104,6 +104,13 @@ fn ident_ok(s: &str, max: usize, extra: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || extra.contains(c))
 }
 
+/// Node names: lowercase letters, digits and '-', at most 31 bytes. A
+/// node's name is its hostname too, so it is a DNS label: it starts with
+/// a letter and does not end with '-'.
+pub fn node_name_ok(s: &str) -> bool {
+    ident_ok(s, 31, "-") && !s.ends_with('-')
+}
+
 /// Interface-name rules: lowercase, starts with a letter, at most 15 bytes.
 pub fn iface_name_ok(s: &str) -> bool {
     ident_ok(s, 15, "-_")
@@ -240,10 +247,12 @@ impl Validator<'_> {
         }
         let mut seen = BTreeSet::new();
         for (i, n) in c.nodes.iter().enumerate() {
-            if !ident_ok(n, 31, "-") {
+            if !node_name_ok(n) {
                 self.err(
                     format!("cluster.nodes[{i}]"),
-                    format!("invalid node name {n:?}: use lowercase letters, digits and '-'"),
+                    format!(
+                        "invalid node name {n:?}: use at most 31 lowercase letters, digits and '-', starting with a letter and not ending with '-'"
+                    ),
                 );
             }
             if !seen.insert(n) {

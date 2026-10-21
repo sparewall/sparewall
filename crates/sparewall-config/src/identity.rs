@@ -14,7 +14,8 @@ use crate::model::Cidr;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
-    /// This node's name; selects its values in the shared document.
+    /// This node's name; selects its values in the shared document, and
+    /// is its hostname.
     pub node: String,
     /// Admin SSH public keys, installed for the `admin` user.
     #[serde(default)]
@@ -51,13 +52,8 @@ pub struct BootstrapPort {
 impl Identity {
     /// Check the identity on its own.
     pub fn check(&self) -> Result<(), String> {
-        use crate::validate::{mac_ok, udev_path_ok};
-        if !self
-            .node
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-            || !self.node.starts_with(|c: char| c.is_ascii_lowercase())
-        {
+        use crate::validate::{mac_ok, node_name_ok, udev_path_ok};
+        if !node_name_ok(&self.node) {
             return Err(format!("invalid node name {:?}", self.node));
         }
         let m = &self.management;
