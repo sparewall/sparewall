@@ -775,3 +775,24 @@ fn pair_wan_one_lease_for_the_pair() {
     );
     assert!(has_error(&d, "not both"));
 }
+
+#[test]
+fn preempt_delay_is_bounded_and_warned_about() {
+    let with = |d: u16| {
+        let mut doc = load(PAIR);
+        doc.cluster
+            .vrrp
+            .get_or_insert_with(|| serde_json::from_value(json!({})).unwrap())
+            .preempt_delay_s = Some(d);
+        validate(&doc)
+    };
+    let at = |issues: Vec<Issue>, sev: Severity| {
+        issues
+            .iter()
+            .any(|i| i.path == "cluster.vrrp.preempt_delay_s" && i.severity == sev)
+    };
+    assert!(at(with(0), Severity::Error));
+    assert!(at(with(1001), Severity::Error));
+    assert!(!at(with(300), Severity::Error));
+    assert!(at(with(300), Severity::Warning));
+}

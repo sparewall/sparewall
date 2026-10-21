@@ -603,3 +603,42 @@ fn forward_destination_refused_from_other_zones() {
     assert!(reject < dispatch, "{input}");
     assert_nft_ok(&r);
 }
+
+#[test]
+fn failback_is_on_request_unless_a_preempt_delay_is_set() {
+    use sparewall_render::keepalived::{preferred, priority};
+    let ka = |doc: &sparewall_config::Document| {
+        render(doc, "fw1").unwrap().files["keepalived/keepalived.conf"].clone()
+    };
+    // Default: never preempt; every instance tracks the failover yield.
+    let mut doc = paired();
+    let conf = ka(&doc);
+    let instances = conf.matches("vrrp_instance ").count();
+    assert!(instances > 0);
+    assert_eq!(conf.matches("    nopreempt\n").count(), instances, "{conf}");
+    assert!(!conf.contains("preempt_delay"), "{conf}");
+    assert!(conf.contains("vrrp_script sparewall_yield"), "{conf}");
+    assert_eq!(
+        conf.matches("        sparewall_yield\n").count(),
+        instances,
+        "{conf}"
+    );
+    // Opted in: preempt after the delay instead.
+    doc.cluster
+        .vrrp
+        .get_or_insert_with(|| serde_json::from_value(serde_json::json!({})).unwrap())
+        .preempt_delay_s = Some(300);
+    let conf = ka(&doc);
+    assert_eq!(
+        conf.matches("    preempt_delay 300\n").count(),
+        instances,
+        "{conf}"
+    );
+    assert!(!conf.contains("nopreempt"), "{conf}");
+    // The preferred node: the higher priority, the first listed on a tie.
+    assert_eq!(preferred(&doc), Some("fw1"));
+    let v = doc.cluster.vrrp.as_mut().unwrap();
+    v.priority.insert("fw2".into(), 200);
+    assert_eq!(priority(&doc, "fw2"), 200);
+    assert_eq!(preferred(&doc), Some("fw2"));
+}

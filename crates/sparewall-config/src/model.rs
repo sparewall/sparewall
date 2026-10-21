@@ -125,6 +125,14 @@ pub struct Vrrp {
     /// Send adverts unicast to the peer instead of multicast.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unicast: Option<bool>,
+    /// Fail back by itself: the node with the higher priority takes the
+    /// gateway addresses back once it has been up and eligible for this
+    /// many seconds (1-1000). Unset (the default), the pair never
+    /// preempts, so it cannot bounce while that node flaps; move the
+    /// addresses with `sparewall failover` instead. The delay is then the
+    /// only protection against flapping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preempt_delay_s: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

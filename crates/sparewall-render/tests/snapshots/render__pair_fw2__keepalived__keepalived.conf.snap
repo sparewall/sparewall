@@ -19,6 +19,13 @@ vrrp_script sparewall_health {
     rise 2
 }
 
+vrrp_script sparewall_yield {
+    script "/usr/libexec/keepalived/sparewall-yield"
+    interval 1
+    fall 1
+    rise 1
+}
+
 vrrp_sync_group SPAREWALL {
     group {
         VI_users
@@ -40,6 +47,7 @@ vrrp_instance VI_users {
     }
     track_script {
         sparewall_health
+        sparewall_yield
     }
     notify "/usr/libexec/keepalived/sparewall-notify"
     notify_deleted
@@ -61,6 +69,7 @@ vrrp_instance VI_wan {
     }
     track_script {
         sparewall_health
+        sparewall_yield
     }
     notify "/usr/libexec/keepalived/sparewall-notify"
     notify_deleted

@@ -298,6 +298,18 @@ impl Validator<'_> {
             {
                 self.err("cluster.vrrp.advert_interval_cs", "must be 1-4095");
             }
+            match vrrp.preempt_delay_s {
+                Some(d) if !(1..=1000).contains(&d) => {
+                    self.err("cluster.vrrp.preempt_delay_s", "must be 1-1000");
+                }
+                Some(d) => self.warn(
+                    "cluster.vrrp.preempt_delay_s",
+                    format!(
+                        "the higher-priority node takes the gateway addresses back {d}s after it is up: the pair may bounce if it flaps"
+                    ),
+                ),
+                None => {}
+            }
         }
         if let Some(ct) = &c.conntrack
             && let Some(t) = ct.tcp_established_timeout

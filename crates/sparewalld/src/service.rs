@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use futures_util::Stream;
 use serde_json::{Value, json};
 use sparewall_api::{
-    ApplyReply, BackupReply, ConfigReply, Empty, EventReply, ExportReply, FirewallError,
-    GenerationReply, HealthCheck, HealthReply, HistoryReply, SecretInfo, SecretListReply,
-    SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply, UpgradeCheckReply,
-    UpgradeStartReply, ValidateReply, VpnConfigReply,
+    ApplyReply, BackupReply, ConfigReply, Empty, EventReply, ExportReply, FailoverReply,
+    FirewallError, GenerationReply, HealthCheck, HealthReply, HistoryReply, SecretInfo,
+    SecretListReply, SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply,
+    UpgradeCheckReply, UpgradeStartReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
@@ -672,6 +672,13 @@ where
                 .await
                 .map_err(|message| FirewallError::ApplyFailed { message })?;
         Ok(UpgradeStartReply { plan })
+    }
+
+    #[zlink(interface = "org.sparewall.Cluster", rename = "Failover")]
+    async fn failover(&mut self, to: Option<String>) -> Result<FailoverReply, FirewallError> {
+        crate::failover::failover(&self.core, &self.events, &self.pair, to.as_deref())
+            .await
+            .map_err(|message| FirewallError::ApplyFailed { message })
     }
 
     #[zlink(interface = "org.sparewall.Auth", types = [TokenInfo])]

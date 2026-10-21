@@ -527,6 +527,35 @@ pub trait PeerUpgradeProxy {
     ) -> zlink::Result<impl futures_util::Stream<Item = zlink::Result<Result<EventReply, PeerError>>>>;
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct FailoverReply {
+    /// The node that holds the gateway addresses now.
+    pub master: String,
+    /// What happened, in words.
+    pub message: String,
+}
+
+#[zlink::proxy("org.sparewall.Peer")]
+pub trait PeerFailoverProxy {
+    /// Hand the gateway addresses to `to`, the caller, if the callee is
+    /// the master and `to` is fit to take them. Returns once the handover
+    /// has started; the caller watches its own VRRP role for the end.
+    async fn failover(&mut self, to: &str) -> zlink::Result<Result<FailoverReply, PeerError>>;
+}
+
+pub const CLUSTER_INTERFACE: &str = "org.sparewall.Cluster";
+
+#[zlink::proxy("org.sparewall.Cluster")]
+pub trait ClusterProxy {
+    /// Move a pair's gateway addresses to `to` (default: the node with
+    /// the higher VRRP priority), from either node. Returns when the move
+    /// is done, or why it was refused or did not happen.
+    async fn failover(
+        &mut self,
+        to: Option<&str>,
+    ) -> zlink::Result<Result<FailoverReply, FirewallError>>;
+}
+
 pub const UPGRADE_INTERFACE: &str = "org.sparewall.Upgrade";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

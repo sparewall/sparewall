@@ -10,8 +10,8 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
 use sparewall_api::{
-    ApplyReply, AuthProxy, FirewallError, FirewallProxy, Generation, SecretsProxy, UpgradeProxy,
-    VpnProxy,
+    ApplyReply, AuthProxy, ClusterProxy, FirewallError, FirewallProxy, Generation, SecretsProxy,
+    UpgradeProxy, VpnProxy,
 };
 use sparewall_config::{Format, path};
 
@@ -327,6 +327,18 @@ enum Cmd {
     /// Connect stdin/stdout to the local socket (used over SSH).
     #[command(hide = true)]
     Bridge,
+    /// Move a pair's gateway addresses to one node (from either node).
+    ///
+    /// The pair never fails back by itself (nopreempt), so after both nodes
+    /// restart, or a node is replaced, the smaller one may stay master.
+    /// This hands the addresses over, as for a failed node, if the target
+    /// is the backup, healthy, in sync and not held.
+    Failover {
+        /// The node to move them to; default the one with the higher VRRP
+        /// priority.
+        #[arg(long, value_name = "NODE")]
+        to: Option<String>,
+    },
     /// Rolling, health-gated OS upgrade (the master of a pair runs it).
     Upgrade {
         /// stable or testing; default the document's updates.channel.
@@ -1203,6 +1215,10 @@ impl App {
                     "only schema version {} exists; nothing to migrate",
                     sparewall_config::SCHEMA_VERSION
                 )));
+            }
+            Cmd::Failover { to } => {
+                let r = self.conn().await?.failover(to.as_deref()).await??;
+                self.say(&r.message);
             }
             Cmd::Upgrade {
                 channel,

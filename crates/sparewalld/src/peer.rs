@@ -14,9 +14,9 @@ use futures_util::Stream;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sparewall_api::{
-    EventReply, FetchReply, HelloReply, LineageEntry, LinkDecisionReply, NetworkReach, PEER_PORT,
-    PEER_PROTOCOL, PeerError, PeerGeneration, PeerProxy, PeerSecret, PeerSecretsProxy, PushReply,
-    PutSecretsReply, UpgradeReply,
+    EventReply, FailoverReply, FetchReply, HelloReply, LineageEntry, LinkDecisionReply,
+    NetworkReach, PEER_PORT, PEER_PROTOCOL, PeerError, PeerGeneration, PeerProxy, PeerSecret,
+    PeerSecretsProxy, PushReply, PutSecretsReply, UpgradeReply,
 };
 use sparewall_core::pair::{NodeView, SyncState, adopt_peer_base, push_plan, sync_state};
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass, SecretInfo, SharedSecret};
@@ -337,6 +337,15 @@ impl PeerService {
             "detail": format!("staged {staged}; rebooting this node into it"),
         }));
         Ok(UpgradeReply { staged })
+    }
+
+    /// `sparewall failover` run on the backup, the caller: hand it the
+    /// gateway addresses if it is fit to take them. Returns once the
+    /// handover has started (`crate::failover::start_for_peer`).
+    async fn failover(&mut self, to: String) -> Result<FailoverReply, PeerError> {
+        crate::failover::start_for_peer(&self.core, &self.events, &self.pair, &to)
+            .await
+            .map_err(|message| PeerError::Rejected { message })
     }
 
     /// An upgrade started on the backup: run it here, the master, and
