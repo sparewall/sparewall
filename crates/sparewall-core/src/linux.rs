@@ -812,9 +812,12 @@ impl System for Linux {
     }
 
     fn set_hostname(&mut self, name: &str) -> Result<bool, Error> {
-        // uname needs no access to /etc/hostname or /proc; hostnamectl
-        // (through hostnamed) writes the file outside this domain.
-        if rustix::system::uname().nodename().to_bytes() == name.as_bytes() {
+        // uname needs no access to /proc; hostnamectl (through hostnamed)
+        // reads and writes /etc/hostname outside this domain. Both must
+        // match: a running name alone is lost at the next boot.
+        if rustix::system::uname().nodename().to_bytes() == name.as_bytes()
+            && host_run("hostnamectl", &["hostname", "--static"])?.trim() == name
+        {
             return Ok(false);
         }
         host_run("hostnamectl", &["set-hostname", name]).map(|_| true)
