@@ -86,7 +86,9 @@ pub struct Document {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Cluster {
-    /// One node name (standalone) or two (an HA pair).
+    /// One node name (standalone) or two (an HA pair). Each is also that
+    /// node's hostname: up to 31 lowercase letters, digits and '-',
+    /// starting with a letter and not ending with '-'.
     pub nodes: Vec<String>,
     /// The network with role `sync` that carries the pair's WireGuard tunnel.
     #[serde(default, skip_serializing_if = "Option::is_none")]

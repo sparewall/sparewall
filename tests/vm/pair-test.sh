@@ -58,6 +58,10 @@ vpn_keys
 pair_doc < "$HERE/site-pair.yaml" | vpn_doc > pair.yaml
 pair_up
 
+log "each node is named for itself (#109)"
+hostnames() { for n in fw1 fw2; do [ "$(at $n hostname)" = $n ] || return 1; done; }
+hostnames || fail "the hostnames are $(at fw1 hostname) and $(at fw2 hostname), not fw1 and fw2"
+
 log "a change on fw1 reaches fw2"
 at fw1 'sudo sparewall set dhcp.users.lease_time=3600 --confirm 0'
 gen=$(at fw1 'sudo sparewall status -o json' | jq .sync.active)
@@ -414,5 +418,6 @@ wait_for 600 "fw1 on the second image" upgraded2 fw1
 wait_for 300 "fw1 in sync" in_sync fw1
 wait_for 120 "fw2 in sync" in_sync fw2
 is_master fw2 || fail "fw2 is $(role fw2) after the second upgrade, not MASTER"
+hostnames || fail "the upgrades changed the hostnames: $(at fw1 hostname), $(at fw2 hostname)"
 vpn_summary
 log "pair PASS (with two rolling upgrades)"

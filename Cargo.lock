@@ -1958,6 +1958,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "jiff",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

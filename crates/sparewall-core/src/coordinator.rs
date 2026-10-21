@@ -264,6 +264,16 @@ impl<S: System> Coordinator<S> {
         &mut self.sys
     }
 
+    /// Make the node name the hostname, so that shell prompts and the
+    /// journal tell the nodes apart.
+    pub fn apply_hostname(&mut self) -> Result<(), Error> {
+        let node = self.node().to_string();
+        if self.system().set_hostname(&node)? {
+            tracing::info!(hostname = %node, "set the hostname");
+        }
+        Ok(())
+    }
+
     pub fn store(&self) -> &Store {
         &self.store
     }

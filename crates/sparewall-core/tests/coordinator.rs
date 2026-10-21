@@ -3055,3 +3055,19 @@ fn admin_password_seeded_synced_and_locked() {
     b.c.apply_admin_password().unwrap();
     assert_eq!(b.c.system().admin_password.as_deref(), Some("!"));
 }
+
+#[test]
+fn hostname_is_the_node_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Coordinator::new(
+        Store::open(dir.path()).unwrap(),
+        Fake::default(),
+        identity(),
+    );
+    a.boot(false).unwrap();
+    a.apply_hostname().unwrap();
+    assert_eq!(a.system().hostname.as_deref(), Some("fw1"));
+    let mut b = pair_node("fw2");
+    b.c.apply_hostname().unwrap();
+    assert_eq!(b.c.system().hostname.as_deref(), Some("fw2"));
+}

@@ -278,6 +278,9 @@ impl System for RealNft {
     fn set_admin_password(&mut self, hash: &str) -> Result<(), sparewall_core::Error> {
         self.rest.set_admin_password(hash)
     }
+    fn set_hostname(&mut self, name: &str) -> Result<bool, sparewall_core::Error> {
+        self.rest.set_hostname(name)
+    }
 }
 
 /// Issue #5 against the real kernel: change the live rules without

@@ -273,6 +273,9 @@ fn run(args: Args) -> Result<(), String> {
     {
         tracing::error!("failover: {e}");
     }
+    if let Err(e) = coordinator.apply_hostname() {
+        tracing::error!(error = %e, "cannot set the hostname");
+    }
     // The admin password: a seeded one is stored first, then whatever the
     // secret holds is set (again: a restore or reinstall brings it back).
     if let Err(e) = coordinator

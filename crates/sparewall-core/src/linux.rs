@@ -811,6 +811,18 @@ impl System for Linux {
         host_run("usermod", &["-p", hash, "admin"]).map(|_| ())
     }
 
+    fn set_hostname(&mut self, name: &str) -> Result<bool, Error> {
+        // uname needs no access to /proc; hostnamectl (through hostnamed)
+        // reads and writes /etc/hostname outside this domain. Both must
+        // match: a running name alone is lost at the next boot.
+        if rustix::system::uname().nodename().to_bytes() == name.as_bytes()
+            && host_run("hostnamectl", &["hostname", "--static"])?.trim() == name
+        {
+            return Ok(false);
+        }
+        host_run("hostnamectl", &["set-hostname", name]).map(|_| true)
+    }
+
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
         // WireGuard keys go where networkd may read them (see KEY_DIR).
         let dir = PathBuf::from(sparewall_render::KEY_DIR);
