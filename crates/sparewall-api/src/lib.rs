@@ -15,6 +15,11 @@ pub const SOCKET: &str = "/run/sparewall/org.sparewall.Firewall";
 /// health check, so that nothing an admin client does on [`SOCKET`] can
 /// hold the check up past its timeout and hand the gateway addresses over.
 pub const HEALTH_SOCKET: &str = "/run/sparewall/org.sparewall.Health";
+/// The restricted socket, open to unprivileged clients such as
+/// `sparewall-httpd`. A client binds its connection to a token
+/// (`org.sparewall.Auth.Bind`) before anything else, and every call is
+/// checked against that token's role.
+pub const API_SOCKET: &str = "/run/sparewall-api/org.sparewall.Api";
 
 /// One configuration generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
@@ -127,15 +132,35 @@ pub struct EventReply {
 #[derive(Debug, Clone, PartialEq, Eq, zlink::ReplyError, ReplyError)]
 #[zlink(interface = "org.sparewall.Firewall")]
 pub enum FirewallError {
-    ValidationFailed { errors: Vec<String> },
-    Conflict { current: i64 },
-    ConfirmTimeout { rolled_back_to: i64 },
-    PeerUnreachable { peer: String },
-    PermissionDenied { role: String },
-    NotFound { id: i64 },
-    NotPending { id: i64 },
-    ApplyFailed { message: String },
-    NotSupported { message: String },
+    ValidationFailed {
+        errors: Vec<String>,
+    },
+    Conflict {
+        current: i64,
+    },
+    ConfirmTimeout {
+        rolled_back_to: i64,
+    },
+    PeerUnreachable {
+        peer: String,
+    },
+    /// `role` is `none` on a connection not bound to a token.
+    PermissionDenied {
+        role: String,
+        reason: Option<String>,
+    },
+    NotFound {
+        id: i64,
+    },
+    NotPending {
+        id: i64,
+    },
+    ApplyFailed {
+        message: String,
+    },
+    NotSupported {
+        message: String,
+    },
 }
 
 impl std::fmt::Display for FirewallError {
@@ -159,8 +184,12 @@ impl std::fmt::Display for FirewallError {
                 )
             }
             FirewallError::PeerUnreachable { peer } => write!(f, "peer {peer} is unreachable"),
-            FirewallError::PermissionDenied { role } => {
-                write!(f, "permission denied for role {role}")
+            FirewallError::PermissionDenied { role, reason } => {
+                write!(f, "permission denied for role {role}")?;
+                match reason {
+                    Some(r) => write!(f, ": {r}"),
+                    None => Ok(()),
+                }
             }
             FirewallError::NotFound { id } => write!(f, "generation {id} not found"),
             FirewallError::NotPending { id } => {
@@ -493,8 +522,19 @@ pub struct TokenListReply {
     pub tokens: Vec<TokenInfo>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct BindReply {
+    /// The token's name.
+    pub name: String,
+    pub role: String,
+}
+
 #[zlink::proxy("org.sparewall.Auth")]
 pub trait AuthProxy {
+    /// Bind this connection to a token: later calls on it act with the
+    /// token's role. Needed first on the restricted socket
+    /// ([`API_SOCKET`]); the root-only socket needs none.
+    async fn bind(&mut self, token: &str) -> zlink::Result<Result<BindReply, FirewallError>>;
     async fn create_token(
         &mut self,
         name: &str,

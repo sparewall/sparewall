@@ -51,6 +51,7 @@ fn opts(base: u64, confirm: Option<u32>) -> ApplyOptions {
         dry_run: false,
         note: None,
         stage_sync_link: false,
+        role: None,
     }
 }
 
@@ -1653,6 +1654,58 @@ fn tokens_create_check_revoke() {
     assert_eq!(t.c.token_check(&tok).unwrap(), None);
 }
 
+/// A bound connection checks its token on every call, without the
+/// coordinator: revoking or expiring it takes effect at once.
+#[test]
+fn tokens_are_looked_up_by_hash() {
+    use sparewall_core::tokens::{Role, current};
+    let mut t = setup();
+    let (tok, _) = t.c.token_create("ci", Role::Operator, None).unwrap();
+    let info = t.c.token_use(&tok).unwrap().unwrap();
+    assert_eq!((info.name.as_str(), info.role), ("ci", Role::Operator));
+    let root = t.c.store().root().to_path_buf();
+    assert_eq!(current(&root, &info.hash).unwrap().unwrap().name, "ci");
+    assert!(t.c.token_revoke("ci").unwrap());
+    assert!(current(&root, &info.hash).unwrap().is_none());
+}
+
+/// Only an admin may turn the anti-lockout rule off; anyone may turn it
+/// back on, and root (no role) may do either.
+#[test]
+fn anti_lockout_off_needs_admin() {
+    use sparewall_core::tokens::Role;
+    let mut t = setup();
+    let off = |mut v: Value| {
+        v["management"]["anti_lockout"] = json!(false);
+        v
+    };
+    let as_role = |base, role| ApplyOptions {
+        role: Some(role),
+        ..opts(base, None)
+    };
+    for role in [Role::Operator, Role::Viewer] {
+        let e = t.c.apply(off(example()), &as_role(0, role)).unwrap_err();
+        assert!(matches!(e, sparewall_core::Error::Denied { .. }), "{e}");
+    }
+    t.c.apply(example(), &as_role(0, Role::Operator)).unwrap();
+    let e =
+        t.c.apply(off(example()), &as_role(1, Role::Operator))
+            .unwrap_err();
+    assert!(e.to_string().contains("anti_lockout"), "{e}");
+    // Nor by rolling back to a generation that had it off.
+    t.c.apply(off(example()), &as_role(1, Role::Admin)).unwrap();
+    t.c.apply(example(), &as_role(2, Role::Operator)).unwrap();
+    let e =
+        t.c.rollback_staging(Some(2), "ci", false, Some(Role::Operator))
+            .unwrap_err();
+    assert!(matches!(e, sparewall_core::Error::Denied { .. }), "{e}");
+    t.c.rollback_staging(Some(2), "root", false, None).unwrap();
+    // Already off: an operator's other changes go through.
+    let mut v = off(example());
+    v["networks"]["users"]["mtu"] = json!(1400);
+    t.c.apply(v, &as_role(4, Role::Operator)).unwrap();
+}
+
 /// Settings earlier versions accepted and this one rejects (issue #9),
 /// as patches to the pair example, with the path each is rejected at.
 fn unbuilt_settings() -> Vec<(Value, &'static str)> {
@@ -2570,7 +2623,7 @@ fn staged_sync_link_change_yields_and_rollback_stages() {
     a2.c.activate_staged(2, 0).unwrap();
     b2.c.confirm_received(2).unwrap();
     a2.c.peer_confirmed(2).unwrap();
-    let (g, staged) = a2.c.rollback_staging(None, "admin", true).unwrap();
+    let (g, staged) = a2.c.rollback_staging(None, "admin", true, None).unwrap();
     assert!(staged);
     assert_eq!((g.id, a2.c.active().unwrap()), (3, 2));
 }

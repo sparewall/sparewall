@@ -56,6 +56,9 @@ pub enum Error {
     },
     #[error("internal error: {0}")]
     Internal(String),
+    /// The caller's role does not allow the change.
+    #[error("permission denied for role {role}: {reason}")]
+    Denied { role: String, reason: String },
 }
 
 impl Error {

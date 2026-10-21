@@ -83,14 +83,34 @@ management:
 The firewall still limits SSH to what the policy allows (the
 anti-lockout rule opens it on the management network only).
 
-**What a token can do today.** Every `sparewall` command goes through
-the coordinator's root-only socket, locally or over SSH with
-`sudo sparewall bridge`, and acts with full rights; no command takes a
-token. Tokens are accepted only by the HTTPS endpoints: verbose health
-(`/readyz?verbose`, `/readyz/<check>`) and `/metrics`, which any role
-may read. A token cannot change configuration, read secrets or manage
-tokens. Token access for scripts and front ends comes with the web UI's
-API (#11).
+### Tokens for scripts
+
+As root (`sudo sparewall`, or over SSH with `sudo sparewall bridge`),
+every command acts with full rights and needs no token. A token lets a
+script or another user act with a role instead, without root: with
+`SPAREWALL_TOKEN` set, the CLI uses the restricted socket
+(`/run/sparewall-api/org.sparewall.Api`), which any local user may
+reach, and every call there is checked against the token's role.
+
+```shell
+sudo sparewall token create ci --role operator --expires 90d -q > ci.token
+SPAREWALL_TOKEN=$(cat ci.token) sparewall set networks.users.mtu=1400
+```
+
+| Role | May |
+| --- | --- |
+| `monitor` | Health (and over HTTPS, verbose health and `/metrics`) |
+| `viewer` | Also read the configuration, history, status and events; validate; check for upgrades |
+| `operator` | Also apply, confirm, roll back, sync, fail over, and acknowledge health checks |
+| `admin` | Also secrets, tokens, backups, VPN client configurations and upgrades, and turning `management.anti_lockout` off |
+
+A refused call exits with code 6. Changes made with a token are
+recorded as `token <name>` in the history and in the journal. Revoking
+a token, or its expiry, takes effect at once, also on connections
+already bound to it. From another machine, point a context's
+`remote_command` at the restricted socket and keep the token on your
+side: `sparewall bridge --socket /run/sparewall-api/org.sparewall.Api`
+runs without `sudo`.
 
 ## Remote-access VPN
 

@@ -86,7 +86,7 @@ pub async fn connect(target: &Target) -> Result<Connection<Stream>, Fail> {
     match target {
         Target::Local(path) => zlink::tokio::unix::connect(path).await.map_err(|e| {
             let hint = if path.exists() {
-                " (the socket is root-only: try sudo)"
+                " (the socket is root-only: try sudo, or set SPAREWALL_TOKEN)"
             } else {
                 " (is sparewalld running?)"
             };

@@ -150,6 +150,11 @@ impl<S: System> Coordinator<S> {
 
     /// The role a presented token grants, recording its use.
     pub fn token_check(&mut self, token: &str) -> Result<Option<Role>, Error> {
+        Ok(self.token_use(token)?.map(|t| t.role))
+    }
+
+    /// The record of a presented, unexpired token, recording its use.
+    pub fn token_use(&mut self, token: &str) -> Result<Option<TokenInfo>, Error> {
         if !token.starts_with(PREFIX) {
             return Ok(None);
         }
@@ -162,11 +167,30 @@ impl<S: System> Coordinator<S> {
         if t.expires.is_some_and(|e| e <= now.as_second()) {
             return Ok(None);
         }
-        let role = t.role;
         t.last_used = Some(now.to_string());
+        let t = t.clone();
         self.save_tokens(&all)?;
-        Ok(Some(role))
+        Ok(Some(t))
     }
+}
+
+/// The record of the token with SHA-256 `hash` in the store at `root`, if
+/// it still exists and has not expired. Reads without the coordinator, so
+/// that a bound connection can check its token on every call while a
+/// change holds the coordinator.
+pub fn current(root: &std::path::Path, hash: &str) -> Result<Option<TokenInfo>, Error> {
+    let p = root.join("tokens.json");
+    let all: Vec<TokenInfo> = match std::fs::read(&p) {
+        Ok(b) => {
+            serde_json::from_slice(&b).map_err(|e| Error::Internal(format!("tokens.json: {e}")))?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(e) => return Err(Error::io(&p, e)),
+    };
+    let now = jiff::Timestamp::now().as_second();
+    Ok(all
+        .into_iter()
+        .find(|t| t.hash == hash && t.expires.is_none_or(|e| e > now)))
 }
 
 #[cfg(test)]

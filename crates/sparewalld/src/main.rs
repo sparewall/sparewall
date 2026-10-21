@@ -1,5 +1,6 @@
 //! sparewalld: the Sparewall coordinator.
 
+mod access;
 mod acme;
 mod author;
 mod backup;
@@ -54,6 +55,9 @@ struct Args {
     /// Varlink socket to listen on when not socket-activated.
     #[arg(long, env = "SPAREWALL_SOCKET", default_value = sparewall_api::SOCKET)]
     socket: PathBuf,
+    /// The restricted socket, for unprivileged clients with a token.
+    #[arg(long, env = "SPAREWALL_API_SOCKET", default_value = sparewall_api::API_SOCKET)]
+    api_socket: PathBuf,
     /// Install the live generation's files and load the firewall, then exit.
     /// Runs before udev and networkd at boot.
     #[arg(long)]
@@ -168,6 +172,19 @@ fn root_only(socket: &Path) -> Result<std::os::unix::net::UnixListener, String> 
             Ok(l)
         })
         .map_err(|e| format!("{}: {e}", socket.display()))
+}
+
+/// Bind the restricted socket: open to every local user, since each call
+/// on it needs a token (SELinux decides which domains may connect).
+fn api_listener(socket: &Path) -> std::io::Result<tokio::net::UnixListener> {
+    if let Some(dir) = socket.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let _ = std::fs::remove_file(socket);
+    let l = std::os::unix::net::UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o666))?;
+    l.set_nonblocking(true)?;
+    tokio::net::UnixListener::from_std(l)
 }
 
 fn listener(socket: &Path) -> std::io::Result<tokio::net::UnixListener> {
@@ -310,15 +327,37 @@ fn run(args: Args) -> Result<(), String> {
             wake.clone(),
             changes.clone(),
         );
-        let server = varlink::serve(l, firewall.clone());
+        let server = varlink::serve(l, {
+            let f = firewall.clone();
+            move || f.clone()
+        });
         // keepalived's health check, on a socket of its own (see
         // HEALTH_SOCKET).
         let health_socket = args.socket.with_file_name("org.sparewall.Health");
         let health_server = varlink::serve(
             tokio::net::UnixListener::from_std(root_only(&health_socket)?)
                 .map_err(|e| e.to_string())?,
-            firewall,
+            {
+                let f = firewall.clone();
+                move || f.clone()
+            },
         );
+        // The restricted socket: each connection gets a session of its own.
+        let api_server = async {
+            let l = match api_listener(&args.api_socket) {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::error!(path = %args.api_socket.display(), error = %e, "restricted socket unavailable");
+                    return std::future::pending().await;
+                }
+            };
+            let state = args.state.clone();
+            varlink::serve(l, move || {
+                let session = access::Session::default();
+                access::Guard::new(firewall.restricted(session.clone()), session, state.clone())
+            })
+            .await
+        };
         // The peer service, reached only through the sync-tunnel listener.
         let peer_socket = args.socket.with_file_name("org.sparewall.Peer");
         let peer_server = zlink::Server::new(
@@ -382,6 +421,7 @@ fn run(args: Args) -> Result<(), String> {
             () = https => Ok(()),
             r = peer_server.run() => r.map_err(|e| format!("peer server: {e}")),
             r = health_server => r.map_err(|e| format!("health server: {e}")),
+            r = api_server => r.map_err(|e| format!("restricted socket: {e}")),
             () = peer::listener(
                 core.clone(),
                 tx.clone(),

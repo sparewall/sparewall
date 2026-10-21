@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.14.0)
+policy_module(sparewalld, 0.15.0)
 
 ########################################
 #
@@ -38,6 +38,10 @@ files_pid_file(sparewalld_provider_conf_t)
 # sshd reads.
 type sparewalld_sshd_conf_t;
 files_pid_file(sparewalld_sshd_conf_t)
+# /run/sparewall-api: the restricted socket, for unprivileged clients
+# with an API token (systemd creates the directory, RuntimeDirectory=).
+type sparewalld_api_var_run_t;
+files_pid_file(sparewalld_api_var_run_t)
 # Its private /tmp (restic's temporary packs).
 type sparewalld_tmp_t;
 files_tmp_file(sparewalld_tmp_t)
@@ -140,6 +144,7 @@ manage_dirs_pattern(sparewalld_t, sparewalld_provider_conf_t, sparewalld_provide
 manage_files_pattern(sparewalld_t, sparewalld_provider_conf_t, sparewalld_provider_conf_t)
 manage_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
 manage_sock_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
+manage_sock_files_pattern(sparewalld_t, sparewalld_api_var_run_t, sparewalld_api_var_run_t)
 manage_fifo_files_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
 # conntrackd.conf is written here, then given conntrackd's type.
 allow sparewalld_t sparewalld_var_run_t:file relabelfrom;

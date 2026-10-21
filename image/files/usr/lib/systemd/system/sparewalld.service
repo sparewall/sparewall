@@ -18,6 +18,9 @@ RestartSec=2s
 WatchdogSec=60s
 StateDirectory=sparewall
 StateDirectoryMode=0711
+# The restricted socket (API tokens), which every local user may reach.
+RuntimeDirectory=sparewall-api
+RuntimeDirectoryMode=0755
 Environment=SPAREWALL_LOG=info
 
 # Sandboxing (design: "Host hardening"). The coordinator writes its state,

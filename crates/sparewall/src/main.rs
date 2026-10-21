@@ -91,7 +91,7 @@ enum Output {
     name = "sparewall",
     version = sparewall_core::VERSION,
     about = "Manage a Sparewall firewall",
-    after_help = "Exit codes: 0 ok, 1 error, 2 usage, 3 validation failed, 4 conflict, 5 unreachable"
+    after_help = "Exit codes: 0 ok, 1 error, 2 usage, 3 validation failed, 4 conflict, 5 unreachable, 6 permission denied\n\nWith SPAREWALL_TOKEN set to an API token, the CLI uses the restricted socket (/run/sparewall-api/org.sparewall.Api) with that token's role, so it needs no root."
 )]
 struct Cli {
     /// Coordinator socket (local use) [default: /run/sparewall/org.sparewall.Firewall].
@@ -443,6 +443,8 @@ struct App {
     target: Target,
     output: Option<Output>,
     quiet: bool,
+    /// An API token (`SPAREWALL_TOKEN`) each connection is bound to.
+    token: Option<String>,
 }
 
 fn read_input(file: &str) -> Result<Value, Fail> {
@@ -613,7 +615,11 @@ const RECONNECT_SECONDS: u64 = 60;
 
 impl App {
     async fn conn(&self) -> Result<zlink::Connection<zlink::tokio::unix::Stream>, Fail> {
-        conn::connect(&self.target).await
+        let mut c = conn::connect(&self.target).await?;
+        if let Some(t) = &self.token {
+            c.bind(t).await??;
+        }
+        Ok(c)
     }
 
     fn say(&self, s: impl AsRef<str>) {
@@ -1559,7 +1565,15 @@ fn main() -> std::process::ExitCode {
             .enable_all()
             .build()
             .map_err(|e| Fail::other(e.to_string()))?;
-        let default_socket = PathBuf::from(sparewall_api::SOCKET);
+        // Kept out of the arguments, where other users could see it.
+        let token = std::env::var("SPAREWALL_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty());
+        let default_socket = PathBuf::from(if token.is_some() {
+            sparewall_api::API_SOCKET
+        } else {
+            sparewall_api::SOCKET
+        });
         if matches!(cli.cmd, Cmd::Bridge) {
             return rt.block_on(conn::bridge(cli.socket.as_ref().unwrap_or(&default_socket)));
         }
@@ -1590,6 +1604,7 @@ fn main() -> std::process::ExitCode {
             target,
             output: cli.output,
             quiet: cli.quiet,
+            token,
         };
         rt.block_on(app.run(cli.cmd))
     })();

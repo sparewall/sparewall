@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use futures_util::Stream;
 use serde_json::{Value, json};
 use sparewall_api::{
-    ApplyReply, BackupReply, ConfigReply, Empty, EventReply, ExportReply, FailoverReply,
+    ApplyReply, BackupReply, BindReply, ConfigReply, Empty, EventReply, ExportReply, FailoverReply,
     FirewallError, GenerationReply, HealthCheck, HealthReply, HistoryReply, SecretInfo,
     SecretListReply, SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply,
     UpgradeCheckReply, UpgradeStartReply, ValidateReply, VpnConfigReply,
@@ -20,6 +20,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use zlink::connection::socket::FetchPeerCredentials;
 use zlink::{Reply, service};
 
+use crate::access::{Principal, Session};
 use crate::author;
 use crate::peer::{Pair, PairStatus};
 
@@ -70,6 +71,9 @@ pub struct Firewall {
     /// changes still run one at a time: a sync-link change must not have
     /// another land between the peer taking it and it running here.
     changes: Changes,
+    /// On the restricted socket, the connection's principal; `None` on
+    /// the root-only sockets.
+    session: Option<Session>,
 }
 
 /// The lock that runs changes one at a time, shared with the peer service
@@ -90,6 +94,42 @@ impl Firewall {
             pair,
             sync,
             changes,
+            session: None,
+        }
+    }
+
+    /// This service for one connection of the restricted socket.
+    pub fn restricted(&self, session: Session) -> Firewall {
+        Firewall {
+            session: Some(session),
+            ..self.clone()
+        }
+    }
+
+    fn principal(&self) -> Option<Principal> {
+        self.session
+            .as_ref()
+            .and_then(|s| s.lock().unwrap_or_else(|p| p.into_inner()).clone())
+    }
+
+    /// The caller's role on the restricted socket (`None`: root).
+    fn role(&self) -> Option<Role> {
+        self.session
+            .as_ref()
+            .map(|_| self.principal().map_or(Role::Monitor, |p| p.role))
+    }
+
+    /// Who is calling, for a generation's author and the journal.
+    async fn author<Sock: zlink::connection::socket::Socket>(
+        &self,
+        conn: &mut zlink::Connection<Sock>,
+    ) -> String
+    where
+        Sock::ReadHalf: FetchPeerCredentials,
+    {
+        match self.principal() {
+            Some(p) => p.describe(),
+            None => author::of(conn).await,
         }
     }
 
@@ -207,13 +247,14 @@ pub fn gated_rollback(
     target: Option<u64>,
     author: &str,
     gate: Result<bool, FirewallError>,
+    role: Option<Role>,
 ) -> Result<Result<(Generation, bool), FirewallError>, Error> {
     let reachable = match gate {
         Ok(r) => r,
         Err(e) if !c.rollback_is_local(target)? => return Ok(Err(e)),
         Err(_) => false,
     };
-    c.rollback_staging(target, author, reachable).map(Ok)
+    c.rollback_staging(target, author, reachable, role).map(Ok)
 }
 
 pub fn to_api_error(e: Error) -> FirewallError {
@@ -227,6 +268,10 @@ pub fn to_api_error(e: Error) -> FirewallError {
         },
         Error::NotFound(id) => FirewallError::NotFound { id: id as i64 },
         Error::NotPending(id) => FirewallError::NotPending { id: id as i64 },
+        Error::Denied { role, reason } => FirewallError::PermissionDenied {
+            role,
+            reason: Some(reason),
+        },
         other => FirewallError::ApplyFailed {
             message: other.to_string(),
         },
@@ -275,8 +320,10 @@ fn opts(
     dry_run: Option<bool>,
     author: String,
     peer_reachable: bool,
+    role: Option<Role>,
 ) -> ApplyOptions {
     ApplyOptions {
+        role,
         stage_sync_link: peer_reachable,
         base: base.max(0) as u64,
         confirm_seconds: confirm.map(|s| s.clamp(0, 24 * 3600) as u32),
@@ -317,8 +364,9 @@ where
             base,
             confirm_seconds,
             dry_run,
-            author::of(conn).await,
+            self.author(conn).await,
             reachable,
+            self.role(),
         );
         let r = with_core(&self.core, &self.events, move |c| c.apply(config, &o)).await;
         self.finish(r, confirm_seconds).await
@@ -339,8 +387,9 @@ where
             base,
             confirm_seconds,
             dry_run,
-            author::of(conn).await,
+            self.author(conn).await,
             reachable,
+            self.role(),
         );
         let r = with_core(&self.core, &self.events, move |c| c.merge(&patch, &o)).await;
         self.finish(r, confirm_seconds).await
@@ -361,8 +410,9 @@ where
             base,
             confirm_seconds,
             dry_run,
-            author::of(conn).await,
+            self.author(conn).await,
             reachable,
+            self.role(),
         );
         let r = with_core(&self.core, &self.events, move |c| c.patch(&ops, &o)).await;
         self.finish(r, confirm_seconds).await
@@ -389,9 +439,10 @@ where
         let target = id.map(|i| i.max(0) as u64);
         // Evaluated now, applied below only if the rollback reaches the peer.
         let gate = self.gate(allow_diverge, None);
-        let author = author::of(conn).await;
+        let author = self.author(conn).await;
+        let role = self.role();
         let (g, staged) = with_core_raw(&self.core, &self.events, move |c| {
-            gated_rollback(c, target, &author, gate)
+            gated_rollback(c, target, &author, gate, role)
         })
         .await
         .map_err(to_api_error)??;
@@ -518,7 +569,7 @@ where
         name: String,
         #[zlink(connection)] conn: &mut Connection<Sock>,
     ) -> Result<Empty, FirewallError> {
-        let by = author::of(conn).await;
+        let by = self.author(conn).await;
         crate::selinux::acknowledge(&self.core, &self.events, name, by).await?;
         Ok(Empty {})
     }
@@ -701,6 +752,33 @@ where
         Ok(TokenCreateReply {
             token,
             info: api_token(&info),
+        })
+    }
+
+    async fn bind(&mut self, token: String) -> Result<BindReply, FirewallError> {
+        let Some(session) = self.session.clone() else {
+            return Err(FirewallError::NotSupported {
+                message: "the root-only socket needs no token".into(),
+            });
+        };
+        let found = with_core(&self.core, &self.events, move |c| c.token_use(&token)).await?;
+        let mut s = session.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(t) = found else {
+            *s = None;
+            return Err(FirewallError::PermissionDenied {
+                role: "none".into(),
+                reason: Some("unknown or expired token".into()),
+            });
+        };
+        tracing::info!(token = t.name, role = t.role.as_str(), "bound a connection");
+        *s = Some(Principal {
+            name: t.name.clone(),
+            role: t.role,
+            hash: t.hash,
+        });
+        Ok(BindReply {
+            name: t.name,
+            role: t.role.as_str().into(),
         })
     }
 
@@ -902,7 +980,7 @@ mod tests {
     #[test]
     fn pending_discard_needs_no_peer() {
         let (_d, mut c) = with_pending();
-        let g = gated_rollback(&mut c, None, "admin", refused())
+        let g = gated_rollback(&mut c, None, "admin", refused(), None)
             .unwrap()
             .unwrap();
         assert_eq!((g.0.id, c.active().unwrap()), (2, 2));
@@ -918,7 +996,7 @@ mod tests {
         let (_d, mut c) = with_pending();
         c.tick(i64::MAX).unwrap();
         assert_eq!(c.active().unwrap(), 2);
-        let r = gated_rollback(&mut c, None, "admin", refused()).unwrap();
+        let r = gated_rollback(&mut c, None, "admin", refused(), None).unwrap();
         assert!(
             matches!(r, Err(FirewallError::PeerUnreachable { .. })),
             "{r:?}"
@@ -926,7 +1004,7 @@ mod tests {
         assert_eq!(c.active().unwrap(), 2);
         assert_eq!(c.history(None).unwrap().len(), 3, "no generation was made");
         // With the gate passed, the same request is an ordinary rollback.
-        let g = gated_rollback(&mut c, None, "admin", Ok(true))
+        let g = gated_rollback(&mut c, None, "admin", Ok(true), None)
             .unwrap()
             .unwrap();
         assert_eq!((g.0.id, g.0.hash), (4, c.generation(1).unwrap().hash));
@@ -939,7 +1017,7 @@ mod tests {
     fn confirmation_in_between_is_gated() {
         let (_d, mut c) = with_pending();
         c.confirm(3).unwrap();
-        let r = gated_rollback(&mut c, None, "admin", refused()).unwrap();
+        let r = gated_rollback(&mut c, None, "admin", refused(), None).unwrap();
         assert!(
             matches!(r, Err(FirewallError::PeerUnreachable { .. })),
             "{r:?}"
@@ -953,7 +1031,7 @@ mod tests {
     #[test]
     fn rollback_past_the_revert_target_is_gated() {
         let (_d, mut c) = with_pending();
-        let r = gated_rollback(&mut c, Some(1), "admin", refused()).unwrap();
+        let r = gated_rollback(&mut c, Some(1), "admin", refused(), None).unwrap();
         assert!(
             matches!(r, Err(FirewallError::PeerUnreachable { .. })),
             "{r:?}"
