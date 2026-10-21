@@ -1972,6 +1972,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "sparewall-httpd"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "clap",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "sparewall-api",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zlink",
+]
+
+[[package]]
 name = "sparewall-render"
 version = "0.1.0"
 dependencies = [
