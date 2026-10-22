@@ -793,7 +793,9 @@ where
             role: "none".into(),
             reason: Some(reason.into()),
         };
-        if !self.logins.attempt(&user) {
+        let name = user.clone();
+        let exists = with_core(&self.core, &self.events, move |c| c.user_exists(&name)).await?;
+        if !self.logins.attempt(&user, exists) {
             return Err(refused("too many failed logins; try again later"));
         }
         let name = user.clone();
@@ -928,45 +930,59 @@ fn parse_role(role: &str) -> Result<Role, FirewallError> {
     })
 }
 
-/// Failed logins per user name, to refuse guessing (design: "Password
+/// Login attempts per user name, to refuse guessing (design: "Password
 /// logins are rate-limited"). Shared by every connection.
+///
+/// Users' counts are kept apart from other names' so that a flood of
+/// made-up names, which no one can log in as, cannot lock out a user or
+/// grow the table without end: other names share a table of
+/// [`Self::NAMES`], emptied when it fills, and are refused the same way
+/// as users meanwhile, so the refusal does not tell which names are users.
 #[derive(Clone, Default)]
-pub struct Logins(Arc<Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>>);
+pub struct Logins(Arc<Mutex<LoginCounts>>);
+
+type Counts = std::collections::HashMap<String, (u32, std::time::Instant)>;
+
+#[derive(Default)]
+pub struct LoginCounts {
+    users: Counts,
+    others: Counts,
+}
 
 impl Logins {
     /// Attempts allowed in a [`Self::WINDOW`].
     const LIMIT: u32 = 5;
     const WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-    /// Names tracked at once. When that many have failed within the
-    /// window, a name not among them is refused until some expire: a
-    /// flood of made-up names cannot grow the table, or reset a real
-    /// name's count by pushing it out.
+    /// Names that are not users tracked at once.
     const NAMES: usize = 10_000;
 
-    /// Count an attempt for `user` before its password is checked, so
-    /// that attempts made at once cannot pass the limit together; `false`
-    /// when it is refused. [`Self::succeeded`] forgets the count.
-    pub(crate) fn attempt(&self, user: &str) -> bool {
+    /// Count an attempt for `user` (a user or not, as `exists` says)
+    /// before its password is checked, so that attempts made at once
+    /// cannot pass the limit together; `false` when it is refused.
+    /// [`Self::succeeded`] forgets the count.
+    pub(crate) fn attempt(&self, user: &str, exists: bool) -> bool {
         let mut m = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let t = if exists { &mut m.users } else { &mut m.others };
         let now = std::time::Instant::now();
-        if let Some(e) = m.get_mut(user) {
-            if e.1.elapsed() > Self::WINDOW {
-                *e = (0, now);
-            }
-            if e.0 >= Self::LIMIT {
-                return false;
-            }
-            e.0 += 1;
-            return true;
-        }
-        if m.len() >= Self::NAMES {
-            m.retain(|_, (_, since)| since.elapsed() <= Self::WINDOW);
-            if m.len() >= Self::NAMES {
-                tracing::warn!(user, "refused a login: too many names failing to log in");
-                return false;
+        if !t.contains_key(user) && t.len() >= Self::NAMES {
+            t.retain(|_, (_, since)| since.elapsed() <= Self::WINDOW);
+            if t.len() >= Self::NAMES {
+                if exists {
+                    // Only removed users' stale counts can fill it.
+                    tracing::warn!("{} users failing to log in", t.len());
+                } else {
+                    t.clear();
+                }
             }
         }
-        m.insert(user.to_string(), (1, now));
+        let e = t.entry(user.to_string()).or_insert((0, now));
+        if e.1.elapsed() > Self::WINDOW {
+            *e = (0, now);
+        }
+        if e.0 >= Self::LIMIT {
+            return false;
+        }
+        e.0 += 1;
         true
     }
 
@@ -974,6 +990,7 @@ impl Logins {
         self.0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
+            .users
             .remove(user);
     }
 }

@@ -507,27 +507,30 @@ mod tests {
     #[test]
     fn failed_logins_are_limited_per_user() {
         let l = crate::service::Logins::default();
-        for _ in 0..5 {
-            assert!(l.attempt("alice"));
+        for exists in [true, false] {
+            for _ in 0..5 {
+                assert!(l.attempt("alice", exists));
+            }
+            assert!(!l.attempt("alice", exists));
+            assert!(l.attempt("bob", exists));
         }
-        assert!(!l.attempt("alice"));
-        assert!(l.attempt("bob"));
         l.succeeded("alice");
-        assert!(l.attempt("alice"));
+        assert!(l.attempt("alice", true));
     }
 
-    /// A table full of names failing within the window refuses new ones
-    /// rather than forgetting the old.
+    /// Made-up names cannot fill the table: they make room for each
+    /// other, and users, admin included, can still log in.
     #[test]
-    fn failing_names_are_bounded() {
+    fn made_up_names_lock_no_one_out() {
         let l = crate::service::Logins::default();
-        for i in 0..10_000 {
-            assert!(l.attempt(&format!("u{i}")));
+        for round in 0..3 {
+            for i in 0..10_000 {
+                assert!(l.attempt(&format!("u{round}-{i}"), false));
+            }
         }
-        assert!(!l.attempt("mallory"));
-        assert!(l.attempt("u0"));
-        l.succeeded("u0");
-        assert!(l.attempt("mallory"));
+        assert!(l.attempt("admin", true));
+        assert!(l.attempt("alice", true));
+        assert!(l.attempt("mallory", false));
     }
 
     /// Every method the coordinator serves has an entry in the table, so

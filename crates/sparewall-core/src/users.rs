@@ -90,6 +90,12 @@ impl<S: System> Coordinator<S> {
         Ok((!r.removed).then_some(r))
     }
 
+    /// Whether `name` is a user that could log in (admin, once it has a
+    /// password, or a user not removed).
+    pub fn user_exists(&mut self, name: &str) -> Result<bool, Error> {
+        Ok(user_name_ok(name) && self.user_record(name)?.is_some())
+    }
+
     /// Every user, `admin` first.
     pub fn users(&mut self) -> Result<Vec<User>, Error> {
         let mut out = vec![];

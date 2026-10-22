@@ -131,9 +131,9 @@ cluster secrets, so the peer and the encrypted backup have them too. A
 login opens a session of 12 hours on the node that took it. Changing a
 user's password or role, or removing it, ends its sessions at once.
 After five failed logins, a user's logins are refused for 15 minutes
-(attempts made at once count before any is checked). If 10,000 names
-have failed within 15 minutes, logins for names not among them are
-refused until some expire.
+(attempts made at once count before any is checked). Attempts with
+names that are not users are counted apart, so they cannot lock a user
+out.
 
 ## Remote-access VPN
 
