@@ -529,8 +529,55 @@ pub struct BindReply {
     pub role: String,
 }
 
+/// A named user (design: "Browser authentication").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct UserInfo {
+    pub name: String,
+    pub role: String,
+    /// No password: the user cannot log in.
+    pub locked: bool,
+    pub updated: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct UserListReply {
+    pub users: Vec<UserInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct LoginReply {
+    /// The session token, shown once.
+    pub token: String,
+    pub user: String,
+    pub role: String,
+    /// Unix time the session ends.
+    pub expires: i64,
+}
+
 #[zlink::proxy("org.sparewall.Auth")]
 pub trait AuthProxy {
+    /// Check a user's password and open a session; the connection is
+    /// bound to it, and its token binds others (`Bind`) until it ends.
+    /// Failed logins are rate-limited per user.
+    async fn login(
+        &mut self,
+        user: &str,
+        password: &str,
+    ) -> zlink::Result<Result<LoginReply, FirewallError>>;
+    /// End the session this connection is bound to.
+    async fn logout(&mut self) -> zlink::Result<Result<Empty, FirewallError>>;
+    /// Add a user, or change its role or password. `password_hash` is a
+    /// crypt(3) hash (`!` locks the user, and an empty one keeps an
+    /// existing user's); `admin` keeps the admin role.
+    /// Ends the user's sessions.
+    async fn set_user(
+        &mut self,
+        name: &str,
+        role: &str,
+        password_hash: &str,
+    ) -> zlink::Result<Result<Empty, FirewallError>>;
+    async fn list_users(&mut self) -> zlink::Result<Result<UserListReply, FirewallError>>;
+    async fn remove_user(&mut self, name: &str) -> zlink::Result<Result<Empty, FirewallError>>;
     /// Bind this connection to a token: later calls on it act with the
     /// token's role. Needed first on the restricted socket
     /// ([`API_SOCKET`]); the root-only socket needs none.

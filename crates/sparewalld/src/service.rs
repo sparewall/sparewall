@@ -6,13 +6,14 @@ use futures_util::Stream;
 use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, BackupReply, BindReply, ConfigReply, Empty, EventReply, ExportReply, FailoverReply,
-    FirewallError, GenerationReply, HealthCheck, HealthReply, HistoryReply, SecretInfo,
+    FirewallError, GenerationReply, HealthCheck, HealthReply, HistoryReply, LoginReply, SecretInfo,
     SecretListReply, SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply,
-    UpgradeCheckReply, UpgradeStartReply, ValidateReply, VpnConfigReply,
+    UpgradeCheckReply, UpgradeStartReply, UserInfo, UserListReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
 use sparewall_core::tokens::Role;
+use sparewall_core::users::USER_PREFIX;
 use sparewall_core::{ApplyOptions, ApplyResult, Coordinator, Error, Generation, System};
 use tokio::sync::{Notify, broadcast};
 use tokio_stream::StreamExt;
@@ -74,6 +75,7 @@ pub struct Firewall {
     /// On the restricted socket, the connection's principal; `None` on
     /// the root-only sockets.
     session: Option<Session>,
+    logins: Logins,
 }
 
 /// The lock that runs changes one at a time, shared with the peer service
@@ -95,6 +97,7 @@ impl Firewall {
             sync,
             changes,
             session: None,
+            logins: Logins::default(),
         }
     }
 
@@ -631,6 +634,11 @@ where
         } else {
             SecretClass::Node
         };
+        if name.starts_with(USER_PREFIX) {
+            return Err(FirewallError::NotSupported {
+                message: "users are set with sparewall user".into(),
+            });
+        }
         let info = with_core(&self.core, &self.events, move |c| {
             let admin_password = name == ADMIN_PASSWORD;
             if admin_password {
@@ -651,6 +659,7 @@ where
             c.refresh_vpn_keys(std::slice::from_ref(&name))?;
             if admin_password {
                 c.apply_admin_password()?;
+                c.users_changed(std::slice::from_ref(&name))?;
             }
             Ok(info)
         })
@@ -739,11 +748,7 @@ where
         role: String,
         expires_days: Option<i64>,
     ) -> Result<TokenCreateReply, FirewallError> {
-        let role = Role::parse(&role).ok_or_else(|| FirewallError::ValidationFailed {
-            errors: vec![format!(
-                "role must be monitor, viewer, operator or admin, not {role:?}"
-            )],
-        })?;
+        let role = parse_role(&role)?;
         let ttl = expires_days.map(|d| d.clamp(1, 3650) as u32);
         let (token, info) = with_core(&self.core, &self.events, move |c| {
             c.token_create(&name, role, ttl)
@@ -770,22 +775,117 @@ where
                 reason: Some("unknown or expired token".into()),
             });
         };
-        tracing::info!(token = t.name, role = t.role.as_str(), "bound a connection");
-        *s = Some(Principal {
-            name: t.name.clone(),
-            role: t.role,
-            hash: t.hash,
-        });
+        let p = Principal::of(&t);
+        tracing::info!(
+            principal = p.describe(),
+            role = t.role.as_str(),
+            "bound a connection"
+        );
+        *s = Some(p);
         Ok(BindReply {
             name: t.name,
             role: t.role.as_str().into(),
         })
     }
 
+    async fn login(&mut self, user: String, password: String) -> Result<LoginReply, FirewallError> {
+        let refused = |reason: &str| FirewallError::PermissionDenied {
+            role: "none".into(),
+            reason: Some(reason.into()),
+        };
+        let name = user.clone();
+        let exists = with_core(&self.core, &self.events, move |c| c.user_exists(&name)).await?;
+        if !self.logins.attempt(&user, exists) {
+            return Err(refused("too many failed logins; try again later"));
+        }
+        let name = user.clone();
+        let found = with_core(&self.core, &self.events, move |c| c.login(&name, &password)).await?;
+        let Some((token, t)) = found else {
+            // Slows guessing on one connection; others are not held up.
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            return Err(refused("wrong user name or password"));
+        };
+        self.logins.succeeded(&user);
+        if let Some(s) = &self.session {
+            *s.lock().unwrap_or_else(|p| p.into_inner()) = Some(Principal::of(&t));
+        }
+        Ok(LoginReply {
+            token,
+            user,
+            role: t.role.as_str().into(),
+            expires: t.expires.unwrap_or_default(),
+        })
+    }
+
+    async fn logout(&mut self) -> Result<Empty, FirewallError> {
+        let Some(p) = self.principal().filter(|p| p.user.is_some()) else {
+            return Err(FirewallError::NotSupported {
+                message: "this connection is not bound to a session".into(),
+            });
+        };
+        if let Some(s) = &self.session {
+            *s.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        }
+        let hash = p.hash.clone();
+        with_core(&self.core, &self.events, move |c| {
+            c.token_revoke_hash(&hash)
+        })
+        .await?;
+        tracing::info!(user = p.describe(), "logged out");
+        Ok(Empty {})
+    }
+
+    #[zlink(types = [UserInfo])]
+    async fn set_user(
+        &mut self,
+        name: String,
+        role: String,
+        password_hash: String,
+    ) -> Result<Empty, FirewallError> {
+        let role = parse_role(&role)?;
+        with_core(&self.core, &self.events, move |c| {
+            c.user_set(&name, role, &password_hash)
+        })
+        .await?;
+        self.sync.notify_one();
+        Ok(Empty {})
+    }
+
+    async fn list_users(&mut self) -> Result<UserListReply, FirewallError> {
+        let users = with_core(&self.core, &self.events, |c| c.users()).await?;
+        Ok(UserListReply {
+            users: users
+                .into_iter()
+                .map(|u| UserInfo {
+                    name: u.name,
+                    role: u.role.as_str().into(),
+                    locked: u.locked,
+                    updated: u.updated,
+                })
+                .collect(),
+        })
+    }
+
+    async fn remove_user(&mut self, name: String) -> Result<Empty, FirewallError> {
+        let existed = with_core(&self.core, &self.events, move |c| c.user_remove(&name)).await?;
+        if !existed {
+            return Err(FirewallError::NotSupported {
+                message: "no such user".into(),
+            });
+        }
+        self.sync.notify_one();
+        Ok(Empty {})
+    }
+
     async fn list_tokens(&mut self) -> Result<TokenListReply, FirewallError> {
         let t = with_core(&self.core, &self.events, |c| c.tokens()).await?;
         Ok(TokenListReply {
-            tokens: t.iter().map(api_token).collect(),
+            // Sessions are the users'.
+            tokens: t
+                .iter()
+                .filter(|t| t.user.is_none())
+                .map(api_token)
+                .collect(),
         })
     }
 
@@ -801,6 +901,11 @@ where
 
     #[zlink(interface = "org.sparewall.Secrets", rename = "Delete")]
     async fn secret_delete(&mut self, name: String) -> Result<Empty, FirewallError> {
+        if name.starts_with(USER_PREFIX) {
+            return Err(FirewallError::NotSupported {
+                message: "users are removed with sparewall user remove".into(),
+            });
+        }
         // A deletion would neither reach the peer nor lock the account.
         if name == ADMIN_PASSWORD {
             return Err(FirewallError::NotSupported {
@@ -814,6 +919,79 @@ where
             });
         }
         Ok(Empty {})
+    }
+}
+
+fn parse_role(role: &str) -> Result<Role, FirewallError> {
+    Role::parse(role).ok_or_else(|| FirewallError::ValidationFailed {
+        errors: vec![format!(
+            "role must be monitor, viewer, operator or admin, not {role:?}"
+        )],
+    })
+}
+
+/// Login attempts per user name, to refuse guessing (design: "Password
+/// logins are rate-limited"). Shared by every connection.
+///
+/// Users' counts are kept apart from other names' so that a flood of
+/// made-up names, which no one can log in as, cannot lock out a user or
+/// grow the table without end: other names share a table of
+/// [`Self::NAMES`], emptied when it fills, and are refused the same way
+/// as users meanwhile, so the refusal does not tell which names are users.
+#[derive(Clone, Default)]
+pub struct Logins(Arc<Mutex<LoginCounts>>);
+
+type Counts = std::collections::HashMap<String, (u32, std::time::Instant)>;
+
+#[derive(Default)]
+pub struct LoginCounts {
+    users: Counts,
+    others: Counts,
+}
+
+impl Logins {
+    /// Attempts allowed in a [`Self::WINDOW`].
+    const LIMIT: u32 = 5;
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+    /// Names that are not users tracked at once.
+    const NAMES: usize = 10_000;
+
+    /// Count an attempt for `user` (a user or not, as `exists` says)
+    /// before its password is checked, so that attempts made at once
+    /// cannot pass the limit together; `false` when it is refused.
+    /// [`Self::succeeded`] forgets the count.
+    pub(crate) fn attempt(&self, user: &str, exists: bool) -> bool {
+        let mut m = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let t = if exists { &mut m.users } else { &mut m.others };
+        let now = std::time::Instant::now();
+        if !t.contains_key(user) && t.len() >= Self::NAMES {
+            t.retain(|_, (_, since)| since.elapsed() <= Self::WINDOW);
+            if t.len() >= Self::NAMES {
+                if exists {
+                    // Only removed users' stale counts can fill it.
+                    tracing::warn!("{} users failing to log in", t.len());
+                } else {
+                    t.clear();
+                }
+            }
+        }
+        let e = t.entry(user.to_string()).or_insert((0, now));
+        if e.1.elapsed() > Self::WINDOW {
+            *e = (0, now);
+        }
+        if e.0 >= Self::LIMIT {
+            return false;
+        }
+        e.0 += 1;
+        true
+    }
+
+    pub(crate) fn succeeded(&self, user: &str) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .users
+            .remove(user);
     }
 }
 

@@ -32,12 +32,26 @@ pub struct Principal {
     pub role: Role,
     /// The token's SHA-256, to look it up again on each call.
     pub hash: String,
+    /// A session's user; `None` for an API token.
+    pub user: Option<String>,
 }
 
 impl Principal {
+    pub fn of(t: &tokens::TokenInfo) -> Principal {
+        Principal {
+            name: t.name.clone(),
+            role: t.role,
+            hash: t.hash.clone(),
+            user: t.user.clone(),
+        }
+    }
+
     /// As a generation's author and in the journal.
     pub fn describe(&self) -> String {
-        format!("token {}", self.name)
+        match &self.user {
+            Some(u) => u.clone(),
+            None => format!("token {}", self.name),
+        }
     }
 }
 
@@ -61,7 +75,8 @@ pub enum Need {
 pub fn needed(method: &str) -> Option<Need> {
     use Role::*;
     let role = match method {
-        "org.sparewall.Auth.Bind" => return Some(Need::Nothing),
+        "org.sparewall.Auth.Bind" | "org.sparewall.Auth.Login" => return Some(Need::Nothing),
+        "org.sparewall.Auth.Logout" => Monitor,
         "org.varlink.service.GetInfo" | "org.varlink.service.GetInterfaceDescription" => Monitor,
         "org.sparewall.Firewall.Health" => Monitor,
         "org.sparewall.Firewall.Validate"
@@ -90,7 +105,10 @@ pub fn needed(method: &str) -> Option<Need> {
         | "org.sparewall.Secrets.Delete"
         | "org.sparewall.Auth.CreateToken"
         | "org.sparewall.Auth.ListTokens"
-        | "org.sparewall.Auth.RevokeToken" => Admin,
+        | "org.sparewall.Auth.RevokeToken"
+        | "org.sparewall.Auth.SetUser"
+        | "org.sparewall.Auth.ListUsers"
+        | "org.sparewall.Auth.RemoveUser" => Admin,
         _ => return None,
     };
     Some(Need::Role(role))
@@ -145,7 +163,11 @@ impl<S> Guard<S> {
                 message: e.to_string(),
             })?;
         let Some(t) = current else {
-            tracing::info!(token = p.name, method, "refused a call: the token is gone");
+            tracing::info!(
+                principal = p.describe(),
+                method,
+                "refused a call: the token is gone"
+            );
             *session = None;
             return Err(denied("none", "the token was revoked or has expired"));
         };
@@ -309,7 +331,7 @@ mod tests {
     use std::sync::Arc;
 
     use serde_json::{Value, json};
-    use sparewall_api::{AuthProxy, FirewallError, FirewallProxy};
+    use sparewall_api::{AuthProxy, FirewallError, FirewallProxy, SecretsProxy};
     use sparewall_config::identity::{BootstrapPort, Identity};
     use sparewall_core::system::Fake;
     use sparewall_core::{Coordinator, Store, System};
@@ -408,6 +430,107 @@ mod tests {
             FirewallError::PermissionDenied { role, .. } => role,
             e => panic!("not a refusal: {e}"),
         }
+    }
+
+    /// `$6$` crypt(3) of "not a password".
+    const NOT_A_PASSWORD: &str = "$6$saltsaltsaltsalt$xBi0h9JAwekg0C/DjMgN2QuqkLmpxS6oSlGvlfbpVmNU6BoD2CIlyMob7DONgVGP/f3HoIdRtnZQ3hEVYIRer.";
+
+    /// A user logs in on the restricted socket, acts with its role and
+    /// as itself, and logs out; the session token then binds nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn users_log_in_and_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_core, f) = firewall(dir.path());
+        let server = serve(dir.path(), f);
+        let test = async {
+            let mut root = connect(dir.path(), "root.sock").await;
+            root.set_user("alice", "operator", NOT_A_PASSWORD)
+                .await
+                .unwrap()
+                .unwrap();
+            let users = root.list_users().await.unwrap().unwrap().users;
+            assert_eq!(users.len(), 2, "{users:?}");
+            // Users are not secrets to set by hand.
+            let e = root
+                .set("user.bob", "{}", Some(true))
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert!(matches!(e, FirewallError::NotSupported { .. }), "{e}");
+
+            let mut c = connect(dir.path(), "api.sock").await;
+            let e = c.login("alice", "wrong").await.unwrap().unwrap_err();
+            assert!(e.to_string().contains("wrong user name or password"), "{e}");
+            let r = c.login("alice", "not a password").await.unwrap().unwrap();
+            assert_eq!((r.user.as_str(), r.role.as_str()), ("alice", "operator"));
+            let a = c.apply(&doc(), 0, None, None, None).await.unwrap().unwrap();
+            assert_eq!(a.generation.author, "alice");
+            let e = c.list_users().await.unwrap().unwrap_err();
+            assert_eq!(role_of(e), "operator");
+            // Sessions are not API tokens.
+            let tokens = root.list_tokens().await.unwrap().unwrap().tokens;
+            assert!(tokens.is_empty(), "{tokens:?}");
+
+            // Another connection binds the session's token.
+            let mut other = connect(dir.path(), "api.sock").await;
+            other.bind(&r.token).await.unwrap().unwrap();
+            other.history(None).await.unwrap().unwrap();
+            c.logout().await.unwrap().unwrap();
+            let e = c.history(None).await.unwrap().unwrap_err();
+            assert_eq!(role_of(e), "none");
+            let e = other.history(None).await.unwrap().unwrap_err();
+            assert!(e.to_string().contains("revoked"), "{e}");
+            let e = other.bind(&r.token).await.unwrap().unwrap_err();
+            assert_eq!(role_of(e), "none");
+
+            // A new admin password (sparewall passwd) ends admin's sessions.
+            root.set("admin-password", NOT_A_PASSWORD, Some(true))
+                .await
+                .unwrap()
+                .unwrap();
+            let mut a = connect(dir.path(), "api.sock").await;
+            a.login("admin", "not a password").await.unwrap().unwrap();
+            a.history(None).await.unwrap().unwrap();
+            root.set("admin-password", NOT_A_PASSWORD, Some(true))
+                .await
+                .unwrap()
+                .unwrap();
+            let e = a.history(None).await.unwrap().unwrap_err();
+            assert!(e.to_string().contains("revoked"), "{e}");
+        };
+        tokio::select! {
+            () = server => unreachable!(),
+            () = test => {}
+        }
+    }
+
+    #[test]
+    fn failed_logins_are_limited_per_user() {
+        let l = crate::service::Logins::default();
+        for exists in [true, false] {
+            for _ in 0..5 {
+                assert!(l.attempt("alice", exists));
+            }
+            assert!(!l.attempt("alice", exists));
+            assert!(l.attempt("bob", exists));
+        }
+        l.succeeded("alice");
+        assert!(l.attempt("alice", true));
+    }
+
+    /// Made-up names cannot fill the table: they make room for each
+    /// other, and users, admin included, can still log in.
+    #[test]
+    fn made_up_names_lock_no_one_out() {
+        let l = crate::service::Logins::default();
+        for round in 0..3 {
+            for i in 0..10_000 {
+                assert!(l.attempt(&format!("u{round}-{i}"), false));
+            }
+        }
+        assert!(l.attempt("admin", true));
+        assert!(l.attempt("alice", true));
+        assert!(l.attempt("mallory", false));
     }
 
     /// Every method the coordinator serves has an entry in the table, so

@@ -1961,6 +1961,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha-crypt",
  "sha2",
  "sparewall-config",
  "sparewall-render",

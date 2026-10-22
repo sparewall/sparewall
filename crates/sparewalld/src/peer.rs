@@ -303,6 +303,7 @@ impl PeerService {
             if changed.iter().any(|n| n == ADMIN_PASSWORD) {
                 c.apply_admin_password()?;
             }
+            c.users_changed(&changed)?;
             Ok(changed.len())
         })
         .await

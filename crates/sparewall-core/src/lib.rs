@@ -15,6 +15,7 @@ pub mod selinux;
 pub mod store;
 pub mod system;
 pub mod tokens;
+pub mod users;
 
 use std::path::Path;
 

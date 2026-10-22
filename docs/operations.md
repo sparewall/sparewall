@@ -112,6 +112,29 @@ already bound to it. From another machine, point a context's
 side: `sparewall bridge --socket /run/sparewall-api/org.sparewall.Api`
 runs without `sudo`.
 
+### Users
+
+People log in to the web UI as named users, each with one of the roles
+above. `admin` is built in, and its password is the console password
+(`sparewall passwd`). The others:
+
+```shell
+sparewall user add alice --role operator   # asks for the password
+sparewall user list
+sparewall user role alice viewer
+sparewall user passwd alice                # or --lock
+sparewall user remove alice
+```
+
+Only the password's SHA-512 crypt hash leaves your machine. Users are
+cluster secrets, so the peer and the encrypted backup have them too. A
+login opens a session of 12 hours on the node that took it. Changing a
+user's password or role, or removing it, ends its sessions at once.
+After five failed logins, a user's logins are refused for 15 minutes
+(attempts made at once count before any is checked). Attempts with
+names that are not users are counted apart, so they cannot lock a user
+out.
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:
