@@ -57,13 +57,16 @@ pub fn user_name_ok(name: &str) -> bool {
 
 /// Whether a crypt(3) hash takes `password`. Logins check SHA-crypt
 /// hashes (`$5$`, `$6$`), which `sparewall passwd` and `sparewall user`
-/// make; another kind, seeded with the identity, never matches.
+/// make; another kind (a locked `!`, or one seeded with the identity)
+/// never matches, though it is checked against [`DUMMY_HASH`] all the
+/// same so that refusing it takes as long as a wrong password.
 pub fn verify(hash: &str, password: &str) -> bool {
     use sha_crypt::password_hash::PasswordVerifier;
-    (hash.starts_with("$5$") || hash.starts_with("$6$"))
-        && sha_crypt::ShaCrypt::default()
-            .verify_password(password.as_bytes(), hash)
-            .is_ok()
+    let sha = hash.starts_with("$5$") || hash.starts_with("$6$");
+    let ok = sha_crypt::ShaCrypt::default()
+        .verify_password(password.as_bytes(), if sha { hash } else { DUMMY_HASH })
+        .is_ok();
+    sha && ok
 }
 
 /// A hash to check against when there is no user, so that a missing

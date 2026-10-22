@@ -659,6 +659,7 @@ where
             c.refresh_vpn_keys(std::slice::from_ref(&name))?;
             if admin_password {
                 c.apply_admin_password()?;
+                c.users_changed(std::slice::from_ref(&name))?;
             }
             Ok(info)
         })
@@ -792,13 +793,12 @@ where
             role: "none".into(),
             reason: Some(reason.into()),
         };
-        if !self.logins.allowed(&user) {
+        if !self.logins.attempt(&user) {
             return Err(refused("too many failed logins; try again later"));
         }
         let name = user.clone();
         let found = with_core(&self.core, &self.events, move |c| c.login(&name, &password)).await?;
         let Some((token, t)) = found else {
-            self.logins.failed(&user);
             // Slows guessing on one connection; others are not held up.
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             return Err(refused("wrong user name or password"));
@@ -934,29 +934,40 @@ fn parse_role(role: &str) -> Result<Role, FirewallError> {
 pub struct Logins(Arc<Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>>);
 
 impl Logins {
-    /// Failures allowed in a [`Self::WINDOW`].
+    /// Attempts allowed in a [`Self::WINDOW`].
     const LIMIT: u32 = 5;
     const WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+    /// Names tracked at once. When that many have failed within the
+    /// window, a name not among them is refused until some expire: a
+    /// flood of made-up names cannot grow the table, or reset a real
+    /// name's count by pushing it out.
+    const NAMES: usize = 10_000;
 
-    pub(crate) fn allowed(&self, user: &str) -> bool {
-        let m = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        m.get(user)
-            .is_none_or(|(n, since)| *n < Self::LIMIT || since.elapsed() > Self::WINDOW)
-    }
-
-    pub(crate) fn failed(&self, user: &str) {
+    /// Count an attempt for `user` before its password is checked, so
+    /// that attempts made at once cannot pass the limit together; `false`
+    /// when it is refused. [`Self::succeeded`] forgets the count.
+    pub(crate) fn attempt(&self, user: &str) -> bool {
         let mut m = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        // Bounded: a flood of made-up names cannot grow it without end.
-        if m.len() > 10_000 {
+        let now = std::time::Instant::now();
+        if let Some(e) = m.get_mut(user) {
+            if e.1.elapsed() > Self::WINDOW {
+                *e = (0, now);
+            }
+            if e.0 >= Self::LIMIT {
+                return false;
+            }
+            e.0 += 1;
+            return true;
+        }
+        if m.len() >= Self::NAMES {
             m.retain(|_, (_, since)| since.elapsed() <= Self::WINDOW);
+            if m.len() >= Self::NAMES {
+                tracing::warn!(user, "refused a login: too many names failing to log in");
+                return false;
+            }
         }
-        let e = m
-            .entry(user.to_string())
-            .or_insert((0, std::time::Instant::now()));
-        if e.1.elapsed() > Self::WINDOW {
-            *e = (0, std::time::Instant::now());
-        }
-        e.0 += 1;
+        m.insert(user.to_string(), (1, now));
+        true
     }
 
     pub(crate) fn succeeded(&self, user: &str) {

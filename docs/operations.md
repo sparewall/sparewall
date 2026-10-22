@@ -130,7 +130,10 @@ Only the password's SHA-512 crypt hash leaves your machine. Users are
 cluster secrets, so the peer and the encrypted backup have them too. A
 login opens a session of 12 hours on the node that took it. Changing a
 user's password or role, or removing it, ends its sessions at once.
-After five failed logins, a user's logins are refused for 15 minutes.
+After five failed logins, a user's logins are refused for 15 minutes
+(attempts made at once count before any is checked). If 10,000 names
+have failed within 15 minutes, logins for names not among them are
+refused until some expire.
 
 ## Remote-access VPN
 

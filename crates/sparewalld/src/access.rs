@@ -482,6 +482,21 @@ mod tests {
             assert!(e.to_string().contains("revoked"), "{e}");
             let e = other.bind(&r.token).await.unwrap().unwrap_err();
             assert_eq!(role_of(e), "none");
+
+            // A new admin password (sparewall passwd) ends admin's sessions.
+            root.set("admin-password", NOT_A_PASSWORD, Some(true))
+                .await
+                .unwrap()
+                .unwrap();
+            let mut a = connect(dir.path(), "api.sock").await;
+            a.login("admin", "not a password").await.unwrap().unwrap();
+            a.history(None).await.unwrap().unwrap();
+            root.set("admin-password", NOT_A_PASSWORD, Some(true))
+                .await
+                .unwrap()
+                .unwrap();
+            let e = a.history(None).await.unwrap().unwrap_err();
+            assert!(e.to_string().contains("revoked"), "{e}");
         };
         tokio::select! {
             () = server => unreachable!(),
@@ -493,13 +508,26 @@ mod tests {
     fn failed_logins_are_limited_per_user() {
         let l = crate::service::Logins::default();
         for _ in 0..5 {
-            assert!(l.allowed("alice"));
-            l.failed("alice");
+            assert!(l.attempt("alice"));
         }
-        assert!(!l.allowed("alice"));
-        assert!(l.allowed("bob"));
+        assert!(!l.attempt("alice"));
+        assert!(l.attempt("bob"));
         l.succeeded("alice");
-        assert!(l.allowed("alice"));
+        assert!(l.attempt("alice"));
+    }
+
+    /// A table full of names failing within the window refuses new ones
+    /// rather than forgetting the old.
+    #[test]
+    fn failing_names_are_bounded() {
+        let l = crate::service::Logins::default();
+        for i in 0..10_000 {
+            assert!(l.attempt(&format!("u{i}")));
+        }
+        assert!(!l.attempt("mallory"));
+        assert!(l.attempt("u0"));
+        l.succeeded("u0");
+        assert!(l.attempt("mallory"));
     }
 
     /// Every method the coordinator serves has an entry in the table, so
