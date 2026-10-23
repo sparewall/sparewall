@@ -47,12 +47,17 @@ An error keeps its Varlink name and parameters, with a message in words:
 | 400 | `NotSupported`, `InvalidParameter`; a malformed call |
 | 401 | `PermissionDenied` with role `none`: no valid credentials |
 | 403 | `PermissionDenied`: the role does not allow the call |
-| 404 | `NotFound`, `MethodNotFound`, `InterfaceNotFound` |
+| 404 | `NotFound`, `MethodNotFound`, `InterfaceNotFound`; `Httpd.NotFound`: no such path |
+| 405 | `Httpd.MethodNotAllowed`: a call that is not a POST |
 | 409 | `Conflict`, `NotPending`, `ConfirmTimeout` |
+| 413 | `Httpd.TooLarge`: a request body over 4 MiB |
 | 422 | `ValidationFailed` |
-| 502 | `org.sparewall.Httpd.Unavailable`: the coordinator did not answer |
+| 502 | `Httpd.Unavailable`: the coordinator did not answer |
 | 503 | `PeerUnreachable` |
 | 500 | Anything else (`ApplyFailed`) |
+
+The `org.sparewall.Httpd` errors are the gateway's own, and have no
+parameters.
 
 The bridge answers every service error with 500 and the error as a
 string; Sparewall keeps the parameters, which name the fields at fault,

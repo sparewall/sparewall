@@ -19,7 +19,9 @@ use hyper::header::{self, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sparewall_api::openapi::{CSRF_HEADER, SESSION_COOKIE, UNAVAILABLE, http_status};
+use sparewall_api::openapi::{
+    CSRF_HEADER, METHOD_NOT_ALLOWED, NOT_FOUND, SESSION_COOKIE, TOO_LARGE, UNAVAILABLE, http_status,
+};
 use zlink::Call;
 
 pub type Body = UnsyncBoxBody<Bytes, Infallible>;
@@ -251,12 +253,9 @@ impl Gateway {
                 let m = p["/call/".len()..].to_string();
                 self.call(req, &m).await
             }
-            (_, p) if p.starts_with("/call/") => refusal(
-                405,
-                "org.sparewall.Httpd.MethodNotAllowed",
-                json!({}),
-                "calls are POST",
-            ),
+            (_, p) if p.starts_with("/call/") => {
+                refusal(405, METHOD_NOT_ALLOWED, json!({}), "calls are POST")
+            }
             (&Method::GET, "/openapi.json") => {
                 let mut r = Response::new(full(OPENAPI));
                 r.headers_mut().insert(
@@ -266,12 +265,7 @@ impl Gateway {
                 r
             }
             (&Method::GET | &Method::HEAD, p) => self.file(p).await,
-            _ => refusal(
-                405,
-                "org.sparewall.Httpd.MethodNotAllowed",
-                json!({}),
-                "not allowed",
-            ),
+            _ => refusal(405, METHOD_NOT_ALLOWED, json!({}), "not allowed"),
         };
         harden(&mut r);
         r
@@ -308,9 +302,17 @@ impl Gateway {
         }
         let body = match Limited::new(req.into_body(), MAX_BODY).collect().await {
             Ok(b) => b.to_bytes(),
-            Err(e) => {
+            Err(e) if e.is::<http_body_util::LengthLimitError>() => {
                 return refusal(
                     413,
+                    TOO_LARGE,
+                    json!({}),
+                    &format!("the request is over {MAX_BODY} bytes"),
+                );
+            }
+            Err(e) => {
+                return refusal(
+                    400,
                     "org.varlink.service.InvalidParameter",
                     json!({"parameter": "parameters"}),
                     &format!("cannot read the request: {e}"),
@@ -420,7 +422,7 @@ impl Gateway {
     async fn file(&self, path: &str) -> Response<Body> {
         let rel = Path::new(path.trim_start_matches('/'));
         if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
-            return refusal(404, "org.sparewall.Httpd.NotFound", json!({}), "not found");
+            return refusal(404, NOT_FOUND, json!({}), "not found");
         }
         let mut p = self.ui.join(rel);
         if path.ends_with('/') || path == "/" {
@@ -437,14 +439,14 @@ impl Gateway {
                     Err(_) => {
                         return refusal(
                             404,
-                            "org.sparewall.Httpd.NotFound",
+                            NOT_FOUND,
                             json!({}),
                             "the web UI is not installed; the API is at /call/",
                         );
                     }
                 }
             }
-            Err(_) => return refusal(404, "org.sparewall.Httpd.NotFound", json!({}), "not found"),
+            Err(_) => return refusal(404, NOT_FOUND, json!({}), "not found"),
         };
         let mut r = Response::new(full(bytes));
         let h = r.headers_mut();
@@ -492,7 +494,7 @@ fn stream(conn: zlink::Connection<zlink::tokio::unix::Stream>) -> Response<Body>
             }
             Ok((Err(e), _)) => (json!({"error": e.error, "parameters": e.parameters}), false),
             Err(e) => (
-                json!({"error": "org.sparewall.Httpd.Unavailable", "message": e.to_string()}),
+                json!({"error": UNAVAILABLE, "parameters": {}, "message": e.to_string()}),
                 false,
             ),
         };

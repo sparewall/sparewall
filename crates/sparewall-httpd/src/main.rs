@@ -25,7 +25,8 @@ use crate::gateway::Gateway;
     about = "Sparewall's HTTP API and web UI"
 )]
 struct Args {
-    /// Where to listen: `unix:<path>` or `tcp:<address>`.
+    /// Where to listen: `unix:<path>`, or `tcp:<address>` on loopback only,
+    /// since it is plain HTTP (TLS is the proxy's in front of it).
     #[arg(
         long,
         env = "SPAREWALL_HTTPD_LISTEN",
@@ -72,7 +73,17 @@ async fn run(args: Args) -> Result<(), String> {
             serve_conn(s, gw.clone());
         }
     } else if let Some(addr) = args.listen.strip_prefix("tcp:") {
-        let l = tokio::net::TcpListener::bind(addr)
+        // Plain HTTP carries tokens and session cookies in the clear: keep
+        // it off the network.
+        let sa: std::net::SocketAddr = addr
+            .parse()
+            .map_err(|e| format!("{addr}: {e} (tcp: takes an IP address and port)"))?;
+        if !sa.ip().is_loopback() {
+            return Err(format!(
+                "{addr}: tcp: listens on loopback only, as it is plain HTTP"
+            ));
+        }
+        let l = tokio::net::TcpListener::bind(sa)
             .await
             .map_err(|e| format!("{addr}: {e}"))?;
         tracing::info!(addr, "listening");

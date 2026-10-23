@@ -1719,7 +1719,7 @@
         "type": "object"
       },
       "Error": {
-        "description": "A Varlink error: its name and parameters, and a message in words. The HTTP status follows the error (422 ValidationFailed, 409 Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied without credentials and 403 with them, 404 NotFound, MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 502 Unavailable, 400 NotSupported, InvalidParameter and malformed calls, 500 the rest).",
+        "description": "A Varlink error: its name and parameters, and a message in words. The HTTP status follows the error (422 ValidationFailed, 409 Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied without credentials and 403 with them, 404 NotFound, MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 400 NotSupported, InvalidParameter and malformed calls, 500 the rest; the gateway's own: 502 Unavailable, 404 NotFound, 405 MethodNotAllowed, 413 TooLarge).",
         "oneOf": [
           {
             "properties": {
@@ -1990,6 +1990,66 @@
           {
             "properties": {
               "error": {
+                "const": "org.sparewall.Httpd.MethodNotAllowed"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "description": "Calls are POST; files are GET.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Httpd.MethodNotAllowed",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Httpd.NotFound"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "description": "No call or file has this path.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Httpd.NotFound",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Httpd.TooLarge"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "description": "The request body is over the gateway's limit.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Httpd.TooLarge",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
                 "const": "org.sparewall.Httpd.Unavailable"
               },
               "message": {
@@ -2184,6 +2244,9 @@
               "org.sparewall.Firewall.PeerUnreachable",
               "org.sparewall.Firewall.PermissionDenied",
               "org.sparewall.Firewall.ValidationFailed",
+              "org.sparewall.Httpd.MethodNotAllowed",
+              "org.sparewall.Httpd.NotFound",
+              "org.sparewall.Httpd.TooLarge",
               "org.sparewall.Httpd.Unavailable",
               "org.varlink.service.ExpectedMore",
               "org.varlink.service.InterfaceNotFound",

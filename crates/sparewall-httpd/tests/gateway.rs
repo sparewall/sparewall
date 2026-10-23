@@ -220,6 +220,18 @@ fn token(n: &Node, name: &str, role: &str) -> String {
     })
 }
 
+/// Plain HTTP stays off the network.
+#[test]
+fn tcp_is_loopback_only() {
+    let out = Command::new(env!("CARGO_BIN_EXE_sparewall-httpd"))
+        .args(["--listen", "tcp:0.0.0.0:0"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("loopback only"), "{err}");
+}
+
 #[test]
 fn tokens_and_statuses() {
     let Some(n) = start() else { return };
@@ -285,6 +297,17 @@ fn tokens_and_statuses() {
     let r = call(&n, "not-a-method", &[("Authorization", &viewer)], json!({}));
     assert_eq!(r.status, 404, "{}", r.json());
     assert_eq!(r.json()["parameters"]["method"], "not-a-method");
+    // One byte over the limit, so the gateway has read it all.
+    let r = request(
+        &n,
+        "POST",
+        "/call/org.sparewall.Firewall.History",
+        &[("Authorization", &viewer)],
+        &" ".repeat((4 << 20) + 1),
+    );
+    assert_eq!(r.status, 413);
+    assert_eq!(r.json()["error"], "org.sparewall.Httpd.TooLarge");
+    assert_eq!(r.json()["parameters"], json!({}));
 
     // Subscribe streams JSON text sequence records.
     let mut s = TcpStream::connect(("127.0.0.1", n.port)).unwrap();
