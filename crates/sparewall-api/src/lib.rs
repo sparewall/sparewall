@@ -4,6 +4,8 @@
 //! Interface changes are additive only; a breaking change gets a new
 //! interface name (design: "Versioning and compatibility").
 
+pub mod openapi;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zlink::introspect::{CustomType, ReplyError, Type};

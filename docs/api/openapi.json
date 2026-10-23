@@ -1,0 +1,4399 @@
+{
+  "components": {
+    "responses": {
+      "Error": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "The call failed."
+      }
+    },
+    "schemas": {
+      "Document": {
+        "additionalProperties": false,
+        "description": "A whole deployment: one node or an HA pair.",
+        "properties": {
+          "backup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Backup"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Scheduled backups of the node bundle."
+          },
+          "cluster": {
+            "$ref": "#/components/schemas/Document.Cluster",
+            "description": "Node names and pair-wide settings."
+          },
+          "dhcp": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Dhcp"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "DHCPv4 service per network."
+          },
+          "dns": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Dns"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Recursive DNS for the served networks."
+          },
+          "forwards": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Forward"
+            },
+            "description": "Inbound port forwards (DNAT).",
+            "type": "object"
+          },
+          "logging": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Logging"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Rule-log defaults and remote forwarding."
+          },
+          "management": {
+            "$ref": "#/components/schemas/Document.Management",
+            "description": "Which network is management, and the anti-lockout switch."
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Metrics"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Metrics collection."
+          },
+          "networks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Network"
+            },
+            "description": "Layer-2 segments, keyed by network name (also the interface name).",
+            "type": "object"
+          },
+          "ntp": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Ntp"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Time service."
+          },
+          "objects": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Object"
+            },
+            "description": "Named address and port sets, referenced from rules as `@name`.",
+            "type": "object"
+          },
+          "policy": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Policy"
+            },
+            "description": "Zone-pair policies keyed by `\"from->to\"`.",
+            "type": "object"
+          },
+          "ports": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/Document.Port"
+              },
+              "type": "object"
+            },
+            "description": "Per node: port role name to the hardware it is bound to.",
+            "type": "object"
+          },
+          "provider_options": {
+            "additionalProperties": true,
+            "description": "Per-provider passthrough settings, keyed by provider name. Not\nbuilt yet: any entry is rejected.",
+            "type": "object"
+          },
+          "raw": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.RawEntry"
+            },
+            "description": "Raw nft statements placed at named hook points.",
+            "type": "object"
+          },
+          "schema": {
+            "description": "Schema version of this document.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tls": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Tls"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Certificates."
+          },
+          "updates": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Updates"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "OS image update policy."
+          },
+          "vpn": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Vpn"
+            },
+            "description": "Remote-access WireGuard instances.",
+            "type": "object"
+          },
+          "zones": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Zone"
+            },
+            "description": "Named groups of networks. `self` is built in and cannot be defined.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "schema",
+          "cluster",
+          "management"
+        ],
+        "title": "Sparewall configuration document",
+        "type": "object"
+      },
+      "Document.Acme": {
+        "additionalProperties": false,
+        "properties": {
+          "ca": {
+            "description": "PEM of the CA that signs the directory's TLS certificate, for a\nprivate CA (default: the system trust store).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "challenge": {
+            "description": "`dns-01` (default) or `http-01`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "directory": {
+            "type": "string"
+          },
+          "dns": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.AcmeDns"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eab": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Eab"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "External Account Binding key ID and secret reference."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "directory"
+        ],
+        "type": "object"
+      },
+      "Document.AcmeDns": {
+        "additionalProperties": false,
+        "properties": {
+          "credentials": {
+            "description": "Secret reference, `secret:<name>`. For `rfc2136`, the TSIG key as\n`algorithm:name:secret`; for lego, the provider's credentials as\n`KEY=value` lines.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "For `rfc2136`, `server` (host[:port]) and `zone`; for lego, the\nprovider's other environment variables (`GCE_PROJECT`), and lego's\nown (`LEGO_DNS_RESOLVERS`).",
+            "type": "object"
+          },
+          "provider": {
+            "description": "`rfc2136` (built in), or a lego provider code such as `gcloud`,\n`cloudflare` or `route53` (https://go-acme.github.io/lego/dns/).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "type": "object"
+      },
+      "Document.Action": {
+        "enum": [
+          "accept",
+          "drop",
+          "reject"
+        ],
+        "type": "string"
+      },
+      "Document.Backup": {
+        "additionalProperties": false,
+        "properties": {
+          "credentials": {
+            "description": "Secret reference for repository credentials (not the password).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "generations": {
+            "description": "Generations to include. Default 20.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repository": {
+            "description": "restic repository URL.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schedule": {
+            "description": "systemd calendar expression. Default `hourly`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "Document.Bond": {
+        "additionalProperties": false,
+        "properties": {
+          "hash_policy": {
+            "description": "Transmit hash policy, e.g. `layer3+4`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lacp_rate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.LacpRate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "LACP rate (802.3ad only)."
+          },
+          "members": {
+            "description": "Member NICs, each a permanent MAC address or udev path.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "miimon": {
+            "description": "Link monitoring interval, e.g. `100ms`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/Document.BondMode",
+            "description": "Bonding mode."
+          },
+          "primary": {
+            "description": "Preferred member (active-backup only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "members",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "Document.BondMode": {
+        "enum": [
+          "802.3ad",
+          "active-backup"
+        ],
+        "type": "string"
+      },
+      "Document.Cake": {
+        "additionalProperties": false,
+        "properties": {
+          "bandwidth": {
+            "description": "Egress bandwidth, e.g. `900mbit`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bandwidth"
+        ],
+        "type": "object"
+      },
+      "Document.Certificate": {
+        "additionalProperties": false,
+        "properties": {
+          "acme": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Acme"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "type": "object"
+      },
+      "Document.Cidr": {
+        "description": "IPv4 address with prefix length, e.g. 192.0.2.1/24",
+        "pattern": "^\\d{1,3}(\\.\\d{1,3}){3}/\\d{1,2}$",
+        "type": "string"
+      },
+      "Document.Cluster": {
+        "additionalProperties": false,
+        "properties": {
+          "conntrack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.ConntrackSizing"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Connection-tracking sizing, identical on both nodes."
+          },
+          "hold": {
+            "description": "Stage beside the gateway this replaces: everything runs, but no\ngateway address is claimed (VRRP instances held in FAULT, or not\ninstalled standalone) and DHCP offers nothing. Set false to cut over.",
+            "type": "boolean"
+          },
+          "nodes": {
+            "description": "One node name (standalone) or two (an HA pair). Each is also that\nnode's hostname: up to 31 lowercase letters, digits and '-',\nstarting with a letter and not ending with '-'.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sync_keys": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Each node's sync-tunnel WireGuard public key, from `sparewall status`.",
+            "type": "object"
+          },
+          "sync_network": {
+            "description": "The network with role `sync` that carries the pair's WireGuard tunnel.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sync_port": {
+            "description": "UDP port of the sync tunnel.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "vrrp": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Vrrp"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "VRRP settings for a pair."
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "Document.ConntrackSizing": {
+        "additionalProperties": false,
+        "properties": {
+          "buckets": {
+            "description": "Hash table buckets (`nf_conntrack_buckets`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max": {
+            "description": "`nf_conntrack_max`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tcp_established_timeout": {
+            "description": "Established-TCP timeout in seconds. Default 86400.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Document.Dhcp": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/Document.DhcpNetwork"
+        },
+        "description": "DHCPv4: service-wide settings plus one entry per served network.",
+        "properties": {
+          "ha": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.DhcpHa"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "HA mode for a pair. Default `hot-standby`."
+          },
+          "lease_time": {
+            "description": "Default lease time in seconds.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "ping_check": {
+            "description": "Ping an address before offering it, and skip it if something\nanswers: a host still using it without a lease here (after a\nrestore, or when replacing another DHCP server). Default true; turn\nit off on networks that filter ICMP echo.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "provider": {
+            "description": "Implementation: `kea` (the default). `networkd` is not built yet.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Document.DhcpHa": {
+        "enum": [
+          "hot-standby",
+          "off"
+        ],
+        "type": "string"
+      },
+      "Document.DhcpNetwork": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_time": {
+            "description": "Lease time in seconds for this network.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.DhcpOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Options; router, DNS and NTP default to the gateway address."
+          },
+          "ping_check": {
+            "description": "Ping before offering on this network (default: `dhcp.ping_check`).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "pool": {
+            "description": "Address range, `first-last`.",
+            "type": "string"
+          },
+          "reservations": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Reservation"
+            },
+            "default": {},
+            "description": "Fixed leases by name.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "pool"
+        ],
+        "type": "object"
+      },
+      "Document.DhcpOptions": {
+        "additionalProperties": false,
+        "properties": {
+          "dns": {
+            "items": {
+              "format": "ipv4",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ntp": {
+            "items": {
+              "format": "ipv4",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "router": {
+            "format": "ipv4",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Document.Dns": {
+        "additionalProperties": false,
+        "properties": {
+          "domain": {
+            "description": "Local domain for reservation names.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "forwarders": {
+            "description": "Forward to these servers instead of recursing.",
+            "items": {
+              "format": "ipv4",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "networks": {
+            "description": "Networks to serve; default every network with DHCP.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "provider": {
+            "description": "Implementation: `unbound` (the default).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "records": {
+            "additionalProperties": {
+              "format": "ipv4",
+              "type": "string"
+            },
+            "description": "Extra local A records, name to address.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "Document.DynamicKind": {
+        "enum": [
+          "address",
+          "prefix"
+        ],
+        "type": "string"
+      },
+      "Document.DynamicSource": {
+        "additionalProperties": false,
+        "properties": {
+          "network": {
+            "description": "The network whose addresses fill the set.",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Document.DynamicKind",
+            "description": "`address` for the node's own address, `prefix` for the subnet."
+          }
+        },
+        "required": [
+          "network"
+        ],
+        "type": "object"
+      },
+      "Document.Eab": {
+        "additionalProperties": false,
+        "properties": {
+          "hmac": {
+            "type": "string"
+          },
+          "kid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kid",
+          "hmac"
+        ],
+        "type": "object"
+      },
+      "Document.Forward": {
+        "additionalProperties": false,
+        "description": "An inbound port forward.",
+        "properties": {
+          "dport": {
+            "$ref": "#/components/schemas/Document.Match",
+            "description": "Port(s) on the firewall."
+          },
+          "dst": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Match"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Original destination; default any address of the arriving zone."
+          },
+          "from": {
+            "description": "Zone the connections arrive from. Default `wan`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hairpin": {
+            "description": "Inside zones whose clients may also use the forward by its outside\naddress (NAT reflection), e.g. `[users]`. Needs `dst`. Clients on\nthe server's own network are also source-NATed to the firewall's\naddress there, so that replies come back through it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "log": {
+            "description": "Log forwarded connections.",
+            "type": "boolean"
+          },
+          "proto": {
+            "description": "`tcp` or `udp`.",
+            "type": "string"
+          },
+          "src": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Match"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Allowed sources."
+          },
+          "to": {
+            "description": "Internal address to forward to.",
+            "format": "ipv4",
+            "type": "string"
+          },
+          "to_port": {
+            "description": "Internal port; default unchanged.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "proto",
+          "dport",
+          "to"
+        ],
+        "type": "object"
+      },
+      "Document.LacpRate": {
+        "enum": [
+          "slow",
+          "fast"
+        ],
+        "type": "string"
+      },
+      "Document.Logging": {
+        "additionalProperties": false,
+        "properties": {
+          "connections": {
+            "description": "Record connection start/end with NAT mappings.",
+            "type": "boolean"
+          },
+          "group": {
+            "description": "nflog group used for rule logging. Default 0.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "remote": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.RemoteLog"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Document.Management": {
+        "additionalProperties": false,
+        "properties": {
+          "anti_lockout": {
+            "description": "Always accept SSH and HTTPS from the management network to `self`.\nOnly an `admin` may turn this off.",
+            "type": "boolean"
+          },
+          "network": {
+            "description": "The network with role `management`.",
+            "type": "string"
+          },
+          "ssh": {
+            "$ref": "#/components/schemas/Document.ManagementSsh",
+            "description": "SSH to the node."
+          }
+        },
+        "required": [
+          "network"
+        ],
+        "type": "object"
+      },
+      "Document.ManagementSsh": {
+        "additionalProperties": false,
+        "properties": {
+          "password": {
+            "description": "Also accept the `admin` password (`sparewall passwd`) over SSH, not\nonly keys. Off by default: the password is the console's\nbreak-glass path.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "Document.Match": {
+        "anyOf": [
+          {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "$ref": "#/components/schemas/Document.MatchItem"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "A match value: a scalar, a list, or an `@object` reference."
+      },
+      "Document.MatchItem": {
+        "anyOf": [
+          {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "Document.Metrics": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/Document.MetricsMode",
+            "description": "`external`: `/metrics` answers the management network without a\ntoken, for an external Prometheus. `off`: not served. (Without a\n`metrics` section it needs a token.) `local` (a local Prometheus)\nis not built yet and is rejected."
+          },
+          "retention": {
+            "description": "Local Prometheus retention, e.g. `15d`. Not built yet, with the\nlocal mode: rejected.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "Document.MetricsMode": {
+        "enum": [
+          "external",
+          "local",
+          "off"
+        ],
+        "type": "string"
+      },
+      "Document.Nat": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/Document.NatMode",
+            "description": "`masquerade`"
+          },
+          {
+            "description": "`{ snat: 203.0.113.5 }`",
+            "properties": {
+              "snat": {
+                "format": "ipv4",
+                "type": "string"
+              }
+            },
+            "required": [
+              "snat"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Document.NatMode": {
+        "enum": [
+          "masquerade"
+        ],
+        "type": "string"
+      },
+      "Document.Network": {
+        "additionalProperties": false,
+        "description": "One layer-2 segment.",
+        "properties": {
+          "addresses": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Cidr"
+            },
+            "description": "Each node's own address on this network, in CIDR form.",
+            "type": "object"
+          },
+          "cake": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Cake"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "WAN shaping with CAKE, e.g. `{ egress: 900mbit }`."
+          },
+          "dhcp_client": {
+            "description": "Obtain this node's address by DHCP (WAN or management only).",
+            "type": "boolean"
+          },
+          "dns": {
+            "description": "Upstream DNS servers learned statically on this network.",
+            "items": {
+              "format": "ipv4",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "extra_vips": {
+            "description": "More addresses that move with the gateway address (in its VRRP\ninstance in a pair; static standalone), for forwards and SNAT, e.g.\na mail server's public address. In the gateway address's subnet.",
+            "items": {
+              "$ref": "#/components/schemas/Document.Cidr"
+            },
+            "type": "array"
+          },
+          "gateway": {
+            "description": "Upstream gateway (default route) for a static WAN or a management\nnetwork with its own upstream.",
+            "format": "ipv4",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lldp": {
+            "description": "Emit and receive LLDP on this network. Default true on untagged ports.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "mtu": {
+            "description": "MTU of this network's interface.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "port": {
+            "description": "The port role this network rides on.",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Document.NetworkRole",
+            "description": "What the network is for. Default `service`."
+          },
+          "vip": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Cidr"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The gateway address clients use. Moved by VRRP in a pair, a plain\nstatic address on a standalone node."
+          },
+          "vlan": {
+            "description": "802.1Q VLAN ID; omit for the untagged network of a port.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "vrid": {
+            "description": "VRRP virtual router ID (1-255), unique across the deployment.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "port"
+        ],
+        "type": "object"
+      },
+      "Document.NetworkRole": {
+        "enum": [
+          "service",
+          "wan",
+          "management",
+          "sync"
+        ],
+        "type": "string"
+      },
+      "Document.Ntp": {
+        "additionalProperties": false,
+        "properties": {
+          "serve": {
+            "description": "Networks to serve time on.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "servers": {
+            "description": "Upstream servers or pools.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "Document.Object": {
+        "additionalProperties": false,
+        "description": "A named set: static elements, or a dynamic set filled by networkd.",
+        "properties": {
+          "dynamic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.DynamicSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fill from a network's addresses instead (`ipv4` only)."
+          },
+          "elements": {
+            "description": "Static elements: addresses or prefixes for `ipv4`, ports or ranges for\n`port`.",
+            "items": {
+              "$ref": "#/components/schemas/Document.MatchItem"
+            },
+            "type": "array"
+          },
+          "type": {
+            "$ref": "#/components/schemas/Document.ObjectKind",
+            "description": "Element type."
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "Document.ObjectKind": {
+        "enum": [
+          "ipv4",
+          "port"
+        ],
+        "type": "string"
+      },
+      "Document.Offload": {
+        "additionalProperties": false,
+        "properties": {
+          "gro": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "gso": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "rx_checksum": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "tso": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "tx_checksum": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Document.Policy": {
+        "additionalProperties": false,
+        "description": "Policy for traffic from one zone to another.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/Document.Action",
+            "description": "What happens to traffic no rule matched."
+          },
+          "log": {
+            "description": "Log traffic that reaches the default action.",
+            "type": "boolean"
+          },
+          "nat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Nat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Source NAT applied to this zone pair."
+          },
+          "rules": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Rule"
+            },
+            "description": "Named rules, evaluated by ascending `order`.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "Document.Port": {
+        "additionalProperties": false,
+        "description": "What a port role is bound to on one node.",
+        "properties": {
+          "bond": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Bond"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A bond of several NICs."
+          },
+          "mtu": {
+            "description": "MTU of the port (VLAN networks may set their own, no larger).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "nic": {
+            "description": "One NIC, matched by permanent MAC address (`52:54:00:aa:00:01`) or by\nudev path (`pci-0000:01:00.0`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "offload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Offload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "NIC offload overrides for misbehaving drivers."
+          }
+        },
+        "type": "object"
+      },
+      "Document.RawAt": {
+        "anyOf": [
+          {
+            "properties": {
+              "pair": {
+                "description": "Zone pair, `\"from->to\"`.",
+                "type": "string"
+              },
+              "position": {
+                "$ref": "#/components/schemas/Document.RawPosition"
+              }
+            },
+            "required": [
+              "pair",
+              "position"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "hook": {
+                "$ref": "#/components/schemas/Document.RawHook"
+              }
+            },
+            "required": [
+              "hook"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Document.RawEntry": {
+        "additionalProperties": false,
+        "description": "A raw nft statement placed at a hook point.",
+        "properties": {
+          "at": {
+            "$ref": "#/components/schemas/Document.RawAt",
+            "description": "Where the statement goes."
+          },
+          "nft": {
+            "description": "The nft statement, without a trailing comment.",
+            "type": "string"
+          },
+          "order": {
+            "description": "Position among raw entries at the same point.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at",
+          "order",
+          "nft"
+        ],
+        "type": "object"
+      },
+      "Document.RawHook": {
+        "oneOf": [
+          {
+            "const": "prerouting-raw",
+            "description": "Prerouting at raw priority (`notrack`, early drops).",
+            "type": "string"
+          },
+          {
+            "const": "forward",
+            "description": "Forward, before zone dispatch (global blocks, MSS clamping).",
+            "type": "string"
+          },
+          {
+            "const": "input",
+            "description": "Input, before zone dispatch.",
+            "type": "string"
+          },
+          {
+            "const": "postrouting",
+            "description": "Postrouting at source-NAT priority (custom SNAT, marks).",
+            "type": "string"
+          }
+        ]
+      },
+      "Document.RawPosition": {
+        "enum": [
+          "before",
+          "after"
+        ],
+        "type": "string"
+      },
+      "Document.RemoteLog": {
+        "additionalProperties": false,
+        "properties": {
+          "destination": {
+            "description": "URL or `host:port`.",
+            "type": "string"
+          },
+          "protocol": {
+            "description": "`udp`, `tcp`, `relp` (syslog only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "description": "`journal-upload` (the default). `syslog` is not built yet.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tls": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "destination"
+        ],
+        "type": "object"
+      },
+      "Document.Reservation": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "format": "ipv4",
+            "type": "string"
+          },
+          "hostname": {
+            "description": "Hostname to hand out (and publish in local DNS).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mac": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mac",
+          "address"
+        ],
+        "type": "object"
+      },
+      "Document.Rule": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/Document.Action",
+            "description": "What to do with matching packets."
+          },
+          "comment": {
+            "description": "Free-form note, not rendered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dport": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Match"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Destination port(s): a number, `low-high`, a list, or `@object`."
+          },
+          "dst": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Match"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Destination: an address, a prefix, a list of them, or `@object`."
+          },
+          "icmp_type": {
+            "description": "ICMP type names, e.g. `echo-request` (proto `icmp`).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "description": "Rate limit, e.g. `10/second` or `100/minute burst 20`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "log": {
+            "description": "Log matching packets.",
+            "type": "boolean"
+          },
+          "order": {
+            "description": "Position within the zone pair; leave gaps (100, 200, ...).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "proto": {
+            "description": "`tcp`, `udp`, `icmp` or another protocol name nft knows.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sport": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Match"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Source port(s): a number, `low-high`, a list, or `@object`."
+          },
+          "src": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Match"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Source: an address, a prefix, a list of them, or `@object`."
+          }
+        },
+        "required": [
+          "order",
+          "action"
+        ],
+        "type": "object"
+      },
+      "Document.Tls": {
+        "additionalProperties": false,
+        "properties": {
+          "certificates": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Certificate"
+            },
+            "default": {},
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "Document.UpdateMode": {
+        "enum": [
+          "manual",
+          "windowed"
+        ],
+        "type": "string"
+      },
+      "Document.Updates": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "description": "`stable` or `testing`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.UpdateMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`manual` (the default): upgrades run when asked for, with\n`sparewall upgrade`. `windowed` (automatic upgrades in `window`) is\nnot built yet and is rejected."
+          },
+          "window": {
+            "description": "Maintenance window as a systemd calendar expression. Not built yet,\nwith the windowed mode: rejected.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Document.Vpn": {
+        "additionalProperties": false,
+        "properties": {
+          "addresses": {
+            "description": "Tunnel addresses of the firewall.",
+            "items": {
+              "$ref": "#/components/schemas/Document.Cidr"
+            },
+            "type": "array"
+          },
+          "client_allowed_ips": {
+            "description": "Networks routed through the tunnel in client configs; default all.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dns": {
+            "description": "DNS servers pushed in client configs.",
+            "items": {
+              "format": "ipv4",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "endpoint": {
+            "description": "Public name or address clients connect to.",
+            "type": "string"
+          },
+          "extra_ports": {
+            "description": "More UDP ports clients may use from networks that block the listen\nport, e.g. `[53, 443]`: redirected to it on the WAN gateway address.",
+            "items": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "listen_port": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "peers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.VpnPeer"
+            },
+            "default": {},
+            "type": "object"
+          },
+          "zone": {
+            "description": "The zone the tunnel interface belongs to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "listen_port",
+          "endpoint",
+          "addresses",
+          "zone"
+        ],
+        "type": "object"
+      },
+      "Document.VpnPeer": {
+        "additionalProperties": false,
+        "properties": {
+          "addresses": {
+            "items": {
+              "$ref": "#/components/schemas/Document.Cidr"
+            },
+            "type": "array"
+          },
+          "endpoint": {
+            "description": "Static endpoint, for site-to-site peers.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preshared_key": {
+            "description": "WireGuard preshared key, a cluster secret: `secret:<name>`. The\nclient must be configured with the same key (`wg genpsk`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "public_key",
+          "addresses"
+        ],
+        "type": "object"
+      },
+      "Document.Vrrp": {
+        "additionalProperties": false,
+        "properties": {
+          "advert_interval_cs": {
+            "description": "Advertisement interval in centiseconds (VRRPv3). Default 100 (1 s).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "preempt_delay_s": {
+            "description": "Fail back by itself: the node with the higher priority takes the\ngateway addresses back once it has been up and eligible for this\nmany seconds (1-1000). Unset (the default), the pair never\npreempts, so it cannot bounce while that node flaps; move the\naddresses with `sparewall failover` instead. The delay is then the\nonly protection against flapping.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "priority": {
+            "additionalProperties": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "VRRP priority per node; give the larger node the higher value.",
+            "type": "object"
+          },
+          "unicast": {
+            "description": "Send adverts unicast to the peer instead of multicast.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "use_vmac": {
+            "description": "Use VRRP virtual MAC addresses.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Document.Zone": {
+        "additionalProperties": false,
+        "properties": {
+          "networks": {
+            "default": [],
+            "description": "Member networks.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "Error": {
+        "description": "A Varlink error: its name and parameters, and a message in words. The HTTP status follows the error (422 ValidationFailed, 409 Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied without credentials and 403 with them, 404 NotFound, MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 502 Unavailable, 400 NotSupported, InvalidParameter and malformed calls, 500 the rest).",
+        "oneOf": [
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.ApplyFailed"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "message"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.ApplyFailed",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.ConfirmTimeout"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "rolled_back_to": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "rolled_back_to"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.ConfirmTimeout",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.Conflict"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "current": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "current"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.Conflict",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.NotFound"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.NotFound",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.NotPending"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.NotPending",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.NotSupported"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "message"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.NotSupported",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.PeerUnreachable"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "peer": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "peer"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.PeerUnreachable",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.PermissionDenied"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "`role` is `none` on a connection not bound to a token.",
+                "properties": {
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "role": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "role"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.PermissionDenied",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.ValidationFailed"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "errors": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "errors"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.ValidationFailed",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Httpd.Unavailable"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "description": "The coordinator did not answer the gateway.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Httpd.Unavailable",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.ExpectedMore"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "Method is expected to be called with 'more' set to true, but wasn't.",
+                "properties": {},
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.ExpectedMore",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.InterfaceNotFound"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "The requested interface was not found.",
+                "properties": {
+                  "interface": {
+                    "description": "The interface that was not found.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "interface"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.InterfaceNotFound",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.InvalidParameter"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "One of the passed parameters is invalid.",
+                "properties": {
+                  "parameter": {
+                    "description": "The parameter that is invalid.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "parameter"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.InvalidParameter",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.MethodNotFound"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "The requested method was not found.",
+                "properties": {
+                  "method": {
+                    "description": "The method that was not found.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "method"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.MethodNotFound",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.MethodNotImplemented"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "The interface defines the requested method, but the service does not implement it.",
+                "properties": {
+                  "method": {
+                    "description": "The method that is not implemented.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "method"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.MethodNotImplemented",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.PermissionDenied"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "Client is denied access.",
+                "properties": {},
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.PermissionDenied",
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "error": {
+            "enum": [
+              "org.sparewall.Firewall.ApplyFailed",
+              "org.sparewall.Firewall.ConfirmTimeout",
+              "org.sparewall.Firewall.Conflict",
+              "org.sparewall.Firewall.NotFound",
+              "org.sparewall.Firewall.NotPending",
+              "org.sparewall.Firewall.NotSupported",
+              "org.sparewall.Firewall.PeerUnreachable",
+              "org.sparewall.Firewall.PermissionDenied",
+              "org.sparewall.Firewall.ValidationFailed",
+              "org.sparewall.Httpd.Unavailable",
+              "org.varlink.service.ExpectedMore",
+              "org.varlink.service.InterfaceNotFound",
+              "org.varlink.service.InvalidParameter",
+              "org.varlink.service.MethodNotFound",
+              "org.varlink.service.MethodNotImplemented",
+              "org.varlink.service.PermissionDenied"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "org.sparewall.Auth.TokenInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "type": "string"
+          },
+          "expires": {
+            "description": "Unix time it expires, if ever.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_used": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "description": "`monitor`, `viewer`, `operator` or `admin`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "created"
+        ],
+        "type": "object"
+      },
+      "org.sparewall.Auth.UserInfo": {
+        "additionalProperties": false,
+        "description": "A named user (design: \"Browser authentication\").",
+        "properties": {
+          "locked": {
+            "description": "No password: the user cannot log in.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "updated": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "locked",
+          "updated"
+        ],
+        "type": "object"
+      },
+      "org.sparewall.Firewall.Generation": {
+        "additionalProperties": false,
+        "description": "One configuration generation.",
+        "properties": {
+          "applied": {
+            "description": "When it was created (RFC 3339).",
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "base": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "confirmed": {
+            "description": "False while it waits for `Confirm`.",
+            "type": "boolean"
+          },
+          "hash": {
+            "description": "SHA-256 of the canonical document (empty for bootstrap).",
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "schema": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "summary": {
+            "description": "One line per changed path.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "hash",
+          "schema",
+          "author",
+          "applied",
+          "confirmed",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "org.sparewall.Firewall.HealthCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "level": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "level",
+          "message"
+        ],
+        "type": "object"
+      },
+      "org.sparewall.Secrets.SecretInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "class": {
+            "description": "`node` or `cluster`.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "class",
+          "version",
+          "updated"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "session": {
+        "description": "A browser session from org.sparewall.Auth.Login. Requests with it must also carry the X-Sparewall-Request header.",
+        "in": "cookie",
+        "name": "sparewall_session",
+        "type": "apiKey"
+      },
+      "token": {
+        "description": "An API token (`sparewall token create`).",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "The Sparewall coordinator's Varlink interfaces over HTTPS, as sparewall-httpd serves them. Each call is checked against the role of the caller's API token or session (x-sparewall-role).",
+    "license": {
+      "identifier": "GPL-3.0-only",
+      "name": "GPL-3.0-only"
+    },
+    "title": "Sparewall",
+    "version": "0.1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/call/org.sparewall.Auth.Bind": {
+      "post": {
+        "description": "Bind this connection to a token (an API token or a session's): later calls act with its role. Needed first on the restricted socket.",
+        "operationId": "Auth.Bind",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "token"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "description": "The token's name.",
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "role"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [],
+        "summary": "Bind this connection to a token (an API token or a session's): later calls act with its role.",
+        "tags": [
+          "org.sparewall.Auth"
+        ],
+        "x-sparewall-role": "none"
+      }
+    },
+    "/call/org.sparewall.Auth.CreateToken": {
+      "post": {
+        "description": "Create an API token with `role`, expiring after `expires_days` if given. The token is shown once.",
+        "operationId": "Auth.CreateToken",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expires_days": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "role"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "info": {
+                      "$ref": "#/components/schemas/org.sparewall.Auth.TokenInfo"
+                    },
+                    "token": {
+                      "description": "Shown once; only its hash is kept.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "info"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Create an API token with `role`, expiring after `expires_days` if given.",
+        "tags": [
+          "org.sparewall.Auth"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Auth.ListTokens": {
+      "post": {
+        "description": "API tokens (never their values).",
+        "operationId": "Auth.ListTokens",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "tokens": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.sparewall.Auth.TokenInfo"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "tokens"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "API tokens (never their values).",
+        "tags": [
+          "org.sparewall.Auth"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Auth.ListUsers": {
+      "post": {
+        "description": "Users and their roles, `admin` first.",
+        "operationId": "Auth.ListUsers",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "users": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.sparewall.Auth.UserInfo"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "users"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Users and their roles, `admin` first.",
+        "tags": [
+          "org.sparewall.Auth"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Auth.Login": {
+      "post": {
+        "description": "Check a user's password and open a session of 12 hours; the connection is bound to it. Failed logins are rate-limited per user.",
+        "operationId": "Auth.Login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "password": {
+                    "type": "string"
+                  },
+                  "user": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "user",
+                  "password"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "expires": {
+                      "description": "Unix time the session ends.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "role": {
+                      "type": "string"
+                    },
+                    "token": {
+                      "description": "The session token, shown once.",
+                      "type": "string"
+                    },
+                    "user": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "user",
+                    "role",
+                    "expires"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [],
+        "summary": "Check a user's password and open a session of 12 hours; the connection is bound to it.",
+        "tags": [
+          "org.sparewall.Auth"
+        ],
+        "x-sparewall-role": "none"
+      }
+    },
+    "/call/org.sparewall.Auth.Logout": {
+      "post": {
+        "description": "End the session this connection is bound to.",
+        "operationId": "Auth.Logout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "End the session this connection is bound to.",
+        "tags": [
+          "org.sparewall.Auth"
+        ],
+        "x-sparewall-role": "monitor"
+      }
+    },
+    "/call/org.sparewall.Auth.RemoveUser": {
+      "post": {
+        "description": "Remove a user and end its sessions.",
+        "operationId": "Auth.RemoveUser",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Remove a user and end its sessions.",
+        "tags": [
+          "org.sparewall.Auth"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Auth.RevokeToken": {
+      "post": {
+        "description": "Revoke an API token at once.",
+        "operationId": "Auth.RevokeToken",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Revoke an API token at once.",
+        "tags": [
+          "org.sparewall.Auth"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Auth.SetUser": {
+      "post": {
+        "description": "Add a user, or change its role or password (a crypt(3) hash; `!` locks it, empty keeps it). Ends the user's sessions.",
+        "operationId": "Auth.SetUser",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "password_hash": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "role",
+                  "password_hash"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Add a user, or change its role or password (a crypt(3) hash; `!` locks it, empty keeps it).",
+        "tags": [
+          "org.sparewall.Auth"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Cluster.Failover": {
+      "post": {
+        "description": "Move a pair's gateway addresses to `to` (default: the node with the higher VRRP priority). Returns when the move is done, or why it did not happen.",
+        "operationId": "Cluster.Failover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "to": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "master": {
+                      "description": "The node that holds the gateway addresses now.",
+                      "type": "string"
+                    },
+                    "message": {
+                      "description": "What happened, in words.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "master",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Move a pair's gateway addresses to `to` (default: the node with the higher VRRP priority).",
+        "tags": [
+          "org.sparewall.Cluster"
+        ],
+        "x-sparewall-role": "operator"
+      }
+    },
+    "/call/org.sparewall.Firewall.AckHealth": {
+      "post": {
+        "description": "Acknowledge a check that stays degraded until someone has seen it (`selinux`).",
+        "operationId": "Firewall.AckHealth",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Acknowledge a check that stays degraded until someone has seen it (`selinux`).",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Firewall.Apply": {
+      "post": {
+        "description": "Replace the configuration with `config`. `base` is the generation it was derived from: Conflict if another change landed meanwhile. With `confirm_seconds`, the change reverts unless confirmed (`Confirm`) in time. `dry_run` validates, renders and checks it without running it. In a pair the peer must be reachable, or `allow_diverge` set.",
+        "operationId": "Firewall.Apply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "allow_diverge": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "base": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "config": {
+                    "$ref": "#/components/schemas/Document"
+                  },
+                  "confirm_seconds": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "dry_run": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "config",
+                  "base"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "changed": {
+                      "description": "Subsystems whose configuration changed.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "confirm_seconds": {
+                      "description": "Seconds until an unconfirmed generation reverts (0 if confirmed).",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "diff": {
+                      "description": "One line per changed document path.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "generation": {
+                      "$ref": "#/components/schemas/org.sparewall.Firewall.Generation"
+                    },
+                    "unchanged": {
+                      "description": "The document was identical to the active one.",
+                      "type": "boolean"
+                    },
+                    "warnings": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "generation",
+                    "changed",
+                    "diff",
+                    "warnings",
+                    "unchanged",
+                    "confirm_seconds"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Replace the configuration with `config`.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "operator"
+      }
+    },
+    "/call/org.sparewall.Firewall.Backup": {
+      "post": {
+        "description": "Write a backup bundle now, and send it to `backup.repository` if one is set.",
+        "operationId": "Firewall.Backup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "digest": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "secrets": {
+                      "description": "Cluster secrets sealed in the bundle (none without a backup password).",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "snapshot": {
+                      "description": "The restic snapshot, when sent to `backup.repository`.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "digest",
+                    "secrets"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Write a backup bundle now, and send it to `backup.repository` if one is set.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Firewall.Confirm": {
+      "post": {
+        "description": "Keep generation `id`, which waits for confirmation.",
+        "operationId": "Firewall.Confirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Keep generation `id`, which waits for confirmation.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "operator"
+      }
+    },
+    "/call/org.sparewall.Firewall.Export": {
+      "post": {
+        "description": "A generation's document alone (default: the active one).",
+        "operationId": "Firewall.Export",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config": {
+                      "$ref": "#/components/schemas/Document"
+                    }
+                  },
+                  "required": [
+                    "config"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "A generation's document alone (default: the active one).",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Firewall.GetConfig": {
+      "post": {
+        "description": "A generation's document and record (default: the active one).",
+        "operationId": "Firewall.GetConfig",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config": {
+                      "$ref": "#/components/schemas/Document"
+                    },
+                    "generation": {
+                      "$ref": "#/components/schemas/org.sparewall.Firewall.Generation"
+                    }
+                  },
+                  "required": [
+                    "config",
+                    "generation"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "A generation's document and record (default: the active one).",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Firewall.Health": {
+      "post": {
+        "description": "This node's health level and VRRP role; with `verbose`, each check.",
+        "operationId": "Firewall.Health",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "verbose": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "checks": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.sparewall.Firewall.HealthCheck"
+                      },
+                      "type": [
+                        "array",
+                        "null"
+                      ]
+                    },
+                    "level": {
+                      "description": "`ok`, `degraded` or `failed`.",
+                      "type": "string"
+                    },
+                    "role": {
+                      "description": "`standalone`, `bootstrap`, `MASTER` or `BACKUP`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "level",
+                    "role"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "This node's health level and VRRP role; with `verbose`, each check.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "monitor"
+      }
+    },
+    "/call/org.sparewall.Firewall.History": {
+      "post": {
+        "description": "Generations, newest first, up to `limit`.",
+        "operationId": "Firewall.History",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "generations": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.sparewall.Firewall.Generation"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "generations"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Generations, newest first, up to `limit`.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Firewall.Merge": {
+      "post": {
+        "description": "Change the configuration with a JSON merge patch (RFC 7396) on generation `base`, as `Apply` does.",
+        "operationId": "Firewall.Merge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "allow_diverge": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "base": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "confirm_seconds": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "dry_run": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "patch": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "patch",
+                  "base"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "changed": {
+                      "description": "Subsystems whose configuration changed.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "confirm_seconds": {
+                      "description": "Seconds until an unconfirmed generation reverts (0 if confirmed).",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "diff": {
+                      "description": "One line per changed document path.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "generation": {
+                      "$ref": "#/components/schemas/org.sparewall.Firewall.Generation"
+                    },
+                    "unchanged": {
+                      "description": "The document was identical to the active one.",
+                      "type": "boolean"
+                    },
+                    "warnings": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "generation",
+                    "changed",
+                    "diff",
+                    "warnings",
+                    "unchanged",
+                    "confirm_seconds"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Change the configuration with a JSON merge patch (RFC 7396) on generation `base`, as `Apply` does.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "operator"
+      }
+    },
+    "/call/org.sparewall.Firewall.Patch": {
+      "post": {
+        "description": "Change the configuration with a JSON patch (RFC 6902) on generation `base`, as `Apply` does.",
+        "operationId": "Firewall.Patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "allow_diverge": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "base": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "confirm_seconds": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "dry_run": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "ops": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "ops",
+                  "base"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "changed": {
+                      "description": "Subsystems whose configuration changed.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "confirm_seconds": {
+                      "description": "Seconds until an unconfirmed generation reverts (0 if confirmed).",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "diff": {
+                      "description": "One line per changed document path.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "generation": {
+                      "$ref": "#/components/schemas/org.sparewall.Firewall.Generation"
+                    },
+                    "unchanged": {
+                      "description": "The document was identical to the active one.",
+                      "type": "boolean"
+                    },
+                    "warnings": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "generation",
+                    "changed",
+                    "diff",
+                    "warnings",
+                    "unchanged",
+                    "confirm_seconds"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Change the configuration with a JSON patch (RFC 6902) on generation `base`, as `Apply` does.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "operator"
+      }
+    },
+    "/call/org.sparewall.Firewall.Rollback": {
+      "post": {
+        "description": "Return to generation `id` (default: the one before the active one) as a new generation; an unconfirmed change is discarded instead.",
+        "operationId": "Firewall.Rollback",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "allow_diverge": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "generation": {
+                      "$ref": "#/components/schemas/org.sparewall.Firewall.Generation"
+                    }
+                  },
+                  "required": [
+                    "generation"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Return to generation `id` (default: the one before the active one) as a new generation; an unconfirmed change is discarded instead.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "operator"
+      }
+    },
+    "/call/org.sparewall.Firewall.Status": {
+      "post": {
+        "description": "The node's state: generations and hashes, pair sync, links, VRRP, connection tracking, the certificate it serves, and health.",
+        "operationId": "Firewall.Status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "conntrack": {
+                      "type": "object"
+                    },
+                    "health": {
+                      "type": "object"
+                    },
+                    "links": {
+                      "type": "object"
+                    },
+                    "node": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string"
+                    },
+                    "services": {
+                      "type": "object"
+                    },
+                    "sync": {
+                      "description": "Active generation, pending confirmation, hashes.",
+                      "type": "object"
+                    },
+                    "tls": {
+                      "description": "The certificate served on the management network.",
+                      "type": "object"
+                    },
+                    "vrrp": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "node",
+                    "role",
+                    "sync",
+                    "links",
+                    "vrrp",
+                    "conntrack",
+                    "services",
+                    "tls",
+                    "health"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "The node's state: generations and hashes, pair sync, links, VRRP, connection tracking, the certificate it serves, and health.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Firewall.Subscribe": {
+      "post": {
+        "description": "Events as they happen: applied and rolled-back generations, peer and health changes, upgrade steps. The first reply confirms the subscription.",
+        "operationId": "Firewall.Subscribe",
+        "parameters": [
+          {
+            "description": "Stream replies as an RFC 7464 JSON text sequence (application/json-seq) until the connection closes.",
+            "in": "query",
+            "name": "more",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "event": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "event"
+                  ],
+                  "type": "object"
+                }
+              },
+              "application/json-seq": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "event": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "event"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Events as they happen: applied and rolled-back generations, peer and health changes, upgrade steps.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Firewall.Sync": {
+      "post": {
+        "description": "In a pair, make both nodes run the configuration of `from_node`: this node (push it to the peer) or the peer (take the peer's).",
+        "operationId": "Firewall.Sync",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "from_node": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "from_node"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "generation": {
+                      "$ref": "#/components/schemas/org.sparewall.Firewall.Generation"
+                    }
+                  },
+                  "required": [
+                    "generation"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "In a pair, make both nodes run the configuration of `from_node`: this node (push it to the peer) or the peer (take the peer's).",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "operator"
+      }
+    },
+    "/call/org.sparewall.Firewall.Validate": {
+      "post": {
+        "description": "Check a document without applying it: errors (as ValidationFailed, each naming its path) or warnings.",
+        "operationId": "Firewall.Validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "config": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "config"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "warnings": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "warnings"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Check a document without applying it: errors (as ValidationFailed, each naming its path) or warnings.",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Firewall.VpnClientConfig": {
+      "post": {
+        "description": "A WireGuard client configuration for remote-access peer `peer` (on `port`, one of the instance's ports, if given).",
+        "operationId": "Firewall.VpnClientConfig",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "instance": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "peer": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "peer"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "config"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "A WireGuard client configuration for remote-access peer `peer` (on `port`, one of the instance's ports, if given).",
+        "tags": [
+          "org.sparewall.Firewall"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Secrets.Delete": {
+      "post": {
+        "description": "Delete a secret on this node.",
+        "operationId": "Secrets.Delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Delete a secret on this node.",
+        "tags": [
+          "org.sparewall.Secrets"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Secrets.List": {
+      "post": {
+        "description": "Secrets' names, classes and versions, never their values.",
+        "operationId": "Secrets.List",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "secrets": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.sparewall.Secrets.SecretInfo"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "secrets"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Secrets' names, classes and versions, never their values.",
+        "tags": [
+          "org.sparewall.Secrets"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Secrets.Set": {
+      "post": {
+        "description": "Store a secret (a cluster secret unless `cluster` is false). Values can never be read back.",
+        "operationId": "Secrets.Set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "cluster": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "value"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "secret": {
+                      "$ref": "#/components/schemas/org.sparewall.Secrets.SecretInfo"
+                    }
+                  },
+                  "required": [
+                    "secret"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Store a secret (a cluster secret unless `cluster` is false).",
+        "tags": [
+          "org.sparewall.Secrets"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
+    "/call/org.sparewall.Upgrade.Check": {
+      "post": {
+        "description": "Whether a newer image is available on the channel (or `image`, a full reference).",
+        "operationId": "Upgrade.Check",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "channel": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "image": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "booted": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "target": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "available"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Whether a newer image is available on the channel (or `image`, a full reference).",
+        "tags": [
+          "org.sparewall.Upgrade"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Upgrade.Start": {
+      "post": {
+        "description": "Start a rolling, health-gated upgrade; progress arrives as events (`Subscribe`).",
+        "operationId": "Upgrade.Start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "channel": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "image": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "plan": {
+                      "description": "What happens next, in words.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "plan"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Start a rolling, health-gated upgrade; progress arrives as events (`Subscribe`).",
+        "tags": [
+          "org.sparewall.Upgrade"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    }
+  },
+  "security": [
+    {
+      "token": []
+    },
+    {
+      "session": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "org.sparewall.Firewall"
+    },
+    {
+      "name": "org.sparewall.Secrets"
+    },
+    {
+      "name": "org.sparewall.Upgrade"
+    },
+    {
+      "name": "org.sparewall.Cluster"
+    },
+    {
+      "name": "org.sparewall.Auth"
+    }
+  ]
+}
