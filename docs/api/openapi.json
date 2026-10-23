@@ -1719,7 +1719,7 @@
         "type": "object"
       },
       "Error": {
-        "description": "A Varlink error: its name and parameters, and a message in words. The HTTP status follows the error (422 ValidationFailed, 409 Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied without credentials and 403 with them, 404 NotFound, 503 PeerUnreachable, 400 NotSupported and malformed calls, 500 the rest).",
+        "description": "A Varlink error: its name and parameters, and a message in words. The HTTP status follows the error (422 ValidationFailed, 409 Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied without credentials and 403 with them, 404 NotFound, MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 502 Unavailable, 400 NotSupported, InvalidParameter and malformed calls, 500 the rest).",
         "oneOf": [
           {
             "properties": {
@@ -1986,6 +1986,190 @@
             ],
             "title": "org.sparewall.Firewall.ValidationFailed",
             "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Httpd.Unavailable"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "description": "The coordinator did not answer the gateway.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Httpd.Unavailable",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.ExpectedMore"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "Method is expected to be called with 'more' set to true, but wasn't.",
+                "properties": {},
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.ExpectedMore",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.InterfaceNotFound"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "The requested interface was not found.",
+                "properties": {
+                  "interface": {
+                    "description": "The interface that was not found.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "interface"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.InterfaceNotFound",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.InvalidParameter"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "One of the passed parameters is invalid.",
+                "properties": {
+                  "parameter": {
+                    "description": "The parameter that is invalid.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "parameter"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.InvalidParameter",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.MethodNotFound"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "The requested method was not found.",
+                "properties": {
+                  "method": {
+                    "description": "The method that was not found.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "method"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.MethodNotFound",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.MethodNotImplemented"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "The interface defines the requested method, but the service does not implement it.",
+                "properties": {
+                  "method": {
+                    "description": "The method that is not implemented.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "method"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.MethodNotImplemented",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.varlink.service.PermissionDenied"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "Client is denied access.",
+                "properties": {},
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.PermissionDenied",
+            "type": "object"
           }
         ],
         "properties": {
@@ -1999,7 +2183,14 @@
               "org.sparewall.Firewall.NotSupported",
               "org.sparewall.Firewall.PeerUnreachable",
               "org.sparewall.Firewall.PermissionDenied",
-              "org.sparewall.Firewall.ValidationFailed"
+              "org.sparewall.Firewall.ValidationFailed",
+              "org.sparewall.Httpd.Unavailable",
+              "org.varlink.service.ExpectedMore",
+              "org.varlink.service.InterfaceNotFound",
+              "org.varlink.service.InvalidParameter",
+              "org.varlink.service.MethodNotFound",
+              "org.varlink.service.MethodNotImplemented",
+              "org.varlink.service.PermissionDenied"
             ],
             "type": "string"
           },

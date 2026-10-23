@@ -20,6 +20,9 @@ pub const SESSION_COOKIE: &str = "sparewall_session";
 /// cross-site form cannot send.
 pub const CSRF_HEADER: &str = "X-Sparewall-Request";
 
+/// The gateway's own error, when the coordinator does not answer (502).
+pub const UNAVAILABLE: &str = "org.sparewall.Httpd.Unavailable";
+
 const REQUIRES_MORE: &str = "[Requires 'more' flag]";
 const SUPPORTS_MORE: &str = "[Supports 'more' flag]";
 
@@ -33,6 +36,7 @@ pub fn http_status(error: &str, parameters: &Value) -> u16 {
         "PermissionDenied" => 403,
         "NotFound" | "MethodNotFound" | "InterfaceNotFound" => 404,
         "PeerUnreachable" => 503,
+        _ if error == UNAVAILABLE => 502,
         "NotSupported" | "InvalidParameter" | "ExpectedMore" => 400,
         _ => 500,
     }
@@ -61,11 +65,11 @@ pub fn document(idls: &[&str], opts: &Options) -> Result<Value, String> {
     for text in idls {
         let iface = Interface::try_from(*text).map_err(|e| format!("{e}"))?;
         let name = iface.name();
-        if name == "org.varlink.service" {
-            continue;
-        }
-        let mut used = false;
-        for m in iface.methods() {
+        // The service interface is not called over HTTP, but its errors
+        // (MethodNotFound, InvalidParameter, ...) can answer any call.
+        let service = name == "org.varlink.service";
+        let mut used = service;
+        for m in iface.methods().filter(|_| !service) {
             let full = format!("{name}.{}", m.name());
             let Some(role) = (opts.role)(&full) else {
                 continue;
@@ -88,9 +92,11 @@ pub fn document(idls: &[&str], opts: &Options) -> Result<Value, String> {
         if !used {
             continue;
         }
-        let mut tag = json!({"name": name});
-        describe(&mut tag, comments(iface.comments()));
-        tags.push(tag);
+        if !service {
+            let mut tag = json!({"name": name});
+            describe(&mut tag, comments(iface.comments()));
+            tags.push(tag);
+        }
         for t in iface.custom_types() {
             schemas.insert(format!("{name}.{}", t.name()), custom_type(name, t));
         }
@@ -109,6 +115,13 @@ pub fn document(idls: &[&str], opts: &Options) -> Result<Value, String> {
     if let Some(d) = opts.document {
         hoist(d, &mut schemas);
     }
+    errors.push((
+        UNAVAILABLE.into(),
+        json!({
+            "type": "object",
+            "description": "The coordinator did not answer the gateway.",
+        }),
+    ));
     errors.sort_by(|a, b| a.0.cmp(&b.0));
     let names: Vec<&String> = errors.iter().map(|(n, _)| n).collect();
     let variants: Vec<Value> = errors
@@ -132,8 +145,10 @@ pub fn document(idls: &[&str], opts: &Options) -> Result<Value, String> {
             "description": "A Varlink error: its name and parameters, and a message in words. \
                             The HTTP status follows the error (422 ValidationFailed, 409 \
                             Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied \
-                            without credentials and 403 with them, 404 NotFound, 503 \
-                            PeerUnreachable, 400 NotSupported and malformed calls, 500 the rest).",
+                            without credentials and 403 with them, 404 NotFound, \
+                            MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 502 \
+                            Unavailable, 400 NotSupported, InvalidParameter and malformed \
+                            calls, 500 the rest).",
             "type": "object",
             "required": ["error"],
             "properties": {
@@ -406,6 +421,14 @@ error Gone (id: int)
 error Lost ()
 ";
 
+    const SERVICE: &str = "\
+interface org.varlink.service
+
+method GetInfo() -> (vendor: string)
+
+error MethodNotFound (method: string)
+";
+
     fn doc() -> Value {
         let role = |m: &str| match m {
             "org.example.Test.Get" => Some("viewer"),
@@ -424,7 +447,7 @@ error Lost ()
             },
         });
         document(
-            &[IDL, OTHER],
+            &[SERVICE, IDL, OTHER],
             &Options {
                 version: "0",
                 role: &role,
@@ -474,7 +497,19 @@ error Lost ()
         let err = &d["components"]["schemas"]["Error"];
         assert_eq!(
             err["properties"]["error"]["enum"],
-            json!(["org.example.Other.Lost", "org.example.Test.Gone"])
+            json!([
+                "org.example.Other.Lost",
+                "org.example.Test.Gone",
+                UNAVAILABLE,
+                "org.varlink.service.MethodNotFound"
+            ])
+        );
+        assert!(
+            d["paths"]
+                .get("/call/org.varlink.service.GetInfo")
+                .is_none()
+                && d["tags"].as_array().unwrap().len() == 2,
+            "the service interface is not called over HTTP"
         );
         let watch = &d["paths"]["/call/org.example.Test.Watch"]["post"];
         assert_eq!(watch["security"], json!([]));
@@ -522,5 +557,6 @@ error Lost ()
             http_status("org.varlink.service.MethodNotFound", &Value::Null),
             404
         );
+        assert_eq!(http_status(UNAVAILABLE, &Value::Null), 502);
     }
 }

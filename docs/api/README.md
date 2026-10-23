@@ -44,12 +44,13 @@ An error keeps its Varlink name and parameters, with a message in words:
 
 | Status | Errors |
 | --- | --- |
-| 400 | `NotSupported`; a malformed call |
+| 400 | `NotSupported`, `InvalidParameter`; a malformed call |
 | 401 | `PermissionDenied` with role `none`: no valid credentials |
 | 403 | `PermissionDenied`: the role does not allow the call |
-| 404 | `NotFound`; an unknown method |
+| 404 | `NotFound`, `MethodNotFound`, `InterfaceNotFound` |
 | 409 | `Conflict`, `NotPending`, `ConfirmTimeout` |
 | 422 | `ValidationFailed` |
+| 502 | `org.sparewall.Httpd.Unavailable`: the coordinator did not answer |
 | 503 | `PeerUnreachable` |
 | 500 | Anything else (`ApplyFailed`) |
 
