@@ -1,0 +1,14 @@
+.diff {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+  padding-left: 16px;
+  overflow-wrap: anywhere;
+}
+
+.warnings {
+  color: var(--mat-sys-tertiary);
+}
+
+mat-form-field {
+  width: 100%;
+}
