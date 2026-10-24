@@ -7,6 +7,10 @@ import type Ajv from 'ajv';
  * should it be). The node validates every change itself (`Validate`, and
  * the dry run before an apply), so the form does not: this compiles to a
  * check that passes, and JSON Forms runs with `NoValidation`.
+ *
+ * JSON Forms also uses the validator to pick a union's branch for a value,
+ * and with this one every branch fits. So no union reaches its renderers:
+ * union-controls.ts edits them as text, by the value's own type.
  */
 const pass = Object.assign(() => true, { errors: null });
 

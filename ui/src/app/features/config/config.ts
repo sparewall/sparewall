@@ -14,7 +14,6 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Router } from '@angular/router';
 import { JsonFormsModule } from '@jsonforms/angular';
-import { angularMaterialRenderers } from '@jsonforms/angular-material';
 import { firstValueFrom } from 'rxjs';
 
 import { ApiClient, CallFailed, callUrl } from '../../api/api-client';
@@ -23,10 +22,8 @@ import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
 import { configUiSchema } from './config-ui-schema';
 import { documentSchema } from './form-schema';
-import { mapControlTester, MapControl } from './map-control';
 import { noEvalAjv } from './no-eval-ajv';
-import { ObjectControl, objectControlTester } from './object-control';
-import { OptionalBooleanControl, optionalBooleanControlTester } from './optional-boolean-control';
+import { configRenderers } from './renderers';
 import { ReviewChange, ReviewData } from './review-change';
 
 type Document = Schemas['Document'];
@@ -49,12 +46,7 @@ export class Config {
   protected readonly ajv = noEvalAjv;
   /** Each field's description under it: they say what a left-out field means. */
   protected readonly formConfig = { showUnfocusedDescription: true };
-  protected readonly renderers = [
-    ...angularMaterialRenderers,
-    { tester: mapControlTester, renderer: MapControl },
-    { tester: objectControlTester, renderer: ObjectControl },
-    { tester: optionalBooleanControlTester, renderer: OptionalBooleanControl },
-  ];
+  protected readonly renderers = configRenderers;
 
   private readonly description = httpResource<{
     components: { schemas: Record<string, Record<string, unknown>> };
