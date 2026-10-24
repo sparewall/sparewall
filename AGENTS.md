@@ -44,3 +44,20 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check            # license and advisory gates
 ```
+
+The web UI (`ui/`, Angular) has its own:
+
+```shell
+cd ui
+npm ci --ignore-scripts
+npm run api                 # TypeScript types from docs/api/openapi.json
+npm run format              # prettier
+npm test
+npm run build
+npm run licenses            # licenses of the packages the bundle ships
+SPAREWALL_NODE=https://192.0.2.1 npm start   # against a node with management.web
+```
+
+CI runs the Rust jobs and the UI's jobs only for pull requests that
+touch them (`.github/workflows/ci.yml`, the `changes` job); a change to
+`docs/api/openapi.json` runs both.

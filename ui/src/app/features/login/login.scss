@@ -1,0 +1,23 @@
+main {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+mat-card {
+  width: min(400px, 100%);
+}
+
+mat-form-field {
+  display: block;
+}
+
+mat-card-header {
+  margin-bottom: 16px;
+}
+
+.problem {
+  color: var(--mat-sys-error);
+}

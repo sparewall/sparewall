@@ -1,0 +1,42 @@
+<mat-toolbar>
+  <button matIconButton (click)="nav.toggle()" aria-label="Menu" class="menu">
+    <mat-icon>menu</mat-icon>
+  </button>
+  <span class="title">Sparewall</span>
+  @if (!events.connected()) {
+    <span class="offline" role="status"> <mat-icon>cloud_off</mat-icon> Reconnecting </span>
+  }
+  <span class="spacer"></span>
+  <button matButton [matMenuTriggerFor]="account">
+    <mat-icon>account_circle</mat-icon>
+    {{ session.user() }}
+  </button>
+  <mat-menu #account="matMenu">
+    <div mat-menu-item disabled>Role: {{ session.role() }}</div>
+    <button mat-menu-item (click)="signOut()">
+      <mat-icon>logout</mat-icon>
+      Sign out
+    </button>
+  </mat-menu>
+</mat-toolbar>
+<mat-sidenav-container>
+  <mat-sidenav #nav mode="side" opened>
+    <mat-nav-list>
+      @for (p of pages; track p.path) {
+        <a
+          mat-list-item
+          [routerLink]="p.path"
+          routerLinkActive
+          #active="routerLinkActive"
+          [activated]="active.isActive"
+        >
+          <mat-icon matListItemIcon>{{ p.icon }}</mat-icon>
+          <span matListItemTitle>{{ p.label }}</span>
+        </a>
+      }
+    </mat-nav-list>
+  </mat-sidenav>
+  <mat-sidenav-content>
+    <router-outlet />
+  </mat-sidenav-content>
+</mat-sidenav-container>

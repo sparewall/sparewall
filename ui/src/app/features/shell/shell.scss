@@ -1,0 +1,33 @@
+:host {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+mat-toolbar {
+  gap: 8px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.offline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: var(--mat-sys-label-large);
+  color: var(--mat-sys-error);
+}
+
+mat-sidenav-container {
+  flex: 1;
+}
+
+mat-sidenav {
+  width: 200px;
+}
+
+mat-sidenav-content {
+  padding: 16px;
+}

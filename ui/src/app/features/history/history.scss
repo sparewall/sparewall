@@ -1,0 +1,33 @@
+table {
+  width: 100%;
+}
+
+.summary {
+  margin: 4px 0;
+  padding-left: 16px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+}
+
+.none {
+  list-style: none;
+  font-family: inherit;
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.problem {
+  color: var(--mat-sys-error);
+}
+
+.empty {
+  display: none;
+}
+
+.nowrap,
+.mat-column-actions {
+  white-space: nowrap;
+}
+
+.summary li {
+  overflow-wrap: anywhere;
+}

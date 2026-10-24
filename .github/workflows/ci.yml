@@ -18,8 +18,47 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # What a pull request touches, so that a change to the web UI alone
+  # skips the Rust jobs and a Rust change skips the UI's. Pushes to main
+  # run everything. The jobs are skipped with `if:` rather than path
+  # filters on the workflow, so that a required check that does not apply
+  # reports as skipped, which counts as passing, instead of never
+  # reporting at all.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.diff.outputs.rust }}
+      ui: ${{ steps.diff.outputs.ui }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "$BASE...$HEAD")
+          printf '%s\n' "$files"
+          # Everything but the UI's own files is the Rust side's: a path
+          # nobody listed runs the Rust jobs rather than none.
+          rust=false ui=false
+          if grep -qv '^ui/' <<<"$files"; then rust=true; fi
+          if grep -qE '^(ui/|docs/api/openapi\.json$|\.github/workflows/ci\.yml$)' <<<"$files"; then ui=true; fi
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "ui=$ui" >> "$GITHUB_OUTPUT"
+
   rust:
     name: fmt, clippy, test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,6 +87,8 @@ jobs:
     # build there, and its own tests pass. Its end-to-end tests run
     # sparewalld, which is Linux only.
     name: macOS CLI
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,6 +112,8 @@ jobs:
 
   deny:
     name: licenses and advisories
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,6 +139,8 @@ jobs:
 
   acme:
     name: ACME against Pebble
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -115,3 +160,34 @@ jobs:
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends podman skopeo jq
       - run: tests/ci/signing.sh
+
+  ui:
+    name: web UI
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # The image builds the UI with Fedora's Node.js, 22.
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: API types match docs/api/openapi.json
+        run: npm run api:check
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run build
+      - name: Licenses of the shipped packages
+        run: npm run licenses
+      - name: Advisories for the shipped packages
+        run: npm audit --omit=dev
+      # The build tools run in the image build and write the bundle, so a
+      # flaw in them reaches it too.
+      - name: Advisories for the build tools
+        run: npm audit
