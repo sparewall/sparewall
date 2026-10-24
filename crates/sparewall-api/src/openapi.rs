@@ -20,8 +20,31 @@ pub const SESSION_COOKIE: &str = "sparewall_session";
 /// cross-site form cannot send.
 pub const CSRF_HEADER: &str = "X-Sparewall-Request";
 
-/// The gateway's own error, when the coordinator does not answer (502).
+/// The gateway's own error, when the coordinator does not answer.
 pub const UNAVAILABLE: &str = "org.sparewall.Httpd.Unavailable";
+/// The gateway's own error, for a path that is neither a call nor a file.
+pub const NOT_FOUND: &str = "org.sparewall.Httpd.NotFound";
+/// The gateway's own error, for a call that is not a POST.
+pub const METHOD_NOT_ALLOWED: &str = "org.sparewall.Httpd.MethodNotAllowed";
+/// The gateway's own error, for a request body over its limit.
+pub const TOO_LARGE: &str = "org.sparewall.Httpd.TooLarge";
+
+/// The gateway's own errors: name, status and description. They have no
+/// parameters.
+const GATEWAY_ERRORS: &[(&str, u16, &str)] = &[
+    (
+        UNAVAILABLE,
+        502,
+        "The coordinator did not answer the gateway.",
+    ),
+    (NOT_FOUND, 404, "No call or file has this path."),
+    (METHOD_NOT_ALLOWED, 405, "Calls are POST; files are GET."),
+    (
+        TOO_LARGE,
+        413,
+        "The request body is over the gateway's limit.",
+    ),
+];
 
 const REQUIRES_MORE: &str = "[Requires 'more' flag]";
 const SUPPORTS_MORE: &str = "[Supports 'more' flag]";
@@ -29,6 +52,9 @@ const SUPPORTS_MORE: &str = "[Supports 'more' flag]";
 /// The HTTP status for a Varlink error reply: its name, and its
 /// parameters (a refusal with role `none` was not authenticated).
 pub fn http_status(error: &str, parameters: &Value) -> u16 {
+    if let Some((_, status, _)) = GATEWAY_ERRORS.iter().find(|(n, ..)| *n == error) {
+        return *status;
+    }
     match error.rsplit('.').next().unwrap_or_default() {
         "ValidationFailed" => 422,
         "Conflict" | "NotPending" | "ConfirmTimeout" => 409,
@@ -36,7 +62,6 @@ pub fn http_status(error: &str, parameters: &Value) -> u16 {
         "PermissionDenied" => 403,
         "NotFound" | "MethodNotFound" | "InterfaceNotFound" => 404,
         "PeerUnreachable" => 503,
-        _ if error == UNAVAILABLE => 502,
         "NotSupported" | "InvalidParameter" | "ExpectedMore" => 400,
         _ => 500,
     }
@@ -115,13 +140,12 @@ pub fn document(idls: &[&str], opts: &Options) -> Result<Value, String> {
     if let Some(d) = opts.document {
         hoist(d, &mut schemas);
     }
-    errors.push((
-        UNAVAILABLE.into(),
-        json!({
-            "type": "object",
-            "description": "The coordinator did not answer the gateway.",
-        }),
-    ));
+    for (name, _, description) in GATEWAY_ERRORS {
+        errors.push((
+            (*name).into(),
+            json!({"type": "object", "description": description}),
+        ));
+    }
     errors.sort_by(|a, b| a.0.cmp(&b.0));
     let names: Vec<&String> = errors.iter().map(|(n, _)| n).collect();
     let variants: Vec<Value> = errors
@@ -146,9 +170,10 @@ pub fn document(idls: &[&str], opts: &Options) -> Result<Value, String> {
                             The HTTP status follows the error (422 ValidationFailed, 409 \
                             Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied \
                             without credentials and 403 with them, 404 NotFound, \
-                            MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 502 \
-                            Unavailable, 400 NotSupported, InvalidParameter and malformed \
-                            calls, 500 the rest).",
+                            MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 400 \
+                            NotSupported, InvalidParameter and malformed calls, 500 the rest; \
+                            the gateway's own: 502 Unavailable, 404 NotFound, 405 \
+                            MethodNotAllowed, 413 TooLarge).",
             "type": "object",
             "required": ["error"],
             "properties": {
@@ -500,6 +525,9 @@ error MethodNotFound (method: string)
             json!([
                 "org.example.Other.Lost",
                 "org.example.Test.Gone",
+                METHOD_NOT_ALLOWED,
+                NOT_FOUND,
+                TOO_LARGE,
                 UNAVAILABLE,
                 "org.varlink.service.MethodNotFound"
             ])
@@ -558,5 +586,7 @@ error MethodNotFound (method: string)
             404
         );
         assert_eq!(http_status(UNAVAILABLE, &Value::Null), 502);
+        assert_eq!(http_status(METHOD_NOT_ALLOWED, &Value::Null), 405);
+        assert_eq!(http_status(TOO_LARGE, &Value::Null), 413);
     }
 }
