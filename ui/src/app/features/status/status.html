@@ -44,9 +44,7 @@
           @if (y.active === 0) {
             <p>Bootstrap: no configuration has been applied yet.</p>
           } @else if (y.pending; as p) {
-            <p class="pending" role="status">
-              Generation {{ p.id }} waits for confirmation: it reverts in {{ p.reverts_in }} s.
-            </p>
+            <p class="pending" role="status">Generation {{ p.id }} waits for confirmation.</p>
           } @else if (y.applied_hash !== y.desired_hash) {
             <p class="problem">The firewall has drifted from generation {{ y.active }}.</p>
           } @else {
@@ -61,13 +59,6 @@
             </p>
           }
         </mat-card-content>
-        @if (y.pending && session.can('operator')) {
-          <mat-card-actions align="end">
-            <button matButton="filled" [disabled]="confirming()" (click)="confirm(y.pending.id)">
-              Confirm
-            </button>
-          </mat-card-actions>
-        }
       </mat-card>
     }
 

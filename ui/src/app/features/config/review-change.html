@@ -1,0 +1,34 @@
+<h2 mat-dialog-title>Apply this change?</h2>
+<mat-dialog-content>
+  @if (data.preview.unchanged) {
+    <p>The configuration is the same as generation {{ data.base }}: nothing to apply.</p>
+  } @else {
+    <p>Compared with generation {{ data.base }}:</p>
+    <ul class="diff">
+      @for (line of data.preview.diff; track $index) {
+        <li>{{ line }}</li>
+      }
+    </ul>
+    @if (data.preview.changed.length) {
+      <p>It changes: {{ data.preview.changed.join(', ') }}.</p>
+    }
+    @if (data.preview.warnings.length) {
+      <ul class="warnings">
+        @for (w of data.preview.warnings; track $index) {
+          <li>{{ w }}</li>
+        }
+      </ul>
+    }
+    <mat-form-field>
+      <mat-label>Revert unless confirmed within (seconds)</mat-label>
+      <input matInput type="number" [formField]="window.confirmSeconds" />
+      <mat-hint>0 applies it for good at once.</mat-hint>
+    </mat-form-field>
+  }
+</mat-dialog-content>
+<mat-dialog-actions align="end">
+  <button matButton mat-dialog-close>Cancel</button>
+  @if (!data.preview.unchanged) {
+    <button matButton="filled" [disabled]="window().invalid()" (click)="apply()">Apply</button>
+  }
+</mat-dialog-actions>

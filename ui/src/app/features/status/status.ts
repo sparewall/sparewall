@@ -1,18 +1,16 @@
 import { DecimalPipe, PercentPipe } from '@angular/common';
 import { httpResource } from '@angular/common/http';
-import { Component, computed, inject, signal } from '@angular/core';
-import { MatButtonModule } from '@angular/material/button';
+import { Component, computed, inject } from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatSnackBar } from '@angular/material/snack-bar';
 
-import { ApiClient, CallFailed, callUrl } from '../../api/api-client';
+import { callUrl } from '../../api/api-client';
 import { Reply } from '../../api/api.model';
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
-import { Conntrack, HealthState, SyncState } from './status.model';
+import { Conntrack, HealthState, SyncState } from '../../api/status.model';
 
 const LEVEL_ICON: Record<string, string> = {
   ok: 'check_circle',
@@ -26,7 +24,6 @@ const LEVEL_ICON: Record<string, string> = {
   imports: [
     DecimalPipe,
     PercentPipe,
-    MatButtonModule,
     MatCardModule,
     MatChipsModule,
     MatIconModule,
@@ -36,9 +33,7 @@ const LEVEL_ICON: Record<string, string> = {
   styleUrl: './status.scss',
 })
 export class Status {
-  private readonly api = inject(ApiClient);
   private readonly events = inject(NodeEvents);
-  private readonly snack = inject(MatSnackBar);
   protected readonly session = inject(Session);
 
   protected readonly status = httpResource<Reply<'org.sparewall.Firewall.Status'>>(() => {
@@ -53,24 +48,10 @@ export class Status {
   protected readonly links = computed(() =>
     Object.entries((this.value()?.links ?? {}) as Record<string, string>),
   );
-  protected readonly confirming = signal(false);
 
   protected readonly levelIcon = (level: string) => LEVEL_ICON[level] ?? 'help';
 
   private value() {
     return this.status.hasValue() ? this.status.value() : undefined;
-  }
-
-  protected async confirm(id: number): Promise<void> {
-    this.confirming.set(true);
-    try {
-      await this.api.call('org.sparewall.Firewall.Confirm', { id });
-      this.snack.open(`Generation ${id} confirmed.`, undefined, { duration: 4000 });
-      this.status.reload();
-    } catch (e) {
-      this.snack.open(e instanceof CallFailed ? e.message : 'Confirming failed.', 'Close');
-    } finally {
-      this.confirming.set(false);
-    }
   }
 }
