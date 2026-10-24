@@ -1,0 +1,61 @@
+<header>
+  <h1>Users</h1>
+  <button matButton="filled" [disabled]="busy()" (click)="add()">
+    <mat-icon>person_add</mat-icon>
+    Add a user
+  </button>
+</header>
+<p>
+  People sign in to this UI as these users. <code>admin</code> is built in and keeps its role; its
+  password is the console password too. Users are cluster secrets, so the peer has them as well.
+  Changing a user ends its sessions.
+</p>
+@if (users.error()) {
+  <p class="problem" role="alert">The users could not be read.</p>
+}
+@if (users.hasValue()) {
+  <table mat-table [dataSource]="users.value().users">
+    <ng-container matColumnDef="name">
+      <th mat-header-cell *matHeaderCellDef>User</th>
+      <td mat-cell *matCellDef="let u">
+        {{ u.name }}
+        @if (u.locked) {
+          <span class="locked">(locked)</span>
+        }
+      </td>
+    </ng-container>
+    <ng-container matColumnDef="role">
+      <th mat-header-cell *matHeaderCellDef>Role</th>
+      <td mat-cell *matCellDef="let u">{{ u.role }}</td>
+    </ng-container>
+    <ng-container matColumnDef="updated">
+      <th mat-header-cell *matHeaderCellDef>Changed</th>
+      <td mat-cell *matCellDef="let u">{{ u.updated | date: 'medium' }}</td>
+    </ng-container>
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef><span class="cdk-visually-hidden">Actions</span></th>
+      <td mat-cell *matCellDef="let u">
+        <button
+          matIconButton
+          [matMenuTriggerFor]="menu"
+          [disabled]="busy()"
+          [attr.aria-label]="'Change ' + u.name"
+        >
+          <mat-icon>more_vert</mat-icon>
+        </button>
+        <mat-menu #menu="matMenu">
+          <button mat-menu-item (click)="changePassword(u)">Set password</button>
+          @if (u.name !== 'admin') {
+            <button mat-menu-item (click)="changeRole(u)">Change role</button>
+            @if (!u.locked) {
+              <button mat-menu-item (click)="lock(u)">Lock</button>
+            }
+            <button mat-menu-item (click)="remove(u)">Remove</button>
+          }
+        </mat-menu>
+      </td>
+    </ng-container>
+    <tr mat-header-row *matHeaderRowDef="columns"></tr>
+    <tr mat-row *matRowDef="let row; columns: columns"></tr>
+  </table>
+}

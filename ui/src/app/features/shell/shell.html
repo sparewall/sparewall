@@ -22,7 +22,7 @@
 <mat-sidenav-container>
   <mat-sidenav #nav mode="side" opened>
     <mat-nav-list>
-      @for (p of pages; track p.path) {
+      @for (p of pages(); track p.path) {
         <a
           mat-list-item
           [routerLink]="p.path"

@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, inject } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatListModule } from '@angular/material/list';
@@ -11,7 +11,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { CallFailed } from '../../api/api-client';
 import { NodeEvents } from '../../core/node-events';
 import { PendingChange } from '../../core/pending-change';
-import { Session } from '../../core/session';
+import { Role, Session } from '../../core/session';
 import { countdown } from '../../shared/countdown';
 
 /** The frame around every page once signed in: navigation and the user's menu. */
@@ -38,11 +38,18 @@ export class Shell implements OnInit, OnDestroy {
   private readonly snack = inject(MatSnackBar);
   protected readonly countdown = countdown;
 
-  protected readonly pages = [
-    { path: '/status', icon: 'monitor_heart', label: 'Status' },
-    { path: '/config', icon: 'tune', label: 'Configuration' },
-    { path: '/history', icon: 'history', label: 'History' },
+  private readonly allPages = [
+    { path: '/status', icon: 'monitor_heart', label: 'Status', role: 'viewer' as Role },
+    { path: '/config', icon: 'tune', label: 'Configuration', role: 'viewer' as Role },
+    { path: '/history', icon: 'history', label: 'History', role: 'viewer' as Role },
+    { path: '/users', icon: 'group', label: 'Users', role: 'admin' as Role },
+    { path: '/tokens', icon: 'key', label: 'API tokens', role: 'admin' as Role },
   ];
+  /** The pages the user's role can use. */
+  protected readonly pages = computed(() => {
+    this.session.role();
+    return this.allPages.filter((p) => this.session.can(p.role));
+  });
 
   ngOnInit(): void {
     this.events.start();
