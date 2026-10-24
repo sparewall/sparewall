@@ -23,7 +23,8 @@ export class ConfigChanges {
   private readonly dialog = inject(MatDialog);
   private readonly snack = inject(MatSnackBar);
 
-  async review(draft: Document, base: number): Promise<Outcome> {
+  /** `applying` is called once the review is accepted, just before the apply. */
+  async review(draft: Document, base: number, applying?: () => void): Promise<Outcome> {
     try {
       const preview = await this.api.call('org.sparewall.Firewall.Apply', {
         config: draft,
@@ -35,6 +36,7 @@ export class ConfigChanges {
         this.dialog.open(ReviewChange, { data, width: '640px' }).afterClosed(),
       );
       if (confirmSeconds === undefined) return { applied: false, problems: [] };
+      applying?.();
       const r = await this.api.call('org.sparewall.Firewall.Apply', {
         config: draft,
         base,

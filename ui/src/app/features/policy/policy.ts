@@ -49,24 +49,33 @@ export class PolicyMatrix extends DraftPage {
   protected async open(c: Cell): Promise<void> {
     const schema = this.schema()?.properties?.['policy']?.additionalProperties as
       JsonSchema7 | undefined;
+    // The draft and its base as they are now: the edit goes onto these,
+    // even if the node's configuration changes while the dialog is open.
     const d = this.draft();
+    const base = this.draftBase();
     if (!schema || !d || c.none) return;
-    const r = await firstValueFrom(
-      this.dialog
-        .open<PolicyDialog, PolicyData, PolicyResult>(PolicyDialog, {
-          data: {
-            key: c.key,
-            policy: c.policy,
-            fallback: c.fallback,
-            schema,
-            readonly: !this.session.can('operator'),
-          },
-          width: '720px',
-          maxHeight: '90vh',
-        })
-        .afterClosed(),
-    );
-    if (!r) return;
-    this.draft.set(withPolicy(d, c.key, 'remove' in r ? undefined : r.policy));
+    this.holding.update((n) => n + 1);
+    try {
+      const r = await firstValueFrom(
+        this.dialog
+          .open<PolicyDialog, PolicyData, PolicyResult>(PolicyDialog, {
+            data: {
+              key: c.key,
+              policy: c.policy,
+              fallback: c.fallback,
+              schema,
+              readonly: !this.session.can('operator'),
+            },
+            width: '720px',
+            maxHeight: '90vh',
+          })
+          .afterClosed(),
+      );
+      if (!r) return;
+      this.draft.set(withPolicy(d, c.key, 'remove' in r ? undefined : r.policy));
+      this.draftBase.set(base);
+    } finally {
+      this.holding.update((n) => n - 1);
+    }
   }
 }

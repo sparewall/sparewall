@@ -49,6 +49,16 @@ export abstract class DraftPage implements HoldsEdits {
   protected readonly draft = linkedSignal<Document | undefined>(() =>
     this.current.hasValue() ? structuredClone(this.current.value().config) : undefined,
   );
+  /**
+   * The generation the draft was taken from, which the apply names as its
+   * base: a draft of an older generation is refused (a conflict) rather
+   * than applied over what changed since.
+   */
+  protected readonly draftBase = linkedSignal<number | undefined>(() =>
+    this.current.hasValue() ? this.current.value().generation.id : undefined,
+  );
+  /** Edits held outside the draft for now (an open dialog): no reload meanwhile. */
+  protected readonly holding = signal(0);
   protected readonly changed = computed(
     () =>
       this.current.hasValue() &&
@@ -66,7 +76,9 @@ export abstract class DraftPage implements HoldsEdits {
     // nothing is edited here; with edits, the apply's base check says so.
     effect(() => {
       this.events.count();
-      if (untracked(() => !this.changed() && !this.busy())) this.current.reload();
+      if (untracked(() => !this.changed() && !this.busy() && !this.holding())) {
+        this.current.reload();
+      }
     });
   }
 
@@ -82,12 +94,14 @@ export abstract class DraftPage implements HoldsEdits {
   /** Dry-run the draft, show what it does, and apply it if asked. */
   protected async review(): Promise<void> {
     const draft = this.draft();
-    if (!draft || !this.current.hasValue()) return;
+    const base = this.draftBase();
+    if (!draft || base === undefined) return;
     this.busy.set(true);
     this.problems.set([]);
-    this.applying = true;
     try {
-      const r = await this.changes.review(draft, this.current.value().generation.id);
+      // Leaving stays guarded through the dry run and the review, until
+      // the apply itself starts.
+      const r = await this.changes.review(draft, base, () => (this.applying = true));
       if (r.applied) await this.router.navigate(['/status']);
       else this.problems.set(r.problems);
     } finally {
