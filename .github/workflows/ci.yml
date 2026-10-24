@@ -187,3 +187,7 @@ jobs:
         run: npm run licenses
       - name: Advisories for the shipped packages
         run: npm audit --omit=dev
+      # The build tools run in the image build and write the bundle, so a
+      # flaw in them reaches it too.
+      - name: Advisories for the build tools
+        run: npm audit

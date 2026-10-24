@@ -7,7 +7,7 @@ import { MatInputModule } from '@angular/material/input';
 import { Router } from '@angular/router';
 
 import { CallFailed } from '../../api/api-client';
-import { Session } from '../../core/session';
+import { NeedsViewer, Session } from '../../core/session';
 
 @Component({
   selector: 'app-login',
@@ -41,6 +41,7 @@ export class Login {
 }
 
 function message(e: unknown): string {
+  if (e instanceof NeedsViewer) return e.message;
   if (e instanceof CallFailed) {
     if (e.status === 401 || e.status === 403) return 'The user name or password is wrong.';
     if (e.status === 0 || e.status === 502) return 'The node did not answer. Try again.';

@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 
 import { ApiClient } from '../api/api-client';
-import { Session } from './session';
+import { NeedsViewer, Session } from './session';
 
 describe('Session', () => {
   const calls: string[] = [];
@@ -60,6 +60,22 @@ describe('Session', () => {
       ],
     });
     expect(TestBed.inject(Session).user()).toBeUndefined();
+  });
+
+  it('turns away monitor users, ending the session their login opened', async () => {
+    const monitor = {
+      call: async (method: string) => {
+        calls.push(method);
+        return method.endsWith('Login')
+          ? { user: 'prom', role: 'monitor', expires: Date.now() / 1000 + 3600, token: '' }
+          : {};
+      },
+    };
+    TestBed.overrideProvider(ApiClient, { useValue: monitor });
+    const s = TestBed.inject(Session);
+    await expect(s.signIn('prom', 'secret')).rejects.toBeInstanceOf(NeedsViewer);
+    expect(calls).toContain('org.sparewall.Auth.Logout');
+    expect(s.user()).toBeUndefined();
   });
 
   it('forgets the user and goes to sign in when signing out', async () => {

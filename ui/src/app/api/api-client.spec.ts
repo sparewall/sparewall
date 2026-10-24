@@ -87,4 +87,17 @@ describe('ApiClient', () => {
     expect((e as CallFailed).error).toBe('org.sparewall.Firewall.PermissionDenied');
     expect((e as CallFailed).message).toBe('permission denied: admin only');
   });
+
+  it('tells an ended session from a role that is too low', () => {
+    const denied = (role: string, status = 403) =>
+      new CallFailed(status, {
+        error: 'org.sparewall.Firewall.PermissionDenied',
+        parameters: { role, reason: '' },
+        message: '',
+      });
+    expect(new CallFailed(401).unauthenticated).toBe(true);
+    // A stream with no session at all: HTTP 200, the refusal its first record.
+    expect(denied('none', 200).unauthenticated).toBe(true);
+    expect(denied('monitor').unauthenticated).toBe(false);
+  });
 });

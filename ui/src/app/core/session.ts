@@ -39,6 +39,13 @@ function save(v: SignedIn | undefined) {
   }
 }
 
+/** The user's role is too low for the web UI (monitor). */
+export class NeedsViewer extends Error {
+  constructor() {
+    super('Monitor users are for health checks and metrics; the web UI needs a viewer at least.');
+  }
+}
+
 @Service()
 export class Session {
   private readonly api = inject(ApiClient);
@@ -56,6 +63,12 @@ export class Session {
 
   async signIn(user: string, password: string): Promise<void> {
     const r = await this.api.call('org.sparewall.Auth.Login', { user, password });
+    if (r.role === 'monitor') {
+      // Monitor users read health and metrics; every page here needs a
+      // viewer at least. End the session the login opened.
+      await this.api.call('org.sparewall.Auth.Logout', {}).catch(() => undefined);
+      throw new NeedsViewer();
+    }
     const v: SignedIn = { user: r.user, role: r.role as Role, expires: r.expires };
     save(v);
     this.current.set(v);

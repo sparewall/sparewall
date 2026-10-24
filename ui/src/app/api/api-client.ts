@@ -25,6 +25,16 @@ export class CallFailed extends Error {
   get error(): string | undefined {
     return this.reply?.error;
   }
+
+  /**
+   * Refused for want of a session or token (it ended, or there never was
+   * one), as opposed to a role that does not allow the call.
+   */
+  get unauthenticated(): boolean {
+    if (this.status === 401) return true;
+    const role = (this.reply?.parameters as { role?: unknown } | undefined)?.role;
+    return this.error === 'org.sparewall.Firewall.PermissionDenied' && role === 'none';
+  }
 }
 
 function isApiError(v: unknown): v is ApiError {

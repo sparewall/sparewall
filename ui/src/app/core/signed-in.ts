@@ -4,4 +4,4 @@ import { CanActivateFn, Router } from '@angular/router';
 import { Session } from './session';
 
 export const signedIn: CanActivateFn = () =>
-  inject(Session).user() !== undefined || inject(Router).createUrlTree(['/login']);
+  inject(Session).can('viewer') || inject(Router).createUrlTree(['/login']);

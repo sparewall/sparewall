@@ -51,14 +51,16 @@ export class NodeEvents {
           this.seen.update((n) => n + 1);
         }
       } catch (e) {
-        // Refused: over HTTP (401) when the session has ended, or as the
-        // stream's first record when there is none at all.
-        if (
-          e instanceof CallFailed &&
-          (e.status === 401 || e.error === 'org.sparewall.Firewall.PermissionDenied')
-        ) {
+        if (e instanceof CallFailed && e.unauthenticated) {
+          // The session ended (401), or there was none (the stream's first
+          // record says so).
           this.stop();
           this.session.ended();
+          return;
+        }
+        if (e instanceof CallFailed && e.error === 'org.sparewall.Firewall.PermissionDenied') {
+          // A role without events: retrying will not change that.
+          this.stop();
           return;
         }
       }
