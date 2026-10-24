@@ -175,16 +175,38 @@ fn health_path(path: &str) -> bool {
 }
 
 /// Headers that describe one connection, not the request (RFC 9110
-/// section 7.6.1), which a proxy drops in both directions.
+/// section 7.6.1), or that are meant for a proxy (its credentials), which
+/// this proxy drops in both directions.
 const HOP_BY_HOP: &[&str] = &[
     "connection",
     "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
     "proxy-connection",
     "te",
     "trailer",
     "transfer-encoding",
     "upgrade",
 ];
+
+/// Where a request came from, as clients may claim it. The coordinator
+/// replaces them with what it saw, so `sparewall-httpd` can trust them.
+const FORWARDING: &[&str] = &[
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-forwarded-proto",
+    "x-real-ip",
+];
+
+/// RFC 7239 `Forwarded` for the TLS client the coordinator accepted.
+fn forwarded(peer: SocketAddr) -> String {
+    match peer.ip().to_canonical() {
+        std::net::IpAddr::V4(ip) => format!("for={ip};proto=https"),
+        std::net::IpAddr::V6(ip) => format!("for=\"[{ip}]\";proto=https"),
+    }
+}
 
 fn drop_hop_by_hop(h: &mut hyper::HeaderMap) {
     let named: Vec<hyper::header::HeaderName> = h
@@ -205,7 +227,7 @@ fn drop_hop_by_hop(h: &mut hyper::HeaderMap) {
 /// Pass a request to `sparewall-httpd` and stream its reply back. Its
 /// socket exists only while the document turns it on, so without one the
 /// path is simply not found.
-async fn proxy<B>(mut req: Request<B>, socket: &Path) -> Response<Body>
+async fn proxy<B>(mut req: Request<B>, peer: SocketAddr, socket: &Path) -> Response<Body>
 where
     B: hyper::body::Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -231,7 +253,14 @@ where
     tokio::spawn(async move {
         let _ = conn.await;
     });
-    drop_hop_by_hop(req.headers_mut());
+    let h = req.headers_mut();
+    drop_hop_by_hop(h);
+    for n in FORWARDING {
+        h.remove(*n);
+    }
+    if let Ok(v) = forwarded(peer).parse() {
+        h.insert("forwarded", v);
+    }
     match sender.send_request(req).await {
         Ok(r) => {
             let (mut parts, body) = r.into_parts();
@@ -247,14 +276,14 @@ where
 
 async fn handle(
     req: Request<Incoming>,
-    _peer: SocketAddr,
+    peer: SocketAddr,
     core: Core,
     events: broadcast::Sender<Value>,
     web: Arc<PathBuf>,
 ) -> Result<Response<Body>, Infallible> {
     let path = req.uri().path().trim_end_matches('/').to_string();
     if !health_path(&path) {
-        return Ok(proxy(req, &web).await);
+        return Ok(proxy(req, peer, &web).await);
     }
     let verbose_wanted = req.uri().query().is_some_and(|q| {
         q.split('&')
@@ -470,6 +499,8 @@ mod tests {
         h.insert("connection", "close, x-private".parse().unwrap());
         h.insert("x-private", "1".parse().unwrap());
         h.insert("keep-alive", "timeout=5".parse().unwrap());
+        h.insert("proxy-authorization", "Basic eDp5".parse().unwrap());
+        h.insert("proxy-authenticate", "Basic".parse().unwrap());
         h.insert("cookie", "sparewall_session=t".parse().unwrap());
         drop_hop_by_hop(&mut h);
         assert_eq!(h.len(), 1, "{h:?}");
@@ -480,7 +511,8 @@ mod tests {
     async fn requests_reach_the_web_socket() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("http.sock");
-        let r = proxy(Request::new(Full::new(Bytes::new())), &socket).await;
+        let peer: SocketAddr = "[::ffff:192.0.2.7]:50000".parse().unwrap();
+        let r = proxy(Request::new(Full::new(Bytes::new())), peer, &socket).await;
         assert_eq!(r.status(), 404, "no socket: the web UI is off");
 
         // A stand-in for sparewall-httpd that echoes what it was sent.
@@ -488,16 +520,21 @@ mod tests {
         tokio::spawn(async move {
             let (s, _) = l.accept().await.unwrap();
             let svc = hyper::service::service_fn(|req: Request<Incoming>| async move {
+                let h = req.headers();
                 let line = format!(
-                    "{} {} {:?} {:?}",
+                    "{} {} {:?} {:?} {:?} {:?} {:?}",
                     req.method(),
                     req.uri(),
-                    req.headers().get("cookie"),
-                    req.headers().get("x-private"),
+                    h.get("cookie"),
+                    h.get("x-private"),
+                    h.get("proxy-authorization"),
+                    h.get_all("forwarded").iter().collect::<Vec<_>>(),
+                    h.get("x-forwarded-for"),
                 );
                 let body = req.into_body().collect().await?.to_bytes();
                 let r = Response::builder()
                     .header("connection", "keep-alive")
+                    .header("proxy-authenticate", "Basic")
                     .body(Full::new(Bytes::from(format!("{line} {body:?}"))))
                     .unwrap();
                 Ok::<_, hyper::Error>(r)
@@ -511,16 +548,21 @@ mod tests {
             .header("cookie", "sparewall_session=t")
             .header("connection", "x-private")
             .header("x-private", "1")
+            .header("proxy-authorization", "Basic eDp5")
+            .header("forwarded", "for=203.0.113.9")
+            .header("x-forwarded-for", "203.0.113.9")
             .body(Full::new(Bytes::from_static(b"{}")))
             .unwrap();
-        let r = proxy(req, &socket).await;
+        let r = proxy(req, peer, &socket).await;
         assert_eq!(r.status(), 200);
         assert!(r.headers().get("connection").is_none());
+        assert!(r.headers().get("proxy-authenticate").is_none());
         let body = r.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             body,
             "POST /call/org.sparewall.Firewall.Status?x=1 \
-             Some(\"sparewall_session=t\") None b\"{}\""
+             Some(\"sparewall_session=t\") None None \
+             [\"for=192.0.2.7;proto=https\"] None b\"{}\""
         );
     }
 }

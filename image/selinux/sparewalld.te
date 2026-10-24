@@ -310,8 +310,13 @@ allow sparewall_httpd_t self:unix_stream_socket create_stream_socket_perms;
 manage_sock_files_pattern(sparewall_httpd_t, sparewall_httpd_var_run_t, sparewall_httpd_var_run_t)
 stream_connect_pattern(sparewall_httpd_t, sparewalld_api_var_run_t, sparewalld_api_var_run_t, sparewalld_t)
 stream_connect_pattern(sparewalld_t, sparewall_httpd_var_run_t, sparewall_httpd_var_run_t, sparewall_httpd_t)
-# The UI's files, /usr/share/sparewall/ui.
-files_read_usr_files(sparewall_httpd_t)
+# The UI's files, /usr/share/sparewall/ui, and nothing else of /usr's
+# beyond the directories on the way there.
+type sparewall_httpd_content_t;
+files_type(sparewall_httpd_content_t)
+files_search_usr(sparewall_httpd_t)
+read_files_pattern(sparewall_httpd_t, sparewall_httpd_content_t, sparewall_httpd_content_t)
+list_dirs_pattern(sparewall_httpd_t, sparewall_httpd_content_t, sparewall_httpd_content_t)
 # The runtime sizes its thread pool from the CPUs it may use: the online
 # CPUs in sysfs and its cgroup's CPU quota.
 dev_read_sysfs(sparewall_httpd_t)
