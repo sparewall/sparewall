@@ -1,5 +1,6 @@
 import { Routes } from '@angular/router';
 
+import { adminOnly } from './core/admin-only';
 import { signedIn } from './core/signed-in';
 import { keepEdits } from './features/config/keep-edits';
 import { Shell } from './features/shell/shell';
@@ -26,6 +27,18 @@ export const routes: Routes = [
         title: 'Configuration · Sparewall',
         loadComponent: () => import('./features/config/config').then((m) => m.Config),
         canDeactivate: [keepEdits],
+      },
+      {
+        path: 'users',
+        title: 'Users · Sparewall',
+        canActivate: [adminOnly],
+        loadComponent: () => import('./features/users/users').then((m) => m.Users),
+      },
+      {
+        path: 'tokens',
+        title: 'API tokens · Sparewall',
+        canActivate: [adminOnly],
+        loadComponent: () => import('./features/tokens/tokens').then((m) => m.Tokens),
       },
       {
         path: 'history',

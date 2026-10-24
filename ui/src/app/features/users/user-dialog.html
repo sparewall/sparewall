@@ -1,0 +1,54 @@
+<h2 mat-dialog-title>
+  @if (adding) {
+    Add a user
+  } @else if (data.passwordOnly) {
+    New password for {{ data.name }}
+  } @else {
+    Change {{ data.name }}
+  }
+</h2>
+<form (submit)="done(); $event.preventDefault()" novalidate>
+  <mat-dialog-content>
+    @if (adding) {
+      <mat-form-field>
+        <mat-label>Name</mat-label>
+        <input matInput autocomplete="off" cdkFocusInitial [formField]="userForm.name" />
+      </mat-form-field>
+    }
+    @if (!data.passwordOnly) {
+      <mat-form-field>
+        <mat-label>Role</mat-label>
+        <mat-select [formField]="userForm.role">
+          @for (r of roles; track r.role) {
+            <mat-option [value]="r.role">{{ r.role }}: {{ r.does }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+    }
+    @if (adding || data.passwordOnly) {
+      <mat-form-field>
+        <mat-label>Password</mat-label>
+        <input
+          matInput
+          type="password"
+          autocomplete="new-password"
+          [formField]="userForm.password"
+        />
+        <mat-hint>Only its SHA-512 crypt hash leaves this browser.</mat-hint>
+      </mat-form-field>
+      <mat-form-field>
+        <mat-label>Password again</mat-label>
+        <input matInput type="password" autocomplete="new-password" [formField]="userForm.again" />
+      </mat-form-field>
+    }
+    @if (firstError(); as e) {
+      <p class="error" role="alert">{{ e }}</p>
+    }
+  </mat-dialog-content>
+  <mat-dialog-actions align="end">
+    <button matButton type="button" mat-dialog-close>Cancel</button>
+    <button matButton="filled" type="submit" [disabled]="userForm().invalid()">
+      {{ adding ? 'Add' : 'Save' }}
+    </button>
+  </mat-dialog-actions>
+</form>

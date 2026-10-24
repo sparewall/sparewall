@@ -171,7 +171,10 @@ operator edits it, reviews what the change does (the node's own dry run:
 the changed paths, the subsystems it touches, any warnings), and applies
 it with a window to confirm it in, two minutes unless changed. While a
 change waits, every page shows how long is left, with Confirm and
-Revert now. Each page offers only what the user's role
+Revert now. An admin also manages users and API tokens there; a new
+password is hashed in the browser, as `sparewall user passwd` hashes it
+on your machine, so only the hash reaches the node, and a new token is
+shown once. Each page offers only what the user's role
 allows, and the node checks every call regardless. The UI loads nothing
 from outside the node.
 
