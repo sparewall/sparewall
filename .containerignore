@@ -3,3 +3,6 @@ target
 *.qcow2
 *.raw
 *.iso
+ui/node_modules
+ui/dist
+ui/.angular

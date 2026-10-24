@@ -1,0 +1,107 @@
+<h1>Status</h1>
+@if (status.error(); as e) {
+  <p class="problem" role="alert">The node's status could not be read.</p>
+}
+@if (status.hasValue()) {
+  @let s = status.value();
+  <div class="cards">
+    <mat-card appearance="outlined">
+      <mat-card-header>
+        <mat-icon matCardAvatar>dns</mat-icon>
+        <mat-card-title>{{ s.node }}</mat-card-title>
+        <mat-card-subtitle>{{ s.role }}</mat-card-subtitle>
+      </mat-card-header>
+    </mat-card>
+
+    @if (health(); as h) {
+      <mat-card appearance="outlined">
+        <mat-card-header>
+          <mat-icon matCardAvatar [class]="h.level">{{ levelIcon(h.level) }}</mat-icon>
+          <mat-card-title>Health: {{ h.level }}</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <ul class="checks">
+            @for (c of h.checks; track c.name) {
+              <li>
+                <mat-icon [class]="c.level" inline>{{ levelIcon(c.level) }}</mat-icon>
+                <strong>{{ c.name }}</strong>
+                <span>{{ c.message }}</span>
+              </li>
+            }
+          </ul>
+        </mat-card-content>
+      </mat-card>
+    }
+
+    @if (sync(); as y) {
+      <mat-card appearance="outlined">
+        <mat-card-header>
+          <mat-icon matCardAvatar>settings</mat-icon>
+          <mat-card-title>Configuration</mat-card-title>
+          <mat-card-subtitle>Generation {{ y.active }}</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          @if (y.active === 0) {
+            <p>Bootstrap: no configuration has been applied yet.</p>
+          } @else if (y.pending; as p) {
+            <p class="pending" role="status">
+              Generation {{ p.id }} waits for confirmation: it reverts in {{ p.reverts_in }} s.
+            </p>
+          } @else if (y.applied_hash !== y.desired_hash) {
+            <p class="problem">The firewall has drifted from generation {{ y.active }}.</p>
+          } @else {
+            <p>Applied and confirmed.</p>
+          }
+          @if (y.peer) {
+            <p>
+              Pair: {{ y.state }} with {{ y.peer }}
+              @if (y.peer_reachable === false) {
+                <span class="problem">(unreachable)</span>
+              }
+            </p>
+          }
+        </mat-card-content>
+        @if (y.pending && session.can('operator')) {
+          <mat-card-actions align="end">
+            <button matButton="filled" [disabled]="confirming()" (click)="confirm(y.pending.id)">
+              Confirm
+            </button>
+          </mat-card-actions>
+        }
+      </mat-card>
+    }
+
+    @if (links().length) {
+      <mat-card appearance="outlined">
+        <mat-card-header>
+          <mat-icon matCardAvatar>lan</mat-icon>
+          <mat-card-title>Links</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <mat-chip-set aria-label="Links">
+            @for (l of links(); track l[0]) {
+              <mat-chip [class]="l[1]">{{ l[0] }}: {{ l[1] }}</mat-chip>
+            }
+          </mat-chip-set>
+        </mat-card-content>
+      </mat-card>
+    }
+
+    @if (conntrack(); as ct) {
+      @if (ct.count !== null && ct.max) {
+        <mat-card appearance="outlined">
+          <mat-card-header>
+            <mat-icon matCardAvatar>swap_horiz</mat-icon>
+            <mat-card-title>Connections</mat-card-title>
+            <mat-card-subtitle>
+              {{ ct.count | number }} of {{ ct.max | number }} ({{ ct.count / ct.max | percent }})
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-progress-bar mode="determinate" [value]="(100 * ct.count) / ct.max" />
+          </mat-card-content>
+        </mat-card>
+      }
+    }
+  </div>
+}

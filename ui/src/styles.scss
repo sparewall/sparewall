@@ -1,0 +1,33 @@
+// The page loads nothing from elsewhere: fonts and icons are bundled.
+@use '@angular/material' as mat;
+@use '@fontsource/roboto/latin-400.css';
+@use '@fontsource/roboto/latin-500.css';
+@use 'material-symbols/outlined.css';
+
+html {
+  height: 100%;
+  color-scheme: light dark;
+  @include mat.theme(
+    (
+      color: (
+        primary: mat.$azure-palette,
+        tertiary: mat.$orange-palette,
+      ),
+      typography: Roboto,
+      density: 0,
+    )
+  );
+}
+
+body {
+  background-color: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+  font: var(--mat-sys-body-medium);
+  margin: 0;
+  height: 100%;
+}
+
+h1 {
+  font: var(--mat-sys-headline-small);
+  margin: 0 0 16px;
+}

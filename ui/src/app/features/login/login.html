@@ -1,0 +1,39 @@
+<main>
+  <mat-card appearance="outlined">
+    <mat-card-header>
+      <mat-card-title>Sparewall</mat-card-title>
+      <mat-card-subtitle>Sign in to manage this firewall</mat-card-subtitle>
+    </mat-card-header>
+    <form (submit)="signIn(); $event.preventDefault()" novalidate>
+      <mat-card-content>
+        <mat-form-field>
+          <mat-label>User</mat-label>
+          <input matInput autocomplete="username" [formField]="loginForm.user" />
+          @if (loginForm.user().touched() && loginForm.user().invalid()) {
+            <mat-error>{{ loginForm.user().errors()[0].message }}</mat-error>
+          }
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Password</mat-label>
+          <input
+            matInput
+            type="password"
+            autocomplete="current-password"
+            [formField]="loginForm.password"
+          />
+          @if (loginForm.password().touched() && loginForm.password().invalid()) {
+            <mat-error>{{ loginForm.password().errors()[0].message }}</mat-error>
+          }
+        </mat-form-field>
+        @if (problem()) {
+          <p class="problem" role="alert">{{ problem() }}</p>
+        }
+      </mat-card-content>
+      <mat-card-actions align="end">
+        <button matButton="filled" type="submit" [disabled]="loginForm().submitting()">
+          Sign in
+        </button>
+      </mat-card-actions>
+    </form>
+  </mat-card>
+</main>

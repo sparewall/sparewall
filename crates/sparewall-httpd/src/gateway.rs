@@ -88,7 +88,7 @@ fn harden(r: &mut Response<Body>) {
         (
             "content-security-policy",
             "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
-             frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+             frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         ),
     ] {
         h.insert(k, HeaderValue::from_static(v));

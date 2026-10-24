@@ -159,9 +159,16 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 ```
 
 `/openapi.json` describes every call; [docs/api](api/README.md) has the
-conventions, errors and statuses. The UI itself is not in the image
-yet. Turning `management.web` off stops the service, and SSH, the
-console and the anti-lockout rule never depend on it.
+conventions, errors and statuses. Turning `management.web` off stops the
+service, and SSH, the console and the anti-lockout rule never depend on
+it.
+
+People open `https://<node>/` and sign in as one of the users above. The
+UI shows the node's status and health as they change, confirms a change
+that waits for confirmation, and lists the history, from which an
+operator can roll back. Each page offers only what the user's role
+allows, and the node checks every call regardless. The UI loads nothing
+from outside the node.
 
 ## Remote-access VPN
 

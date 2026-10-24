@@ -1,0 +1,35 @@
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.checks {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+
+  li {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    gap: 8px;
+    align-items: baseline;
+    padding: 2px 0;
+  }
+}
+
+.ok,
+.up {
+  color: var(--mat-sys-primary);
+}
+
+.degraded,
+.pending {
+  color: var(--mat-sys-tertiary);
+}
+
+.failed,
+.down,
+.problem {
+  color: var(--mat-sys-error);
+}

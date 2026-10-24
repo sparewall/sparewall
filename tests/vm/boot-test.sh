@@ -299,6 +299,13 @@ vm 'ps -eo label,comm' | grep -q 'sparewall_httpd_t.*sparewall-httpd' \
 vm 'curl -sfk https://localhost/openapi.json' | jq -e '.paths["/call/org.sparewall.Firewall.Status"]' >/dev/null \
     || fail "no OpenAPI description at /openapi.json"
 [ "$(status https://localhost/readyz)" = 200 ] || fail "/readyz is not the coordinator's with management.web"
+# The UI's page, and its assets, under the gateway's labels.
+vm 'curl -sfk https://localhost/' | grep -q '<app-root' || fail "no web UI at /"
+vm 'curl -sfk https://localhost/history' | grep -q '<app-root' || fail "the UI's routes do not lead to its page"
+main_js=$(vm 'curl -sfk https://localhost/' | grep -o 'main-[A-Za-z0-9]*\.js' | head -1)
+[ "$(status "https://localhost/$main_js")" = 200 ] || fail "the UI's script $main_js is not served"
+vm 'ls -Zd /usr/share/sparewall/ui' | grep -q sparewall_httpd_content_t \
+    || fail "the UI's files are not labelled sparewall_httpd_content_t"
 WEB=$(vm 'sudo sparewall token create ci-web --role viewer -q')
 vm "curl -sfk -X POST -H 'Authorization: Bearer $WEB' https://localhost/call/org.sparewall.Firewall.Status" \
     | jq -e '.role' >/dev/null || fail "a viewer token cannot call Status over HTTPS"

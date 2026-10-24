@@ -36,6 +36,26 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     && rm /out/schema.json
 
 # ---------------------------------------------------------------------------
+# The web UI, a static bundle that sparewall-httpd serves.
+FROM quay.io/fedora/fedora:45 AS ui
+RUN dnf -y install --setopt=install_weak_deps=False nodejs npm \
+    && dnf clean all
+WORKDIR /src/ui
+COPY ui/package.json ui/package-lock.json ./
+# No install scripts: the build needs none (esbuild's binary is its own
+# package), and nothing the bundle ships runs one.
+RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
+COPY ui ./
+COPY docs/api/openapi.json /src/docs/api/openapi.json
+RUN npm run api:check \
+    && npm run build \
+    && mkdir -p /out/usr/share/sparewall \
+    && cp -r dist/sparewall-ui/browser /out/usr/share/sparewall/ui \
+    && install -D -m 0644 dist/sparewall-ui/3rdpartylicenses.txt \
+        /out/usr/share/licenses/sparewall-ui/3rdpartylicenses.txt \
+    && test -f /out/usr/share/sparewall/ui/index.html
+
+# ---------------------------------------------------------------------------
 # ulogd2 for rule logging; Fedora no longer packages it. ulogd needs
 # libnetfilter_log >= 1.0.2 and Fedora 45 has 1.0.1, so that is built too,
 # statically, and linked into the NFLOG plugin only.
@@ -126,6 +146,7 @@ RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManag
 # /usr/sbin is a symlink to /usr/bin on Fedora 45: a stage that ships a
 # real usr/sbin directory would replace it and hide every tool in it.
 COPY --from=build /out/ /
+COPY --from=ui /out/ /
 COPY --from=ulogd /out/ /
 COPY --from=selinux /out/ /
 COPY image/files/ /
