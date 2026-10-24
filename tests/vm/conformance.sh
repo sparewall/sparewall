@@ -209,7 +209,7 @@ selinux_report() { # run-command node-name
     # here): they are denied by design.
     denials=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
         | grep -oE 'avc: +denied .*' \
-        | grep -E 'scontext=[^ ]*:(sparewalld|keepalived|keepalived_unconfined_script|conntrackd|bootupd)_t:|tcontext=[^ ]*:sparewalld_[a-z_]*:' \
+        | grep -E 'scontext=[^ ]*:(sparewalld|sparewall_httpd|keepalived|keepalived_unconfined_script|conntrackd|bootupd)_t:|tcontext=[^ ]*:(sparewalld|sparewall_httpd)_[a-z_]*:' \
         | grep -vE 'denied +\{ (noatsecure|siginh|rlimitinh) \}' \
         | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=[01]//' \
         | sort | uniq -c | sort -rn) || true

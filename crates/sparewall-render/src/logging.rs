@@ -52,6 +52,7 @@ pub(crate) fn render(doc: &Document, out: &mut Rendered) {
                 unit: ULOGD_UNIT.into(),
                 subsystem: Subsystem::Logging,
                 reload: false,
+                management: false,
                 check: None,
             },
         );
@@ -74,6 +75,7 @@ pub(crate) fn render(doc: &Document, out: &mut Rendered) {
                 unit: UPLOAD_UNIT.into(),
                 subsystem: Subsystem::Logging,
                 reload: false,
+                management: false,
                 check: None,
             },
         );

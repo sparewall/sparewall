@@ -163,6 +163,11 @@ pub struct Management {
     /// SSH to the node.
     #[serde(default, skip_serializing_if = "is_default")]
     pub ssh: ManagementSsh,
+    /// Serve the web UI and the HTTP API (`sparewall-httpd`) on the HTTPS
+    /// port, next to the health endpoints. Off by default; reached only
+    /// where HTTPS is, the management network.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub web: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

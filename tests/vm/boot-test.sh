@@ -280,6 +280,45 @@ rc=0; vm "SPAREWALL_TOKEN=$OPERATOR sparewall status" || rc=$?
 [ "$rc" = 6 ] || fail "a revoked token still works (exit $rc)"
 vm 'sudo sparewall token revoke ci-viewer'
 
+log "the web UI and HTTP API (management.web)"
+# sparewalld keeps HTTPS and passes all but the health endpoints to
+# sparewall-httpd, which runs only while the document asks for it.
+status() { vm "curl -sk -o /dev/null -w '%{http_code}' $*"; }
+web_up() { # want: active or inactive
+    local deadline=$((SECONDS + 60))
+    until [ "$(vm 'systemctl is-active sparewall-httpd' || true)" = "$1" ]; do
+        [ $SECONDS -lt $deadline ] || fail "sparewall-httpd is not $1"
+        sleep 2
+    done
+}
+[ "$(status https://localhost/openapi.json)" = 404 ] || fail "the HTTP API answers before management.web"
+vm 'sudo sparewall set management.web=true --confirm 0'
+web_up active
+vm 'ps -eo label,comm' | grep -q 'sparewall_httpd_t.*sparewall-httpd' \
+    || fail "sparewall-httpd does not run in sparewall_httpd_t"
+vm 'curl -sfk https://localhost/openapi.json' | jq -e '.paths["/call/org.sparewall.Firewall.Status"]' >/dev/null \
+    || fail "no OpenAPI description at /openapi.json"
+[ "$(status https://localhost/readyz)" = 200 ] || fail "/readyz is not the coordinator's with management.web"
+WEB=$(vm 'sudo sparewall token create ci-web --role viewer -q')
+vm "curl -sfk -X POST -H 'Authorization: Bearer $WEB' https://localhost/call/org.sparewall.Firewall.Status" \
+    | jq -e '.role' >/dev/null || fail "a viewer token cannot call Status over HTTPS"
+[ "$(status -X POST -H "'Authorization: Bearer $WEB'" https://localhost/call/org.sparewall.Auth.ListUsers)" = 403 ] \
+    || fail "a viewer token listed users over HTTPS"
+vm 'sudo sparewall token revoke ci-web'
+[ "$(status -X POST -H "'Authorization: Bearer $WEB'" https://localhost/call/org.sparewall.Firewall.Status)" = 401 ] \
+    || fail "a revoked token still works over HTTPS"
+# A browser: the admin's password, then the session cookie with the
+# custom header.
+vm "curl -sk -c /tmp/jar -o /dev/null -w '%{http_code}' -X POST -H 'X-Sparewall-Request: 1' \
+    -d '{\"user\": \"admin\", \"password\": \"console only\"}' \
+    https://localhost/call/org.sparewall.Auth.Login" | grep -qx 200 || fail "the admin cannot log in over HTTPS"
+vm "curl -sfk -b /tmp/jar -X POST -H 'X-Sparewall-Request: 1' https://localhost/call/org.sparewall.Auth.ListUsers" \
+    | jq -e '.users' >/dev/null || fail "the admin's session cannot list users"
+vm 'rm -f /tmp/jar'
+vm 'sudo sparewall set management.web=false --confirm 0'
+web_up inactive
+[ "$(status https://localhost/openapi.json)" = 404 ] || fail "the HTTP API still answers after management.web=false"
+
 log "backup to a restic REST server"
 start_rest_server
 REPO=rest:http://10.0.2.2:8000/fw1

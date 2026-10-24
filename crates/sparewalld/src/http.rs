@@ -5,13 +5,18 @@
 //! Unauthenticated requests get only the level; `?verbose`,
 //! `/readyz/<check>` and `/metrics` need an API token
 //! (`Authorization: Bearer`), unless `metrics.mode` is `external`.
+//!
+//! Every other path goes to `sparewall-httpd` over its socket, when the
+//! document turns it on (`management.web`): the web UI and the HTTP API
+//! share this port and its certificate.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use http_body_util::Full;
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -143,15 +148,101 @@ impl Tls {
     }
 }
 
-fn reply(status: u16, body: Value) -> Response<Full<Bytes>> {
+/// A reply's body: the coordinator's own, or `sparewall-httpd`'s streamed
+/// through.
+type Body = BoxBody<Bytes, hyper::Error>;
+
+fn full(b: impl Into<Bytes>) -> Body {
+    Full::new(b.into()).map_err(|never| match never {}).boxed()
+}
+
+fn reply(status: u16, body: Value) -> Response<Body> {
     let mut text = body.to_string();
     text.push('\n');
     Response::builder()
         .status(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
         .header("content-type", "application/json")
         .header("cache-control", "no-store")
-        .body(Full::new(Bytes::from(text)))
+        .body(full(text))
         .expect("valid response")
+}
+
+/// Paths the coordinator answers itself; the rest are `sparewall-httpd`'s.
+fn health_path(path: &str) -> bool {
+    matches!(path, "/livez" | "/readyz" | "/healthz" | "/metrics")
+        || path.starts_with("/readyz/")
+        || path.starts_with("/healthz/")
+}
+
+/// Headers that describe one connection, not the request (RFC 9110
+/// section 7.6.1), which a proxy drops in both directions.
+const HOP_BY_HOP: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+fn drop_hop_by_hop(h: &mut hyper::HeaderMap) {
+    let named: Vec<hyper::header::HeaderName> = h
+        .get_all(hyper::header::CONNECTION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|n| n.trim().parse().ok())
+        .collect();
+    for n in named {
+        h.remove(n);
+    }
+    for n in HOP_BY_HOP {
+        h.remove(*n);
+    }
+}
+
+/// Pass a request to `sparewall-httpd` and stream its reply back. Its
+/// socket exists only while the document turns it on, so without one the
+/// path is simply not found.
+async fn proxy<B>(mut req: Request<B>, socket: &Path) -> Response<Body>
+where
+    B: hyper::body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let stream = match tokio::net::UnixStream::connect(socket).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return reply(404, json!({"error": "not found"}));
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "sparewall-httpd did not answer");
+            return reply(502, json!({"error": "the web UI did not answer"}));
+        }
+    };
+    let (mut sender, conn) = match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await
+    {
+        Ok(x) => x,
+        Err(e) => {
+            tracing::warn!(error = %e, "sparewall-httpd did not answer");
+            return reply(502, json!({"error": "the web UI did not answer"}));
+        }
+    };
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    drop_hop_by_hop(req.headers_mut());
+    match sender.send_request(req).await {
+        Ok(r) => {
+            let (mut parts, body) = r.into_parts();
+            drop_hop_by_hop(&mut parts.headers);
+            Response::from_parts(parts, body.boxed())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "sparewall-httpd did not answer");
+            reply(502, json!({"error": "the web UI did not answer"}))
+        }
+    }
 }
 
 async fn handle(
@@ -159,8 +250,12 @@ async fn handle(
     _peer: SocketAddr,
     core: Core,
     events: broadcast::Sender<Value>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+    web: Arc<PathBuf>,
+) -> Result<Response<Body>, Infallible> {
     let path = req.uri().path().trim_end_matches('/').to_string();
+    if !health_path(&path) {
+        return Ok(proxy(req, &web).await);
+    }
     let verbose_wanted = req.uri().query().is_some_and(|q| {
         q.split('&')
             .any(|p| p == "verbose" || p.starts_with("verbose="))
@@ -229,7 +324,7 @@ async fn handle(
                 .status(200)
                 .header("content-type", "text/plain; version=0.0.4")
                 .header("cache-control", "no-store")
-                .body(Full::new(Bytes::from(text)))
+                .body(full(text))
                 .expect("valid response"),
             Ok(None) => reply(
                 403,
@@ -242,9 +337,6 @@ async fn handle(
         .strip_prefix("/readyz/")
         .or_else(|| path.strip_prefix("/healthz/"))
         .map(str::to_string);
-    if path != "/readyz" && path != "/healthz" && check.is_none() {
-        return Ok(reply(404, json!({"error": "not found"})));
-    }
     let r = with_core(&core, &events, |c| Ok((c.health()?, role_of(c)?))).await;
     let (health, role) = match r {
         Ok(v) => v,
@@ -283,13 +375,16 @@ async fn handle(
     Ok(reply(status, json!({"level": health.level.as_str()})))
 }
 
-/// Serve the health endpoints until the listener fails.
+/// Serve the health endpoints, and pass the rest to `sparewall-httpd`'s
+/// socket at `web`, until the listener fails.
 pub async fn serve(
     listener: TcpListener,
     tls: Arc<Tls>,
     core: Core,
     events: broadcast::Sender<Value>,
+    web: PathBuf,
 ) {
+    let web = Arc::new(web);
     loop {
         let (tcp, peer) = match listener.accept().await {
             Ok(x) => x,
@@ -301,6 +396,7 @@ pub async fn serve(
         let acceptor = tls.acceptor();
         let core = core.clone();
         let events = events.clone();
+        let web = web.clone();
         tokio::spawn(async move {
             let tls = match tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -312,7 +408,7 @@ pub async fn serve(
                 _ => return,
             };
             let svc = hyper::service::service_fn(move |req| {
-                handle(req, peer, core.clone(), events.clone())
+                handle(req, peer, core.clone(), events.clone(), web.clone())
             });
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(tls), svc)
@@ -347,4 +443,84 @@ async fn node_exporter() -> Option<String> {
         .await
         .ok()
         .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_paths_stay_here() {
+        for p in ["/livez", "/readyz", "/readyz/nft", "/healthz", "/metrics"] {
+            assert!(health_path(p), "{p}");
+        }
+        for p in [
+            "",
+            "/call/org.sparewall.Firewall.Status",
+            "/openapi.json",
+            "/livezz",
+        ] {
+            assert!(!health_path(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn hop_by_hop_headers_are_dropped() {
+        let mut h = hyper::HeaderMap::new();
+        h.insert("connection", "close, x-private".parse().unwrap());
+        h.insert("x-private", "1".parse().unwrap());
+        h.insert("keep-alive", "timeout=5".parse().unwrap());
+        h.insert("cookie", "sparewall_session=t".parse().unwrap());
+        drop_hop_by_hop(&mut h);
+        assert_eq!(h.len(), 1, "{h:?}");
+        assert!(h.contains_key("cookie"));
+    }
+
+    #[tokio::test]
+    async fn requests_reach_the_web_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("http.sock");
+        let r = proxy(Request::new(Full::new(Bytes::new())), &socket).await;
+        assert_eq!(r.status(), 404, "no socket: the web UI is off");
+
+        // A stand-in for sparewall-httpd that echoes what it was sent.
+        let l = tokio::net::UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            let svc = hyper::service::service_fn(|req: Request<Incoming>| async move {
+                let line = format!(
+                    "{} {} {:?} {:?}",
+                    req.method(),
+                    req.uri(),
+                    req.headers().get("cookie"),
+                    req.headers().get("x-private"),
+                );
+                let body = req.into_body().collect().await?.to_bytes();
+                let r = Response::builder()
+                    .header("connection", "keep-alive")
+                    .body(Full::new(Bytes::from(format!("{line} {body:?}"))))
+                    .unwrap();
+                Ok::<_, hyper::Error>(r)
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(s), svc)
+                .await;
+        });
+        let req = Request::post("/call/org.sparewall.Firewall.Status?x=1")
+            .header("host", "fw1")
+            .header("cookie", "sparewall_session=t")
+            .header("connection", "x-private")
+            .header("x-private", "1")
+            .body(Full::new(Bytes::from_static(b"{}")))
+            .unwrap();
+        let r = proxy(req, &socket).await;
+        assert_eq!(r.status(), 200);
+        assert!(r.headers().get("connection").is_none());
+        let body = r.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            body,
+            "POST /call/org.sparewall.Firewall.Status?x=1 \
+             Some(\"sparewall_session=t\") None b\"{}\""
+        );
+    }
 }

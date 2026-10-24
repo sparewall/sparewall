@@ -203,6 +203,19 @@ fn changed_subsystems() {
 }
 
 #[test]
+fn web_runs_only_when_enabled() {
+    let mut doc = example("standalone.yaml");
+    let off = render(&doc, "fw1").unwrap();
+    assert!(!off.meta.services.contains_key("web"));
+    doc.management.web = true;
+    let on = render(&doc, "fw1").unwrap();
+    assert_eq!(on.meta.services["web"].unit, sparewall_render::web::UNIT);
+    // No files of its own, and no new rules: HTTPS is already open where
+    // the health endpoints are.
+    assert_eq!(off.files, on.files);
+}
+
+#[test]
 fn unknown_node_is_rejected() {
     let doc = example("standalone.yaml");
     assert!(render(&doc, "fw9").is_err());

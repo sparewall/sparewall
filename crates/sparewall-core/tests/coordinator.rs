@@ -731,6 +731,35 @@ fn services_follow_generations() {
 }
 
 #[test]
+fn web_runs_while_enabled_and_never_fails_health() {
+    let mut t = setup();
+    t.c.apply(example(), &opts(0, None)).unwrap();
+    let web = sparewall_render::web::UNIT.to_string();
+    assert!(!t.c.system().running.contains(&web));
+    t.c.merge(&json!({"management": {"web": true}}), &opts(1, None))
+        .unwrap();
+    assert!(t.c.system().running.contains(&web));
+    // Down, the web UI degrades health but does not fail it: it carries
+    // no traffic, so it must not move the gateway address.
+    t.c.system().running.retain(|u| *u != web);
+    let h = t.c.health().unwrap();
+    let services = h.check("services").unwrap();
+    assert_eq!(services.level, Level::Degraded, "{services:?}");
+    assert!(services.message.contains(&web), "{services:?}");
+    // A provider down as well fails it.
+    t.c.system()
+        .running
+        .retain(|u| u != "sparewall-kea.service");
+    assert_eq!(
+        t.c.health().unwrap().check("services").unwrap().level,
+        Level::Failed
+    );
+    t.c.merge(&json!({"management": {"web": false}}), &opts(2, None))
+        .unwrap();
+    assert!(!t.c.system().running.contains(&web));
+}
+
+#[test]
 fn ssh_password_opt_in_reloads_sshd() {
     use sparewall_render::Subsystem;
     let mut t = setup();

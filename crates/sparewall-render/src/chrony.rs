@@ -42,6 +42,7 @@ fn service(out: &mut Rendered) {
             unit: UNIT.into(),
             subsystem: Subsystem::Ntp,
             reload: false,
+            management: false,
             check: Some(CheckSpec {
                 container: None,
                 mount: DIR.into(),

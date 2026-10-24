@@ -135,6 +135,34 @@ After five failed logins, a user's logins are refused for 15 minutes
 names that are not users are counted apart, so they cannot lock a user
 out.
 
+### The web UI and HTTP API
+
+A node serves neither until the document turns them on:
+
+```shell
+sparewall set management.web=true
+```
+
+They share the HTTPS port with the health endpoints, so they are
+reached where those are, on the management network, with the same
+certificate (the `mgmt` one from `tls.certificates`, or the node's
+self-signed one). The coordinator keeps the port and passes every
+other path to `sparewall-httpd`, a sandboxed service that runs only
+while `management.web` is on and holds no authority of its own: each
+call is made with the caller's token or session, under that role.
+
+Scripts call the API with a token:
+
+```shell
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+    https://fw1.example.net/call/org.sparewall.Firewall.Status
+```
+
+`/openapi.json` describes every call; [docs/api](api/README.md) has the
+conventions, errors and statuses. The UI itself is not in the image
+yet. Turning `management.web` off stops the service, and SSH, the
+console and the anti-lockout rule never depend on it.
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:

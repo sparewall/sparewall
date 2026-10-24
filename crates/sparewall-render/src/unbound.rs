@@ -126,6 +126,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             unit: UNIT.into(),
             subsystem: Subsystem::Dns,
             reload: true,
+            management: false,
             check: Some(CheckSpec {
                 container: Some(CONTAINER.into()),
                 mount: "/etc/unbound".into(),

@@ -1951,19 +1951,35 @@ impl<S: System> Coordinator<S> {
         let units: Vec<String> = r.meta.services.values().map(|s| s.unit.clone()).collect();
         if !units.is_empty() {
             let states = self.sys.unit_states(&units);
-            let bad: Vec<String> = states
+            let management = |u: &str| {
+                r.meta
+                    .services
+                    .values()
+                    .any(|s| s.unit == u && s.management)
+            };
+            let bad: Vec<(bool, String)> = states
                 .iter()
                 .filter(|(_, st)| st.as_str() != "active")
-                .map(|(u, st)| format!("{u} is {st}"))
+                .map(|(u, st)| (management(u), format!("{u} is {st}")))
                 .collect();
+            let words = |b: &[(bool, String)]| {
+                b.iter()
+                    .map(|(_, w)| w.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            // A management service down (the web UI) leaves traffic
+            // flowing, so it never moves the gateway address.
             checks.push(if bad.is_empty() {
                 Check::new(
                     "services",
                     Level::Ok,
                     format!("{} services running", units.len()),
                 )
+            } else if bad.iter().all(|(m, _)| *m) {
+                Check::new("services", Level::Degraded, words(&bad))
             } else {
-                Check::new("services", Level::Failed, bad.join(", "))
+                Check::new("services", Level::Failed, words(&bad))
             });
         }
 
