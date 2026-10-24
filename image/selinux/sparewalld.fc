@@ -1,8 +1,11 @@
 /usr/bin/sparewalld	--	gen_context(system_u:object_r:sparewalld_exec_t,s0)
+/usr/bin/sparewall-httpd	--	gen_context(system_u:object_r:sparewall_httpd_exec_t,s0)
 /var/lib/sparewall(/.*)?	gen_context(system_u:object_r:sparewalld_var_lib_t,s0)
 /run/sparewall(/.*)?	gen_context(system_u:object_r:sparewalld_var_run_t,s0)
 /run/sparewall/(dhcp|dns)(/.*)?	gen_context(system_u:object_r:sparewalld_provider_conf_t,s0)
 /run/sparewall-api(/.*)?	gen_context(system_u:object_r:sparewalld_api_var_run_t,s0)
+/run/sparewall-httpd(/.*)?	gen_context(system_u:object_r:sparewall_httpd_var_run_t,s0)
+/usr/share/sparewall/ui(/.*)?	gen_context(system_u:object_r:sparewall_httpd_content_t,s0)
 /run/sparewall/ssh(/.*)?	gen_context(system_u:object_r:sparewalld_sshd_conf_t,s0)
 /usr/lib/systemd/system/sparewall.*	--	gen_context(system_u:object_r:sparewalld_unit_file_t,s0)
 # Units it manages that have no type of their own.

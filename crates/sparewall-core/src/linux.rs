@@ -66,6 +66,7 @@ pub const PROVIDER_UNITS: &[&str] = &[
     "conntrackd.service",
     "sparewall-ulogd.service",
     "systemd-journal-upload.service",
+    sparewall_render::web::UNIT,
 ];
 
 impl Default for Linux {

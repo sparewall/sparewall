@@ -205,6 +205,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
             unit: UNIT.into(),
             subsystem: Subsystem::Keepalived,
             reload: true,
+            management: false,
             // keepalived insists the interfaces exist; check in a private
             // network namespace holding dummy links of the same names.
             check: Some(CheckSpec {

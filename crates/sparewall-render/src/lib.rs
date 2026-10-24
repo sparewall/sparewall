@@ -19,6 +19,7 @@ pub mod nft;
 pub mod ssh;
 pub mod sysctl;
 pub mod unbound;
+pub mod web;
 
 /// Where secrets and node keys are made available to daemons at runtime.
 /// Where networkd reads WireGuard private keys: its own runtime directory,
@@ -56,6 +57,7 @@ pub enum Subsystem {
     Ntp,
     Logging,
     Ssh,
+    Web,
 }
 
 impl Subsystem {
@@ -73,6 +75,7 @@ impl Subsystem {
             Subsystem::Ntp => "ntp",
             Subsystem::Logging => "logging",
             Subsystem::Ssh => "ssh",
+            Subsystem::Web => "web",
         }
     }
 
@@ -88,6 +91,7 @@ impl Subsystem {
             Subsystem::Ntp,
             Subsystem::Logging,
             Subsystem::Ssh,
+            Subsystem::Web,
         ]
     }
 }
@@ -113,6 +117,10 @@ pub struct Service {
     /// Whether a config change can be applied with a reload rather than a
     /// restart.
     pub reload: bool,
+    /// A management service, which carries no traffic: down, it degrades
+    /// health but never fails it, so it cannot cause a failover.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub management: bool,
     /// How to dry-run the rendered files with the daemon's own checker.
     pub check: Option<CheckSpec>,
 }
@@ -208,6 +216,7 @@ pub fn render(doc: &Document, node: &str) -> Result<Rendered, Error> {
     conntrackd::render(doc, node, &mut out);
     logging::render(doc, &mut out);
     ssh::render(doc, &mut out);
+    web::render(doc, &mut out);
     Ok(out)
 }
 

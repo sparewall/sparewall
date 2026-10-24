@@ -12,6 +12,7 @@ cd "$(dirname "$0")/../../image/files/usr/lib/systemd/system"
 declare -A LIMIT=(
     [sparewalld.service]=45
     [sparewall-ulogd.service]=60
+    [sparewall-httpd.service]=10
 )
 # Unsandboxed by design: sparewall-early runs before udev to install the
 # live generation and load the firewall; sparewall-run@ runs the commands

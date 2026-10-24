@@ -961,8 +961,8 @@ A node serves no web UI and no HTTP API until the document enables them (`manage
 | Piece | Where | Role |
 | --- | --- | --- |
 | The coordinator | This repository | Serves a restricted socket next to the root-only one. A client binds its connection to a principal with a token before anything else, and the coordinator checks every call against that principal's role and logs every mutation with it (#11). The root-only socket is unchanged |
-| `sparewall-httpd` | This repository | An unprivileged, sandboxed Rust service with its own SELinux domain. It terminates TLS, authenticates browsers and API clients, calls the restricted socket on their behalf, and serves the UI's files |
-| The UI | Its own repository | Angular with Angular Material, built into a static bundle; the image includes a pinned, signed release of it. No container, since `sparewall-httpd` serves the files |
+| `sparewall-httpd` | This repository | An unprivileged, sandboxed Rust service with its own SELinux domain and no network: it serves plain HTTP on a Unix socket. It authenticates browsers and API clients, calls the restricted socket on their behalf, and serves the UI's files. The coordinator keeps the HTTPS port and its certificate, answers the health endpoints itself, and passes every other request to this socket, so the UI, the API and health checks share one port and one certificate, and the service never holds a private key |
+| The UI | This repository (`ui/`) | Angular with Angular Material, built into a static bundle that the image includes. No container, since `sparewall-httpd` serves the files. CI runs the Rust jobs and the UI's jobs only for changes that touch them |
 
 The HTTP API follows the conventions of systemd's [varlink-http-bridge](https://github.com/systemd/varlink-http-bridge): `POST /call/<interface.Method>` with the parameters as JSON, and streamed replies (`more`) as `application/json-seq`. Generic Varlink-over-HTTP clients then work with a token, and an OpenAPI description generated from the same interfaces serves the UI and scripts. The bridge itself is not used: it authenticates callers but does not authorize them, runs as root, and connects to each socket as itself, so the coordinator could not tell an `admin` from a `viewer`, and it has no login or session model for browsers.
 
@@ -987,11 +987,10 @@ Sparewall lives at [github.com/sparewall](https://github.com/sparewall); `sparew
 
 | Repository | Contents |
 | --- | --- |
-| `sparewall/sparewall` | Cargo workspace (`sparewalld`, `sparewall`, schema, renderers, providers), Containerfile and Quadlet units, VM test suites, example documents, and the documentation under `docs/` |
+| `sparewall/sparewall` | Cargo workspace (`sparewalld`, `sparewall`, `sparewall-httpd`, schema, renderers, providers), the web UI (`ui/`), Containerfile and Quadlet units, VM test suites, example documents, and the documentation under `docs/` |
 | `sparewall/.github` | Organization profile, shared workflows, security policy, contributing guide |
-| Web UI repository | The Angular UI, released as a signed static bundle that the image includes; created when milestone 7 starts |
 
-The schema, coordinator, providers and image live in one repository because they change in lockstep: the image pins the daemon versions the providers render for, and one release tag means one tested image. Documentation lives beside the code so it changes in the same pull request. Rust crates stay unpublished on crates.io until there is a reason to publish them, since crate names cannot be reclaimed.
+The schema, coordinator, providers, web UI and image live in one repository because they change in lockstep (the UI is a client of the HTTP API that the same release freezes): the image pins the daemon versions the providers render for, and one release tag means one tested image. Documentation lives beside the code so it changes in the same pull request. Rust crates stay unpublished on crates.io until there is a reason to publish them, since crate names cannot be reclaimed.
 
 ### Licensing
 
@@ -1024,7 +1023,7 @@ Build bottom-up: a bootable image, then a standalone firewall, then services, th
 | 4 | Access and secrets | Secret store; users, tokens and roles; ACME (RFC 2136 and lego) with self-signed fallback; remote-access WireGuard | Token and role tests; certificate issuance against a test CA; VPN client survives failover |
 | 5 | Releases and upgrades | `sparewall upgrade` with channels and health gates; signature enforcement on nodes; schema versioning and migrations; installer images on GitHub Releases | Rolling upgrade from the previous release; schema upgrade and downgrade; unsigned image refused |
 | 6 | First production deployments | 0.x releases: hardening pass (SELinux module, sandboxing score), benchmarks on real hardware, documentation | Runs in production at two sites; restore drill passes on real hardware |
-| 7 | Web UI and HTTP API | Role checks on a restricted socket (#11); `sparewall-httpd`; the UI in its own repository; opt-in through the document | The UI and the HTTP API drive every operation the CLI does, under each role's limits; 1.0 released, freezing the schema, the Varlink API and the HTTP API |
+| 7 | Web UI and HTTP API | Role checks on a restricted socket (#11); `sparewall-httpd`; the UI; opt-in through the document | The UI and the HTTP API drive every operation the CLI does, under each role's limits; 1.0 released, freezing the schema, the Varlink API and the HTTP API |
 
 Later features (multiple WANs and WAN failover, IPv6 routing, DDNS, IDS/IPS, dynamic routing) follow 1.0 and slot in as providers or schema additions.
 

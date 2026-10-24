@@ -1,0 +1,51 @@
+[Unit]
+Description=Sparewall web UI and HTTP API
+Documentation=https://github.com/sparewall/sparewall
+# Started and stopped by the coordinator, as the document asks
+# (management.web); never enabled. sparewalld serves HTTPS and passes it
+# everything but the health endpoints over this unit's socket.
+After=sparewalld.service
+
+[Service]
+ExecStart=/usr/bin/sparewall-httpd
+Restart=on-failure
+RestartSec=2s
+Environment=SPAREWALL_LOG=info
+# http.sock, which only root (the coordinator) reaches besides itself.
+RuntimeDirectory=sparewall-httpd
+RuntimeDirectoryMode=0750
+UMask=0077
+
+# Sandboxing (design: "Host hardening"). It holds no authority: it talks
+# only to the coordinator's restricted socket, with each caller's token,
+# and serves the UI's files from /usr.
+DynamicUser=yes
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+PrivateUsers=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+DevicePolicy=closed

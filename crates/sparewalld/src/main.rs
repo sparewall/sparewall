@@ -68,6 +68,10 @@ struct Args {
     /// Address for the HTTPS health endpoints, or `off`.
     #[arg(long, env = "SPAREWALL_HTTPS", default_value = "[::]:443")]
     https: String,
+    /// `sparewall-httpd`'s socket, which the HTTPS listener passes every
+    /// path but the health endpoints to.
+    #[arg(long, env = "SPAREWALL_WEB_SOCKET", default_value = sparewall_render::web::SOCKET)]
+    web_socket: PathBuf,
     /// Run a spooled command (the body of sparewall-run@.service).
     #[arg(long, hide = true, value_name = "ID")]
     run: Option<String>,
@@ -390,13 +394,19 @@ fn run(args: Args) -> Result<(), String> {
                 let l = tokio::net::TcpListener::bind(&args.https)
                     .await
                     .map_err(|e| format!("{}: {e}", args.https))?;
-                tracing::info!(addr = %args.https, "serving health endpoints");
+                tracing::info!(addr = %args.https, "serving HTTPS");
                 Ok::<_, String>((l, tls))
             };
             match setup.await {
                 Ok((l, tls)) => {
                     tokio::join!(
-                        http::serve(l, tls.clone(), core.clone(), tx.clone()),
+                        http::serve(
+                            l,
+                            tls.clone(),
+                            core.clone(),
+                            tx.clone(),
+                            args.web_socket.clone()
+                        ),
                         acme::acme_loop(core.clone(), tx.clone(), pair.clone(), tls),
                     );
                 }

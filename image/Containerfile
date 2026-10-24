@@ -9,7 +9,8 @@
 
 
 # ---------------------------------------------------------------------------
-# The coordinator and CLI, built against the same Fedora release.
+# The coordinator, CLI and HTTP gateway, built against the same Fedora
+# release.
 FROM quay.io/fedora/fedora:45 AS build
 RUN dnf -y install --setopt=install_weak_deps=False cargo rust gcc \
     && dnf clean all
@@ -17,12 +18,15 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
 COPY examples examples
+# sparewall-httpd serves the API description it was built with.
+COPY docs/api/openapi.json docs/api/openapi.json
 # The version the binaries report; CI passes .github/version.sh's.
 ARG SPAREWALL_VERSION=
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p sparewalld -p sparewall \
+    cargo build --release --locked -p sparewalld -p sparewall -p sparewall-httpd \
     && install -D -m 0755 target/release/sparewalld /out/usr/bin/sparewalld \
+    && install -D -m 0755 target/release/sparewall-httpd /out/usr/bin/sparewall-httpd \
     && install -D -m 0755 target/release/sparewall /out/usr/bin/sparewall \
     && /out/usr/bin/sparewall completion bash > /out/sparewall.bash \
     && install -D -m 0644 /out/sparewall.bash /out/usr/share/bash-completion/completions/sparewall \

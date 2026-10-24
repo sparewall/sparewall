@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.15.0)
+policy_module(sparewalld, 0.16.0)
 
 ########################################
 #
@@ -287,6 +287,43 @@ allow sparewalld_t container_file_t:dir search;
 allow sparewalld_t container_file_t:file { open read };
 allow sparewalld_t container_file_t:sock_file write;
 allow sparewalld_t container_t:unix_stream_socket connectto;
+
+########################################
+#
+# sparewall-httpd, the web UI and HTTP API (management.web). It runs as a
+# dynamic user with no capabilities and no network: it serves plain HTTP
+# on its own socket, which only the coordinator connects to (passing on
+# HTTPS), and calls the coordinator's restricted socket with each
+# caller's token. The suites fail on its denials too.
+#
+
+type sparewall_httpd_t;
+type sparewall_httpd_exec_t;
+init_daemon_domain(sparewall_httpd_t, sparewall_httpd_exec_t)
+init_nnp_daemon_domain(sparewall_httpd_t)
+# /run/sparewall-httpd: http.sock (systemd creates the directory,
+# RuntimeDirectory=).
+type sparewall_httpd_var_run_t;
+files_pid_file(sparewall_httpd_var_run_t)
+
+allow sparewall_httpd_t self:unix_stream_socket create_stream_socket_perms;
+manage_sock_files_pattern(sparewall_httpd_t, sparewall_httpd_var_run_t, sparewall_httpd_var_run_t)
+stream_connect_pattern(sparewall_httpd_t, sparewalld_api_var_run_t, sparewalld_api_var_run_t, sparewalld_t)
+stream_connect_pattern(sparewalld_t, sparewall_httpd_var_run_t, sparewall_httpd_var_run_t, sparewall_httpd_t)
+# The UI's files, /usr/share/sparewall/ui, and nothing else of /usr's
+# beyond the directories on the way there.
+type sparewall_httpd_content_t;
+files_type(sparewall_httpd_content_t)
+files_search_usr(sparewall_httpd_t)
+read_files_pattern(sparewall_httpd_t, sparewall_httpd_content_t, sparewall_httpd_content_t)
+list_dirs_pattern(sparewall_httpd_t, sparewall_httpd_content_t, sparewall_httpd_content_t)
+# The runtime sizes its thread pool from the CPUs it may use: the online
+# CPUs in sysfs and its cgroup's CPU quota.
+dev_read_sysfs(sparewall_httpd_t)
+fs_search_cgroup_dirs(sparewall_httpd_t)
+fs_read_cgroup_files(sparewall_httpd_t)
+# Its log lines reach the journal on stderr; systemd's notify socket is
+# not used (Type=simple).
 
 ########################################
 #

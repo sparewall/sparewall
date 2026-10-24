@@ -870,6 +870,10 @@
           "ssh": {
             "$ref": "#/components/schemas/Document.ManagementSsh",
             "description": "SSH to the node."
+          },
+          "web": {
+            "description": "Serve the web UI and the HTTP API (`sparewall-httpd`) on the HTTPS\nport, next to the health endpoints. Off by default; reached only\nwhere HTTPS is, the management network.",
+            "type": "boolean"
           }
         },
         "required": [
