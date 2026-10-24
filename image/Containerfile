@@ -51,8 +51,9 @@ RUN npm run api:check \
     && npm run build \
     && mkdir -p /out/usr/share/sparewall \
     && cp -r dist/sparewall-ui/browser /out/usr/share/sparewall/ui \
-    && install -D -m 0644 dist/sparewall-ui/3rdpartylicenses.txt \
-        /out/usr/share/licenses/sparewall-ui/3rdpartylicenses.txt \
+    && mkdir -p /out/usr/share/licenses/sparewall-ui \
+    && node scripts/licenses.mjs --notices /out/usr/share/licenses/sparewall-ui/NOTICES \
+    && cp /out/usr/share/licenses/sparewall-ui/NOTICES /out/usr/share/sparewall/ui/licenses.txt \
     && test -f /out/usr/share/sparewall/ui/index.html
 
 # ---------------------------------------------------------------------------

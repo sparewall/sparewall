@@ -33,5 +33,9 @@ fails when they differ (`npm run api:check`).
   gateway's Content-Security-Policy allows only the node itself (so no
   inline scripts either; critical-CSS inlining is off for that reason).
 - Every package the bundle ships must have a license on the list in
-  `scripts/licenses.mjs` (`npm run licenses`), and no advisories
-  (`npm audit --omit=dev`).
+  `scripts/licenses.mjs` (`npm run licenses`) and a license file, and no
+  advisories (`npm audit --omit=dev`). The image ships every one's
+  license text in `/usr/share/licenses/sparewall-ui/NOTICES`, the fonts'
+  included (Roboto, OFL-1.1; Material Symbols, Apache-2.0), and the UI
+  serves the same text at `/licenses.txt`, since the fonts go to every
+  browser that opens it.

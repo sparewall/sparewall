@@ -304,6 +304,8 @@ vm 'curl -sfk https://localhost/' | grep -q '<app-root' || fail "no web UI at /"
 vm 'curl -sfk https://localhost/history' | grep -q '<app-root' || fail "the UI's routes do not lead to its page"
 main_js=$(vm 'curl -sfk https://localhost/' | grep -o 'main-[A-Za-z0-9]*\.js' | head -1)
 [ "$(status "https://localhost/$main_js")" = 200 ] || fail "the UI's script $main_js is not served"
+vm 'curl -sfk https://localhost/licenses.txt' | grep -q 'SIL OPEN FONT LICENSE' \
+    || fail "the UI does not serve its third-party licenses"
 vm 'ls -Zd /usr/share/sparewall/ui' | grep -q sparewall_httpd_content_t \
     || fail "the UI's files are not labelled sparewall_httpd_content_t"
 WEB=$(vm 'sudo sparewall token create ci-web --role viewer -q')
