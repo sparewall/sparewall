@@ -29,6 +29,12 @@ export const routes: Routes = [
         canDeactivate: [keepEdits],
       },
       {
+        path: 'policy',
+        title: 'Zone policy · Sparewall',
+        loadComponent: () => import('./features/policy/policy').then((m) => m.PolicyMatrix),
+        canDeactivate: [keepEdits],
+      },
+      {
         path: 'users',
         title: 'Users · Sparewall',
         canActivate: [adminOnly],

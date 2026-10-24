@@ -1,0 +1,133 @@
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+h1 {
+  margin: 0;
+}
+
+.generation,
+.intro,
+.legend {
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.problems,
+.problem {
+  color: var(--mat-sys-error);
+}
+
+.scroll {
+  overflow-x: auto;
+}
+
+.matrix {
+  border-collapse: separate;
+  border-spacing: 4px;
+
+  th {
+    font: var(--mat-sys-label-large);
+    padding: 4px 8px;
+    white-space: nowrap;
+  }
+
+  th[scope='row'] {
+    text-align: right;
+  }
+
+  .corner {
+    font: var(--mat-sys-label-small);
+    color: var(--mat-sys-on-surface-variant);
+    text-align: left;
+  }
+}
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 128px;
+  min-height: 56px;
+  padding: 6px 8px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font: var(--mat-sys-body-small);
+  text-align: left;
+
+  .action {
+    font: var(--mat-sys-label-large);
+  }
+
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .badge {
+    padding: 0 6px;
+    border-radius: 8px;
+    background: color-mix(in srgb, currentColor 12%, transparent);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--mat-sys-primary);
+    outline-offset: 2px;
+  }
+}
+
+.accept {
+  background: var(--mat-sys-primary-container);
+  color: var(--mat-sys-on-primary-container);
+}
+
+.drop {
+  background: var(--mat-sys-error-container);
+  color: var(--mat-sys-on-error-container);
+}
+
+.reject {
+  background: var(--mat-sys-tertiary-container);
+  color: var(--mat-sys-on-tertiary-container);
+}
+
+.fallback {
+  background: transparent;
+  border: 2px dashed var(--mat-sys-outline-variant);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.edited {
+  border: 2px solid var(--mat-sys-tertiary);
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font: var(--mat-sys-body-small);
+}
+
+.swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  margin-left: 8px;
+}
+
+.edited-swatch {
+  border: 2px solid var(--mat-sys-tertiary);
+}

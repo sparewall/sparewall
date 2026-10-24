@@ -4,10 +4,14 @@ import { CanDeactivateFn } from '@angular/router';
 import { map } from 'rxjs';
 
 import { ConfirmData, ConfirmDialog } from '../../shared/confirm-dialog';
-import type { Config } from './config';
 
-/** Asks before leaving the editor with changes not yet applied. */
-export const keepEdits: CanDeactivateFn<Config> = (editor) => {
+/** A page that may hold edits not yet applied. */
+export interface HoldsEdits {
+  hasUnappliedChanges(): boolean;
+}
+
+/** Asks before leaving such a page with its edits. */
+export const keepEdits: CanDeactivateFn<HoldsEdits> = (editor) => {
   if (!editor.hasUnappliedChanges()) return true;
   return inject(MatDialog)
     .open<ConfirmDialog, ConfirmData, boolean>(ConfirmDialog, {
