@@ -28,7 +28,8 @@ curl -sk -H "Authorization: Bearer $TOKEN" --json '{"limit": 5}' \
 
 A method that streams (`Subscribe`) takes `?more=true` and answers with
 an RFC 7464 JSON text sequence (`application/json-seq`): each reply is
-a record (RS, JSON, LF), until the connection closes.
+a record (RS, JSON, LF), until the connection closes. Any other
+method refuses `?more=true` with a 400.
 
 ## Errors
 

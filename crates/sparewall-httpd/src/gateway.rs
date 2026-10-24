@@ -154,8 +154,7 @@ struct DynMethod<'a> {
 /// needed once zlink takes both (z-galaxy/zlink#275 and #324).
 fn takes_parameters(method: &str) -> bool {
     static NONE: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-        let doc: Value = serde_json::from_str(OPENAPI).unwrap_or_default();
-        doc["paths"]
+        DESCRIPTION["paths"]
             .as_object()
             .into_iter()
             .flatten()
@@ -169,6 +168,29 @@ fn takes_parameters(method: &str) -> bool {
     });
     !NONE.iter().any(|m| m == method)
 }
+
+/// Methods that stream replies, from the description. Only these take
+/// `?more=true`: any other would answer down the stream path, where a
+/// login's token would reach the page instead of the cookie.
+fn streams(method: &str) -> bool {
+    static MORE: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        DESCRIPTION["paths"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(_, op)| {
+                op.pointer("/post/parameters")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ps| ps.iter().any(|p| p["name"] == "more"))
+            })
+            .filter_map(|(p, _)| p.strip_prefix("/call/").map(str::to_string))
+            .collect()
+    });
+    method != LOGIN && MORE.iter().any(|m| m == method)
+}
+
+static DESCRIPTION: std::sync::LazyLock<Value> =
+    std::sync::LazyLock::new(|| serde_json::from_str(OPENAPI).unwrap_or_default());
 
 /// A Varlink error reply.
 #[derive(Debug, Deserialize)]
@@ -291,6 +313,14 @@ impl Gateway {
                 );
             }
         };
+        if more && !streams(method) {
+            return refusal(
+                400,
+                "org.varlink.service.InvalidParameter",
+                json!({"parameter": "more"}),
+                &format!("{method} does not stream, so it takes no ?more=true"),
+            );
+        }
         let creds = match credentials(&req) {
             Ok(c) => c,
             Err(reason) => return unauthenticated(&reason),
@@ -541,5 +571,8 @@ mod tests {
         assert_eq!(flag(Some("a=1&more"), "more"), Ok(true));
         assert_eq!(flag(None, "more"), Ok(false));
         assert!(flag(Some("more=yes"), "more").is_err());
+        assert!(streams("org.sparewall.Firewall.Subscribe"));
+        assert!(!streams(LOGIN));
+        assert!(!streams("org.sparewall.Firewall.GetConfig"));
     }
 }

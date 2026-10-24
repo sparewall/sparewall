@@ -354,6 +354,14 @@ fn browser_sessions() {
         json!({"user": "alice", "password": "no"}),
     );
     assert_eq!(r.status, 401);
+    let r = call(
+        &n,
+        "org.sparewall.Auth.Login?more=true",
+        &[csrf],
+        login.clone(),
+    );
+    assert_eq!(r.status, 400, "a login does not stream its token");
+    assert_eq!(r.json()["parameters"], json!({"parameter": "more"}));
     let r = call(&n, "org.sparewall.Auth.Login", &[csrf], login);
     assert_eq!(r.status, 200, "{}", r.json());
     assert!(
