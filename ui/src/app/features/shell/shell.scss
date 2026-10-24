@@ -31,3 +31,19 @@ mat-sidenav {
 mat-sidenav-content {
   padding: 16px;
 }
+
+.pending {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  background: var(--mat-sys-tertiary-container);
+  color: var(--mat-sys-on-tertiary-container);
+
+  span {
+    flex: 1;
+  }
+}

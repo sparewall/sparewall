@@ -27,6 +27,19 @@ self-signed certificate is accepted.
 `docs/api/openapi.json`. After the API changes, run `npm run api`; CI
 fails when they differ (`npm run api:check`).
 
+## The configuration editor
+
+`features/config` renders the document with [JSON Forms](https://jsonforms.io)
+from the document's schema in `/openapi.json`, so a schema change reaches
+the form without a hand-built one. `form-schema.ts` inlines the schema's
+references and turns its nullable fields into optional ones, and three
+renderers of our own cover what JSON Forms lacks: maps of named things
+(`map-control.ts`), nested groups in a useful order (`object-control.ts`)
+and yes/no settings left at their default (`optional-boolean-control.ts`).
+The form does not validate: Ajv compiles schemas with `new Function`,
+which the Content-Security-Policy refuses, so JSON Forms gets a stand-in
+(`no-eval-ajv.ts`) and the node checks every change before it applies.
+
 ## Rules
 
 - Nothing is loaded from elsewhere: fonts and icons are bundled, and the

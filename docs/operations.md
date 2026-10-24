@@ -164,9 +164,14 @@ service, and SSH, the console and the anti-lockout rule never depend on
 it.
 
 People open `https://<node>/` and sign in as one of the users above. The
-UI shows the node's status and health as they change, confirms a change
-that waits for confirmation, and lists the history, from which an
-operator can roll back. Each page offers only what the user's role
+UI shows the node's status and health as they change, and lists the
+history, from which an operator can roll back. The configuration page
+is a form built from the document's schema, a tab per section: an
+operator edits it, reviews what the change does (the node's own dry run:
+the changed paths, the subsystems it touches, any warnings), and applies
+it with a window to confirm it in, two minutes unless changed. While a
+change waits, every page shows how long is left, with Confirm and
+Revert now. Each page offers only what the user's role
 allows, and the node checks every call regardless. The UI loads nothing
 from outside the node.
 

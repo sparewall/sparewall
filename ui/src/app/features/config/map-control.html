@@ -1,0 +1,40 @@
+@if (!hidden) {
+  <section class="map">
+    <header>
+      <h3>{{ label }}</h3>
+      @if (isEnabled()) {
+        <button matButton type="button" (click)="add()">
+          <mat-icon>add</mat-icon>
+          Add
+        </button>
+      }
+    </header>
+    @if (description) {
+      <p class="description">{{ description }}</p>
+    }
+    <mat-accordion multi>
+      @for (name of names; track name) {
+        <mat-expansion-panel>
+          <mat-expansion-panel-header>
+            <mat-panel-title>{{ name }}</mat-panel-title>
+          </mat-expansion-panel-header>
+          <ng-template matExpansionPanelContent>
+            <jsonforms-outlet
+              [uischema]="entryUiSchema"
+              [schema]="entrySchema"
+              [path]="entryPath(name)"
+            />
+            @if (isEnabled()) {
+              <div class="actions">
+                <button matButton type="button" (click)="rename(name)">Rename</button>
+                <button matButton type="button" (click)="remove(name)">Remove</button>
+              </div>
+            }
+          </ng-template>
+        </mat-expansion-panel>
+      } @empty {
+        <p class="description">None yet.</p>
+      }
+    </mat-accordion>
+  </section>
+}

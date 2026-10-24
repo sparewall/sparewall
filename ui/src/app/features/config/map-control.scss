@@ -1,0 +1,25 @@
+.map {
+  margin: 8px 0 16px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+h3 {
+  font: var(--mat-sys-title-medium);
+  margin: 0;
+}
+
+.description {
+  color: var(--mat-sys-on-surface-variant);
+  font: var(--mat-sys-body-small);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

@@ -37,6 +37,19 @@
     </mat-nav-list>
   </mat-sidenav>
   <mat-sidenav-content>
+    @if (pending.id(); as id) {
+      <div class="pending" role="status">
+        <mat-icon>timer</mat-icon>
+        <span>
+          Generation {{ id }} reverts in {{ countdown(pending.secondsLeft()) }} unless it is
+          confirmed.
+        </span>
+        @if (session.can('operator')) {
+          <button matButton (click)="revert()">Revert now</button>
+          <button matButton="filled" (click)="keep()">Confirm</button>
+        }
+      </div>
+    }
     <router-outlet />
   </mat-sidenav-content>
 </mat-sidenav-container>

@@ -1,0 +1,41 @@
+<header>
+  <h1>Configuration</h1>
+  @if (current.hasValue()) {
+    <span class="generation">Generation {{ current.value().generation.id }}</span>
+  }
+  <span class="spacer"></span>
+  @if (session.can('operator')) {
+    <button matButton type="button" [disabled]="!changed() || busy()" (click)="discard()">
+      Discard changes
+    </button>
+    <button matButton="filled" type="button" [disabled]="!changed() || busy()" (click)="review()">
+      Review and apply
+    </button>
+  }
+</header>
+
+@if (problems().length) {
+  <ul class="problems" role="alert">
+    @for (p of problems(); track $index) {
+      <li>{{ p }}</li>
+    }
+  </ul>
+}
+
+@if (current.error() || description.error()) {
+  <p class="problem" role="alert">The configuration could not be read.</p>
+}
+
+@if (schema() && uischema() && draft()) {
+  <jsonforms
+    [data]="draft()"
+    [schema]="schema()!"
+    [uischema]="uischema()!"
+    [renderers]="renderers"
+    [readonly]="!session.can('operator')"
+    [ajv]="ajv"
+    [config]="formConfig"
+    validationMode="NoValidation"
+    (dataChange)="edited($event)"
+  />
+}
