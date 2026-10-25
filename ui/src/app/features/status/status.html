@@ -1,29 +1,34 @@
-<h1>Status</h1>
+<div class="page-header">
+  <h1>Status</h1>
+  @if (status.hasValue()) {
+    <span class="subtitle">{{ status.value().node }} · {{ status.value().role }}</span>
+  }
+</div>
 @if (status.error(); as e) {
   <p class="problem" role="alert">The node's status could not be read.</p>
 }
 @if (status.hasValue()) {
-  @let s = status.value();
+  @if (health(); as h) {
+    <section [class]="'hero ' + h.level" aria-live="polite">
+      <mat-icon class="big" aria-hidden="true">{{ levelIcon(h.level) }}</mat-icon>
+      <div>
+        <h2>{{ levelText(h.level) }}</h2>
+        <p>{{ summary(h) }}</p>
+      </div>
+    </section>
+  }
   <div class="cards">
-    <mat-card appearance="outlined">
-      <mat-card-header>
-        <mat-icon matCardAvatar>dns</mat-icon>
-        <mat-card-title>{{ s.node }}</mat-card-title>
-        <mat-card-subtitle>{{ s.role }}</mat-card-subtitle>
-      </mat-card-header>
-    </mat-card>
-
     @if (health(); as h) {
-      <mat-card appearance="outlined">
+      <mat-card appearance="outlined" class="wide">
         <mat-card-header>
-          <mat-icon matCardAvatar [class]="h.level">{{ levelIcon(h.level) }}</mat-icon>
-          <mat-card-title>Health: {{ h.level }}</mat-card-title>
+          <mat-icon matCardAvatar>fact_check</mat-icon>
+          <mat-card-title>Checks</mat-card-title>
         </mat-card-header>
         <mat-card-content>
           <ul class="checks">
             @for (c of h.checks; track c.name) {
               <li>
-                <mat-icon [class]="c.level" inline>{{ levelIcon(c.level) }}</mat-icon>
+                <mat-icon [class]="'level-' + c.level" inline>{{ levelIcon(c.level) }}</mat-icon>
                 <strong>{{ c.name }}</strong>
                 <span>{{ c.message }}</span>
               </li>

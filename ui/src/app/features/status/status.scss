@@ -1,7 +1,77 @@
+// The node's health, first and in its colour.
+.hero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 24px;
+  margin-bottom: 16px;
+  border-radius: 16px;
+
+  .big {
+    font-size: 40px;
+    width: 40px;
+    height: 40px;
+  }
+
+  h2 {
+    font: var(--mat-sys-title-large);
+    margin: 0;
+  }
+
+  p {
+    margin: 2px 0 0;
+  }
+
+  &.ok {
+    background: var(--sw-ok-container);
+    color: var(--sw-ok);
+  }
+
+  &.degraded {
+    background: var(--sw-degraded-container);
+    color: var(--sw-degraded);
+  }
+
+  &.failed {
+    background: var(--sw-failed-container);
+    color: var(--mat-sys-on-error-container);
+  }
+
+  p,
+  h2 {
+    color: var(--mat-sys-on-surface);
+  }
+}
+
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
+
+  mat-card {
+    background: var(--mat-sys-surface-container-lowest);
+    border-radius: 16px;
+  }
+
+  .wide {
+    grid-column: span 2;
+  }
+
+  [matCardAvatar] {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--mat-sys-secondary-container);
+    color: var(--mat-sys-on-secondary-container);
+  }
+}
+
+@media (max-width: 720px) {
+  .cards .wide {
+    grid-column: auto;
+  }
 }
 
 .checks {
@@ -18,18 +88,15 @@
   }
 }
 
-.ok,
 .up {
-  color: var(--mat-sys-primary);
+  color: var(--sw-ok);
 }
 
-.degraded,
 .pending {
-  color: var(--mat-sys-tertiary);
+  color: var(--sw-degraded);
 }
 
-.failed,
 .down,
 .problem {
-  color: var(--mat-sys-error);
+  color: var(--sw-failed);
 }

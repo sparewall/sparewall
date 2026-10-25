@@ -24,11 +24,6 @@ type User = Schemas['org.sparewall.Auth.UserInfo'];
   imports: [DatePipe, MatButtonModule, MatIconModule, MatMenuModule, MatTableModule],
   templateUrl: './users.html',
   styles: `
-    header {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-    }
     table {
       width: 100%;
     }

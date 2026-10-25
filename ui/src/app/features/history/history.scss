@@ -3,10 +3,28 @@ table {
 }
 
 .summary {
-  margin: 4px 0;
-  padding-left: 16px;
+  margin: 8px 0;
+  padding-left: 0;
+  list-style: none;
   font-family: ui-monospace, monospace;
   font-size: 0.85em;
+
+  li {
+    padding: 1px 6px;
+    border-left: 3px solid transparent;
+  }
+
+  .added {
+    border-left-color: var(--sw-ok);
+  }
+
+  .removed {
+    border-left-color: var(--sw-failed);
+  }
+
+  .changed {
+    border-left-color: var(--sw-degraded);
+  }
 }
 
 .none {

@@ -1,4 +1,4 @@
-<header>
+<header class="page-header">
   <h1>Zone policy</h1>
   @if (current.hasValue()) {
     <span class="generation">Generation {{ current.value().generation.id }}</span>
@@ -13,7 +13,7 @@
     </button>
   }
 </header>
-<p class="intro">
+<p class="page-intro">
   From each zone (rows) to each (columns): the action for traffic between them, with its NAT,
   logging and rules. A pair without a policy is dropped, except what the firewall itself sends.
   {{ session.can('operator') ? 'Select a pair to change it.' : 'Select a pair to see it.' }}

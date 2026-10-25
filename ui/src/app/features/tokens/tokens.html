@@ -1,11 +1,12 @@
-<header>
+<header class="page-header">
   <h1>API tokens</h1>
+  <span class="spacer"></span>
   <button matButton="filled" [disabled]="busy()" (click)="create()">
     <mat-icon>key</mat-icon>
     Create a token
   </button>
 </header>
-<p>
+<p class="page-intro">
   Scripts, CI and monitoring use tokens instead of a password: over HTTPS (<code
     >Authorization: Bearer</code
   >) or the restricted socket, with the token's role. Changes made with one are recorded with its
@@ -18,47 +19,51 @@
   @if (!tokens.value().tokens.length) {
     <p>No tokens yet.</p>
   } @else {
-    <table mat-table [dataSource]="tokens.value().tokens">
-      <ng-container matColumnDef="name">
-        <th mat-header-cell *matHeaderCellDef>Token</th>
-        <td mat-cell *matCellDef="let t">{{ t.name }}</td>
-      </ng-container>
-      <ng-container matColumnDef="role">
-        <th mat-header-cell *matHeaderCellDef>Role</th>
-        <td mat-cell *matCellDef="let t">{{ t.role }}</td>
-      </ng-container>
-      <ng-container matColumnDef="created">
-        <th mat-header-cell *matHeaderCellDef>Created</th>
-        <td mat-cell *matCellDef="let t">{{ t.created | date: 'medium' }}</td>
-      </ng-container>
-      <ng-container matColumnDef="expires">
-        <th mat-header-cell *matHeaderCellDef>Expires</th>
-        <td mat-cell *matCellDef="let t">
-          @if (expiry(t); as e) {
-            {{ e | date: 'medium' }}
-          } @else {
-            <span class="never">Never</span>
-          }
-        </td>
-      </ng-container>
-      <ng-container matColumnDef="last_used">
-        <th mat-header-cell *matHeaderCellDef>Last used</th>
-        <td mat-cell *matCellDef="let t">
-          @if (t.last_used) {
-            {{ t.last_used | date: 'medium' }}
-          } @else {
-            <span class="never">Never</span>
-          }
-        </td>
-      </ng-container>
-      <ng-container matColumnDef="actions">
-        <th mat-header-cell *matHeaderCellDef><span class="cdk-visually-hidden">Actions</span></th>
-        <td mat-cell *matCellDef="let t">
-          <button matButton [disabled]="busy()" (click)="revoke(t)">Revoke</button>
-        </td>
-      </ng-container>
-      <tr mat-header-row *matHeaderRowDef="columns"></tr>
-      <tr mat-row *matRowDef="let row; columns: columns"></tr>
-    </table>
+    <div class="panel">
+      <table mat-table [dataSource]="tokens.value().tokens">
+        <ng-container matColumnDef="name">
+          <th mat-header-cell *matHeaderCellDef>Token</th>
+          <td mat-cell *matCellDef="let t">{{ t.name }}</td>
+        </ng-container>
+        <ng-container matColumnDef="role">
+          <th mat-header-cell *matHeaderCellDef>Role</th>
+          <td mat-cell *matCellDef="let t">{{ t.role }}</td>
+        </ng-container>
+        <ng-container matColumnDef="created">
+          <th mat-header-cell *matHeaderCellDef>Created</th>
+          <td mat-cell *matCellDef="let t">{{ t.created | date: 'medium' }}</td>
+        </ng-container>
+        <ng-container matColumnDef="expires">
+          <th mat-header-cell *matHeaderCellDef>Expires</th>
+          <td mat-cell *matCellDef="let t">
+            @if (expiry(t); as e) {
+              {{ e | date: 'medium' }}
+            } @else {
+              <span class="never">Never</span>
+            }
+          </td>
+        </ng-container>
+        <ng-container matColumnDef="last_used">
+          <th mat-header-cell *matHeaderCellDef>Last used</th>
+          <td mat-cell *matCellDef="let t">
+            @if (t.last_used) {
+              {{ t.last_used | date: 'medium' }}
+            } @else {
+              <span class="never">Never</span>
+            }
+          </td>
+        </ng-container>
+        <ng-container matColumnDef="actions">
+          <th mat-header-cell *matHeaderCellDef>
+            <span class="cdk-visually-hidden">Actions</span>
+          </th>
+          <td mat-cell *matCellDef="let t">
+            <button matButton [disabled]="busy()" (click)="revoke(t)">Revoke</button>
+          </td>
+        </ng-container>
+        <tr mat-header-row *matHeaderRowDef="columns"></tr>
+        <tr mat-row *matRowDef="let row; columns: columns"></tr>
+      </table>
+    </div>
   }
 }

@@ -4,10 +4,23 @@ main {
   min-height: 100vh;
   padding: 16px;
   box-sizing: border-box;
+  background: radial-gradient(
+    circle at 50% 0%,
+    var(--mat-sys-primary-container),
+    var(--mat-sys-surface) 70%
+  );
 }
 
 mat-card {
   width: min(400px, 100%);
+  padding: 8px;
+  border-radius: 20px;
+  background: var(--mat-sys-surface-container-lowest);
+}
+
+// The logo is its own tile: no avatar circle around it.
+.mark {
+  border-radius: 0;
 }
 
 mat-form-field {

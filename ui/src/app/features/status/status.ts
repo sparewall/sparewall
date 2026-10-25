@@ -18,6 +18,12 @@ const LEVEL_ICON: Record<string, string> = {
   failed: 'error',
 };
 
+const LEVEL_TEXT: Record<string, string> = {
+  ok: 'Healthy',
+  degraded: 'Degraded',
+  failed: 'Failed',
+};
+
 /** The node at a glance, kept current by its events. */
 @Component({
   selector: 'app-status',
@@ -50,6 +56,18 @@ export class Status {
   );
 
   protected readonly levelIcon = (level: string) => LEVEL_ICON[level] ?? 'help';
+
+  protected levelText(level: string): string {
+    return LEVEL_TEXT[level] ?? level;
+  }
+
+  /** What is wrong, by check, or that nothing is. */
+  protected summary(h: HealthState): string {
+    const bad = h.checks.filter((c) => c.level !== 'ok').map((c) => c.name);
+    return bad.length
+      ? `Needs attention: ${bad.join(', ')}.`
+      : `All ${h.checks.length} checks pass.`;
+  }
 
   private value() {
     return this.status.hasValue() ? this.status.value() : undefined;

@@ -1,11 +1,8 @@
-import { httpResource } from '@angular/common/http';
 import { Service, computed, inject, linkedSignal, signal } from '@angular/core';
 
-import { ApiClient, callUrl } from '../api/api-client';
-import { Reply } from '../api/api.model';
+import { ApiClient } from '../api/api-client';
 import { SyncState } from '../api/status.model';
-import { NodeEvents } from './node-events';
-import { Session } from './session';
+import { NodeStatus } from './node-status';
 
 /**
  * A generation that waits for confirmation, and the seconds left before
@@ -15,15 +12,8 @@ import { Session } from './session';
 @Service()
 export class PendingChange {
   private readonly api = inject(ApiClient);
-  private readonly events = inject(NodeEvents);
-  private readonly session = inject(Session);
+  private readonly status = inject(NodeStatus).status;
   private readonly now = signal(Date.now());
-
-  private readonly status = httpResource<Reply<'org.sparewall.Firewall.Status'>>(() => {
-    if (!this.session.can('viewer')) return undefined;
-    this.events.count();
-    return { url: callUrl('org.sparewall.Firewall.Status'), method: 'POST', body: {} };
-  });
 
   /** The pending generation and when it reverts (ms since the epoch). */
   private readonly pending = linkedSignal(() => {
