@@ -1751,9 +1751,11 @@ fn write_init(out: &Path, v: &Value) -> Result<(), Fail> {
 
 /// The subcommands that work on a node itself (its state directory, its
 /// systemd credentials, its socket), which a build for a workstation OS
-/// cannot do. Elsewhere they say so before trying.
-fn node_only(cmd: &Cmd, linux: bool) -> Option<&'static str> {
-    if linux {
+/// cannot do, and which never go through `--host` or `--context` (they
+/// would work on this machine instead). Elsewhere they say so before
+/// trying.
+fn node_only(cmd: &Cmd, linux: bool, remote: bool) -> Option<&'static str> {
+    if linux && !remote {
         return None;
     }
     match cmd {
@@ -1773,10 +1775,25 @@ fn node_only(cmd: &Cmd, linux: bool) -> Option<&'static str> {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = (|| -> Result<(), Fail> {
-        if let Some(name) = node_only(&cli.cmd, cfg!(target_os = "linux")) {
-            return Err(Fail::usage(format!(
-                "`sparewall {name}` runs on a Sparewall node, not here: run it there (over ssh)"
-            )));
+        let remote = cli.host.is_some()
+            || match &cli.context {
+                Some(name) => Contexts::load()?
+                    .contexts
+                    .get(name)
+                    .is_some_and(|c| c.host.is_some()),
+                None => false,
+            };
+        if let Some(name) = node_only(&cli.cmd, cfg!(target_os = "linux"), remote) {
+            return Err(Fail::usage(if remote {
+                format!(
+                    "`sparewall {name}` runs on the node itself, not through --host or \
+                     --context: run it there (over ssh)"
+                )
+            } else {
+                format!(
+                    "`sparewall {name}` runs on a Sparewall node, not here: run it there (over ssh)"
+                )
+            }));
         }
         if local(&cli.cmd)? {
             return Ok(());
@@ -1852,14 +1869,27 @@ mod tests {
                 .cmd
         };
         let init = cmd(&["init", "--node", "fw1", "--mgmt-nic", "52:54:00:12:34:56"]);
-        assert_eq!(node_only(&init, false), Some("init"));
-        assert_eq!(node_only(&init, true), None);
-        assert_eq!(node_only(&cmd(&["bridge"]), false), Some("bridge"));
-        assert_eq!(node_only(&cmd(&["status"]), false), None);
+        assert_eq!(node_only(&init, false, false), Some("init"));
+        assert_eq!(node_only(&init, true, false), None);
+        assert_eq!(node_only(&cmd(&["bridge"]), false, false), Some("bridge"));
+        assert_eq!(node_only(&cmd(&["status"]), false, false), None);
         let check = cmd(&["backup", "--check-password"]);
-        assert_eq!(node_only(&check, false), Some("backup --check-password"));
+        assert_eq!(
+            node_only(&check, false, false),
+            Some("backup --check-password")
+        );
         let copied = cmd(&["backup", "--check-password", "-f", "b.tar.gz"]);
-        assert_eq!(node_only(&copied, false), None);
+        assert_eq!(node_only(&copied, false, false), None);
+        // Through a context they would read this machine's files, on
+        // Linux too.
+        let restore = cmd(&["restore", "-f", "b.tar.gz"]);
+        assert_eq!(node_only(&restore, true, true), Some("restore"));
+        assert_eq!(
+            node_only(&check, true, true),
+            Some("backup --check-password")
+        );
+        assert_eq!(node_only(&copied, true, true), None);
+        assert_eq!(node_only(&cmd(&["status"]), true, true), None);
         assert!(Cli::try_parse_from(["sparewall", "backup", "-f", "b.tar.gz"]).is_err());
     }
 

@@ -393,15 +393,15 @@ sparewall backup                # a bundle now, sent to the repository
 sudo sparewall backup --check-password   # on the node: try your copy
 ```
 
-**Check the password before relying on the backups.** After setting
-it and writing a bundle, run `sparewall backup --check-password` on
-the node and paste the password from your password manager: the check
-tells you whether it opens the secrets in the newest local bundle. It needs neither restic nor the repository, and
-changes nothing. `--file` checks another bundle, and works on any
-machine the bundle is copied to. A wrong password exits non-zero. Get it
-right before the first backup reaches the repository: restic
-initialises the repository with the password, and changing it later
-orphans the snapshots already there.
+**Check the password before relying on the backups.** After setting it
+and writing a bundle, run `sparewall backup --check-password` on the
+node and paste the password from your password manager: the check tells
+you whether it opens the secrets in the newest local bundle. It needs
+neither restic nor the repository, and changes nothing. `--file` checks
+another bundle, and works on any machine the bundle is copied to. A
+wrong password exits non-zero. Get it right before the first backup
+reaches the repository: restic initialises the repository with the
+password, and changing it later orphans the snapshots already there.
 
 `backup.repository` is any restic repository: SFTP, S3-compatible
 storage or a restic REST server (a local path must be under
