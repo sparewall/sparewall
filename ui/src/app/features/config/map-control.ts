@@ -46,8 +46,10 @@ export class MapControl extends JsonFormsControl {
   override mapAdditionalProps(props: ControlProps): void {
     const data = (props.data ?? {}) as Record<string, unknown>;
     const fixed = new Set(((props.schema as Record<string, unknown>)[FIXED] as string[]) ?? []);
-    this.taken = Object.keys(data);
-    this.names = this.taken.filter((k) => !fixed.has(k));
+    this.names = Object.keys(data).filter((k) => !fixed.has(k));
+    // The fixed fields' names, set or not: an entry there would sit where
+    // a field belongs, and be hidden from the list.
+    this.taken = [...this.names, ...fixed];
     const entry = (props.schema as JsonSchema7).additionalProperties as JsonSchema7;
     if (entry !== this.entrySchema) {
       this.entrySchema = entry;
