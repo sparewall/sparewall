@@ -66,6 +66,13 @@ export function documentSchema(openapi: {
   return walk({ $ref: '#/components/schemas/Document' }) as JsonSchema7;
 }
 
+/**
+ * On a map drawn for an object that also has fields of its own (`dhcp`:
+ * its settings, then one entry per network): those fields' names, which
+ * are not entries.
+ */
+export const FIXED = 'x-sparewall-fixed';
+
 /** Whether a schema is a map of named things: an object of one schema per key. */
 export function isMap(s: JsonSchema7 | undefined): boolean {
   return (

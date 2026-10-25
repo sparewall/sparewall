@@ -93,11 +93,11 @@ describe('the form with unions', () => {
   it('edits a policy NAT either way, and refuses broken JSON', async () => {
     const policy = { action: 'accept', nat: 'masquerade' };
     const f = await render(policySchema, policy);
-    expect(f.field('Nat').value).toBe('masquerade');
+    expect(f.field('NAT').value).toBe('masquerade');
     expect(f.now()).toEqual(policy);
-    await f.edit('Nat', '{"snat": "203.0.113.5"}');
+    await f.edit('NAT', '{"snat": "203.0.113.5"}');
     expect(f.now()).toEqual({ ...policy, nat: { snat: '203.0.113.5' } });
-    await f.edit('Nat', '{"snat": ');
+    await f.edit('NAT', '{"snat": ');
     expect(f.el.textContent).toContain('Not valid JSON.');
     expect(f.now()).toEqual({ ...policy, nat: { snat: '203.0.113.5' } });
   });
