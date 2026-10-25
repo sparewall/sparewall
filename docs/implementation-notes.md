@@ -33,8 +33,9 @@ Where the implementation departs from, or settles open questions in,
   project's signature and local transports are open.
 - **ulogd2 is built from source** in an image stage (Fedora 45 does not
   package it), with libnetfilter_log 1.0.2 linked statically because
-  Fedora has 1.0.1. node_exporter is likewise not packaged and not yet
-  included.
+  Fedora has 1.0.1. node_exporter comes from Fedora's `node-exporter`
+  package; it listens on localhost only, and sparewalld appends its
+  metrics to `/metrics`.
 - **The coordinator has its own enforcing SELinux domain,
   `sparewalld_t`** (`image/selinux`, installed with `semodule` in the
   image build). Its state, runtime and temporary files and its units have their
