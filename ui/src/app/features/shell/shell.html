@@ -1,8 +1,24 @@
 <mat-toolbar>
-  <button matIconButton (click)="nav.toggle()" aria-label="Menu" class="menu">
-    <mat-icon>menu</mat-icon>
+  <button
+    matIconButton
+    (click)="toggleNav()"
+    [attr.aria-label]="rail() ? 'Show page names' : 'Show page icons only'"
+    [attr.aria-expanded]="!rail()"
+    class="menu"
+  >
+    <mat-icon>{{ rail() ? 'menu' : 'menu_open' }}</mat-icon>
   </button>
-  <span class="title">Sparewall</span>
+  <span class="brand">
+    <img class="mark" src="favicon.svg" alt="" />
+    <span class="title">Sparewall</span>
+  </span>
+  @if (node.node(); as name) {
+    <a routerLink="/status" [class]="'node level-' + (node.level() ?? 'unknown')">
+      <span class="dot" aria-hidden="true"></span>
+      {{ name }}
+      <span class="cdk-visually-hidden">: {{ node.level() }}</span>
+    </a>
+  }
   @if (!events.connected()) {
     <span class="offline" role="status"> <mat-icon>cloud_off</mat-icon> Reconnecting </span>
   }
@@ -19,22 +35,29 @@
     </button>
   </mat-menu>
 </mat-toolbar>
-<mat-sidenav-container>
-  <mat-sidenav #nav mode="side" opened>
-    <mat-nav-list>
-      @for (p of pages(); track p.path) {
-        <a
-          mat-list-item
-          [routerLink]="p.path"
-          routerLinkActive
-          #active="routerLinkActive"
-          [activated]="active.isActive"
-        >
-          <mat-icon matListItemIcon>{{ p.icon }}</mat-icon>
-          <span matListItemTitle>{{ p.label }}</span>
-        </a>
-      }
-    </mat-nav-list>
+<mat-sidenav-container autosize>
+  <mat-sidenav mode="side" opened [class.rail]="rail()">
+    @for (group of groups(); track group.label) {
+      <mat-nav-list [attr.aria-label]="group.label">
+        @if (group.label !== 'Firewall') {
+          <h2 class="group" [class.cdk-visually-hidden]="rail()">{{ group.label }}</h2>
+        }
+        @for (p of group.pages; track p.path) {
+          <a
+            mat-list-item
+            [routerLink]="p.path"
+            routerLinkActive
+            #active="routerLinkActive"
+            [activated]="active.isActive"
+            [matTooltip]="rail() ? p.label : ''"
+            matTooltipPosition="right"
+          >
+            <mat-icon matListItemIcon>{{ p.icon }}</mat-icon>
+            <span matListItemTitle>{{ p.label }}</span>
+          </a>
+        }
+      </mat-nav-list>
+    }
   </mat-sidenav>
   <mat-sidenav-content>
     @if (pending.id(); as id) {

@@ -22,11 +22,6 @@ type Token = Schemas['org.sparewall.Auth.TokenInfo'];
   imports: [DatePipe, MatButtonModule, MatIconModule, MatTableModule],
   templateUrl: './tokens.html',
   styles: `
-    header {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-    }
     table {
       width: 100%;
     }

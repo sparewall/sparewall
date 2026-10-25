@@ -40,6 +40,11 @@ export class History {
   /** Changed paths shown per generation; `sparewall history` has them all. */
   protected readonly shown = 6;
 
+  /** A summary line's kind, from its sign: added, removed or changed. */
+  protected change(line: string): string {
+    return { '+': 'added', '-': 'removed', '~': 'changed' }[line.charAt(0)] ?? '';
+  }
+
   protected async rollback(g: Generation, active: number): Promise<void> {
     const ok = await firstValueFrom(
       this.dialog.open(ConfirmRollback, { data: { generation: g, active } }).afterClosed(),

@@ -1,12 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="6" fill="#005cbb"/>
-  <g fill="#fff">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Sparewall">
+  <rect width="32" height="32" rx="7" fill="#1b2a3a"/>
+  <g fill="#e9eef3">
     <rect x="5" y="7" width="10" height="5" rx="1"/>
     <rect x="17" y="7" width="10" height="5" rx="1"/>
     <rect x="5" y="14" width="4" height="5" rx="1"/>
     <rect x="11" y="14" width="10" height="5" rx="1"/>
     <rect x="23" y="14" width="4" height="5" rx="1"/>
     <rect x="5" y="21" width="10" height="5" rx="1"/>
-    <rect x="17" y="21" width="10" height="5" rx="1"/>
   </g>
+  <rect x="17" y="21" width="10" height="5" rx="1" fill="#f59e0b"/>
 </svg>

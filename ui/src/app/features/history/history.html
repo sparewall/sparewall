@@ -1,4 +1,7 @@
-<h1>History</h1>
+<header class="page-header">
+  <h1>History</h1>
+  <span class="subtitle">Every generation applied, newest first</span>
+</header>
 @if (history.error()) {
   <p class="problem" role="alert">The history could not be read.</p>
 }
@@ -8,48 +11,50 @@
     <p>No configuration has been applied yet: the node is in bootstrap mode.</p>
   }
   @let active = generations[0]?.id ?? 0;
-  <table mat-table [dataSource]="generations" [class.empty]="!generations.length">
-    <ng-container matColumnDef="id">
-      <th mat-header-cell *matHeaderCellDef>Generation</th>
-      <td mat-cell *matCellDef="let g">
-        {{ g.id }}
-        @if (!g.confirmed) {
-          <mat-icon inline matTooltip="Waits for confirmation">hourglass_top</mat-icon>
-        }
-      </td>
-    </ng-container>
-    <ng-container matColumnDef="applied">
-      <th mat-header-cell *matHeaderCellDef>Applied</th>
-      <td mat-cell *matCellDef="let g" class="nowrap">{{ g.applied | date: 'medium' }}</td>
-    </ng-container>
-    <ng-container matColumnDef="author">
-      <th mat-header-cell *matHeaderCellDef>By</th>
-      <td mat-cell *matCellDef="let g">{{ g.author }}</td>
-    </ng-container>
-    <ng-container matColumnDef="summary">
-      <th mat-header-cell *matHeaderCellDef>Changes</th>
-      <td mat-cell *matCellDef="let g">
-        <ul class="summary">
-          @for (line of g.summary.slice(0, shown); track $index) {
-            <li>{{ line }}</li>
-          } @empty {
-            <li class="none">No changes</li>
+  <div class="panel">
+    <table mat-table [dataSource]="generations" [class.empty]="!generations.length">
+      <ng-container matColumnDef="id">
+        <th mat-header-cell *matHeaderCellDef>Generation</th>
+        <td mat-cell *matCellDef="let g">
+          {{ g.id }}
+          @if (!g.confirmed) {
+            <mat-icon inline matTooltip="Waits for confirmation">hourglass_top</mat-icon>
           }
-          @if (g.summary.length > shown) {
-            <li class="none">and {{ g.summary.length - shown }} more</li>
+        </td>
+      </ng-container>
+      <ng-container matColumnDef="applied">
+        <th mat-header-cell *matHeaderCellDef>Applied</th>
+        <td mat-cell *matCellDef="let g" class="nowrap">{{ g.applied | date: 'medium' }}</td>
+      </ng-container>
+      <ng-container matColumnDef="author">
+        <th mat-header-cell *matHeaderCellDef>By</th>
+        <td mat-cell *matCellDef="let g">{{ g.author }}</td>
+      </ng-container>
+      <ng-container matColumnDef="summary">
+        <th mat-header-cell *matHeaderCellDef>Changes</th>
+        <td mat-cell *matCellDef="let g">
+          <ul class="summary">
+            @for (line of g.summary.slice(0, shown); track $index) {
+              <li [class]="change(line)">{{ line }}</li>
+            } @empty {
+              <li class="none">No changes</li>
+            }
+            @if (g.summary.length > shown) {
+              <li class="none">and {{ g.summary.length - shown }} more</li>
+            }
+          </ul>
+        </td>
+      </ng-container>
+      <ng-container matColumnDef="actions">
+        <th mat-header-cell *matHeaderCellDef><span class="cdk-visually-hidden">Actions</span></th>
+        <td mat-cell *matCellDef="let g">
+          @if (session.can('operator') && g.id !== active) {
+            <button matButton [disabled]="busy()" (click)="rollback(g, active)">Roll back</button>
           }
-        </ul>
-      </td>
-    </ng-container>
-    <ng-container matColumnDef="actions">
-      <th mat-header-cell *matHeaderCellDef><span class="cdk-visually-hidden">Actions</span></th>
-      <td mat-cell *matCellDef="let g">
-        @if (session.can('operator') && g.id !== active) {
-          <button matButton [disabled]="busy()" (click)="rollback(g, active)">Roll back</button>
-        }
-      </td>
-    </ng-container>
-    <tr mat-header-row *matHeaderRowDef="columns"></tr>
-    <tr mat-row *matRowDef="let row; columns: columns"></tr>
-  </table>
+        </td>
+      </ng-container>
+      <tr mat-header-row *matHeaderRowDef="columns"></tr>
+      <tr mat-row *matRowDef="let row; columns: columns"></tr>
+    </table>
+  </div>
 }

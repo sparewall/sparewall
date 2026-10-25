@@ -17,6 +17,15 @@ html {
       density: 0,
     )
   );
+
+  // How healthy something is, the same everywhere: the node, a check, a
+  // link. light-dark() follows color-scheme.
+  --sw-ok: light-dark(#1b7f4b, #7fd8a4);
+  --sw-ok-container: light-dark(#d7f5e3, #0f3d26);
+  --sw-degraded: light-dark(#8a5300, #ffb95c);
+  --sw-degraded-container: light-dark(#ffe7c6, #4a2c00);
+  --sw-failed: var(--mat-sys-error);
+  --sw-failed-container: var(--mat-sys-error-container);
 }
 
 body {
@@ -30,4 +39,70 @@ body {
 h1 {
   font: var(--mat-sys-headline-small);
   margin: 0 0 16px;
+}
+
+// A page's title row: the title, what it shows, and its actions at the end.
+.page-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 16px;
+
+  h1 {
+    margin: 0;
+  }
+
+  .subtitle {
+    color: var(--mat-sys-on-surface-variant);
+    font: var(--mat-sys-body-large);
+  }
+
+  .spacer {
+    flex: 1;
+  }
+}
+
+// What a page explains before its content.
+.page-intro {
+  color: var(--mat-sys-on-surface-variant);
+  max-width: 80ch;
+  margin: -4px 0 20px;
+}
+
+// A raised surface for a table or a list on a page.
+.panel {
+  background: var(--mat-sys-surface-container-lowest);
+  border: 1px solid var(--mat-sys-outline-variant);
+  border-radius: 16px;
+  overflow: hidden;
+
+  .mat-mdc-table {
+    background: transparent;
+  }
+
+  .mat-mdc-header-row {
+    background: var(--mat-sys-surface-container-low);
+  }
+
+  .mat-mdc-row:hover {
+    background: var(--mat-sys-surface-container-low);
+  }
+
+  .mat-mdc-row:last-child .mat-mdc-cell {
+    border-bottom: none;
+  }
+}
+
+// Health levels, on text and icons.
+.level-ok {
+  color: var(--sw-ok);
+}
+
+.level-degraded {
+  color: var(--sw-degraded);
+}
+
+.level-failed {
+  color: var(--sw-failed);
 }
