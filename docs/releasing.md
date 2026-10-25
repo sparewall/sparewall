@@ -85,6 +85,24 @@ installs the formula it would write, from a local tap, on every run.
 A failed suite stops at step 3 with no release. Delete the tag, fix
 `main`, and tag again.
 
+## A demo node
+
+To try a build by hand before tagging it (the web UI especially),
+`tests/vm/demo.sh` runs one node in a VM under libvirt's user session,
+with a configuration that gives every page something to show. It needs
+libvirt, qemu, passt, swtpm and virt-install; only the disk build needs
+root.
+
+```shell
+tests/vm/demo.sh disk          # base disk from :testing (or name an image)
+tests/vm/demo.sh up            # https://localhost:8443/, users and passwords printed
+tests/vm/demo.sh reset         # a fresh install from the base disk
+tests/vm/demo.sh destroy
+```
+
+The web UI and SSH are forwarded from localhost only. The VM's WAN is
+NATed to this machine's network; its LAN trunk has nothing on it.
+
 ## Versions
 
 The binaries report the version the build is given in
