@@ -1,4 +1,6 @@
+import { BreakpointObserver } from '@angular/cdk/layout';
 import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatListModule } from '@angular/material/list';
@@ -8,6 +10,7 @@ import { MatSidenavModule } from '@angular/material/sidenav';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { map } from 'rxjs';
 
 import { CallFailed } from '../../api/api-client';
 import { NodeEvents } from '../../core/node-events';
@@ -44,6 +47,14 @@ export class Shell implements OnInit, OnDestroy {
   protected readonly node = inject(NodeStatus);
   /** The navigation as icons only, leaving room for a page's own (the editor's sections). */
   protected readonly rail = signal(remembered() === 'rail');
+  /** A phone's width: the navigation is a drawer over the page, closed until asked for. */
+  protected readonly narrow = toSignal(
+    inject(BreakpointObserver)
+      .observe(NARROW)
+      .pipe(map((r) => r.matches)),
+    { initialValue: false },
+  );
+  protected readonly drawer = signal(false);
 
   private readonly allPages = [
     { path: '/status', icon: 'monitor_heart', label: 'Status', role: 'viewer' as Role },
@@ -89,6 +100,10 @@ export class Shell implements OnInit, OnDestroy {
   }
 
   protected toggleNav(): void {
+    if (this.narrow()) {
+      this.drawer.update((d) => !d);
+      return;
+    }
     this.rail.update((r) => !r);
     remember(this.rail() ? 'rail' : 'full');
   }
@@ -97,6 +112,8 @@ export class Shell implements OnInit, OnDestroy {
     void this.session.signOut();
   }
 }
+
+const NARROW = '(max-width: 599.98px)';
 
 /** This browser's choice of navigation; storage may be unavailable (a private window). */
 const NAV_KEY = 'sparewall.nav';

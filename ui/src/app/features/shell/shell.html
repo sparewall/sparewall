@@ -2,11 +2,13 @@
   <button
     matIconButton
     (click)="toggleNav()"
-    [attr.aria-label]="rail() ? 'Show page names' : 'Show page icons only'"
-    [attr.aria-expanded]="!rail()"
+    [attr.aria-label]="
+      narrow() ? 'Navigation' : rail() ? 'Show page names' : 'Show page icons only'
+    "
+    [attr.aria-expanded]="narrow() ? drawer() : !rail()"
     class="menu"
   >
-    <mat-icon>{{ rail() ? 'menu' : 'menu_open' }}</mat-icon>
+    <mat-icon>{{ (narrow() ? !drawer() : rail()) ? 'menu' : 'menu_open' }}</mat-icon>
   </button>
   <span class="brand">
     <img class="mark" src="favicon.svg" alt="" />
@@ -36,11 +38,16 @@
   </mat-menu>
 </mat-toolbar>
 <mat-sidenav-container autosize>
-  <mat-sidenav mode="side" opened [class.rail]="rail()">
+  <mat-sidenav
+    [mode]="narrow() ? 'over' : 'side'"
+    [opened]="!narrow() || drawer()"
+    (closedStart)="drawer.set(false)"
+    [class.rail]="rail() && !narrow()"
+  >
     @for (group of groups(); track group.label) {
       <mat-nav-list [attr.aria-label]="group.label">
         @if (group.label !== 'Firewall') {
-          <h2 class="group" [class.cdk-visually-hidden]="rail()">{{ group.label }}</h2>
+          <h2 class="group" [class.cdk-visually-hidden]="rail() && !narrow()">{{ group.label }}</h2>
         }
         @for (p of group.pages; track p.path) {
           <a
@@ -49,7 +56,8 @@
             routerLinkActive
             #active="routerLinkActive"
             [activated]="active.isActive"
-            [matTooltip]="rail() ? p.label : ''"
+            [matTooltip]="rail() && !narrow() ? p.label : ''"
+            (click)="drawer.set(false)"
             matTooltipPosition="right"
           >
             <mat-icon matListItemIcon>{{ p.icon }}</mat-icon>

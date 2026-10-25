@@ -119,6 +119,25 @@ mat-sidenav-content {
   padding: 24px 32px;
 }
 
+// A phone: the drawer covers the page when open, so the page has the width.
+@media (max-width: 599.98px) {
+  .brand .title {
+    display: none;
+  }
+
+  .node {
+    margin-left: 0;
+  }
+
+  mat-sidenav {
+    width: 260px;
+  }
+
+  mat-sidenav-content {
+    padding: 16px;
+  }
+}
+
 // Pages keep to a readable width on wide screens.
 :host ::ng-deep mat-sidenav-content > :not(.pending):not(router-outlet) {
   display: block;
