@@ -253,10 +253,10 @@ ssh_password() {
 # Unless the document opts in. sshd is reloaded; a key login shows it is
 # listening again before the password is tried.
 vm 'sudo sparewall set management.ssh.password=true --confirm 0'
-vm true
+wait_ssh 60
 ssh_password || fail "SSH refused the admin password after management.ssh.password=true"
 vm 'sudo sparewall set management.ssh.password=false --confirm 0'
-vm true
+wait_ssh 60
 ! ssh_password || fail "SSH still takes the admin password after opting out"
 vm 'sudo systemctl restart sparewalld'
 takes_password "$(admin_hash)" 'console only' || fail "the admin password changed on restart"
@@ -270,9 +270,11 @@ rc=0; vm "SPAREWALL_TOKEN=$VIEWER sparewall set management.ssh.password=true --c
 [ "$rc" = 6 ] || fail "a viewer token changed the configuration (exit $rc)"
 vm "SPAREWALL_TOKEN=$OPERATOR sparewall set management.ssh.password=true --confirm 0" \
     || fail "an operator token cannot change the configuration"
+wait_ssh 60
 vm 'sudo sparewall history -o json' | grep -q '"author": *"token ci-operator"' \
     || fail "the change is not recorded with its token"
 vm 'sudo sparewall set management.ssh.password=false --confirm 0'
+wait_ssh 60
 rc=0; vm "SPAREWALL_TOKEN=$OPERATOR sparewall token list" || rc=$?
 [ "$rc" = 6 ] || fail "an operator token listed tokens (exit $rc)"
 vm 'sudo sparewall token revoke ci-operator'
@@ -304,7 +306,9 @@ vm 'curl -sfk https://localhost/' | grep -q '<app-root' || fail "no web UI at /"
 vm 'curl -sfk https://localhost/history' | grep -q '<app-root' || fail "the UI's routes do not lead to its page"
 main_js=$(vm 'curl -sfk https://localhost/' | grep -o 'main-[A-Za-z0-9]*\.js' | head -1)
 [ "$(status "https://localhost/$main_js")" = 200 ] || fail "the UI's script $main_js is not served"
-vm 'curl -sfk https://localhost/licenses.txt' | grep -q 'SIL OPEN FONT LICENSE' \
+# Searched on the node: grep -q stops reading at the first match, and here
+# pipefail would count the SSH session it cut short as a failure.
+vm "curl -sfk https://localhost/licenses.txt | grep -q 'SIL OPEN FONT LICENSE'" \
     || fail "the UI does not serve its third-party licenses"
 vm 'ls -Zd /usr/share/sparewall/ui' | grep -q sparewall_httpd_content_t \
     || fail "the UI's files are not labelled sparewall_httpd_content_t"
