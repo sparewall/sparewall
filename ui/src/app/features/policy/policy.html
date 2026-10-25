@@ -1,0 +1,90 @@
+<header>
+  <h1>Zone policy</h1>
+  @if (current.hasValue()) {
+    <span class="generation">Generation {{ current.value().generation.id }}</span>
+  }
+  <span class="spacer"></span>
+  @if (session.can('operator')) {
+    <button matButton type="button" [disabled]="!changed() || busy()" (click)="discard()">
+      Discard changes
+    </button>
+    <button matButton="filled" type="button" [disabled]="!changed() || busy()" (click)="review()">
+      Review and apply
+    </button>
+  }
+</header>
+<p class="intro">
+  From each zone (rows) to each (columns): the action for traffic between them, with its NAT,
+  logging and rules. A pair without a policy is dropped, except what the firewall itself sends.
+  {{ session.can('operator') ? 'Select a pair to change it.' : 'Select a pair to see it.' }}
+</p>
+
+@if (problems().length) {
+  <ul class="problems" role="alert">
+    @for (p of problems(); track $index) {
+      <li>{{ p }}</li>
+    }
+  </ul>
+}
+@if (current.error() || description.error()) {
+  <p class="problem" role="alert">The configuration could not be read.</p>
+}
+
+@if (rows().length) {
+  <div class="scroll">
+    <table class="matrix">
+      <thead>
+        <tr>
+          <th class="corner" scope="col">from ↓ &nbsp; to →</th>
+          @for (z of zones(); track z) {
+            <th scope="col">{{ z }}</th>
+          }
+        </tr>
+      </thead>
+      <tbody>
+        @for (row of rows(); track row[0].from) {
+          <tr>
+            <th scope="row">{{ row[0].from }}</th>
+            @for (c of row; track c.key) {
+              <td>
+                @if (!c.none) {
+                  <button
+                    type="button"
+                    class="cell"
+                    [class]="c.policy ? c.policy.action : 'fallback ' + c.fallback"
+                    [class.edited]="edited().has(c.key)"
+                    [attr.aria-label]="c.key"
+                    (click)="open(c)"
+                  >
+                    @if (c.policy; as p) {
+                      <span class="action">{{ p.action }}</span>
+                      <span class="badges">
+                        @if (natLabel(p.nat); as n) {
+                          <span class="badge" matTooltip="Source NAT">{{ n }}</span>
+                        }
+                        @if (p.log) {
+                          <mat-icon inline matTooltip="Logged">description</mat-icon>
+                        }
+                        @if (rulesCount(c); as n) {
+                          <span class="badge">{{ n }} {{ n === 1 ? 'rule' : 'rules' }}</span>
+                        }
+                      </span>
+                    } @else {
+                      <span class="action">{{ c.fallback }}</span>
+                      <span class="badges"><span class="badge">default</span></span>
+                    }
+                  </button>
+                }
+              </td>
+            }
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+  <p class="legend">
+    <span class="swatch accept"></span> accept <span class="swatch drop"></span> drop
+    <span class="swatch reject"></span> reject <span class="swatch edited-swatch"></span> changed,
+    not yet applied
+  </p>
+}

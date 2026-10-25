@@ -40,6 +40,7 @@ export class Shell implements OnInit, OnDestroy {
 
   private readonly allPages = [
     { path: '/status', icon: 'monitor_heart', label: 'Status', role: 'viewer' as Role },
+    { path: '/policy', icon: 'grid_view', label: 'Zone policy', role: 'viewer' as Role },
     { path: '/config', icon: 'tune', label: 'Configuration', role: 'viewer' as Role },
     { path: '/history', icon: 'history', label: 'History', role: 'viewer' as Role },
     { path: '/users', icon: 'group', label: 'Users', role: 'admin' as Role },

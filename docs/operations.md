@@ -169,9 +169,13 @@ history, from which an operator can roll back. The configuration page
 is a form built from the document's schema, a tab per section: an
 operator edits it, reviews what the change does (the node's own dry run:
 the changed paths, the subsystems it touches, any warnings), and applies
-it with a window to confirm it in, two minutes unless changed. While a
-change waits, every page shows how long is left, with Confirm and
-Revert now. An admin also manages users and API tokens there; a new
+it with a window to confirm it in, two minutes unless changed. The zone
+policy page shows every pair of zones as a matrix (from each row to each
+column): the action, NAT, logging and number of rules, and the default
+for a pair without a policy (dropped, except what the firewall itself
+sends). Selecting a pair edits its policy; edits to several pairs are
+reviewed and applied together. While a change waits, every page shows
+how long is left, with Confirm and Revert now. An admin also manages users and API tokens there; a new
 password is hashed in the browser, as `sparewall user passwd` hashes it
 on your machine, so only the hash reaches the node, and a new token is
 shown once. Each page offers only what the user's role
