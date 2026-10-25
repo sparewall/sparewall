@@ -1,0 +1,83 @@
+# The demo node's document (tests/vm/demo.sh): a standalone firewall with
+# a management port, a WAN and a LAN trunk, enough for every page of the
+# web UI to have something to show. Its NICs are the demo VM's.
+schema: 1
+cluster:
+  nodes: [fw1]
+management:
+  network: mgmt
+  web: true
+ports:
+  fw1:
+    mgmt0: { nic: "52:54:00:5a:00:01" }
+    wan0: { nic: "52:54:00:5a:00:02" }
+    lan0: { nic: "52:54:00:5a:00:03" }
+networks:
+  mgmt:
+    port: mgmt0
+    role: management
+    dhcp_client: true
+  wan:
+    port: wan0
+    role: wan
+    dhcp_client: true
+  users:
+    port: lan0
+    addresses: { fw1: 192.0.2.1/24 }
+  guests:
+    port: lan0
+    vlan: 30
+    addresses: { fw1: 198.51.100.1/24 }
+  iot:
+    port: lan0
+    vlan: 40
+    addresses: { fw1: 203.0.113.1/24 }
+zones:
+  wan: { networks: [wan] }
+  users: { networks: [users] }
+  guests: { networks: [guests] }
+  iot: { networks: [iot] }
+objects:
+  admin_nets:
+    type: ipv4
+    elements: [192.0.2.0/28]
+  web:
+    type: port
+    elements: [80, 443]
+policy:
+  users->wan: { action: accept, nat: masquerade }
+  guests->wan: { action: accept, nat: masquerade }
+  iot->wan:
+    action: drop
+    nat: masquerade
+    rules:
+      ntp: { order: 100, proto: udp, dport: 123, action: accept }
+      updates: { order: 200, proto: tcp, dport: "@web", action: accept }
+  users->iot: { action: accept }
+  guests->users: { action: drop, log: true }
+  users->self:
+    action: drop
+    rules:
+      ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }
+      ssh: { order: 200, proto: tcp, dport: 22, src: "@admin_nets", action: accept }
+  guests->self:
+    action: drop
+    rules:
+      ping: { order: 100, proto: icmp, icmp_type: [echo-request], limit: 5/second, action: accept }
+forwards:
+  web-server:
+    proto: tcp
+    dport: "@web"
+    to: 192.0.2.80
+dhcp:
+  users:
+    pool: 192.0.2.100-192.0.2.199
+  guests:
+    pool: 198.51.100.100-198.51.100.250
+  iot:
+    pool: 203.0.113.100-203.0.113.200
+dns:
+  enabled: true
+  domain: home.arpa
+ntp:
+  serve: [users, guests, iot]
