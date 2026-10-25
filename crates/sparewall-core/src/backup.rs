@@ -73,8 +73,11 @@ pub fn record(
 }
 
 /// Remove all but the newest `keep` bundles in `dir`.
-fn prune(dir: &Path, keep: usize) {
-    let Ok(rd) = fs::read_dir(dir) else { return };
+/// The bundles in a directory, oldest first.
+fn bundles(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return vec![];
+    };
     let mut bundles: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
         .filter(|e| {
@@ -84,8 +87,19 @@ fn prune(dir: &Path, keep: usize) {
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
     bundles.sort();
+    bundles.into_iter().map(|(_, p)| p).collect()
+}
+
+/// The newest bundle in a directory (the node keeps them in
+/// `backups/` under its state directory).
+pub fn newest(dir: &Path) -> Option<PathBuf> {
+    bundles(dir).pop()
+}
+
+fn prune(dir: &Path, keep: usize) {
+    let bundles = bundles(dir);
     let n = bundles.len().saturating_sub(keep);
-    for (_, p) in bundles.into_iter().take(n) {
+    for p in bundles.into_iter().take(n) {
         let _ = fs::remove_file(p);
     }
 }
@@ -244,6 +258,29 @@ pub fn manifest(bundle: &Path) -> Result<Manifest, Error> {
         }
     }
     Err(Error::Internal("bundle has no manifest".into()))
+}
+
+/// Whether `password` opens a bundle's sealed secrets, writing nothing:
+/// the names of the secrets it opens.
+pub fn check_password(bundle: &Path, password: &[u8]) -> Result<Vec<String>, Error> {
+    let f = fs::File::open(bundle).map_err(|e| Error::io(bundle, e))?;
+    let mut ar = tar::Archive::new(GzDecoder::new(f));
+    for e in ar.entries().map_err(|e| Error::Internal(e.to_string()))? {
+        let mut e = e.map_err(|e| Error::Internal(e.to_string()))?;
+        if e.path().ok().as_deref() != Some(Path::new(SECRETS)) {
+            continue;
+        }
+        let mut data = Vec::new();
+        e.read_to_end(&mut data)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        let secrets: Vec<SharedSecret> =
+            serde_json::from_slice(&crate::seal::open(password, &data)?)
+                .map_err(|e| Error::Internal(format!("{SECRETS}: {e}")))?;
+        return Ok(secrets.into_iter().map(|s| s.info.name).collect());
+    }
+    Err(Error::Validation(vec![format!(
+        "the bundle has no secrets: it was written without a {PASSWORD_SECRET} secret"
+    )]))
 }
 
 /// Restore a bundle into a state directory (with sparewalld stopped,

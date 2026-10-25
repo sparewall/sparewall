@@ -45,12 +45,33 @@ Secrets never appear in the document; it refers to them as
 `secret:<name>`.
 
 ```shell
-sparewall secret set dns-tsig          # reads the value from stdin
+sparewall secret set dns-tsig          # reads the value from stdin, or a prompt
 sparewall secret list                  # names and versions only
 sparewall token create prometheus --role monitor --expires 90d
 sparewall token list
 sparewall token revoke prometheus
 ```
+
+A secret cannot be read back, so `secret set` helps you check what you
+stored. At a prompt it asks twice (`--no-confirm` asks once). It warns
+about a carriage return or whitespace at either end of the value, which
+usually come with a paste. It also reports the stored length:
+
+```console
+$ sparewall secret set backup-password --fingerprint
+Value for backup-password:
+Value for backup-password again:
+Stored backup-password (version 2, cluster): 32 bytes, fingerprint 9f3a1c0d.
+```
+
+To compare the fingerprint with the copy in your password manager:
+
+```shell
+printf %s "$value" | sha256sum | cut -c1-8
+```
+
+`--fingerprint` is opt-in: it narrows the search for a weak value, so
+use it for keys and long random passwords only.
 
 Roles: `monitor` (health and metrics), `viewer`, `operator` (change,
 confirm, roll back, sync) and `admin`.
@@ -369,7 +390,18 @@ sparewall set backup.enabled=true \
     backup.repository=rest:https://backup.example.net/fw1 \
     backup.schedule=hourly      # a systemd calendar expression
 sparewall backup                # a bundle now, sent to the repository
+sudo sparewall backup --check-password   # on the node: try your copy
 ```
+
+**Check the password before relying on the backups.** After setting
+it and writing a bundle, run `sparewall backup --check-password` on
+the node and paste the password from your password manager: the check
+tells you whether it opens the secrets in the newest local bundle. It needs neither restic nor the repository, and
+changes nothing. `--file` checks another bundle, and works on any
+machine the bundle is copied to. A wrong password exits non-zero. Get it
+right before the first backup reaches the repository: restic
+initialises the repository with the password, and changing it later
+orphans the snapshots already there.
 
 `backup.repository` is any restic repository: SFTP, S3-compatible
 storage or a restic REST server (a local path must be under

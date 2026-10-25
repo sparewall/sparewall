@@ -338,6 +338,56 @@ fn backup_to_restic_and_restore() {
     );
 }
 
+/// `secret set` says how long the stored value is, and the backup
+/// password can be checked against the newest bundle.
+#[test]
+fn secret_length_and_backup_password_check() {
+    let Some(d) = start() else { return };
+    ok(&d, &["apply", "-f", &example(), "--confirm", "0"]);
+    // A Windows line ending came with the paste: stored, with a warning,
+    // and one byte longer than the password.
+    let o = sw_stdin(
+        &d,
+        &["secret", "set", "backup-password", "--fingerprint"],
+        "correct horse\r\n",
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("carriage return"), "{err}");
+    assert!(err.contains(": 14 bytes, fingerprint "), "{err}");
+    ok(&d, &["backup"]);
+
+    let check = |pw: &str| {
+        let f = d.dir.path().join("pw");
+        std::fs::write(&f, format!("{pw}\n")).unwrap();
+        let o = Command::new(env!("CARGO_BIN_EXE_sparewall"))
+            .args(["backup", "--check-password", "--password-file"])
+            .arg(&f)
+            .arg("--state")
+            .arg(d.dir.path().join("state"))
+            .output()
+            .unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    let (good, err) = check("correct horse");
+    assert!(!good, "{err}");
+    assert!(err.contains("wrong backup password"), "{err}");
+    let (good, err) = check("correct horse\r");
+    assert!(good, "{err}");
+    assert!(
+        err.contains("node fw1") && err.ends_with(": backup-password.\n"),
+        "{err}"
+    );
+
+    let o = sw_stdin(&d, &["secret", "set", "backup-password"], "correct horse");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains(": 13 bytes."), "{err}");
+    assert!(!err.contains("warning"), "{err}");
+}
+
 #[test]
 fn init_from_a_seed_file() {
     let dir = tempfile::tempdir().unwrap();

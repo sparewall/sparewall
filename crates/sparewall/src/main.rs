@@ -232,7 +232,26 @@ enum Cmd {
         generation: Option<i64>,
     },
     /// Write a backup bundle.
-    Backup,
+    Backup {
+        /// Instead, check a backup password against the newest bundle on
+        /// this node: whether it opens the bundle's secrets. Nothing is
+        /// written and the repository is not used.
+        #[arg(long)]
+        check_password: bool,
+        /// The bundle to check (default: the newest in the state
+        /// directory's `backups`).
+        #[arg(short, long, requires = "check_password")]
+        file: Option<PathBuf>,
+        /// A file holding the password (default: a prompt).
+        #[arg(long, requires = "check_password")]
+        password_file: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value = "/var/lib/sparewall",
+            requires = "check_password"
+        )]
+        state: PathBuf,
+    },
     /// Stream coordinator events.
     Events,
     /// Schema operations.
@@ -381,6 +400,15 @@ enum SecretCmd {
         /// Keep it on this node only instead of sharing it with the peer.
         #[arg(long)]
         node: bool,
+        /// At a prompt, ask once instead of twice.
+        #[arg(long)]
+        no_confirm: bool,
+        /// Also print a fingerprint of the value: the first 8 hex digits
+        /// of its SHA-256, to compare with `printf %s "$value" | sha256sum`.
+        /// It narrows the search for a weak value, so use it for keys and
+        /// long random passwords.
+        #[arg(long)]
+        fingerprint: bool,
     },
     /// List secret names and versions.
     List,
@@ -551,6 +579,57 @@ fn read_new_password(user: &str) -> Result<String, Fail> {
         return Err(Fail::usage("the passwords do not match"));
     }
     Ok(first)
+}
+
+/// A secret's value: asked twice without echo on a terminal (unless
+/// `once`), or read from stdin.
+fn read_confirmed(name: &str, once: bool) -> Result<String, Fail> {
+    let first = read_secret(name)?;
+    if once || !std::io::stdin().is_terminal() {
+        return Ok(first);
+    }
+    if read_secret(&format!("{name} again"))? != first {
+        return Err(Fail::usage("the values do not match"));
+    }
+    Ok(first)
+}
+
+/// What looks like a slip in a pasted value: a carriage return (a
+/// Windows line ending) or whitespace at either end.
+fn paste_slip(v: &str) -> Option<&'static str> {
+    if v.contains('\r') {
+        Some("contains a carriage return")
+    } else if v.starts_with(char::is_whitespace) || v.ends_with(char::is_whitespace) {
+        Some("begins or ends with whitespace")
+    } else {
+        None
+    }
+}
+
+fn warn_paste_slip(what: &str, v: &str) {
+    if let Some(slip) = paste_slip(v) {
+        eprintln!("warning: {what} {slip}");
+    }
+}
+
+/// The first 8 hex digits of a value's SHA-256.
+fn fingerprint(v: &str) -> String {
+    use sha2::Digest;
+    hex::encode(&sha2::Sha256::digest(v.as_bytes())[..4])
+}
+
+/// The backup password, from a file (one line) or a prompt.
+fn backup_password(file: Option<&Path>) -> Result<String, Fail> {
+    let pw = match file {
+        Some(p) => {
+            let s = std::fs::read_to_string(p)
+                .map_err(|e| Fail::other(format!("{}: {e}", p.display())))?;
+            s.strip_suffix('\n').unwrap_or(&s).to_string()
+        }
+        None => read_secret("the backup password")?,
+    };
+    warn_paste_slip("the backup password", &pw);
+    Ok(pw)
 }
 
 /// A SHA-512 crypt(3) hash, as shadow holds it. The salt is 16
@@ -1098,7 +1177,7 @@ impl App {
                 };
                 print!("{}", sparewall_config::export(&doc, f));
             }
-            Cmd::Backup => {
+            Cmd::Backup { .. } => {
                 let r = self.conn().await?.backup().await??;
                 if !self.quiet {
                     println!("{} {}", r.digest, r.path);
@@ -1123,12 +1202,26 @@ impl App {
                     println!("{}", ev.event);
                 }
             }
-            Cmd::Secret(SecretCmd::Set { name, node }) => {
-                let value = read_secret(&name)?;
+            Cmd::Secret(SecretCmd::Set {
+                name,
+                node,
+                no_confirm,
+                fingerprint: show,
+            }) => {
+                let value = read_confirmed(&name, no_confirm)?;
+                warn_paste_slip(&format!("the value for {name}"), &value);
                 let r = self.conn().await?.set(&name, &value, Some(!node)).await??;
                 self.say(format!(
-                    "Stored {} (version {}, {}).",
-                    r.secret.name, r.secret.version, r.secret.class
+                    "Stored {} (version {}, {}): {} bytes{}.",
+                    r.secret.name,
+                    r.secret.version,
+                    r.secret.class,
+                    value.len(),
+                    if show {
+                        format!(", fingerprint {}", fingerprint(&value))
+                    } else {
+                        String::new()
+                    }
                 ));
             }
             Cmd::Passwd { lock } => {
@@ -1551,14 +1644,10 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
                     "stop sparewalld first: systemctl stop sparewalld.service sparewalld.socket",
                 ));
             }
-            let password = match password_file {
-                _ if *no_secrets => None,
-                Some(p) => {
-                    let s = std::fs::read_to_string(p)
-                        .map_err(|e| Fail::other(format!("{}: {e}", p.display())))?;
-                    Some(s.strip_suffix('\n').unwrap_or(&s).to_string())
-                }
-                None => Some(read_secret("the backup password")?),
+            let password = if *no_secrets {
+                None
+            } else {
+                Some(backup_password(password_file.as_deref())?)
             };
             let fetched;
             let file = match (file, repository) {
@@ -1608,6 +1697,36 @@ fn local(cmd: &Cmd) -> Result<bool, Fail> {
             );
             Ok(true)
         }
+        Cmd::Backup {
+            check_password: true,
+            file,
+            password_file,
+            state,
+        } => {
+            let dir = state.join("backups");
+            let bundle = match file {
+                Some(f) => f.clone(),
+                None => sparewall_core::backup::newest(&dir).ok_or_else(|| {
+                    Fail::other(format!(
+                        "no bundles in {}: write one with `sparewall backup`",
+                        dir.display()
+                    ))
+                })?,
+            };
+            let m = sparewall_core::backup::manifest(&bundle)
+                .map_err(|e| Fail::other(format!("{}: {e}", bundle.display())))?;
+            let password = backup_password(password_file.as_deref())?;
+            let names = sparewall_core::backup::check_password(&bundle, password.as_bytes())
+                .map_err(|e| Fail::other(format!("{}: {e}", bundle.display())))?;
+            eprintln!(
+                "The password opens the secrets in {} (node {}, written {}): {}.",
+                bundle.display(),
+                m.node,
+                m.created,
+                names.join(", ")
+            );
+            Ok(true)
+        }
         Cmd::Completion { shell } => {
             clap_complete::generate(
                 *shell,
@@ -1640,6 +1759,12 @@ fn node_only(cmd: &Cmd, linux: bool) -> Option<&'static str> {
     match cmd {
         Cmd::Init { .. } => Some("init"),
         Cmd::Restore { .. } => Some("restore"),
+        // A bundle copied here can be checked anywhere.
+        Cmd::Backup {
+            check_password: true,
+            file: None,
+            ..
+        } => Some("backup --check-password"),
         Cmd::Bridge => Some("bridge"),
         _ => None,
     }
@@ -1716,7 +1841,7 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, hash_password, node_only};
+    use super::{Cli, fingerprint, hash_password, node_only, paste_slip};
     use clap::Parser;
 
     #[test]
@@ -1731,6 +1856,32 @@ mod tests {
         assert_eq!(node_only(&init, true), None);
         assert_eq!(node_only(&cmd(&["bridge"]), false), Some("bridge"));
         assert_eq!(node_only(&cmd(&["status"]), false), None);
+        let check = cmd(&["backup", "--check-password"]);
+        assert_eq!(node_only(&check, false), Some("backup --check-password"));
+        let copied = cmd(&["backup", "--check-password", "-f", "b.tar.gz"]);
+        assert_eq!(node_only(&copied, false), None);
+        assert!(Cli::try_parse_from(["sparewall", "backup", "-f", "b.tar.gz"]).is_err());
+    }
+
+    #[test]
+    fn fingerprint_is_what_sha256sum_prints() {
+        // printf %s hunter2 | sha256sum
+        assert_eq!(fingerprint("hunter2"), "f52fbd32");
+    }
+
+    #[test]
+    fn paste_slips_are_noticed() {
+        assert_eq!(paste_slip("hunter2"), None);
+        assert_eq!(paste_slip("KEY=a\nOTHER=b"), None);
+        assert_eq!(paste_slip("hunter2\r"), Some("contains a carriage return"));
+        assert_eq!(
+            paste_slip("hunter2 "),
+            Some("begins or ends with whitespace")
+        );
+        assert_eq!(
+            paste_slip("\thunter2"),
+            Some("begins or ends with whitespace")
+        );
     }
 
     #[test]
