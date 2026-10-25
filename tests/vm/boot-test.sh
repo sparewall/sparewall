@@ -341,6 +341,12 @@ vm "sudo sparewall set backup.enabled=true backup.repository=$REPO 'backup.sched
 vm 'sudo sparewall backup' 2>&1 | tee backup.txt
 grep -q snapshot backup.txt || fail "the bundle was not sent to the repository"
 grep -q 'no cluster secrets' backup.txt && fail "the bundle left out the secrets"
+# The operator's copy of the password opens the newest bundle; a wrong one
+# does not.
+vm "printf %s '$PASSWORD' | sudo sparewall backup --check-password" \
+    || fail "the backup password does not open the newest bundle"
+! vm "printf %s 'not it' | sudo sparewall backup --check-password" \
+    || fail "a wrong backup password opened the newest bundle"
 # The bundle carries the secrets decrypted: log-token, sealed before the
 # reboot, was unsealed by the coordinator.
 deadline=$((SECONDS + 120))

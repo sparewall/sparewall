@@ -813,6 +813,8 @@ fn backup_and_restore_drill() {
             .secrets
             .is_empty()
     );
+    let e = sparewall_core::backup::check_password(&bundle, b"hunter2").unwrap_err();
+    assert!(e.to_string().contains("no secrets"), "{e}");
     std::fs::remove_file(&bundle).unwrap();
     t.c.secret_set("backup-password", b"hunter2", SecretClass::Cluster)
         .unwrap();
@@ -824,6 +826,22 @@ fn backup_and_restore_drill() {
         (2, vec![1, 2], true)
     );
     assert_eq!(m.secrets, ["backup-password", "vpn-office"]);
+    // The password can be checked against the newest bundle, which
+    // changes nothing.
+    assert_eq!(
+        sparewall_core::backup::newest(&src.out_dir).as_deref(),
+        Some(bundle.as_path())
+    );
+    assert_eq!(
+        sparewall_core::backup::check_password(&bundle, b"hunter2").unwrap(),
+        ["backup-password", "vpn-office"]
+    );
+    let e = sparewall_core::backup::check_password(&bundle, b"hunter2\r").unwrap_err();
+    assert!(e.to_string().contains("wrong backup password"), "{e}");
+    assert_eq!(
+        sparewall_core::backup::newest(&out.path().join("none")),
+        None
+    );
 
     // Both nodes lost: restore onto a fresh state directory. A wrong
     // password changes nothing.
