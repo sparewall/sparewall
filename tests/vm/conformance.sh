@@ -153,6 +153,13 @@ run_conformance() {
     [ "$a" = 192.0.2.20 ] || fail "reservation name: got '$a'"
     vm 'sudo nft list chain inet sparewall fwd_guests_users' | grep -q 'packets [1-9]' \
         || fail "the guests->users default drop counted nothing"
+    # That drop is logged: ulogd (in ulogd_t, under NoNewPrivileges) hands
+    # each hit to the coordinator, which writes it to the journal.
+    vm 'systemctl is-active sparewall-ulogd' >/dev/null \
+        || { vm 'sudo journalctl -b -u sparewall-ulogd --no-pager | tail -20' || true
+             fail "sparewall-ulogd is not running"; }
+    vm "sudo journalctl -b -u sparewalld TARGET=sparewall::rules F_RULE='guests->users:default' --no-pager -o cat | grep -q 'rule hit'" \
+        || fail "the logged guests->users drop is not in the journal"
     log "conformance PASS"
 }
 

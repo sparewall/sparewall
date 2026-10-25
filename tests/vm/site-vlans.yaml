@@ -26,7 +26,7 @@ zones:
 policy:
   mgmt->self: { action: drop }
   users->guests: { action: accept }
-  guests->users: { action: drop }
+  guests->users: { action: drop, log: true }
   users->self:
     action: drop
     rules:

@@ -157,6 +157,13 @@ files_tmp_filetrans(sparewalld_t, sparewalld_tmp_t, { dir file })
 # keepalived's scripts run unconfined.
 allow { conntrackd_t ulogd_t systemd_journal_upload_t } sparewalld_var_run_t:dir search_dir_perms;
 allow { ulogd_t systemd_journal_upload_t } sparewalld_var_run_t:file read_file_perms;
+# sparewall-ulogd runs with NoNewPrivileges=yes, so systemd's transition
+# into ulogd_t is an nnp transition; without it ulogd stays init_t, cannot
+# read its plugins and exits. It streams each logged packet to the
+# coordinator's rules.sock.
+init_nnp_daemon_domain(ulogd_t)
+allow ulogd_t sparewalld_var_run_t:sock_file write_sock_file_perms;
+allow ulogd_t sparewalld_t:unix_stream_socket connectto;
 # Kea and Unbound, in containers, read theirs.
 allow container_t sparewalld_provider_conf_t:dir list_dir_perms;
 allow container_t sparewalld_provider_conf_t:file read_file_perms;

@@ -325,6 +325,29 @@ rule, a changed policy) fails `nft` and `applied`, so the node reports
 `apply-failed`. To restore it, reload the generation:
 `systemctl restart sparewalld` (or apply any new change).
 
+### Logged traffic
+
+`log: true` logs the packets that reach a policy's default action, match
+a rule, or are forwarded:
+
+```shell
+sparewall set "policy.'guests->users'.log=true"
+sparewall set "policy.'users->self'.rules.ssh.log=true"
+```
+
+Each hit becomes a journal entry from sparewalld, with the rule
+(`guests->users:default`, `users->self:ssh`) and a one-line summary of
+the packet as fields:
+
+```shell
+journalctl -u sparewalld TARGET=sparewall::rules \
+    --output=verbose --output-fields=F_RULE,F_PACKET
+journalctl -u sparewalld F_RULE='guests->users:default'   # one rule
+```
+
+`F_RECORD` holds ulogd's full JSON record. Hits go to the journal and,
+with `logging.remote`, wherever the journal is forwarded.
+
 ## Certificates
 
 Each node serves a self-signed certificate on the management network
