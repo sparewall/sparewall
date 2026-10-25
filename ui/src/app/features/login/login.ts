@@ -3,6 +3,7 @@ import { FormField, form, required, submit } from '@angular/forms/signals';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { Router } from '@angular/router';
 
@@ -11,7 +12,14 @@ import { NeedsViewer, Session } from '../../core/session';
 
 @Component({
   selector: 'app-login',
-  imports: [FormField, MatButtonModule, MatCardModule, MatFormFieldModule, MatInputModule],
+  imports: [
+    FormField,
+    MatButtonModule,
+    MatCardModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+  ],
   templateUrl: './login.html',
   styleUrl: './login.scss',
 })
@@ -25,6 +33,8 @@ export class Login {
     required(p.password, { message: 'Enter your password.' });
   });
   protected readonly problem = signal('');
+  /** Whether the password is shown as typed, to check it before signing in. */
+  protected readonly showPassword = signal(false);
 
   protected signIn(): void {
     submit(this.loginForm, async () => {

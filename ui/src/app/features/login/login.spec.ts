@@ -51,6 +51,25 @@ describe('Login', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it('shows and hides the password', async () => {
+    const fixture = TestBed.createComponent(Login);
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+    const password = el.querySelectorAll('input')[1];
+    const toggle = el.querySelector<HTMLButtonElement>('button[type=button]')!;
+    expect(password.type).toBe('password');
+    expect(toggle.getAttribute('aria-label')).toBe('Show password');
+    toggle.click();
+    await fixture.whenStable();
+    expect(password.type).toBe('text');
+    expect(toggle.getAttribute('aria-label')).toBe('Hide password');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    toggle.click();
+    await fixture.whenStable();
+    expect(password.type).toBe('password');
+    expect(signIn).not.toHaveBeenCalled();
+  });
+
   it('asks for both fields before calling the node', async () => {
     const el = await fill('', '');
     expect(signIn).not.toHaveBeenCalled();
