@@ -10,9 +10,16 @@ export interface HoldsEdits {
   hasUnappliedChanges(): boolean;
 }
 
-/** Asks before leaving such a page with its edits. */
-export const keepEdits: CanDeactivateFn<HoldsEdits> = (editor) => {
+/** A URL's page: its first path segment (`config` for `/config/dhcp?find=x`). */
+const page = (url: string) => url.split(/[?#]/)[0].split('/').filter(Boolean)[0] ?? '';
+
+/**
+ * Asks before leaving such a page with its edits. Moving within it (the
+ * editor's sections, which keep the page and its draft) is not leaving.
+ */
+export const keepEdits: CanDeactivateFn<HoldsEdits> = (editor, _route, current, next) => {
   if (!editor.hasUnappliedChanges()) return true;
+  if (next && page(next.url) === page(current.url)) return true;
   return inject(MatDialog)
     .open<ConfirmDialog, ConfirmData, boolean>(ConfirmDialog, {
       data: {

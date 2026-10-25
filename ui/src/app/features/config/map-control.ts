@@ -19,7 +19,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { ConfirmData, ConfirmDialog } from '../../shared/confirm-dialog';
 import { NameData, NameDialog } from '../../shared/name-dialog';
-import { isMap } from './form-schema';
+import { FIXED, isMap } from './form-schema';
 import { objectLayout } from './layout';
 
 /**
@@ -38,12 +38,18 @@ export class MapControl extends JsonFormsControl {
   private readonly cd = inject(ChangeDetectorRef);
   private readonly dialog = inject(MatDialog);
   protected names: string[] = [];
+  /** Every key, entries or not: a new name must not take one. */
+  private taken: string[] = [];
   protected entrySchema: JsonSchema7 = {};
   protected entryUiSchema: UISchemaElement = { type: 'VerticalLayout' };
 
   override mapAdditionalProps(props: ControlProps): void {
     const data = (props.data ?? {}) as Record<string, unknown>;
-    this.names = Object.keys(data);
+    const fixed = new Set(((props.schema as Record<string, unknown>)[FIXED] as string[]) ?? []);
+    this.names = Object.keys(data).filter((k) => !fixed.has(k));
+    // The fixed fields' names, set or not: an entry there would sit where
+    // a field belongs, and be hidden from the list.
+    this.taken = [...this.names, ...fixed];
     const entry = (props.schema as JsonSchema7).additionalProperties as JsonSchema7;
     if (entry !== this.entrySchema) {
       this.entrySchema = entry;
@@ -54,6 +60,11 @@ export class MapControl extends JsonFormsControl {
           : Generate.uiSchema(entry, 'VerticalLayout', undefined, this.rootSchema);
     }
     this.cd.markForCheck();
+  }
+
+  /** Whether it has a name to show; a whole section is drawn without one. */
+  protected named(): boolean {
+    return (this.label ?? '').replace(/\*/g, '').trim() !== '';
   }
 
   protected entryPath(name: string): string {
@@ -107,7 +118,7 @@ export class MapControl extends JsonFormsControl {
     return firstValueFrom(
       this.dialog
         .open<NameDialog, NameData, string>(NameDialog, {
-          data: { title, name, taken: this.names },
+          data: { title, name, taken: this.taken },
           width: '400px',
         })
         .afterClosed(),

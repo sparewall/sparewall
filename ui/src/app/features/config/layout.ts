@@ -2,10 +2,46 @@ import { ControlElement, JsonSchema7, VerticalLayout } from '@jsonforms/core';
 
 import { isMap } from './form-schema';
 
-/** How a field reads: `tcp_established_timeout` as "Tcp established timeout". */
+/** Words written in capitals wherever they appear in a field's name. */
+const ACRONYMS = new Set([
+  'acme',
+  'dhcp',
+  'dns',
+  'ha',
+  'http',
+  'https',
+  'icmp',
+  'ip',
+  'ips',
+  'lacp',
+  'mac',
+  'mss',
+  'mtu',
+  'nat',
+  'nic',
+  'ntp',
+  'psk',
+  'snat',
+  'ssh',
+  'tcp',
+  'tls',
+  'udp',
+  'url',
+  'vip',
+  'vlan',
+  'vpn',
+  'vrrp',
+  'wan',
+]);
+
+/** How a field reads: `tcp_established_timeout` as "TCP established timeout". */
 export function fieldLabel(key: string): string {
-  const words = key.replace(/_/g, ' ');
-  return words.charAt(0).toUpperCase() + words.slice(1);
+  const words = key
+    .split('_')
+    .filter(Boolean)
+    .map((w) => (ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w));
+  const s = words.join(' ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function weight(s: JsonSchema7, required: boolean): number {

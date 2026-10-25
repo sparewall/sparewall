@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { MatDialog } from '@angular/material/dialog';
-import { Router } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 import { Subject } from 'rxjs';
 
 import openapi from '../../../../../docs/api/openapi.json';
@@ -43,9 +43,11 @@ function setup() {
       { provide: ConfigChanges, useValue: { review } },
       { provide: MatDialog, useValue: { open: () => ({ afterClosed: () => closed }) } },
       { provide: Session, useValue: { can: () => true } },
-      { provide: Router, useValue: { navigate: vi.fn() } },
+      // The editor links to its sections; navigating goes nowhere here.
+      provideRouter([]),
     ],
   });
+  vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
   const http = TestBed.inject(HttpTestingController);
   const serve = (gen: number) => {
     http.match('/openapi.json').forEach((r) => r.flush(openapi));

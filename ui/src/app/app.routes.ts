@@ -22,8 +22,12 @@ export const routes: Routes = [
         title: 'Status · Sparewall',
         loadComponent: () => import('./features/status/status').then((m) => m.Status),
       },
+      // The first section in the editor's list.
+      { path: 'config', pathMatch: 'full', redirectTo: 'config/ports' },
       {
-        path: 'config',
+        // One route for every section, so moving between them keeps the
+        // page and its draft; leaving for another page is guarded.
+        path: 'config/:section',
         title: 'Configuration · Sparewall',
         loadComponent: () => import('./features/config/config').then((m) => m.Config),
         canDeactivate: [keepEdits],

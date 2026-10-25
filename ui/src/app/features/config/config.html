@@ -26,16 +26,73 @@
   <p class="problem" role="alert">The configuration could not be read.</p>
 }
 
-@if (schema() && uischema() && draft()) {
-  <jsonforms
-    [data]="draft()"
-    [schema]="schema()!"
-    [uischema]="uischema()!"
-    [renderers]="renderers"
-    [readonly]="!session.can('operator')"
-    [ajv]="ajv"
-    [config]="formConfig"
-    validationMode="NoValidation"
-    (dataChange)="edited($event)"
-  />
-}
+<div class="layout">
+  <nav aria-label="Configuration sections">
+    <mat-form-field class="search" subscriptSizing="dynamic">
+      <mat-icon matPrefix>search</mat-icon>
+      <mat-label>Find a setting</mat-label>
+      <input
+        matInput
+        type="search"
+        autocomplete="off"
+        [value]="query()"
+        (input)="query.set($any($event.target).value)"
+        (keydown)="searchKey($event)"
+      />
+    </mat-form-field>
+
+    @if (query()) {
+      <mat-nav-list class="results" aria-label="Matching settings">
+        @for (r of results(); track $index) {
+          <a mat-list-item (click)="open(r)" (keydown.enter)="open(r)" tabindex="0">
+            <span matListItemTitle>{{ r.label }}</span>
+            <span matListItemLine>{{ place(r) }}</span>
+          </a>
+        } @empty {
+          <p class="none">No setting matches.</p>
+        }
+      </mat-nav-list>
+    } @else {
+      @for (g of groups(); track g.label) {
+        <h2>{{ g.label }}</h2>
+        <mat-nav-list>
+          @for (s of g.sections; track s.key) {
+            <a
+              mat-list-item
+              [routerLink]="['/config', s.key]"
+              [activated]="s.key === shown()?.key"
+              [attr.aria-current]="s.key === shown()?.key ? 'page' : null"
+            >
+              <span matListItemTitle>{{ s.label }}</span>
+              @if (editedSections().has(s.key)) {
+                <span matListItemMeta class="edited" title="Changed, not yet applied">●</span>
+              }
+            </a>
+          }
+        </mat-nav-list>
+      }
+    }
+  </nav>
+
+  <section class="form">
+    @if (shown(); as s) {
+      <h2>{{ s.label }}</h2>
+      @if (s.description) {
+        <p class="description">{{ s.description }}</p>
+      }
+    }
+    @if (schema() && uischema() && draft()) {
+      <jsonforms
+        [data]="draft()"
+        [schema]="schema()!"
+        [uischema]="uischema()!"
+        [renderers]="renderers"
+        [readonly]="!session.can('operator')"
+        [ajv]="ajv"
+        [config]="formConfig"
+        validationMode="NoValidation"
+        (dataChange)="edited($event)"
+      />
+    }
+  </section>
+</div>

@@ -1,7 +1,8 @@
 @if (!hidden) {
   <section class="map">
     <header>
-      <h3>{{ label }}</h3>
+      <!-- A whole section: the page names and describes it. -->
+      <h3>{{ named() ? label : '' }}</h3>
       @if (isEnabled()) {
         <button matButton type="button" (click)="add()">
           <mat-icon>add</mat-icon>
@@ -9,7 +10,7 @@
         </button>
       }
     </header>
-    @if (description) {
+    @if (description && named()) {
       <p class="description">{{ description }}</p>
     }
     <mat-accordion multi>
