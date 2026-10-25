@@ -253,10 +253,10 @@ ssh_password() {
 # Unless the document opts in. sshd is reloaded; a key login shows it is
 # listening again before the password is tried.
 vm 'sudo sparewall set management.ssh.password=true --confirm 0'
-vm true
+wait_ssh 60
 ssh_password || fail "SSH refused the admin password after management.ssh.password=true"
 vm 'sudo sparewall set management.ssh.password=false --confirm 0'
-vm true
+wait_ssh 60
 ! ssh_password || fail "SSH still takes the admin password after opting out"
 vm 'sudo systemctl restart sparewalld'
 takes_password "$(admin_hash)" 'console only' || fail "the admin password changed on restart"
@@ -270,9 +270,11 @@ rc=0; vm "SPAREWALL_TOKEN=$VIEWER sparewall set management.ssh.password=true --c
 [ "$rc" = 6 ] || fail "a viewer token changed the configuration (exit $rc)"
 vm "SPAREWALL_TOKEN=$OPERATOR sparewall set management.ssh.password=true --confirm 0" \
     || fail "an operator token cannot change the configuration"
+wait_ssh 60
 vm 'sudo sparewall history -o json' | grep -q '"author": *"token ci-operator"' \
     || fail "the change is not recorded with its token"
 vm 'sudo sparewall set management.ssh.password=false --confirm 0'
+wait_ssh 60
 rc=0; vm "SPAREWALL_TOKEN=$OPERATOR sparewall token list" || rc=$?
 [ "$rc" = 6 ] || fail "an operator token listed tokens (exit $rc)"
 vm 'sudo sparewall token revoke ci-operator'
