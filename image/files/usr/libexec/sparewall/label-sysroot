@@ -1,0 +1,30 @@
+#!/bin/sh
+# Label what the installer left unlabelled under /sysroot (#152), for
+# sparewall-label-sysroot.service, which runs it in a mount namespace of
+# its own. A disk built by bootc-image-builder on a host with SELinux
+# enforcing has ostree's own metadata unlabelled: the repo's commit,
+# dirtree and dirmeta objects and refs, the deploy directories, and
+# /sysroot/boot. restorecon's walk of the mounts is then denied searching
+# them.
+#
+# Only what is unlabelled_t, each as the policy labels its path with
+# /sysroot taken off, as ostree labels the sysroot. Not restorecon -R:
+# the repo's file objects carry the labels of the files they are (lib_t,
+# bin_t, ...), and the policy's label for their path would overwrite
+# those. A no-op once nothing is unlabelled.
+set -eu
+cd /sysroot
+list=$(find . -xdev -context '*:unlabeled_t:*' -printf '/%P\n' | grep -vx / || true)
+[ -n "$list" ] || exit 0
+# /sysroot is mounted read-only; its filesystem is read-write (/var is on
+# it), so a read-write bind remount in this namespace is enough.
+mount -o remount,bind,rw /sysroot
+tab=$(printf '\t')
+contexts=$(printf '%s\n' "$list" | xargs -d '\n' matchpathcon)
+for ctx in $(printf '%s\n' "$contexts" | cut -f2 | sort -u); do
+    printf '%s\n' "$contexts" | awk -F "$tab" -v c="$ctx" '$2 == c { print "." $1 }' \
+        | xargs -d '\n' chcon -h "$ctx"
+done
+left=$(find . -xdev -context '*:unlabeled_t:*' -printf '/%P\n' | grep -cvx / || true)
+echo "labelled $(printf '%s\n' "$list" | wc -l) files under /sysroot; $left left"
+[ "$left" = 0 ]
