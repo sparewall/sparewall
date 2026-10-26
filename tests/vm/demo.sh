@@ -52,10 +52,11 @@ disk() {
     mkdir -p "$DIR"
     rm -rf "$DIR/build"
     # bootc-image-builder reads the image from root's container storage.
-    if ! sudo podman image exists "$image"; then
-        log "pulling $image"
-        sudo podman pull "$image"
-    fi
+    # A tag such as testing moves, so pull even when a copy is there: an
+    # earlier disk's image would otherwise be built again. "newer" still
+    # uses a local image the registry cannot be asked about.
+    log "pulling $image"
+    sudo podman pull --policy newer "$image"
     log "building a disk from $image (several minutes)"
     "$HERE/build-disk.sh" "$image" "$DIR/build"
     mv "$DIR/build/output/qcow2/disk.qcow2" "$DIR/base.qcow2"
