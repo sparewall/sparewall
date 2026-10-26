@@ -14,7 +14,14 @@
 # those. A no-op once nothing is unlabelled.
 set -eu
 cd /sysroot
-list=$(find . -xdev -context '*:unlabeled_t:*' -printf '/%P\n' | grep -vx / || true)
+# What is unlabelled, as paths from /sysroot. find's own status stops the
+# script (set -e), so a scan that failed is not taken for an empty one;
+# only grep's "nothing left" is not an error.
+unlabelled() {
+    found=$(find . -xdev -context '*:unlabeled_t:*' -printf '/%P\n')
+    printf '%s\n' "$found" | grep -vx -e / -e '' || true
+}
+list=$(unlabelled)
 [ -n "$list" ] || exit 0
 # /sysroot is mounted read-only; its filesystem is read-write (/var is on
 # it), so a read-write bind remount in this namespace is enough.
@@ -25,6 +32,6 @@ for ctx in $(printf '%s\n' "$contexts" | cut -f2 | sort -u); do
     printf '%s\n' "$contexts" | awk -F "$tab" -v c="$ctx" '$2 == c { print "." $1 }' \
         | xargs -d '\n' chcon -h "$ctx"
 done
-left=$(find . -xdev -context '*:unlabeled_t:*' -printf '/%P\n' | grep -cvx / || true)
-echo "labelled $(printf '%s\n' "$list" | wc -l) files under /sysroot; $left left"
-[ "$left" = 0 ]
+left=$(unlabelled)
+echo "labelled $(printf '%s\n' "$list" | wc -l) files under /sysroot; $(printf '%s' "$left" | grep -c . || true) left"
+[ -z "$left" ]
