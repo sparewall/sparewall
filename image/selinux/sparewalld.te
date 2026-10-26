@@ -314,6 +314,12 @@ type sparewall_httpd_var_run_t;
 files_pid_file(sparewall_httpd_var_run_t)
 
 allow sparewall_httpd_t self:unix_stream_socket create_stream_socket_perms;
+# zlink tags its sockets with a user.varlink xattr where sockets take
+# one, and finds out by setting one on a datagram socket of its own. It
+# caches the answer only when the probe runs: denied the socket, it
+# probed again on every call to the coordinator, each a denial. The
+# socket reaches nothing; there is no rule to connect or send it.
+allow sparewall_httpd_t self:unix_dgram_socket { create setattr };
 manage_sock_files_pattern(sparewall_httpd_t, sparewall_httpd_var_run_t, sparewall_httpd_var_run_t)
 stream_connect_pattern(sparewall_httpd_t, sparewalld_api_var_run_t, sparewalld_api_var_run_t, sparewalld_t)
 stream_connect_pattern(sparewalld_t, sparewall_httpd_var_run_t, sparewall_httpd_var_run_t, sparewall_httpd_t)

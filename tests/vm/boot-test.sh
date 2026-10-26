@@ -301,6 +301,11 @@ vm 'ps -eo label,comm' | grep -q 'sparewall_httpd_t.*sparewall-httpd' \
 vm 'curl -sfk https://localhost/openapi.json' | jq -e '.paths["/call/org.sparewall.Firewall.Status"]' >/dev/null \
     || fail "no OpenAPI description at /openapi.json"
 [ "$(status https://localhost/readyz)" = 200 ] || fail "/readyz is not the coordinator's with management.web"
+# A call through the gateway to the coordinator, so the SELinux report
+# covers what sparewall-httpd does for one.
+viewer=$(vm 'sudo sparewall token create ci-viewer --role viewer -q')
+vm "curl -sfk -X POST -H 'Authorization: Bearer $viewer' -H 'Content-Type: application/json' -d '{}' https://localhost/call/org.sparewall.Firewall.Status" \
+    | jq -e '.health.level' >/dev/null || fail "the HTTP API does not answer a viewer's Status"
 # The UI's page, and its assets, under the gateway's labels.
 vm 'curl -sfk https://localhost/' | grep -q '<app-root' || fail "no web UI at /"
 vm 'curl -sfk https://localhost/history' | grep -q '<app-root' || fail "the UI's routes do not lead to its page"
