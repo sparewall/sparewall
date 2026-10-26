@@ -114,6 +114,7 @@ MTU (parent and VLAN) and NIC offload overrides are per port.
 - Do not apply libvirt's `clean-traffic` nwfilter: it blocks the extra MACs and addresses that gateway addresses need.
 - VRRP adverts use link-local multicast, which OVS floods; switch instances to `unicast_peer` if anything in the path filters it.
 - PCI passthrough or SR-IOV remain options where virtio becomes the bottleneck.
+- The image ships the QEMU guest agent, which starts when the domain has its channel (libvirt adds one by default) and never on hardware. Snapshots can then quiesce (`virsh snapshot-create-as --quiesce`), and `virsh domifaddr --source agent` shows the node's addresses. The agent answers only freeze and thaw, fstrim, time, shutdown and read-only queries: `guest-exec`, file access, SSH keys, passwords and suspend are refused, by an allow list in `qemu-guest-agent.service.d/50-sparewall.conf`.
 
 ### Mixed pairs
 
