@@ -12,8 +12,11 @@ def send(m):
     f.write(json.dumps(m).encode() + b"\n")
 def reply():
     while True:
+        line = f.readline()
+        if not line:
+            sys.exit("qga.py: the agent closed the connection")
         try:
-            return json.loads(f.readline())
+            return json.loads(line)
         except ValueError:
             continue
 # guest-sync first: the channel may still hold an earlier client's reply.
