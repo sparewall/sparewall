@@ -70,6 +70,9 @@ start_vm() {
         -device virtio-net-pci,netdev=n1,mac=52:54:00:12:34:57 \
         -chardev "socket,id=chrtpm,path=$WORK/tpm.sock" \
         -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-crb,tpmdev=tpm0 \
+        -device virtio-serial-pci \
+        -chardev "socket,id=qga0,path=$WORK/qga.sock,server=on,wait=off" \
+        -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \
         -smbios "type=11,value=io.systemd.credential.binary:sparewall.identity=$CRED" \
         -display none -serial file:serial.log \
         -pidfile qemu.pid -daemonize
@@ -402,6 +405,31 @@ takes_password "$(admin_hash)" 'console only' || fail "the admin password was no
 # unseals them.
 vm 'sudo sparewall backup' 2>&1 | tee backup-after.txt
 grep -q snapshot backup-after.txt || fail "no backup after the restore"
+
+log "the guest agent"
+# The VM has the agent's channel, as libvirt gives one by default: the
+# agent answers what a hypervisor needs for a consistent snapshot, and
+# refuses the rest.
+qga() { sudo python3 -I "$HERE/qga.py" "$WORK/qga.sock" "$@"; }
+vm 'systemctl is-active qemu-guest-agent' || fail "the guest agent is not running"
+qga guest-ping | jq -e '.return' >/dev/null || fail "the guest agent does not answer"
+qga guest-network-get-interfaces \
+    | jq -e --arg mac "$MAC" '.return[] | select(."hardware-address" == $mac) | ."ip-addresses" | length > 0' >/dev/null \
+    || fail "the guest agent does not report the management address"
+qga guest-get-fsinfo | jq -e '.return | length > 0' >/dev/null \
+    || fail "the guest agent reports no filesystems"
+# Freeze and thaw in one call, so a failed check cannot leave the node frozen.
+qga guest-fsfreeze-freeze guest-fsfreeze-status guest-fsfreeze-thaw | tee qga-freeze.json
+jq -se '.[0].return > 0 and .[1].return == "frozen" and .[2].return > 0' qga-freeze.json >/dev/null \
+    || fail "the guest agent could not freeze and thaw the filesystems"
+[ "$(qga guest-fsfreeze-status | jq -r .return)" = thawed ] || fail "the filesystems are still frozen"
+vm true || fail "the node does not answer after a thaw"
+for c in 'guest-exec:{"path": "/bin/true"}' 'guest-file-open:{"path": "/etc/shadow"}' \
+         'guest-ssh-add-authorized-keys:{"username": "admin", "keys": []}' \
+         'guest-set-user-password:{"username": "admin", "password": "", "crypted": false}'; do
+    qga "$c" | jq -e '.error.desc | test("disabled")' >/dev/null \
+        || fail "the guest agent allows ${c%%:*}"
+done
 
 log "the coordinator's SELinux domain"
 selinux_report vm fw1

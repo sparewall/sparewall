@@ -209,14 +209,14 @@ selinux_report() { # run-command node-name
     # Kernel log and journald's audit transport: with auditd running, or
     # kauditd rate-limiting printk, either one alone misses records.
     # The coordinator, or a daemon it configures (keepalived and its
-    # scripts, conntrackd), or bootupd (#111) denied anything, or any
-    # domain denied the coordinator's own files (a consumer of
-    # /run/sparewall, say). Not the checks of a domain transition's
-    # environment scrubbing, which the policy hides (dontaudit, off
-    # here): they are denied by design.
+    # scripts, conntrackd), bootupd (#111) or the guest agent denied
+    # anything, or any domain denied the coordinator's own files (a
+    # consumer of /run/sparewall, say). Not the checks of a domain
+    # transition's environment scrubbing, which the policy hides
+    # (dontaudit, off here): they are denied by design.
     denials=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
         | grep -oE 'avc: +denied .*' \
-        | grep -E 'scontext=[^ ]*:(sparewalld|sparewall_httpd|keepalived|keepalived_unconfined_script|conntrackd|bootupd)_t:|tcontext=[^ ]*:(sparewalld|sparewall_httpd)_[a-z_]*:' \
+        | grep -E 'scontext=[^ ]*:(sparewalld|sparewall_httpd|keepalived|keepalived_unconfined_script|conntrackd|bootupd|virt_qemu_ga|virt_qemu_ga_unconfined)_t:|tcontext=[^ ]*:(sparewalld|sparewall_httpd)_[a-z_]*:' \
         | grep -vE 'denied +\{ (noatsecure|siginh|rlimitinh) \}' \
         | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=[01]//' \
         | sort | uniq -c | sort -rn) || true
