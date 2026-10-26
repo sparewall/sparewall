@@ -110,6 +110,19 @@ Where the implementation departs from, or settles open questions in,
 - **Confined daemons read their configs from their own runtime
   directories** (`/run/chrony`, `/run/keepalived`), which carry their
   SELinux labels; everything else is under `/run/sparewall/<subsystem>`.
+- **Disks built on an SELinux-enforcing host are relabelled on first
+  boot** (#152). bootc-image-builder run there leaves ostree's own
+  metadata under `/sysroot` without labels (the repo's commit, dirtree
+  and dirmeta objects and refs, the deploy directories, `/sysroot/boot`);
+  on a host with SELinux off, as in CI, it is labelled. Either way the
+  deployment and the repo's file objects are. The coordinator's
+  restorecon walks the mounts and was denied searching the unlabelled
+  directories, so a node from such a disk started `degraded`.
+  `sparewall-label-sysroot` labels only what is `unlabeled_t`, as the
+  policy labels its path with `/sysroot` taken off (ostree's own rule);
+  `restorecon -R` would replace the file objects' labels, which are the
+  labels of the files they are. The VM suites fail on anything
+  unlabelled under `/sysroot`.
 - **SELinux stays enforcing**, and confined daemons get files they may
   read: networkd's WireGuard keys are copies in `/run/systemd/network`
   (masters stay root-only under `/var/lib/sparewall`); conntrackd's

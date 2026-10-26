@@ -243,6 +243,12 @@ selinux_report() { # run-command node-name
         echo "$node: $unlabelled files in /boot are mislabelled" | tee -a "$WORK/selinux-denials"
         $run 'findmnt /boot; systemctl status --no-pager sparewall-label-boot.service' || true
     fi
+    # Nothing unlabelled under /sysroot (sparewall-label-sysroot, #152).
+    unlabelled=$($run 'sudo find /sysroot -xdev -context "*:unlabeled_t:*" -printf "%p\n"' | grep -c . || true)
+    if [ "$unlabelled" != 0 ]; then
+        echo "$node: $unlabelled files under /sysroot are unlabelled" | tee -a "$WORK/selinux-denials"
+        $run 'systemctl status --no-pager sparewall-label-sysroot.service' || true
+    fi
     [ -z "$denials" ] || printf '%s\n' "$denials" | sed "s/^/$node: /" >> "$WORK/selinux-denials"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         {
