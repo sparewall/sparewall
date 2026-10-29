@@ -212,9 +212,9 @@ with the console password.
   port and certificate as the health endpoints. Until `tls.certificates`
   has a `mgmt` certificate, the browser warns about the node's
   self-signed one.
-- **Roles:** the same ones as API tokens (`monitor`, `viewer`,
-  `operator`, `admin`). Each page offers only what the user's role
-  allows.
+- **Roles:** `viewer`, `operator` or `admin`. Each page offers only
+  what the user's role allows. A `monitor` user is for health checks
+  and metrics, and can't sign in to the UI.
 
 See [the web UI and HTTP API](operations.md#the-web-ui-and-http-api) in
 operations.md for the pages, users and roles, and for calling the API
