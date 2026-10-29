@@ -184,24 +184,38 @@ conventions, errors and statuses. Turning `management.web` off stops the
 service, and SSH, the console and the anti-lockout rule never depend on
 it.
 
-People open `https://<node>/` and sign in as one of the users above. The
-UI shows the node's status and health as they change, and lists the
-history, from which an operator can roll back. The configuration page
-is a form built from the document's schema, a tab per section: an
-operator edits it, reviews what the change does (the node's own dry run:
-the changed paths, the subsystems it touches, any warnings), and applies
-it with a window to confirm it in, two minutes unless changed. The zone
-policy page shows every pair of zones as a matrix (from each row to each
-column): the action, NAT, logging and number of rules, and the default
-for a pair without a policy (dropped, except what the firewall itself
-sends). Selecting a pair edits its policy; edits to several pairs are
-reviewed and applied together. While a change waits, every page shows
-how long is left, with Confirm and Revert now. An admin also manages users and API tokens there; a new
-password is hashed in the browser, as `sparewall user passwd` hashes it
-on your machine, so only the hash reaches the node, and a new token is
-shown once. Each page offers only what the user's role
-allows, and the node checks every call regardless. The UI loads nothing
-from outside the node.
+People open `https://<node>/` and sign in as one of the users above.
+The UI has these pages:
+
+- **Status:** the node's status and health, updated as they change.
+- **History:** the generations, from which an operator can roll back.
+- **Configuration:** a form built from the document's schema. It shows
+  one section at a time (`/config/<section>`, so a section can be
+  bookmarked), chosen from a sidebar grouped into Network, Firewall,
+  Services, VPN and System. A search finds any setting by its name, its
+  path or words in its description.
+  - An operator edits the form, then reviews what the change does. The
+    review is the node's own dry run: the changed paths, the subsystems
+    the change touches, and any warnings.
+  - The operator then applies the change, with a window to confirm it
+    in: two minutes unless changed.
+- **Zone policy:** every pair of zones as a matrix, from each row to
+  each column.
+  - Each cell shows the pair's action, NAT, logging and number of
+    rules.
+  - A pair without a policy shows its default: dropped, except what the
+    firewall itself sends.
+  - Selecting a pair edits its policy. Edits to several pairs are
+    reviewed and applied together.
+- **Users and API tokens:** for admins.
+  - A new password is hashed in the browser, as `sparewall user passwd`
+    hashes it on your machine, so only the hash reaches the node.
+  - A new token is shown only once.
+
+While a change waits for confirmation, every page shows how long is
+left, with Confirm and Revert now. Each page offers only what the
+user's role allows, and the node checks every call regardless. The UI
+loads nothing from outside the node.
 
 ## Remote-access VPN
 
