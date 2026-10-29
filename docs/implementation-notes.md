@@ -544,8 +544,8 @@ through the cut network do not survive that long a stall.
   Earlier versions accepted them and then rendered nothing, silently
   turning DHCP or log forwarding off; validation now rejects them as
   not built yet (#10).
-- Schema migrations (only schema 1 exists); the Web UI.
-- The coordinator's SELinux domain enforcing; benchmarks.
+- Schema migrations (only schema 1 exists).
+- Benchmarks.
 - A local Prometheus (`metrics.mode: local`, `metrics.retention`),
   scheduled upgrades (`updates.mode: windowed`, `updates.window`) and
   provider passthrough (`provider_options`). The schema keeps their

@@ -29,7 +29,7 @@ Sparewall turns a Linux box or VM into a firewall appliance that is upgraded and
 | Zone-based firewall with raw nftables rules | IPsec, captive portal, multi-tenancy |
 | WireGuard remote-access VPN | Site-to-site beyond static WireGuard peers |
 | Optional recursive DNS (Unbound), NTP, logging, metrics, health endpoints | DHCP-to-DNS updates (DDNS), IDS/IPS (Suricata), dynamic routing (BGP, OSPF) |
-| `sparewall` CLI and the Varlink API | Web UI and HTTP API (milestone 7, which 1.0 waits for) |
+| `sparewall` CLI and the Varlink API; a first web UI and HTTP API (0.3.0) | A web UI and HTTP API covering every CLI operation (milestone 7, which 1.0 waits for) |
 
 ### Design principles
 
@@ -718,7 +718,7 @@ The coordinator is the single authority: it holds users and tokens, checks every
 | Prometheus and health checks | A `monitor`-role token or a TLS client certificate |
 | Peer node | WireGuard keys on the sync tunnel |
 
-- **A built-in `admin` account** may have a password (`sparewall passwd`, or seeded with the node identity); its crypt(3) hash is a cluster secret, which console logins check and the web UI will check too. Password logins are rate-limited.
+- **A built-in `admin` account** may have a password (`sparewall passwd`, or seeded with the node identity); its crypt(3) hash is a cluster secret, which console logins and web UI logins check. Password logins are rate-limited.
 - **API tokens** are random opaque strings, not JWTs, so revocation is immediate. `sparewall token create --role operator --expires 90d` shows a token once; the coordinator stores only its hash with name, role, expiry and last use.
 - **Single sign-on** (OpenID Connect) can be added later and mapped onto the same roles; the local `admin` account always keeps working, so an identity provider reached through the firewall can never lock anyone out of it.
 
@@ -951,7 +951,7 @@ Self-hosted runners, if added for benchmarks or capacity, never run workflows tr
 
 ## Web UI and HTTP API
 
-The web UI and the HTTP API are milestone 7. Work on them began while milestone 6's 0.x releases were still proving themselves at real sites, and 1.0 waits for both. The UI will be the Varlink API's first client not built alongside it, and the gaps it finds (live events for status pages, errors that name the field at fault, schema metadata for forms, concurrent edits) should be closed before 1.0 freezes the schema, the Varlink API and the HTTP API together.
+The web UI and the HTTP API are milestone 7. Work on them began while milestone 6's 0.x releases were still proving themselves at real sites, and 1.0 waits for both. A first version shipped in 0.3.0: status, history and rollback, the configuration editor, the zone policy matrix, and users and tokens. The UI is the Varlink API's first client not built alongside it, and the gaps it finds (live events for status pages, errors that name the field at fault, schema metadata for forms, concurrent edits) should be closed before 1.0 freezes the schema, the Varlink API and the HTTP API together.
 
 ### Off until enabled
 

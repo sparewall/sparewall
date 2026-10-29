@@ -20,7 +20,12 @@ nftables and a small Rust coordinator.
   one node or an active/standby pair.
 - **Built from standard parts:** systemd-networkd, nftables, keepalived,
   conntrackd, WireGuard, Podman. The only new code is the coordinator
-  (`sparewalld`) and its CLI (`sparewall`).
+  (`sparewalld`), its CLI (`sparewall`), and the web UI with its HTTP
+  API gateway (`sparewall-httpd`).
+- **A web UI and an HTTP API, off until you turn them on.** Status and
+  health, the configuration as a form with a dry-run review, a zone
+  policy matrix, history and rollback, and users and API tokens. Every
+  call is checked against the user's or token's role.
 
 ## A taste
 
@@ -60,6 +65,13 @@ or with Homebrew:
 brew install sparewall/tap/sparewall
 ```
 
+Or turn on the web UI, add a user, and open `https://<node>/`:
+
+```shell
+sparewall set management.web=true
+sparewall user add alice --role operator
+```
+
 More complete examples live in [`examples/`](examples/). Start with
 [docs/getting-started.md](docs/getting-started.md), then
 [docs/pairing.md](docs/pairing.md) and [docs/operations.md](docs/operations.md).
@@ -71,9 +83,11 @@ More complete examples live in [`examples/`](examples/). Start with
 | `crates/sparewall-config` | Document model, JSON Schema, validation, canonical form, merge/patch/path operations |
 | `crates/sparewall-render` | Renderers: networkd, nftables, sysctl, and the service providers (Kea, Unbound, chrony) |
 | `crates/sparewall-core` | Generations, apply/confirm/rollback, health, adapters |
-| `crates/sparewall-api` | Varlink interface (`org.sparewall.*`) shared by daemon and CLI |
+| `crates/sparewall-api` | Varlink interfaces (`org.sparewall.*`) shared by the daemon, CLI and gateway, and the OpenAPI description generated from them |
 | `crates/sparewalld` | The coordinator daemon |
 | `crates/sparewall` | The CLI |
+| `crates/sparewall-httpd` | The HTTP API gateway, serving the web UI |
+| `ui/` | The web UI (Angular) |
 | `image/` | bootc Containerfile, systemd units, Quadlet files, provider images |
 | `tests/` | VM test suites |
 | `docs/` | Design and documentation |

@@ -194,3 +194,28 @@ sparewall history
 
 Health is `ok`, `degraded` (working, but something needs attention) or
 `failed`. The same model answers `https://<mgmt address>/readyz`.
+
+## 6. Optionally, turn on the web UI
+
+A node serves no web UI and no HTTP API until the document turns them
+on. To try them, turn them on and add a user to sign in as:
+
+```shell
+sparewall set management.web=true
+sparewall user add alice --role operator   # asks for the password
+```
+
+Open `https://<mgmt address>/` and sign in as `alice`, or as `admin`
+with the console password.
+
+- **Where it's reachable:** only on the management network, on the same
+  port and certificate as the health endpoints. Until `tls.certificates`
+  has a `mgmt` certificate, the browser warns about the node's
+  self-signed one.
+- **Roles:** `viewer`, `operator` or `admin`. Each page offers only
+  what the user's role allows. A `monitor` user is for health checks
+  and metrics, and can't sign in to the UI.
+
+See [the web UI and HTTP API](operations.md#the-web-ui-and-http-api) in
+operations.md for the pages, users and roles, and for calling the API
+with a token.
