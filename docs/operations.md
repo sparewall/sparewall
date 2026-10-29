@@ -136,7 +136,8 @@ runs without `sudo`.
 ### Users
 
 People log in to the web UI as named users, each with one of the roles
-above. `admin` is built in, and its password is the console password
+above. A `monitor` user can't sign in: the UI needs `viewer` at least.
+`admin` is built in, and its password is the console password
 (`sparewall passwd`). The others:
 
 ```shell
