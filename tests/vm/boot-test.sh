@@ -336,6 +336,12 @@ vm "curl -sk -c /tmp/jar -o /dev/null -w '%{http_code}' -X POST -H 'X-Sparewall-
 vm "curl -sfk -b /tmp/jar -X POST -H 'X-Sparewall-Request: 1' https://localhost/call/org.sparewall.Auth.ListUsers" \
     | jq -e '.users' >/dev/null || fail "the admin's session cannot list users"
 vm 'rm -f /tmp/jar'
+# A restart of the coordinator restarts the gateway during its own start,
+# which must not wait for it (#164): sparewalld's start times out at 45s.
+vm 'sudo timeout 40 systemctl restart sparewalld' \
+    || fail "sparewalld did not finish starting with sparewall-httpd running (#164)"
+web_up active
+[ "$(status https://localhost/openapi.json)" = 200 ] || fail "the HTTP API is not back after restarting sparewalld"
 vm 'sudo sparewall set management.web=false --confirm 0'
 web_up inactive
 [ "$(status https://localhost/openapi.json)" = 404 ] || fail "the HTTP API still answers after management.web=false"

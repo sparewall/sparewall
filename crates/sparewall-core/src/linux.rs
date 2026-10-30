@@ -33,7 +33,8 @@ pub struct Linux {
     pub sync_key: PathBuf,
     /// Services started so far. The first start is the coordinator's own
     /// startup, which must not wait for a provider (one waiting for
-    /// network-online, say): those starts are queued, not awaited.
+    /// network-online, say): those starts and restarts are queued, not
+    /// awaited.
     pub started: bool,
 }
 
@@ -751,8 +752,14 @@ impl System for Linux {
                 } else {
                     "restart"
                 };
-                tracing::info!(unit, verb, "configuration changed");
-                systemctl(&[verb, unit])?;
+                tracing::info!(unit, verb, startup, "configuration changed");
+                // At startup, as for a start: a restart that waits for a
+                // unit queued behind sparewalld's own start job never ends.
+                if startup {
+                    systemctl(&[verb, "--no-block", unit])?;
+                } else {
+                    systemctl(&[verb, unit])?;
+                }
             }
         }
         Ok(())
