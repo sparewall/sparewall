@@ -342,6 +342,10 @@ vm 'sudo timeout 40 systemctl restart sparewalld' \
     || fail "sparewalld did not finish starting with sparewall-httpd running (#164)"
 web_up active
 [ "$(status https://localhost/openapi.json)" = 200 ] || fail "the HTTP API is not back after restarting sparewalld"
+# Restarts are awaited at startup, so health finds every provider active.
+vm 'sudo sparewall health --verbose' > restart-health.txt || true
+grep -qE '^  services +ok ' restart-health.txt \
+    || fail "services not ok right after restarting sparewalld: $(cat restart-health.txt)"
 vm 'sudo sparewall set management.web=false --confirm 0'
 web_up inactive
 [ "$(status https://localhost/openapi.json)" = 404 ] || fail "the HTTP API still answers after management.web=false"

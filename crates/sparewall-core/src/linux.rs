@@ -33,8 +33,10 @@ pub struct Linux {
     pub sync_key: PathBuf,
     /// Services started so far. The first start is the coordinator's own
     /// startup, which must not wait for a provider (one waiting for
-    /// network-online, say): those starts and restarts are queued, not
-    /// awaited.
+    /// network-online, say): those starts are queued, not awaited.
+    /// Restarts are awaited, so that health does not see a provider
+    /// mid-restart, which no unit sparewalld starts may therefore order
+    /// after sparewalld (#164).
     pub started: bool,
 }
 
@@ -752,14 +754,8 @@ impl System for Linux {
                 } else {
                     "restart"
                 };
-                tracing::info!(unit, verb, startup, "configuration changed");
-                // At startup, as for a start: a restart that waits for a
-                // unit queued behind sparewalld's own start job never ends.
-                if startup {
-                    systemctl(&[verb, "--no-block", unit])?;
-                } else {
-                    systemctl(&[verb, unit])?;
-                }
+                tracing::info!(unit, verb, "configuration changed");
+                systemctl(&[verb, unit])?;
             }
         }
         Ok(())
@@ -933,6 +929,47 @@ impl Linux {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The units sparewalld starts, as the image ships them (unit file,
+    /// Quadlet file, drop-ins), never order after or depend on
+    /// sparewalld: it restarts them during its own start and waits, which
+    /// would wait for a job queued behind that start (#164).
+    #[test]
+    fn units_sparewalld_starts_do_not_wait_for_it() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../image/files/usr");
+        for unit in PROVIDER_UNITS {
+            let mut files = Vec::new();
+            let system = root.join("lib/systemd/system");
+            files.push(system.join(unit));
+            if let Ok(dir) = fs::read_dir(system.join(format!("{unit}.d"))) {
+                files.extend(dir.flatten().map(|e| e.path()));
+            }
+            let quadlet = unit.strip_suffix(".service").unwrap_or(unit);
+            files.push(root.join(format!("share/containers/systemd/{quadlet}.container")));
+            let mut found = false;
+            for f in files {
+                let Ok(text) = fs::read_to_string(&f) else {
+                    continue;
+                };
+                found = true;
+                for line in text.lines().map(str::trim) {
+                    let Some((key, value)) = line.split_once('=') else {
+                        continue;
+                    };
+                    let ordering = ["After", "Requires", "BindsTo", "Requisite", "Upholds"];
+                    assert!(
+                        !(ordering.contains(&key.trim())
+                            && value
+                                .split_whitespace()
+                                .any(|u| u.starts_with("sparewalld."))),
+                        "{}: {line}",
+                        f.display()
+                    );
+                }
+            }
+            assert!(found, "no unit file, Quadlet file or drop-in for {unit}");
+        }
+    }
 
     #[test]
     fn a_reexecuting_manager_is_retried_a_failed_job_is_not() {

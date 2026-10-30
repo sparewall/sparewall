@@ -26,10 +26,11 @@ Where the implementation departs from, or settles open questions in,
   sparewalld starts them during its own start-up activation, so ordering
   them after sparewalld deadlocked a reboot of a configured node. Early
   boot installs their configuration; at start-up sparewalld queues the
-  starts and restarts (`--no-block`) rather than waiting on them.
-  `sparewall-httpd` was ordered after sparewalld until 0.3.0, so a restart
-  of sparewalld with `management.web` on waited for it and timed out, over
-  and over (#164).
+  starts (`--no-block`) rather than waiting on them. Restarts it still
+  awaits, so health never sees a provider mid-restart: no unit it starts
+  may order after it, which a unit test checks. `sparewall-httpd` was
+  ordered after sparewalld until 0.3.0, so a restart of sparewalld with
+  `management.web` on waited for it and timed out, over and over (#164).
 - **The containers signature policy defaults to `reject`.** bootc's
   `--enforce-container-sigpolicy`, which upgrades use, refuses a policy
   whose default accepts anything. `ghcr.io/sparewall` requires the
