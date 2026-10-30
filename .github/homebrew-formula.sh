@@ -55,25 +55,18 @@ $blocks
     generate_completions_from_executable(bin/"sparewall", "completion")
   end
 
-  def post_install
-    return unless OS.mac?
-
-    # The macOS build is signed ad hoc, not notarized: should the download
-    # carry the quarantine attribute, macOS would refuse to run it.
-    # Homebrew installs the binary read-only, and removing an attribute
-    # needs write permission.
-    f = prefix/"bin/sparewall"
-    quarantined = -> { quiet_system "xattr", "-p", "com.apple.quarantine", f }
-    return unless quarantined.call
-
-    mode = f.stat.mode
-    begin
-      f.chmod(mode | 0200)
-      system "xattr", "-d", "com.apple.quarantine", f
-    ensure
-      f.chmod(mode)
+  # The macOS build is signed ad hoc, not notarized: should the download
+  # carry the quarantine attribute, macOS would refuse to run it. Homebrew
+  # installs the binary read-only, and removing an attribute needs write
+  # permission, so it is lent and taken back. xattr fails when there is no
+  # attribute to remove, which is the usual case.
+  post_install_steps do
+    on_macos do
+      set_permissions "sparewall", "u+w", base: :bin, recursive: false
+      run "/usr/bin/xattr", args: ["-d", "com.apple.quarantine", "{{bin}}/sparewall"],
+          must_succeed: false, print_stderr: false, writable_paths: ["sparewall"], writable_base: :bin
+      set_permissions "sparewall", "u-w", base: :bin, recursive: false
     end
-    odie "#{f} is still quarantined: run xattr -d com.apple.quarantine #{f}" if quarantined.call
   end
 
   test do

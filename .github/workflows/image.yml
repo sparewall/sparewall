@@ -19,6 +19,7 @@ on:
       - ".github/workflows/image.yml"
       - ".github/check-tag.sh"
       - ".github/version.sh"
+      - ".github/homebrew-formula.sh"
   workflow_dispatch:
 
 permissions:
@@ -334,7 +335,7 @@ jobs:
           done
           test -e "$(brew --prefix)/share/zsh/site-functions/_sparewall"
           # Quarantined as a download would be (Homebrew installs it
-          # read-only), then post_install clears it, leaving the mode.
+          # read-only), then the post-install steps clear it, leaving the mode.
           bin=$(brew --prefix sparewall)/bin/sparewall
           mode=$(stat -f %Lp "$bin")
           chmod u+w "$bin"
@@ -342,9 +343,9 @@ jobs:
           chmod "$mode" "$bin"
           brew postinstall sparewall-ci/tap/sparewall
           ! xattr -p com.apple.quarantine "$bin" 2>/dev/null \
-            || { echo "post_install left the quarantine attribute" >&2; exit 1; }
+            || { echo "postinstall left the quarantine attribute" >&2; exit 1; }
           [ "$(stat -f %Lp "$bin")" = "$mode" ] \
-            || { echo "post_install changed the mode from $mode" >&2; exit 1; }
+            || { echo "postinstall changed the mode from $mode" >&2; exit 1; }
           "$bin" --version
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

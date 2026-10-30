@@ -36,7 +36,8 @@ fi
 # A release from before the macOS builds: Linux only.
 grep linux "$tmp/all" > "$tmp/linux"
 f=$("$gen" 0.2.0 "$tmp/linux" https://example.test/d)
-grep -q on_macos <<<"$f" && fail "an on_macos block without a macOS tarball"
+# Only a top-level one: the post-install steps have their own on_macos.
+grep -q "^  on_macos do" <<<"$f" && fail "an on_macos block without a macOS tarball"
 grep -q 'url "https://example.test/d/sparewall-0.2.0-x86_64-linux.tar.gz"' <<<"$f" || fail "BASE_URL ignored"
 
 grep iso "$tmp/all" > "$tmp/none"
