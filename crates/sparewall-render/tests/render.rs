@@ -82,6 +82,29 @@ fn pair_both_nodes() {
     }
 }
 
+/// VRRP adverts are never tracked, so the WAN egress SNAT cannot rewrite
+/// a node's own adverts (#174): one rule in each direction, at raw
+/// priority, on a pair only.
+#[test]
+fn vrrp_is_untracked_in_a_pair() {
+    let rule = "ip protocol vrrp notrack comment \"infra:vrrp-notrack\"";
+    let nft = |doc: &sparewall_config::Document, node: &str| {
+        render(doc, node).unwrap().files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)]
+            .clone()
+    };
+    let pair = nft(&example("pair.yaml"), "fw1");
+    assert!(pair.contains("infra:wan-egress"), "{pair}");
+    for chain in ["prerouting_raw", "output_raw"] {
+        let body = pair.split(&format!("chain {chain} {{")).nth(1).unwrap();
+        let body = &body[..body.find("\n\t}").unwrap()];
+        assert!(body.contains("priority raw;"), "{chain}: {body}");
+        assert!(body.contains(rule), "{chain}: {body}");
+    }
+    let standalone = nft(&example("standalone.yaml"), "fw1");
+    assert!(!standalone.contains("vrrp"), "{standalone}");
+    assert!(!standalone.contains("output_raw"), "{standalone}");
+}
+
 /// The pair example with both sync keys: paired, with its tunnel.
 fn paired() -> sparewall_config::Document {
     let mut doc = example("pair.yaml");
