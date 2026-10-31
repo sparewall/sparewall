@@ -524,14 +524,31 @@ sparewall upgrade --image mirror.example:5000/sparewall:stable
 
 On a standalone node this stages the image and reboots (one reboot of
 downtime). In a pair the master runs it, whichever node you start it on:
-the standby is upgraded and rebooted first, and once it is back on the new
-image, healthy and in sync, the master hands it the gateway addresses
-(established connections carry over through conntrackd) and upgrades
-itself. Started on the standby, the command shows the master's progress
-until the standby reboots; follow the rest with `sparewall status` or the
-master's journal. A failed gate stops the
-upgrade and the master keeps the addresses; `bootc rollback` and a reboot
-return a node to its previous image. The containers signature policy
+
+1. The master downloads its own image without applying it, while it still
+   has its own WAN. A download that keeps failing stops the upgrade here,
+   with nothing changed.
+2. The standby is upgraded and rebooted.
+3. Once the standby is back on the new image, healthy and in sync, the
+   master hands it the gateway addresses (established connections carry
+   over through conntrackd), applies the image it downloaded, which needs
+   no network, and reboots.
+
+Started on the standby, the command shows the master's progress until the
+standby reboots; follow the rest with `sparewall status` or the master's
+journal. A failed gate before the handover stops the upgrade and the
+master keeps the addresses. After the handover, a failure gives them back
+to the master. A downloaded image that was never applied is discarded at
+the next reboot. `bootc rollback` and a reboot return a node to its
+previous image.
+
+If a run stops with one node on the new image (a failure after the
+handover, or a reboot during it), run `sparewall upgrade` again. A master
+that already runs the target upgrades only the standby and keeps the
+gateway addresses: no handover, no reboot of the master. Releases before
+0.3.2 hand over and reboot the master regardless; with one of those as
+master, run `sudo bootc upgrade && sudo systemctl reboot` on the standby
+instead, which moves no addresses. The containers signature policy
 rejects images from anywhere but `ghcr.io/sparewall`, whose images must
 carry a valid signature; to upgrade from a mirror, add it to
 `/etc/containers/policy.json` with its own signature requirement.

@@ -406,7 +406,17 @@ pub trait UpgradeHost: Send + Sync {
     /// Stage `image` for the next boot. Returns the staged image, or
     /// `None` when the node already runs the newest one.
     fn stage(&self, image: &str) -> Result<Option<String>, String>;
+    /// Download `image` and stage it without queueing it: a reboot
+    /// discards it until [`Self::apply_downloaded`] queues it. Returns the
+    /// downloaded image, or `None` when the node already runs the newest
+    /// one (#175).
+    fn download(&self, image: &str) -> Result<Option<String>, String>;
+    /// Queue what [`Self::download`] staged for the next boot, without the
+    /// network.
     /// Reboot in a few seconds, after the caller's reply has gone out.
+    fn apply_downloaded(&self) -> Result<(), String>;
+    /// The booted image as `reference@digest`, if bootc says.
+    fn booted(&self) -> Option<String>;
     fn reboot_soon(&self) -> Result<(), String>;
     /// Queue keepalived's stop without waiting for the job.
     fn stop_keepalived(&self) -> Result<(), String>;
@@ -443,14 +453,40 @@ pub fn stage_args<'a>(status: Option<&serde_json::Value>, image: &'a str) -> Vec
     }
 }
 
+/// The staged image as `reference@digest`, if one is staged.
+fn staged_image(image: &str) -> Result<Option<String>, String> {
+    let st = bootc_status().ok_or("cannot read bootc status")?;
+    let staged = &st["status"]["staged"]["image"];
+    Ok(staged["imageDigest"]
+        .as_str()
+        .map(|d| format!("{}@{d}", staged["image"]["image"].as_str().unwrap_or(image))))
+}
+
 impl UpgradeHost for HostUpgrade {
     fn stage(&self, image: &str) -> Result<Option<String>, String> {
         host("bootc", &stage_args(bootc_status().as_ref(), image))?;
-        let st = bootc_status().ok_or("cannot read bootc status")?;
-        let staged = &st["status"]["staged"]["image"];
-        Ok(staged["imageDigest"]
-            .as_str()
-            .map(|d| format!("{}@{d}", staged["image"]["image"].as_str().unwrap_or(image))))
+        staged_image(image)
+    }
+
+    fn download(&self, image: &str) -> Result<Option<String>, String> {
+        let mut args = stage_args(bootc_status().as_ref(), image);
+        args.insert(1, "--download-only");
+        host("bootc", &args)?;
+        staged_image(image)
+    }
+
+    fn apply_downloaded(&self) -> Result<(), String> {
+        host("bootc", &["upgrade", "--from-downloaded"]).map(|_| ())
+    }
+
+    fn booted(&self) -> Option<String> {
+        let st = bootc_status()?;
+        let img = &st["status"]["booted"]["image"];
+        Some(format!(
+            "{}@{}",
+            img["image"]["image"].as_str().unwrap_or_default(),
+            img["imageDigest"].as_str()?
+        ))
     }
 
     fn reboot_soon(&self) -> Result<(), String> {
