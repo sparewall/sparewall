@@ -3276,6 +3276,8 @@ fn reopen(dir: &tempfile::TempDir) -> Coordinator<Fake> {
 #[test]
 fn unreadable_generation_boots_into_bootstrap() {
     let (dir, bootstrap) = with_unreadable_generation();
+    // Nothing older to fall back to: the bootstrap configuration runs.
+    make_unreadable(&dir, 1);
     // sparewall-early, then sparewalld: neither fails, and both install the
     // bootstrap configuration, which keeps management and SSH up.
     let mut early = reopen(&dir);
@@ -3318,6 +3320,8 @@ fn unreadable_generation_recovers_by_rollback() {
 #[test]
 fn unreadable_generation_recovers_by_apply() {
     let (dir, bootstrap) = with_unreadable_generation();
+    // Nothing older to fall back to: the bootstrap configuration runs.
+    make_unreadable(&dir, 1);
     let mut c = reopen(&dir);
     c.boot(false).unwrap();
     // A change left unconfirmed reverts to the unreadable generation, which
@@ -3421,4 +3425,192 @@ fn unreadable_generations_while_a_sync_link_change_is_in_doubt() {
         assert_eq!(g.level, Level::Failed, "{unreadable:?}: {}", g.message);
         assert!(g.message.contains("cannot be read"), "{}", g.message);
     }
+}
+
+#[test]
+fn an_apply_records_the_schema_revision_it_needs() {
+    let mut t = setup();
+    // Whatever the document says, it is stored with the revision it needs:
+    // 1 without fields added since 0.2.0, so 0.2.0 still reads it.
+    let mut v = example();
+    v["schema"] = json!(2);
+    t.c.apply(v, &opts(0, None)).unwrap();
+    assert_eq!(t.c.document_value(1).unwrap()["schema"], 1);
+    t.c.merge(&json!({"management": {"web": true}}), &opts(1, None))
+        .unwrap();
+    assert_eq!(t.c.document_value(2).unwrap()["schema"], 2);
+    // A revision newer than this release reads is refused.
+    let mut v = example();
+    v["schema"] = json!(sparewall_config::SCHEMA_VERSION + 1);
+    let e = t.c.apply(v, &opts(2, None)).unwrap_err().to_string();
+    assert!(e.contains("this release reads revisions 1 to"), "{e}");
+}
+
+#[test]
+fn a_generation_from_the_peer_keeps_its_schema_revision() {
+    // From a release that wrote `schema: 1` with fields added since: kept
+    // as it came, so its hash matches the peer's.
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let g1 = a.c.generation(1).unwrap();
+    b.c.receive(&g1, a.c.document_value(1).unwrap(), PeerGate::Immediate)
+        .unwrap();
+    let mut v = a.c.document_value(1).unwrap();
+    v["management"]["web"] = json!(true);
+    let doc = sparewall_config::from_value(v.clone()).unwrap();
+    let mut g = g1.clone();
+    g.id = 2;
+    g.base = Some(1);
+    g.hash = sparewall_config::hash(&doc);
+    b.c.receive(&g, v, PeerGate::Immediate).unwrap();
+    assert_eq!(b.c.document_value(2).unwrap()["schema"], 1);
+    assert_eq!(b.c.generation(2).unwrap().hash, g.hash);
+}
+
+#[test]
+fn a_newer_generation_falls_back_to_the_newest_one_this_release_reads() {
+    let (dir, _) = with_unreadable_generation();
+    // As a newer release writes it: a revision this release does not read.
+    let p = dir.path().join("generations/2/document.json");
+    let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    doc["schema"] = json!(sparewall_config::SCHEMA_VERSION + 1);
+    std::fs::write(&p, serde_json::to_string(&doc).unwrap()).unwrap();
+    let gen1 = {
+        let mut c = reopen(&dir);
+        c.boot(false).unwrap();
+        // What generation 1 loads, for comparison.
+        c.rollback(Some(1), "admin").unwrap();
+        c.system().nft_body.clone().unwrap()
+    };
+    let (dir, _) = with_unreadable_generation();
+    std::fs::write(
+        dir.path().join("generations/2/document.json"),
+        serde_json::to_string(&doc).unwrap(),
+    )
+    .unwrap();
+    let mut c = reopen(&dir);
+    assert_eq!(c.boot(false).unwrap(), 2);
+    assert_eq!(c.fallback(), 1);
+    assert_eq!(c.system().nft_body.as_deref(), Some(gen1.as_str()));
+    assert_eq!(
+        c.active_document().unwrap().unwrap().policy,
+        sparewall_config::from_value(example()).unwrap().policy
+    );
+    let g = c.health().unwrap().check("generation").unwrap().clone();
+    assert_eq!(g.level, Level::Failed);
+    assert!(g.message.contains("needs schema revision"), "{}", g.message);
+    assert!(g.message.contains("running generation 1"), "{}", g.message);
+    // An apply from here diffs against what runs, and recovers.
+    c.apply(example(), &opts(2, None)).unwrap();
+    assert_eq!(
+        c.health().unwrap().check("generation").unwrap().level,
+        Level::Ok
+    );
+}
+
+#[test]
+fn a_change_the_peer_cannot_read_is_refused() {
+    let mut a = pair_node("fw1");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let mut web = pair_example();
+    web["management"]["web"] = json!(true);
+    a.c.set_peer_reads(Some(("fw2".into(), 2)));
+    a.c.apply(web.clone(), &opts(1, None)).unwrap();
+    a.c.apply(pair_example(), &opts(2, None)).unwrap();
+    // The peer, as its hello said, reads revision 1 only (0.3.1 or older).
+    a.c.set_peer_reads(Some(("fw2".into(), 1)));
+    let e =
+        a.c.apply(web.clone(), &opts(3, None))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        e.contains("needs schema revision 2, and fw2 reads revisions 1 to 1"),
+        "{e}"
+    );
+    let e =
+        a.c.merge(&json!({"management": {"web": true}}), &opts(3, None))
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("upgrade fw2 first"), "{e}");
+    let e = a.c.rollback(Some(2), "admin").unwrap_err().to_string();
+    assert!(e.contains("upgrade fw2 first"), "{e}");
+    // What it reads still goes ahead.
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(3, None)).unwrap();
+    // Once the peer reads it, so does the change.
+    a.c.set_peer_reads(Some(("fw2".into(), 2)));
+    a.c.apply(web, &opts(4, None)).unwrap();
+}
+
+#[test]
+fn what_the_peer_reads_is_unknown_until_it_answers() {
+    let mut web = pair_example();
+    web["management"]["web"] = json!(true);
+    // A new pairing is not checked here: the peer checks its own apply.
+    let mut a = pair_node("fw1");
+    a.c.apply(web.clone(), &opts(0, None)).unwrap();
+    // Once paired, a revision-2 change needs to know what fw2 reads: not
+    // before its first hello (as after a restart), not from another node,
+    // and not once its hello fails.
+    let mut v = web.clone();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    let e =
+        a.c.apply(v.clone(), &opts(1, None))
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("not known until it is reached"), "{e}");
+    a.c.set_peer_reads(Some(("fw3".into(), 2)));
+    let e =
+        a.c.apply(v.clone(), &opts(1, None))
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("reach fw2 first"), "{e}");
+    a.c.set_peer_reads(Some(("fw2".into(), 2)));
+    a.c.apply(v.clone(), &opts(1, None)).unwrap();
+    a.c.set_peer_reads(None);
+    v["networks"]["users"]["mtu"] = json!(1300);
+    let e = a.c.apply(v, &opts(2, None)).unwrap_err().to_string();
+    assert!(e.contains("not known until it is reached"), "{e}");
+    // A revision-1 change goes ahead regardless.
+    a.c.apply(pair_example(), &opts(2, None)).unwrap();
+}
+
+#[test]
+fn a_gated_push_reaches_a_node_running_an_older_generation() {
+    let mut a = pair_node("fw1");
+    let dir = tempfile::tempdir().unwrap();
+    let id2 = || {
+        let mut id = identity();
+        id.node = "fw2".into();
+        id
+    };
+    let mut b = Coordinator::new(Store::open(dir.path()).unwrap(), Fake::default(), id2());
+    b.boot(false).unwrap();
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    for id in [1, 2] {
+        let g = a.c.generation(id).unwrap();
+        b.receive(&g, a.c.document_value(id).unwrap(), PeerGate::Immediate)
+            .unwrap();
+    }
+    // fw2's generation 2 becomes unreadable (a newer release's), so after a
+    // restart it runs generation 1 in its place.
+    make_unreadable(&dir, 2);
+    drop(b);
+    let mut b = Coordinator::new(Store::open(dir.path()).unwrap(), Fake::default(), id2());
+    b.boot(false).unwrap();
+    assert_eq!(b.fallback(), 1);
+    // A change from fw1, gated as protocol 2 peers push it, recovers it.
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1300);
+    a.c.apply(v.clone(), &opts(2, None)).unwrap();
+    let doc3 = a.c.document_value(3).unwrap();
+    assert!(!b.changes_sync_link(&doc3).unwrap());
+    b.receive(&a.c.generation(3).unwrap(), doc3, PeerGate::PeerConfirms)
+        .unwrap();
+    assert_eq!(b.active().unwrap(), 3);
 }

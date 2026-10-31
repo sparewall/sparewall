@@ -74,6 +74,42 @@ fn child<'a>(root: &'a Value, node: &'a Value, seg: &str) -> Option<&'a Value> {
     None
 }
 
+/// The schema revision that added a property (`x-since`), or 1.
+fn since(node: &Value) -> u32 {
+    node.get("x-since")
+        .and_then(Value::as_u64)
+        .map_or(1, |v| v as u32)
+}
+
+/// The oldest schema revision that reads a document: the newest revision
+/// among the fields it uses (#168). Fields the schema does not describe
+/// are left to validation.
+pub fn revision(doc: &Value) -> u32 {
+    fn walk(root: &Value, node: &Value, v: &Value) -> u32 {
+        let mut rev = 1;
+        match v {
+            Value::Object(m) => {
+                for (k, v) in m {
+                    if let Some(c) = child(root, node, k) {
+                        rev = rev.max(since(c)).max(walk(root, c, v));
+                    }
+                }
+            }
+            Value::Array(a) => {
+                for (i, v) in a.iter().enumerate() {
+                    if let Some(c) = child(root, node, &i.to_string()) {
+                        rev = rev.max(walk(root, c, v));
+                    }
+                }
+            }
+            _ => {}
+        }
+        rev
+    }
+    let root = json_schema();
+    walk(root, root, doc)
+}
+
 /// The schema node at a path, if the schema describes it.
 pub fn node_at<S: AsRef<str>>(path: &[S]) -> Option<&'static Value> {
     let root = json_schema();
@@ -229,4 +265,95 @@ pub fn json_schema_text() -> String {
     let mut s = serde_json::to_string_pretty(json_schema()).expect("schema");
     s.push('\n');
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Every property path a schema describes (`a.b`, `*` for map values,
+    /// `[]` for items), with the revision that added it: its own `x-since`,
+    /// or the nearest enclosing property's.
+    fn paths(root: &Value) -> BTreeMap<String, u32> {
+        fn walk(
+            root: &Value,
+            node: &Value,
+            at: &str,
+            rev: u32,
+            depth: usize,
+            out: &mut BTreeMap<String, u32>,
+        ) {
+            if depth > 16 {
+                return;
+            }
+            for alt in alternatives(root, node) {
+                let mut go = |seg: &str, c: &Value| {
+                    let p = if at.is_empty() {
+                        seg.to_string()
+                    } else {
+                        format!("{at}.{seg}")
+                    };
+                    let r = rev.max(since(c));
+                    if out.insert(p.clone(), r).is_none() {
+                        walk(root, c, &p, r, depth + 1, out);
+                    }
+                };
+                if let Some(Value::Object(props)) = alt.get("properties") {
+                    for (k, c) in props {
+                        go(k, c);
+                    }
+                }
+                if let Some(ap) = alt.get("additionalProperties").filter(|a| a.is_object()) {
+                    go("*", ap);
+                }
+                if let Some(items) = alt.get("items").filter(|i| i.is_object()) {
+                    go("[]", items);
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(root, root, "", 1, 0, &mut out);
+        out
+    }
+
+    /// The schema revisions (#168): a field that revision 1 (0.2.0's
+    /// schema, `schema/v1.json`) does not have must say which revision
+    /// added it, no field may disappear (a document that used it would no
+    /// longer read), and the newest revision is `SCHEMA_VERSION`.
+    #[test]
+    fn new_fields_name_their_revision() {
+        let v1: Value = serde_json::from_str(include_str!("../schema/v1.json")).unwrap();
+        let old = paths(&v1);
+        let now = paths(json_schema());
+        let unmarked: Vec<_> = now
+            .iter()
+            .filter(|(p, r)| !old.contains_key(*p) && **r < 2)
+            .map(|(p, _)| p.as_str())
+            .collect();
+        assert!(
+            unmarked.is_empty(),
+            "fields added after revision 1 without #[schemars(extend(\"x-since\" = N))]: {unmarked:?}"
+        );
+        let gone: Vec<_> = old.keys().filter(|p| !now.contains_key(*p)).collect();
+        assert!(gone.is_empty(), "fields removed since revision 1: {gone:?}");
+        let newest = now.values().copied().max().unwrap_or(1);
+        assert_eq!(
+            newest,
+            crate::SCHEMA_VERSION,
+            "SCHEMA_VERSION must be the newest revision a field names"
+        );
+    }
+
+    #[test]
+    fn a_document_needs_the_newest_revision_it_uses() {
+        let mut doc = serde_json::json!({
+            "schema": 1,
+            "cluster": {"nodes": ["fw1"]},
+            "management": {"network": "mgmt"},
+        });
+        assert_eq!(revision(&doc), 1);
+        doc["management"]["web"] = Value::Bool(true);
+        assert_eq!(revision(&doc), 2);
+    }
 }

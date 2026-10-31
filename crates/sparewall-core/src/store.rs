@@ -352,8 +352,20 @@ impl Store {
         }
         let p = self.gen_dir(id).join("document.json");
         let text = fs::read_to_string(&p).map_err(|e| Error::io(&p, e))?;
-        sparewall_config::parse(&text, sparewall_config::Format::Json)
-            .map_err(|e| Error::Internal(format!("{}: {e}", p.display())))
+        let bad = |e: &dyn std::fmt::Display| Error::Internal(format!("{}: {e}", p.display()));
+        let value = sparewall_config::parse_value(&text, sparewall_config::Format::Json)
+            .map_err(|e| bad(&e))?;
+        // A newer release's document says so: report that, not the first
+        // field this release does not know (#168).
+        if let Some(rev) = value.get("schema").and_then(serde_json::Value::as_u64)
+            && rev > u64::from(sparewall_config::SCHEMA_VERSION)
+        {
+            return Err(bad(&format!(
+                "needs schema revision {rev}; this release reads revisions 1 to {}",
+                sparewall_config::SCHEMA_VERSION
+            )));
+        }
+        sparewall_config::from_value(value).map_err(|e| bad(&e))
     }
 
     pub fn rendered(&self, id: u64) -> Result<Rendered, Error> {

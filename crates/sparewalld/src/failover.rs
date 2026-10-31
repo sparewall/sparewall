@@ -411,6 +411,7 @@ mod tests {
             role: Some("BACKUP".into()),
             link_decision: None,
             reach: vec![],
+            schema: None,
         };
         change(&mut h);
         FakePeer {

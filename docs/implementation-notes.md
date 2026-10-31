@@ -174,6 +174,15 @@ Where the implementation departs from, or settles open questions in,
 
 ## Coordinator
 
+- **Adding a field** (#168): mark it with
+  `#[schemars(extend("x-since" = N))]`, where N is one more than the
+  revision of the last release, and raise `SCHEMA_VERSION` to N if it is
+  lower. `schema::tests::new_fields_name_their_revision` fails on a field
+  that is not in revision 1 (`crates/sparewall-config/schema/v1.json`,
+  0.2.0's schema) and names no revision, and on a removed field. A local
+  apply records `schema::revision` of the document; a generation from the
+  peer keeps its own, since both nodes must hash it alike. Add the
+  revision to the table in operations.md, "Schema revisions".
 - **Host operations beyond `System` are narrow adapters** in
   `sparewall_core::host`: `Conntrackd`, `BackupRepository` (restic),
   `Timers` (transient systemd timers), `DnsZone` (RFC 2136) and
@@ -548,7 +557,8 @@ through the cut network do not survive that long a stall.
   Earlier versions accepted them and then rendered nothing, silently
   turning DHCP or log forwarding off; validation now rejects them as
   not built yet (#10).
-- Schema migrations (only schema 1 exists).
+- Schema migrations. Revision 2 only added a field, which needs none
+  (see "Adding a field" above).
 - Benchmarks.
 - A local Prometheus (`metrics.mode: local`, `metrics.retention`),
   scheduled upgrades (`updates.mode: windowed`, `updates.window`) and

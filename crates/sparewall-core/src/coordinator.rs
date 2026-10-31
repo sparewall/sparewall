@@ -144,13 +144,21 @@ pub struct Coordinator<S: System> {
     /// it did not complete: until it is known to be on disk, the peer is
     /// told the decision is still pending.
     decision_unsure: bool,
-    /// The generations this release cannot read, and why (#169): the
-    /// active one, and the one an in-doubt sync-link change runs in its
-    /// place. Boot runs the bootstrap configuration instead of either,
-    /// which keeps the management network and SSH up, and health reports
-    /// it failed. Kept for the process's life: a revert to one, at the end
-    /// of a confirm window, runs the bootstrap configuration again.
+    /// The generations this release cannot read, and why: the active one,
+    /// and the one an in-doubt sync-link change runs in its place. Boot
+    /// runs [`Self::fallback`] instead of either, and health reports it
+    /// failed. Kept for the process's life: a revert to one, at the end of
+    /// a confirm window, runs the fallback again.
     unreadable: std::collections::BTreeMap<u64, String>,
+    /// What runs in place of an unreadable generation: the newest older
+    /// one this release reads and renders (#168), or the bootstrap
+    /// configuration (0) if there is none, which keeps the management
+    /// network and SSH up (#169).
+    fallback: u64,
+    /// The peer's name and the newest schema revision it reads, as its
+    /// latest hello said; forgotten when a hello fails. A change the peer
+    /// of the running pair could not read is refused (#168).
+    peer_reads: Option<(String, u32)>,
 }
 
 /// How much longer than the peer this node waits for the peer to
@@ -260,17 +268,68 @@ impl<S: System> Coordinator<S> {
             nft_loaded: NftBaseline::None,
             decision_unsure: false,
             unreadable: Default::default(),
+            fallback: 0,
+            peer_reads: None,
         }
     }
 
-    /// The generation that runs for `id`: the bootstrap configuration in
-    /// place of one this release cannot read.
+    /// The generation that runs for `id`: the fallback in place of one
+    /// this release cannot read.
     pub(crate) fn runs(&self, id: u64) -> u64 {
         if self.unreadable.contains_key(&id) {
-            0
+            self.fallback
         } else {
             id
         }
+    }
+
+    /// Refuse a change the peer of the running pair could not read (#168).
+    /// What it reads is what its latest hello said; until a hello from
+    /// that peer succeeds (after a restart, while it is unreachable, or a
+    /// different node), it may be a release that reads revision 1 only. A
+    /// new pairing is not checked here: the peer checks its own apply.
+    fn check_peer_reads(&self, doc: &Document) -> Result<(), Error> {
+        if doc.schema <= 1 || !doc.is_pair() {
+            return Ok(());
+        }
+        let Some(running) = self.active_document()?.filter(|d| d.is_pair()) else {
+            return Ok(());
+        };
+        let Some(peer) = running.peer_of(self.node()).map(str::to_string) else {
+            return Ok(());
+        };
+        if doc.peer_of(self.node()) != Some(peer.as_str()) {
+            return Ok(());
+        }
+        let need = doc.schema;
+        match &self.peer_reads {
+            Some((n, reads)) if *n == peer && need <= *reads => Ok(()),
+            Some((n, reads)) if *n == peer => Err(Error::Validation(vec![format!(
+                "schema: this change needs schema revision {need}, and {peer} reads revisions 1 to {reads}: \
+                 upgrade {peer} first"
+            )])),
+            _ => Err(Error::Validation(vec![format!(
+                "schema: this change needs schema revision {need}, and which revisions {peer} reads is \
+                 not known until it is reached (it may read revision 1 only): reach {peer} first"
+            )])),
+        }
+    }
+
+    /// Record what the peer reads (from its hello), or forget it (`None`:
+    /// its hello failed, or there is no peer).
+    pub fn set_peer_reads(&mut self, reads: Option<(String, u32)>) {
+        self.peer_reads = reads;
+    }
+
+    /// Whether boot found generation `id` unreadable.
+    pub(crate) fn is_unreadable(&self, id: u64) -> bool {
+        self.unreadable.contains_key(&id)
+    }
+
+    /// What runs in place of the unreadable generations: 0 for the
+    /// bootstrap configuration.
+    pub fn fallback(&self) -> u64 {
+        self.fallback
     }
 
     /// Refuse a partial change to a generation this release cannot read:
@@ -423,16 +482,43 @@ impl<S: System> Coordinator<S> {
         // A document this release cannot read (a newer release's, after a
         // rollback of the image, or a damaged file) must not stop the node
         // from booting: that would leave even the management network down.
-        // Run the bootstrap configuration instead, and say why in health.
+        // Run the newest older generation it reads instead, or else the
+        // bootstrap configuration, and say why in health.
         self.unreadable.clear();
+        self.fallback = 0;
         for &id in &ids {
             if let Err(e) = self.store.document(id) {
+                self.unreadable.insert(id, e.to_string());
+            }
+        }
+        if let Some(&first) = self.unreadable.keys().next() {
+            for id in self.store.ids()?.into_iter().rev().filter(|&i| i < first) {
+                let Ok(doc) = self.store.document(id) else {
+                    continue;
+                };
+                match sparewall_render::render(&doc, self.node()) {
+                    Ok(r) => {
+                        if self.store.rendered(id).ok().as_ref() != Some(&r) {
+                            self.store.set_rendered(id, &r)?;
+                        }
+                        self.fallback = id;
+                        break;
+                    }
+                    Err(e) => tracing::warn!(id, error = %e, "cannot render an older generation"),
+                }
+            }
+            for (id, e) in &self.unreadable {
                 tracing::error!(
                     id,
                     error = %e,
-                    "cannot read the generation; running the bootstrap configuration"
+                    fallback = self.fallback,
+                    "cannot read the generation; running {} in its place",
+                    if self.fallback == 0 {
+                        "the bootstrap configuration".to_string()
+                    } else {
+                        format!("generation {}", self.fallback)
+                    }
                 );
-                self.unreadable.insert(id, e.to_string());
             }
         }
         for id in ids.into_iter().filter(|i| !self.unreadable.contains_key(i)) {
@@ -533,7 +619,12 @@ impl<S: System> Coordinator<S> {
     pub fn apply(&mut self, value: Value, opts: &ApplyOptions) -> Result<ApplyResult, Error> {
         let state = self.check_base(opts.base)?;
         self.link_change_in_progress(&state)?;
-        let (doc, mut warnings, rendered) = self.check(value)?;
+        let (mut doc, mut warnings, rendered) = self.check(value)?;
+        // Record the oldest schema revision that reads it (#168). Only a
+        // local change sets it: a generation from the peer keeps its own,
+        // so that both nodes hash it alike.
+        doc.schema = sparewall_config::schema::revision(&sparewall_config::to_value(&doc));
+        self.check_peer_reads(&doc)?;
         self.check_anti_lockout(&doc, opts.role)?;
         if let Some(old) = self.active_document()? {
             warnings.extend(sparewall_config::providers::switch_warnings(&old, &doc));
@@ -919,11 +1010,12 @@ impl<S: System> Coordinator<S> {
     /// Whether running a document pushed by the peer would change this
     /// node's sync link (it then answers the push before running it).
     pub fn changes_sync_link(&self, value: &Value) -> Result<bool, Error> {
-        let active = self.store.state()?.active;
-        if self.runs(active) == 0 {
+        // What runs: an older generation in place of an unreadable one.
+        let running = self.runs(self.store.state()?.active);
+        if running == 0 {
             return Ok(false);
         }
-        Ok(link_change(&self.document_value(active)?, value))
+        Ok(link_change(&self.document_value(running)?, value))
     }
 
     /// Whether the peer is told a change is pending here: one is, or a
@@ -1559,7 +1651,10 @@ impl<S: System> Coordinator<S> {
             PeerGate::Immediate => vec![],
         };
         let changes_link = gate == PeerGate::PeerConfirms
-            && link_change(&self.document_value(from)?, &self.document_value(g.id)?);
+            && link_change(
+                &self.document_value(self.runs(from))?,
+                &self.document_value(g.id)?,
+            );
         if let Err(e) = self.activate(g.id, Some(old), false) {
             return Err(self.undo_foreign(g, from, "activating it failed", e));
         }
@@ -1797,8 +1892,13 @@ impl<S: System> Coordinator<S> {
                     "generation",
                     Level::Failed,
                     format!(
-                        "generation {id} cannot be read ({e}); running the bootstrap configuration \
-                     (management only): roll back to an earlier generation or apply a document"
+                        "generation {id} cannot be read ({e}); running {}: \
+                         roll back to a generation this release reads, or apply a document",
+                        if self.fallback == 0 {
+                            "the bootstrap configuration (management only)".to_string()
+                        } else {
+                            format!("generation {}, the newest it reads", self.fallback)
+                        }
                     ),
                 )
             } else if state.active == 0 {

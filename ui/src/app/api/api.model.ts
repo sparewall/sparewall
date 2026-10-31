@@ -36,7 +36,9 @@ export interface Schemas {
     "provider_options"?: Record<string, unknown>;
     /** Raw nft statements placed at named hook points. */
     "raw"?: Record<string, Schemas["Document.RawEntry"]>;
-    /** Schema version of this document. */
+    /** The oldest schema revision that reads this document: the newest
+     * revision among the fields it uses. Set when the document is
+     * applied; a release refuses one newer than it reads. */
     "schema": number;
     /** Certificates. */
     "tls"?: Schemas["Document.Tls"] | null;

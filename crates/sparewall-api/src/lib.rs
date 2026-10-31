@@ -343,6 +343,10 @@ pub struct HelloReply {
     /// What the callee reaches on each network with a gateway address.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reach: Vec<NetworkReach>,
+    /// The newest schema revision the callee reads. Releases before it was
+    /// reported read revision 1 only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<i64>,
 }
 
 /// One node's view of a network with a gateway address: whether the peer
