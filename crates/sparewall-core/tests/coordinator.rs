@@ -3284,7 +3284,7 @@ fn unreadable_generation_boots_into_bootstrap() {
     let mut c = reopen(&dir);
     assert_eq!(c.boot(false).unwrap(), 2);
     assert_eq!(c.system().nft_body.as_deref(), Some(bootstrap.as_str()));
-    let (id, why) = c.unreadable().unwrap();
+    let (id, why) = c.unreadable().next().unwrap();
     assert_eq!(id, 2);
     assert!(why.contains("from_the_future"), "{why}");
     assert!(c.active_document().unwrap().is_none());
@@ -3372,4 +3372,53 @@ fn unreadable_generation_refuses_partial_changes_and_backs_up() {
     let (bundle, _) = c.backup(&src, 20).unwrap();
     let m = sparewall_core::backup::manifest(&bundle).unwrap();
     assert_eq!((m.active, m.generations), (2, vec![1, 2]));
+}
+
+/// Make generation `id`'s document unreadable, as in
+/// [`with_unreadable_generation`].
+fn make_unreadable(dir: &tempfile::TempDir, id: u64) {
+    let p = dir.path().join(format!("generations/{id}/document.json"));
+    let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    doc["management"]["from_the_future"] = json!(true);
+    std::fs::write(&p, serde_json::to_string(&doc).unwrap()).unwrap();
+}
+
+#[test]
+fn unreadable_generations_while_a_sync_link_change_is_in_doubt() {
+    // Generation 2 is a sync-link change from the peer, in doubt, and this
+    // node runs generation 1 in its place while it looks for the peer on
+    // the old link.
+    for unreadable in [vec![1, 2], vec![1]] {
+        let (dir, bootstrap) = with_unreadable_generation();
+        if !unreadable.contains(&2) {
+            // Readable again: only the generation that runs is not.
+            let p = dir.path().join("generations/2/document.json");
+            let mut doc: Value =
+                serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            doc["management"]
+                .as_object_mut()
+                .unwrap()
+                .remove("from_the_future");
+            std::fs::write(&p, serde_json::to_string(&doc).unwrap()).unwrap();
+        }
+        make_unreadable(&dir, 1);
+        let p = dir.path().join("state.json");
+        let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        state["pending"] = json!({
+            "id": 2, "revert_to": 1, "deadline": i64::MAX / 2,
+            "from_peer": true, "link_change": true, "prepared": true, "trying_old": true,
+        });
+        std::fs::write(&p, serde_json::to_string(&state).unwrap()).unwrap();
+        let mut c = reopen(&dir);
+        assert_eq!(c.boot(false).unwrap(), 2, "{unreadable:?}");
+        assert_eq!(
+            c.unreadable().map(|(id, _)| id).collect::<Vec<_>>(),
+            unreadable,
+            "{unreadable:?}"
+        );
+        assert_eq!(c.system().nft_body.as_deref(), Some(bootstrap.as_str()));
+        let g = c.health().unwrap().check("generation").unwrap().clone();
+        assert_eq!(g.level, Level::Failed, "{unreadable:?}: {}", g.message);
+        assert!(g.message.contains("cannot be read"), "{}", g.message);
+    }
 }

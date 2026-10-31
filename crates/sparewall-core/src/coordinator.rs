@@ -144,12 +144,13 @@ pub struct Coordinator<S: System> {
     /// it did not complete: until it is known to be on disk, the peer is
     /// told the decision is still pending.
     decision_unsure: bool,
-    /// A generation this release cannot read, and why (#169). Boot then
-    /// runs the bootstrap configuration in its place, which keeps the
-    /// management network and SSH up, and health reports it failed. Kept
-    /// for the process's life: a revert to it, at the end of a confirm
-    /// window, runs the bootstrap configuration again.
-    unreadable: Option<(u64, String)>,
+    /// The generations this release cannot read, and why (#169): the
+    /// active one, and the one an in-doubt sync-link change runs in its
+    /// place. Boot runs the bootstrap configuration instead of either,
+    /// which keeps the management network and SSH up, and health reports
+    /// it failed. Kept for the process's life: a revert to one, at the end
+    /// of a confirm window, runs the bootstrap configuration again.
+    unreadable: std::collections::BTreeMap<u64, String>,
 }
 
 /// How much longer than the peer this node waits for the peer to
@@ -258,16 +259,17 @@ impl<S: System> Coordinator<S> {
             extra_checks: Default::default(),
             nft_loaded: NftBaseline::None,
             decision_unsure: false,
-            unreadable: None,
+            unreadable: Default::default(),
         }
     }
 
     /// The generation that runs for `id`: the bootstrap configuration in
     /// place of one this release cannot read.
     pub(crate) fn runs(&self, id: u64) -> u64 {
-        match &self.unreadable {
-            Some((u, _)) if *u == id => 0,
-            _ => id,
+        if self.unreadable.contains_key(&id) {
+            0
+        } else {
+            id
         }
     }
 
@@ -275,18 +277,18 @@ impl<S: System> Coordinator<S> {
     /// there is no document to change. A whole document, or a rollback,
     /// replaces it.
     fn readable_base(&self, id: u64) -> Result<(), Error> {
-        match &self.unreadable {
-            Some((u, e)) if *u == id => Err(Error::Validation(vec![format!(
+        match self.unreadable.get(&id) {
+            Some(e) => Err(Error::Validation(vec![format!(
                 "generation {id} cannot be read ({e}): apply a whole document \
                  (sparewall apply -f) or roll back to a generation this release can read"
             )])),
-            _ => Ok(()),
+            None => Ok(()),
         }
     }
 
-    /// The generation this release could not read at boot, and why.
-    pub fn unreadable(&self) -> Option<(u64, &str)> {
-        self.unreadable.as_ref().map(|(id, e)| (*id, e.as_str()))
+    /// The generations this release could not read at boot, and why.
+    pub fn unreadable(&self) -> impl Iterator<Item = (u64, &str)> {
+        self.unreadable.iter().map(|(id, e)| (*id, e.as_str()))
     }
 
     pub fn node(&self) -> &str {
@@ -422,7 +424,7 @@ impl<S: System> Coordinator<S> {
         // rollback of the image, or a damaged file) must not stop the node
         // from booting: that would leave even the management network down.
         // Run the bootstrap configuration instead, and say why in health.
-        self.unreadable = None;
+        self.unreadable.clear();
         for &id in &ids {
             if let Err(e) = self.store.document(id) {
                 tracing::error!(
@@ -430,12 +432,10 @@ impl<S: System> Coordinator<S> {
                     error = %e,
                     "cannot read the generation; running the bootstrap configuration"
                 );
-                self.unreadable = Some((id, e.to_string()));
-                break;
+                self.unreadable.insert(id, e.to_string());
             }
         }
-        let unreadable = self.unreadable.as_ref().map(|(id, _)| *id);
-        for id in ids.into_iter().filter(|&i| Some(i) != unreadable) {
+        for id in ids.into_iter().filter(|i| !self.unreadable.contains_key(i)) {
             let doc = self.store.document(id)?;
             match sparewall_render::render(&doc, self.node()) {
                 Ok(r) => {
@@ -1788,7 +1788,11 @@ impl<S: System> Coordinator<S> {
         let mut checks = Vec::new();
 
         checks.push(
-            if let Some((id, e)) = self.unreadable.as_ref().filter(|(u, _)| *u == state.active) {
+            // The active generation, or the one running in its place.
+            if let Some((id, e)) = [state.active, self.live_id(&state)]
+                .into_iter()
+                .find_map(|i| self.unreadable.get(&i).map(|e| (i, e)))
+            {
                 Check::new(
                     "generation",
                     Level::Failed,
