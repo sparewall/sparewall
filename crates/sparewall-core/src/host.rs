@@ -467,8 +467,8 @@ fn staged_image(image: &str) -> Result<Option<String>, String> {
 /// newest image). A deployment staged before is not this download unless
 /// it is the image bootc just resolved: one of another image, or of this
 /// tag at an older digest (tags move), would be rebooted into, so it is
-/// refused (#175). A download-only deployment is always this run's (bootc
-/// replaces the staged deployment when it downloads).
+/// refused (#175). That holds for a download-only deployment too: one left
+/// by an earlier run stays when bootc finds nothing new.
 pub fn downloaded(
     status: &serde_json::Value,
     image: &str,
@@ -493,10 +493,9 @@ pub fn downloaded(
             if digest.is_empty() { "?" } else { digest }
         ));
     }
-    let queued = !staged["downloadOnly"].as_bool().unwrap_or(false);
-    if queued && !output.contains(digest) {
+    if !output.contains(digest) {
         return Err(format!(
-            "a deployment of {reference}@{digest} is already queued, not the image just resolved; \
+            "a deployment of {reference}@{digest} is already staged, not the image just resolved; \
              remove it (ostree admin undeploy 0) or reboot into it first"
         ));
     }
@@ -604,9 +603,17 @@ mod tests {
             downloaded(&staged(STABLE, "sha256:new", false), STABLE, unchanged),
             Ok(Some(format!("{STABLE}@sha256:new")))
         );
-        // Queued at an older digest of the same tag: refused.
-        let e = downloaded(&staged(STABLE, "sha256:old", false), STABLE, unchanged).unwrap_err();
-        assert!(e.contains("sha256:old is already queued"), "{e}");
+        // At an older digest of the same tag, queued or left downloaded by
+        // an earlier run: refused.
+        for download_only in [false, true] {
+            let e = downloaded(
+                &staged(STABLE, "sha256:old", download_only),
+                STABLE,
+                unchanged,
+            )
+            .unwrap_err();
+            assert!(e.contains("sha256:old is already staged"), "{e}");
+        }
         // Of another image: refused.
         let e = downloaded(
             &staged("ghcr.io/sparewall/sparewall:testing", "sha256:other", false),
