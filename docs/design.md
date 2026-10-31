@@ -138,7 +138,7 @@ One versioned document describes a whole deployment, one node or a pair, and the
 
 | Key | Holds | Per node? |
 | --- | --- | --- |
-| `schema` | Integer schema version | No |
+| `schema` | The oldest schema revision that reads the document, set by the coordinator | No |
 | `cluster` | Node names (one or two), VRRP timing, which network carries sync | No |
 | `management` | Which network is management; anti-lockout switch | No |
 | `ports` | Per node: port role → NIC (MAC or PCI path) or bond (members, mode, LACP options); MTU; offload overrides | Yes |
@@ -277,7 +277,7 @@ OS upgrades are a separate order: the BACKUP is upgraded first, then the MASTER 
 - **`id`:** a number that increases across the pair, assigned by the node that accepted the change.
 - **`hash`:** SHA-256 of the canonical document, so equal content always hashes equal.
 - **`base`:** the generation it was derived from. Every change, and every push to the peer, is rejected if `base` is no longer current, so nobody overwrites a change they have not seen.
-- **`schema`:** the schema version it was written in.
+- **`schema`:** the oldest schema revision that reads it: the newest revision among the fields it uses.
 
 ### Pair sync states
 
@@ -884,15 +884,15 @@ The image ships a containers signature policy requiring the project's signature;
 | Version | Changes when | Rule |
 | --- | --- | --- |
 | Release (image, semver) | Every release | The image carries the coordinator with the daemons and providers it renders for, so they never skew within a node |
-| Config schema (integer) | The document format changes | A coordinator reads its own schema and at least the previous one, migrating on load; writing a newer schema is an explicit step |
+| Config schema (integer revision) | A field is added, or the format changes | Each field names the revision that added it, and a document records the newest revision among the fields it uses, so a release reads every document that needs nothing newer. A format change that is not just an added field needs a migration, which is an explicit step |
 | Peer protocol (Varlink interface) | Node-to-node calls change | Only additive changes within an interface; breaking changes get a new interface name; nodes negotiate the highest common version |
 
-Across a schema change, a rolling upgrade goes: upgrade the BACKUP node, fail over, upgrade the other node, then run `sparewall schema upgrade`, which migrates the document as an ordinary generation. New schema features are gated on the oldest release in the pair, so the coordinator rejects a field the peer could not render.
+An added field needs no migration: a document that does not use it keeps its revision, and every release that reads that revision still reads it. New fields are gated on the oldest release in the pair: each node reports the newest revision it reads in its hello (a node that does not say reads revision 1), and the coordinator refuses a change, rollback included, that needs a newer one. A format change that is more than an added field goes: upgrade the BACKUP node, fail over, upgrade the other node, then run `sparewall schema upgrade`, which migrates the document as an ordinary generation.
 
 Rollback rules:
 
-- Rolling the image back before `schema upgrade` is always safe.
-- Afterwards, an older coordinator cannot read the new schema. Each node keeps the latest generation for every schema version, so an older coordinator falls back to the newest one it understands, reports *apply failed*, and alerts.
+- Rolling the image back is safe while the active generation needs no newer revision than the older release reads.
+- Otherwise the older coordinator cannot read it. At boot it runs the newest generation in its history that it reads, or the bootstrap configuration if there is none, and reports `generation` failed, naming the generation it skipped and why. Releases before 0.3.2 lack this fallback: roll the configuration back to a generation they read first.
 - Migrations ship with a down-migration where possible, so `sparewall schema downgrade` can precede an intentional image rollback.
 - Backup bundles record their schema version; restores follow the same rules.
 

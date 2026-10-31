@@ -155,6 +155,9 @@ pub struct Coordinator<S: System> {
     /// configuration (0) if there is none, which keeps the management
     /// network and SSH up (#169).
     fallback: u64,
+    /// The peer's name and the newest schema revision it reads, as its
+    /// last hello said: a change it could not read is refused (#168).
+    peer_reads: Option<(String, u32)>,
 }
 
 /// How much longer than the peer this node waits for the peer to
@@ -265,6 +268,7 @@ impl<S: System> Coordinator<S> {
             decision_unsure: false,
             unreadable: Default::default(),
             fallback: 0,
+            peer_reads: None,
         }
     }
 
@@ -276,6 +280,12 @@ impl<S: System> Coordinator<S> {
         } else {
             id
         }
+    }
+
+    /// Record what the peer reads (from its hello), or forget it (`None`:
+    /// no peer, or this node left the pair).
+    pub fn set_peer_reads(&mut self, reads: Option<(String, u32)>) {
+        self.peer_reads = reads;
     }
 
     /// Whether boot found generation `id` unreadable.
@@ -581,6 +591,16 @@ impl<S: System> Coordinator<S> {
         // local change sets it: a generation from the peer keeps its own,
         // so that both nodes hash it alike.
         doc.schema = sparewall_config::schema::revision(&sparewall_config::to_value(&doc));
+        if let Some((peer, reads)) = &self.peer_reads
+            && doc.is_pair()
+            && doc.schema > *reads
+        {
+            return Err(Error::Validation(vec![format!(
+                "schema: this change needs schema revision {}, and {peer} reads revisions 1 to {reads}: \
+                 upgrade {peer} first",
+                doc.schema
+            )]));
+        }
         self.check_anti_lockout(&doc, opts.role)?;
         if let Some(old) = self.active_document()? {
             warnings.extend(sparewall_config::providers::switch_warnings(&old, &doc));

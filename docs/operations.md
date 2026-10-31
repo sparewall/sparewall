@@ -42,17 +42,40 @@ discards it, with or without the peer, since it was never pushed.
 ### A generation the node cannot read
 
 If the coordinator cannot read the active generation's document at boot,
-it runs the bootstrap configuration instead of stopping. That happens to a
-document from a newer release after `bootc rollback`, or to a damaged
-file. Only the management port comes up, with SSH and HTTPS; forwarding is
-dropped and the providers stop. Health reports `generation` **failed**,
-naming the generation and why it cannot be read, so in a pair the peer
-keeps or takes the gateway addresses. The node stays in this state until
-you run `sparewall rollback` to a generation it can read, or apply a whole
-document with `sparewall apply -f`. `sparewall set` and other partial
-changes are refused, since there is no document to change. A change left
-unconfirmed reverts to the bootstrap configuration again. Backups still
-work: the bundle keeps the unreadable generation's files as they are.
+it runs the newest generation in its history that it can read, instead of
+stopping. That happens to a document from a newer release after
+`bootc rollback` (it says which schema revision it needs), or to a damaged
+file. If no generation is readable, it runs the bootstrap configuration:
+only the management port comes up, with SSH and HTTPS, forwarding is
+dropped and the providers stop.
+
+Either way health reports `generation` **failed**, naming the generation,
+why it cannot be read and what runs instead, so in a pair the peer keeps
+or takes the gateway addresses. The node stays in this state until you run
+`sparewall rollback` to a generation it can read, or apply a whole document
+with `sparewall apply -f`. `sparewall set` and other partial changes are
+refused, since there is no document to change. A change left unconfirmed
+reverts to what ran before it. Backups still work: the bundle keeps the
+unreadable generation's files as they are.
+
+### Schema revisions
+
+A document's `schema` is the oldest schema revision that reads it: each
+field names the revision that added it, and the coordinator records the
+newest revision among the fields a change uses. You never need to set it;
+any revision up to the newest the release reads is accepted. A document
+that uses nothing new stays readable by older releases, so rolling a node
+back to one of them keeps its configuration.
+
+| Revision | Added | First read by |
+| --- | --- | --- |
+| 1 | Everything up to 0.2.0 | 0.2.0 |
+| 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
+
+In a pair, a change, rollback included, that needs a newer revision than
+the peer reads is refused until the peer is upgraded: each node reports
+the newest revision it reads, and one that does not say (0.3.1 or older)
+reads revision 1.
 
 ## Secrets and tokens
 

@@ -3508,3 +3508,37 @@ fn a_newer_generation_falls_back_to_the_newest_one_this_release_reads() {
         Level::Ok
     );
 }
+
+#[test]
+fn a_change_the_peer_cannot_read_is_refused() {
+    let mut a = pair_node("fw1");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let mut web = pair_example();
+    web["management"]["web"] = json!(true);
+    a.c.apply(web.clone(), &opts(1, None)).unwrap();
+    a.c.apply(pair_example(), &opts(2, None)).unwrap();
+    // The peer, as its hello said, reads revision 1 only (0.3.1 or older).
+    a.c.set_peer_reads(Some(("fw2".into(), 1)));
+    let e =
+        a.c.apply(web.clone(), &opts(3, None))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        e.contains("needs schema revision 2, and fw2 reads revisions 1 to 1"),
+        "{e}"
+    );
+    let e =
+        a.c.merge(&json!({"management": {"web": true}}), &opts(3, None))
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("upgrade fw2 first"), "{e}");
+    let e = a.c.rollback(Some(2), "admin").unwrap_err().to_string();
+    assert!(e.contains("upgrade fw2 first"), "{e}");
+    // What it reads still goes ahead.
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(3, None)).unwrap();
+    // Once the peer reads it, so does the change.
+    a.c.set_peer_reads(Some(("fw2".into(), 2)));
+    a.c.apply(web, &opts(4, None)).unwrap();
+}

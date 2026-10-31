@@ -191,6 +191,7 @@ impl PeerService {
                 role,
                 link_decision,
                 reach,
+                schema: Some(i64::from(sparewall_config::SCHEMA_VERSION)),
             }))
         })
         .await
@@ -682,6 +683,17 @@ async fn sync_once(
             Ok(h) => {
                 status.reachable = true;
                 status.peer_image = h.image.clone();
+                // What the peer reads, for refusing a change it could not
+                // (#168). One that does not say reads revision 1 only.
+                let reads = h
+                    .schema
+                    .map_or(1, |s| s.clamp(1, i64::from(u32::MAX)) as u32);
+                let name = h.node.clone();
+                let _ = with_core_raw(core, events, move |c| {
+                    c.set_peer_reads(Some((name, reads)));
+                    Ok(())
+                })
+                .await;
                 status.peer_reach = Some(h.reach.clone());
                 if let Err(e) = send_secrets(core, events, link, &mut status.secrets_sent).await {
                     tracing::warn!(peer, error = %e, "sending secrets to the peer failed");
@@ -727,7 +739,7 @@ async fn sync_once(
                     && !h.pending
                     && let Err(e) = push_missing(core, events, link, &local, &pv, gated).await
                 {
-                    tracing::warn!(peer, error = %e, "push to peer failed");
+                    tracing::warn!(peer, error = %e, "push to peer failed: {e}");
                     status.last_error = Some(e);
                 }
                 // Paired with the same content under unrelated histories:

@@ -643,6 +643,7 @@ mod tests {
             role: Some(role.into()),
             link_decision: None,
             reach: vec![],
+            schema: None,
         }
     }
 
