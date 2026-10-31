@@ -4349,8 +4349,29 @@
                         "null"
                       ]
                     },
+                    "note": {
+                      "description": "Why the target is or is not offered, when it is not plainly newer: older than this node, the same version, or no version to compare.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "running": {
+                      "description": "This node's Sparewall version.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "target": {
                       "type": "string"
+                    },
+                    "version": {
+                      "description": "The target's Sparewall version, if its image says.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -4384,6 +4405,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "allow_downgrade": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
                   "channel": {
                     "type": [
                       "string",

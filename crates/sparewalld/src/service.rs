@@ -734,7 +734,24 @@ where
             doc_channel.as_deref(),
             tracked.as_deref(),
         );
-        let available = if tracked.as_deref() == Some(target.as_str()) {
+        let t = target.clone();
+        let remote = tokio::task::spawn_blocking(move || crate::upgrade::inspect(&t))
+            .await
+            .map_err(|e| FirewallError::ApplyFailed {
+                message: e.to_string(),
+            })?;
+        let booted = booted_image_digest();
+        let offer = crate::upgrade::offer(
+            sparewall_core::VERSION,
+            booted
+                .as_deref()
+                .and_then(|b| b.rsplit_once('@'))
+                .map(|(_, d)| d),
+            &remote,
+        );
+        let available = if let Some(a) = offer.available {
+            a
+        } else if tracked.as_deref() == Some(target.as_str()) {
             let out = tokio::task::spawn_blocking(|| {
                 crate::upgrade::host_run("bootc", &["upgrade", "--check"])
             })
@@ -751,9 +768,12 @@ where
             true
         };
         Ok(UpgradeCheckReply {
-            booted: booted_image_digest(),
+            booted,
             target,
             available,
+            version: remote.ok().and_then(|r| r.version),
+            running: Some(sparewall_core::VERSION.to_string()),
+            note: offer.note,
         })
     }
 
@@ -764,12 +784,20 @@ where
         &mut self,
         channel: Option<String>,
         image: Option<String>,
+        allow_downgrade: Option<bool>,
     ) -> Result<UpgradeStartReply, FirewallError> {
         let _change = self.changes.lock().await;
-        let plan =
-            crate::upgrade::start(&self.core, &self.events, &self.pair, channel, image, true)
-                .await
-                .map_err(|message| FirewallError::ApplyFailed { message })?;
+        let plan = crate::upgrade::start(
+            &self.core,
+            &self.events,
+            &self.pair,
+            channel,
+            image,
+            allow_downgrade.unwrap_or(false),
+            true,
+        )
+        .await
+        .map_err(|message| FirewallError::ApplyFailed { message })?;
         Ok(UpgradeStartReply { plan })
     }
 

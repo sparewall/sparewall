@@ -1018,7 +1018,13 @@ export interface Calls {
     reply: {
       "available": boolean;
       "booted"?: string | null;
+      /** Why the target is or is not offered, when it is not plainly newer: older than this node, the same version, or no version to compare. */
+      "note"?: string | null;
+      /** This node's Sparewall version. */
+      "running"?: string | null;
       "target": string;
+      /** The target's Sparewall version, if its image says. */
+      "version"?: string | null;
     };
     role: "viewer";
     streams: false;
@@ -1026,6 +1032,7 @@ export interface Calls {
   /** Start a rolling, health-gated upgrade; progress arrives as events (`Subscribe`). */
   "org.sparewall.Upgrade.Start": {
     parameters: {
+      "allow_downgrade"?: boolean | null;
       "channel"?: string | null;
       "image"?: string | null;
     };

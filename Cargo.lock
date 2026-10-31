@@ -2023,6 +2023,7 @@ dependencies = [
  "rustix",
  "rustls",
  "sd-notify",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

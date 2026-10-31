@@ -512,15 +512,35 @@ identity, so a management port with a new MAC address still works.
 
 ## Upgrades
 
-Nodes run a signed bootc image and track a channel (`testing` or `stable`)
-of the repository they were installed from:
+Nodes run a signed bootc image and follow a channel, `stable` or
+`testing`, of the repository they were installed from:
 
 ```shell
 sparewall upgrade --check                 # is a newer image available?
 sparewall upgrade                         # the document's updates.channel
-sparewall upgrade --channel stable
+sparewall upgrade --channel stable        # once, to another channel
 sparewall upgrade --image mirror.example:5000/sparewall:stable
 ```
+
+**Choosing a channel.** Set it in the document, which changes nothing
+until the next upgrade and reaches both nodes of a pair:
+`sparewall set updates.channel=stable`. Without it, a node follows the
+channel it tracks, and a node that tracks a build or a release (one
+installed from a release's ISO or disk image, which come from a build tag)
+follows `stable`. `--channel` is for one upgrade; the node then tracks
+that channel.
+
+**Never backwards by accident.** Images carry their Sparewall version
+(`org.sparewall.version`), and `--check` shows it next to the node's own.
+A newer version is offered; the same version is offered when the image
+differs (a rebuild, such as base image updates); an older one is not, and
+`sparewall upgrade` refuses it. Moving to `stable` from a newer `testing`
+build therefore waits until `stable` passes it. `--allow-downgrade` moves
+to an older release anyway: roll the configuration back to a generation
+that release reads first ([a generation the node cannot
+read](#a-generation-the-node-cannot-read)). Images from before 0.3.2 carry
+no version, so they are compared as before, by digest only, and
+`--check` says so.
 
 On a standalone node this stages the image and reboots (one reboot of
 downtime). In a pair the master runs it, whichever node you start it on:
