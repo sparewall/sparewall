@@ -3515,6 +3515,7 @@ fn a_change_the_peer_cannot_read_is_refused() {
     a.c.apply(pair_example(), &opts(0, None)).unwrap();
     let mut web = pair_example();
     web["management"]["web"] = json!(true);
+    a.c.set_peer_reads(Some(("fw2".into(), 2)));
     a.c.apply(web.clone(), &opts(1, None)).unwrap();
     a.c.apply(pair_example(), &opts(2, None)).unwrap();
     // The peer, as its hello said, reads revision 1 only (0.3.1 or older).
@@ -3541,4 +3542,75 @@ fn a_change_the_peer_cannot_read_is_refused() {
     // Once the peer reads it, so does the change.
     a.c.set_peer_reads(Some(("fw2".into(), 2)));
     a.c.apply(web, &opts(4, None)).unwrap();
+}
+
+#[test]
+fn what_the_peer_reads_is_unknown_until_it_answers() {
+    let mut web = pair_example();
+    web["management"]["web"] = json!(true);
+    // A new pairing is not checked here: the peer checks its own apply.
+    let mut a = pair_node("fw1");
+    a.c.apply(web.clone(), &opts(0, None)).unwrap();
+    // Once paired, a revision-2 change needs to know what fw2 reads: not
+    // before its first hello (as after a restart), not from another node,
+    // and not once its hello fails.
+    let mut v = web.clone();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    let e =
+        a.c.apply(v.clone(), &opts(1, None))
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("not known until it is reached"), "{e}");
+    a.c.set_peer_reads(Some(("fw3".into(), 2)));
+    let e =
+        a.c.apply(v.clone(), &opts(1, None))
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("reach fw2 first"), "{e}");
+    a.c.set_peer_reads(Some(("fw2".into(), 2)));
+    a.c.apply(v.clone(), &opts(1, None)).unwrap();
+    a.c.set_peer_reads(None);
+    v["networks"]["users"]["mtu"] = json!(1300);
+    let e = a.c.apply(v, &opts(2, None)).unwrap_err().to_string();
+    assert!(e.contains("not known until it is reached"), "{e}");
+    // A revision-1 change goes ahead regardless.
+    a.c.apply(pair_example(), &opts(2, None)).unwrap();
+}
+
+#[test]
+fn a_gated_push_reaches_a_node_running_an_older_generation() {
+    let mut a = pair_node("fw1");
+    let dir = tempfile::tempdir().unwrap();
+    let id2 = || {
+        let mut id = identity();
+        id.node = "fw2".into();
+        id
+    };
+    let mut b = Coordinator::new(Store::open(dir.path()).unwrap(), Fake::default(), id2());
+    b.boot(false).unwrap();
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1400);
+    a.c.apply(v, &opts(1, None)).unwrap();
+    for id in [1, 2] {
+        let g = a.c.generation(id).unwrap();
+        b.receive(&g, a.c.document_value(id).unwrap(), PeerGate::Immediate)
+            .unwrap();
+    }
+    // fw2's generation 2 becomes unreadable (a newer release's), so after a
+    // restart it runs generation 1 in its place.
+    make_unreadable(&dir, 2);
+    drop(b);
+    let mut b = Coordinator::new(Store::open(dir.path()).unwrap(), Fake::default(), id2());
+    b.boot(false).unwrap();
+    assert_eq!(b.fallback(), 1);
+    // A change from fw1, gated as protocol 2 peers push it, recovers it.
+    let mut v = pair_example();
+    v["networks"]["users"]["mtu"] = json!(1300);
+    a.c.apply(v.clone(), &opts(2, None)).unwrap();
+    let doc3 = a.c.document_value(3).unwrap();
+    assert!(!b.changes_sync_link(&doc3).unwrap());
+    b.receive(&a.c.generation(3).unwrap(), doc3, PeerGate::PeerConfirms)
+        .unwrap();
+    assert_eq!(b.active().unwrap(), 3);
 }

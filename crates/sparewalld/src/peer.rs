@@ -783,6 +783,13 @@ async fn sync_once(
                 status.peer_view = Some(pv);
             }
             Err(e) => {
+                // What it reads may change before it answers again (a
+                // downgrade, or another node): unknown until then.
+                let _ = with_core_raw(core, events, |c| {
+                    c.set_peer_reads(None);
+                    Ok(())
+                })
+                .await;
                 // In doubt and the peer is not on this link: after a while,
                 // look for it on the other one.
                 if doubt.is_some() {

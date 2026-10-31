@@ -75,7 +75,10 @@ back to one of them keeps its configuration.
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
 the newest revision it reads, and one that does not say (0.3.1 or older)
-reads revision 1.
+reads revision 1. Until the peer has answered since sparewalld started,
+and while it is unreachable, which revisions it reads is not known, so a
+change that needs more than revision 1 waits until the peer is reached.
+A new pairing is not checked this way: each node checks its own apply.
 
 ## Secrets and tokens
 
