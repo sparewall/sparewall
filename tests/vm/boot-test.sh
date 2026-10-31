@@ -446,13 +446,13 @@ for c in 'guest-exec:{"path": "/bin/true"}' 'guest-file-open:{"path": "/etc/shad
         || fail "the guest agent allows ${c%%:*}"
 done
 
-log "an unreadable document: the node boots reachable, and recovers (#169)"
-# A field this release does not know, as a newer release's document
-# leaves it after an image rollback. Written in place, so the file keeps
-# its label.
+log "a newer release's document: the node runs the newest generation it reads, and recovers (#168, #169)"
+# A schema revision and a field this release does not know, as a newer
+# release's document leaves it after an image rollback. Written in place,
+# so the file keeps its label.
 gen=$(vm 'sudo sparewall status -o json' | jq .sync.active)
 doc=/var/lib/sparewall/generations/$gen/document.json
-vm "sudo jq -c '.management.from_the_future = true' $doc > /tmp/doc.json && sudo sh -c 'cat /tmp/doc.json > $doc'"
+vm "sudo jq -c '.schema = 99 | .management.from_the_future = true' $doc > /tmp/doc.json && sudo sh -c 'cat /tmp/doc.json > $doc'"
 vm 'sudo systemctl reboot' || true
 sleep 15
 wait_ssh 600
@@ -466,6 +466,10 @@ check_level() { vm 'sudo sparewall status -o json' | jq -r --arg c "$1" '.health
 vm 'sudo sparewall health --verbose' > unreadable-health.txt || true
 grep -q "generation $gen cannot be read" unreadable-health.txt \
     || fail "health does not say which generation cannot be read: $(cat unreadable-health.txt)"
+grep -q "needs schema revision 99" unreadable-health.txt \
+    || fail "health does not say the generation needs a newer schema: $(cat unreadable-health.txt)"
+grep -qE "running generation [0-9]+, the newest it reads" unreadable-health.txt \
+    || fail "the node does not run an older generation in its place: $(cat unreadable-health.txt)"
 vm 'sudo sparewall rollback' >/dev/null || fail "cannot roll back from an unreadable generation"
 [ "$(check_level generation)" = ok ] || fail "generation not ok after the rollback: $(vm 'sudo sparewall health --verbose' || true)"
 [ "$(check_level applied)" = ok ] || fail "the rollback is not applied: $(vm 'sudo sparewall health --verbose' || true)"
