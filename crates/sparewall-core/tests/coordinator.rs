@@ -3337,3 +3337,39 @@ fn unreadable_generation_recovers_by_apply() {
     assert_eq!(h.check("generation").unwrap().level, Level::Ok);
     assert_eq!(h.check("applied").unwrap().level, Level::Ok);
 }
+
+#[test]
+fn unreadable_generation_refuses_partial_changes_and_backs_up() {
+    let (dir, _) = with_unreadable_generation();
+    let mut c = reopen(&dir);
+    c.boot(false).unwrap();
+    // `sparewall set` and patches change the active document; there is
+    // none to change.
+    let e = c
+        .merge(
+            &json!({"networks": {"users": {"mtu": 1400}}}),
+            &opts(2, None),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("apply a whole document"), "{e}");
+    let e = c
+        .patch(
+            &json!([{"op": "replace", "path": "/networks/users/mtu", "value": 1400}]),
+            &opts(2, None),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("apply a whole document"), "{e}");
+    // A backup still works, with the unreadable generation's files as
+    // they are.
+    let out = tempfile::tempdir().unwrap();
+    let src = sparewall_core::backup::Sources {
+        leases: None,
+        out_dir: out.path().join("backups"),
+        image_digest: None,
+    };
+    let (bundle, _) = c.backup(&src, 20).unwrap();
+    let m = sparewall_core::backup::manifest(&bundle).unwrap();
+    assert_eq!((m.active, m.generations), (2, vec![1, 2]));
+}

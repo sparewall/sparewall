@@ -48,9 +48,11 @@ file. Only the management port comes up, with SSH and HTTPS; forwarding is
 dropped and the providers stop. Health reports `generation` **failed**,
 naming the generation and why it cannot be read, so in a pair the peer
 keeps or takes the gateway addresses. The node stays in this state until
-you run `sparewall rollback` to a generation it can read, or apply a
-document. A change left unconfirmed reverts to the bootstrap configuration
-again.
+you run `sparewall rollback` to a generation it can read, or apply a whole
+document with `sparewall apply -f`. `sparewall set` and other partial
+changes are refused, since there is no document to change. A change left
+unconfirmed reverts to the bootstrap configuration again. Backups still
+work: the bundle keeps the unreadable generation's files as they are.
 
 ## Secrets and tokens
 

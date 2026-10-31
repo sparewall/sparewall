@@ -264,10 +264,23 @@ impl<S: System> Coordinator<S> {
 
     /// The generation that runs for `id`: the bootstrap configuration in
     /// place of one this release cannot read.
-    fn runs(&self, id: u64) -> u64 {
+    pub(crate) fn runs(&self, id: u64) -> u64 {
         match &self.unreadable {
             Some((u, _)) if *u == id => 0,
             _ => id,
+        }
+    }
+
+    /// Refuse a partial change to a generation this release cannot read:
+    /// there is no document to change. A whole document, or a rollback,
+    /// replaces it.
+    fn readable_base(&self, id: u64) -> Result<(), Error> {
+        match &self.unreadable {
+            Some((u, e)) if *u == id => Err(Error::Validation(vec![format!(
+                "generation {id} cannot be read ({e}): apply a whole document \
+                 (sparewall apply -f) or roll back to a generation this release can read"
+            )])),
+            _ => Ok(()),
         }
     }
 
@@ -738,6 +751,7 @@ impl<S: System> Coordinator<S> {
     /// Merge a partial document (RFC 7386) into the active one.
     pub fn merge(&mut self, patch: &Value, opts: &ApplyOptions) -> Result<ApplyResult, Error> {
         let state = self.check_base(opts.base)?;
+        self.readable_base(state.active)?;
         let mut v = self.document_value(state.active)?;
         sparewall_config::merge_patch(&mut v, patch);
         self.apply(v, opts)
@@ -746,6 +760,7 @@ impl<S: System> Coordinator<S> {
     /// Apply RFC 6902 operations to the active document.
     pub fn patch(&mut self, ops: &Value, opts: &ApplyOptions) -> Result<ApplyResult, Error> {
         let state = self.check_base(opts.base)?;
+        self.readable_base(state.active)?;
         let mut v = self.document_value(state.active)?;
         sparewall_config::json_patch(&mut v, ops)
             .map_err(|e| Error::Validation(vec![e.to_string()]))?;
