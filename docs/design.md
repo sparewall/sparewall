@@ -810,7 +810,7 @@ With no applied generation, the coordinator renders the default shipped in the i
 
 ### 3. First configuration
 
-An operator or CI runs `sparewall apply -f site.yaml --confirm 120` over SSH to the management port and confirms once a post-apply check passes. If the configuration cuts off management access, the confirm timer returns the node to bootstrap mode (generation 0).
+An operator or CI runs `sparewall apply -f site.yaml --confirm 120` over SSH to the management port and confirms once a post-apply check passes. If the configuration cuts off management access, the confirm timer returns the node to bootstrap mode (generation 0). The coordinator also runs the bootstrap configuration when it cannot read the active generation's document at boot (a newer release's, after an image rollback, or a damaged file), and reports health failed until a rollback or a new apply: a node that cannot read its configuration stays reachable.
 
 ### 4. Pairing
 

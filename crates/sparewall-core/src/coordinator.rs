@@ -144,6 +144,12 @@ pub struct Coordinator<S: System> {
     /// it did not complete: until it is known to be on disk, the peer is
     /// told the decision is still pending.
     decision_unsure: bool,
+    /// A generation this release cannot read, and why (#169). Boot then
+    /// runs the bootstrap configuration in its place, which keeps the
+    /// management network and SSH up, and health reports it failed. Kept
+    /// for the process's life: a revert to it, at the end of a confirm
+    /// window, runs the bootstrap configuration again.
+    unreadable: Option<(u64, String)>,
 }
 
 /// How much longer than the peer this node waits for the peer to
@@ -252,7 +258,22 @@ impl<S: System> Coordinator<S> {
             extra_checks: Default::default(),
             nft_loaded: NftBaseline::None,
             decision_unsure: false,
+            unreadable: None,
         }
+    }
+
+    /// The generation that runs for `id`: the bootstrap configuration in
+    /// place of one this release cannot read.
+    fn runs(&self, id: u64) -> u64 {
+        match &self.unreadable {
+            Some((u, _)) if *u == id => 0,
+            _ => id,
+        }
+    }
+
+    /// The generation this release could not read at boot, and why.
+    pub fn unreadable(&self) -> Option<(u64, &str)> {
+        self.unreadable.as_ref().map(|(id, e)| (*id, e.as_str()))
     }
 
     pub fn node(&self) -> &str {
@@ -304,6 +325,7 @@ impl<S: System> Coordinator<S> {
     }
 
     fn rendered_for(&self, id: u64) -> Result<Rendered, Error> {
+        let id = self.runs(id);
         if id == 0 {
             return Ok(sparewall_render::render_bootstrap(&self.identity));
         }
@@ -382,7 +404,25 @@ impl<S: System> Coordinator<S> {
         // render the same document differently.
         let mut ids = vec![state.active, live];
         ids.dedup();
-        for id in ids.into_iter().filter(|&i| i != 0) {
+        ids.retain(|&i| i != 0);
+        // A document this release cannot read (a newer release's, after a
+        // rollback of the image, or a damaged file) must not stop the node
+        // from booting: that would leave even the management network down.
+        // Run the bootstrap configuration instead, and say why in health.
+        self.unreadable = None;
+        for &id in &ids {
+            if let Err(e) = self.store.document(id) {
+                tracing::error!(
+                    id,
+                    error = %e,
+                    "cannot read the generation; running the bootstrap configuration"
+                );
+                self.unreadable = Some((id, e.to_string()));
+                break;
+            }
+        }
+        let unreadable = self.unreadable.as_ref().map(|(id, _)| *id);
+        for id in ids.into_iter().filter(|&i| Some(i) != unreadable) {
             let doc = self.store.document(id)?;
             match sparewall_render::render(&doc, self.node()) {
                 Ok(r) => {
@@ -488,7 +528,7 @@ impl<S: System> Coordinator<S> {
         warnings.extend(missing_psk_messages(&self.missing_vpn_psks(&doc)?));
         let hash = sparewall_config::hash(&doc);
         let active_gen = self.generation(state.active)?;
-        let old_value = self.document_value(state.active)?;
+        let old_value = self.document_value(self.runs(state.active))?;
         let new_value = sparewall_config::to_value(&doc);
         let diff = sparewall_config::diff_summary(&old_value, &new_value);
         let old_rendered = self.rendered_for(state.active)?;
@@ -817,7 +857,7 @@ impl<S: System> Coordinator<S> {
     /// The document whose configuration runs (see [`Self::live_id`]): the
     /// one the sync tunnel is set up from.
     pub fn live_document(&self) -> Result<Option<Document>, Error> {
-        let id = self.live_id(&self.store.state()?);
+        let id = self.runs(self.live_id(&self.store.state()?));
         if id == 0 {
             return Ok(None);
         }
@@ -865,7 +905,7 @@ impl<S: System> Coordinator<S> {
     /// node's sync link (it then answers the push before running it).
     pub fn changes_sync_link(&self, value: &Value) -> Result<bool, Error> {
         let active = self.store.state()?.active;
-        if active == 0 {
+        if self.runs(active) == 0 {
             return Ok(false);
         }
         Ok(link_change(&self.document_value(active)?, value))
@@ -1209,7 +1249,7 @@ impl<S: System> Coordinator<S> {
 
     /// The live document, if any.
     pub fn active_document(&self) -> Result<Option<Document>, Error> {
-        match self.active()? {
+        match self.runs(self.active()?) {
             0 => Ok(None),
             id => self.store.document(id).map(Some),
         }
@@ -1709,7 +1749,7 @@ impl<S: System> Coordinator<S> {
         })();
         match &result {
             Ok(()) => {
-                self.applied_hash = Some(self.generation(id)?.hash);
+                self.applied_hash = Some(self.generation(self.runs(id))?.hash);
                 self.last_error = None;
             }
             Err(e) => {
@@ -1732,19 +1772,30 @@ impl<S: System> Coordinator<S> {
         let r = self.rendered_for(state.active)?;
         let mut checks = Vec::new();
 
-        checks.push(if state.active == 0 {
-            Check::new(
-                "generation",
-                Level::Degraded,
-                "bootstrap mode: no configuration applied",
-            )
-        } else {
-            Check::new(
-                "generation",
-                Level::Ok,
-                format!("generation {}", state.active),
-            )
-        });
+        checks.push(
+            if let Some((id, e)) = self.unreadable.as_ref().filter(|(u, _)| *u == state.active) {
+                Check::new(
+                    "generation",
+                    Level::Failed,
+                    format!(
+                        "generation {id} cannot be read ({e}); running the bootstrap configuration \
+                     (management only): roll back to an earlier generation or apply a document"
+                    ),
+                )
+            } else if state.active == 0 {
+                Check::new(
+                    "generation",
+                    Level::Degraded,
+                    "bootstrap mode: no configuration applied",
+                )
+            } else {
+                Check::new(
+                    "generation",
+                    Level::Ok,
+                    format!("generation {}", state.active),
+                )
+            },
+        );
 
         // Degraded, not failed: a held pair must still confirm and sync.
         if self.active_document()?.is_some_and(|d| d.cluster.hold) {
