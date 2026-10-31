@@ -4,7 +4,13 @@ Documentation=https://github.com/sparewall/sparewall
 # Started and stopped by the coordinator, as the document asks
 # (management.web); never enabled. sparewalld serves HTTPS and passes it
 # everything but the health endpoints over this unit's socket.
-After=sparewalld.service
+#
+# Like the providers, it orders after sparewall-early, not sparewalld:
+# sparewalld restarts it during its own start, which would wait for a job
+# queued behind that start (#164). It needs nothing from sparewalld to
+# start: it connects to the coordinator for each call, and HTTPS reaches
+# it only through sparewalld.
+After=sparewall-early.service
 
 [Service]
 ExecStart=/usr/bin/sparewall-httpd

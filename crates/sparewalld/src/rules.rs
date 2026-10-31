@@ -2,7 +2,7 @@
 //! journal as structured entries (design: "Logging").
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::Path;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -37,16 +37,30 @@ pub fn describe(v: &Value) -> Option<(String, String)> {
     Some((prefix, format!("{proto}{ports}{ifs}")))
 }
 
-pub async fn listener(path: PathBuf) {
-    let _ = std::fs::remove_file(&path);
-    let l = match UnixListener::bind(&path) {
-        Ok(l) => l,
-        Err(e) => {
+/// Bind the socket ulogd2 sends rule hits to. This happens before the
+/// start-up activation, which restarts ulogd2: it connects once, at
+/// start, and exits if nothing is listening, so the services check would
+/// fail until systemd started it again.
+pub fn bind(path: &Path) -> Option<std::os::unix::net::UnixListener> {
+    let _ = std::fs::remove_file(path);
+    let l = std::os::unix::net::UnixListener::bind(path)
+        .and_then(|l| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            l.set_nonblocking(true)?;
+            Ok(l)
+        })
+        .inspect_err(|e| {
             tracing::error!(path = %path.display(), error = %e, "cannot listen for rule logs");
-            return std::future::pending().await;
-        }
+        })
+        .ok()?;
+    Some(l)
+}
+
+/// Write the rule hits arriving on `l` to the journal.
+pub async fn listener(l: Option<std::os::unix::net::UnixListener>) {
+    let Some(l) = l.and_then(|l| UnixListener::from_std(l).ok()) else {
+        return std::future::pending().await;
     };
-    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     loop {
         let Ok((stream, _)) = l.accept().await else {
             continue;

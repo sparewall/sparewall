@@ -279,6 +279,7 @@ fn run(args: Args) -> Result<(), String> {
     }
     let node = identity.node.clone();
     let mut coordinator = Coordinator::new(store, sys, identity);
+    let rules = (!args.early).then(|| rules::bind(&args.socket.with_file_name("rules.sock")));
     let active = coordinator.boot(args.early).map_err(|e| e.to_string())?;
     tracing::info!(
         generation = active,
@@ -477,7 +478,7 @@ fn run(args: Args) -> Result<(), String> {
                 }
             } => Ok(()),
             () = vrrp::fifo_reader(pair.clone(), tx.clone(), fifo.clone(), vrrp::host_conntrackd()) => Ok(()),
-            () = rules::listener(args.socket.with_file_name("rules.sock")) => Ok(()),
+            () = rules::listener(rules.flatten()) => Ok(()),
             _ = term.recv() => {
                 tracing::info!("terminating");
                 if let Some(path) = &motd {
