@@ -461,8 +461,11 @@ vm 'systemctl is-active sparewall-early.service sparewalld.service' \
 check_level() { vm 'sudo sparewall status -o json' | jq -r --arg c "$1" '.health.checks[] | select(.name == $c) | .level'; }
 [ "$(check_level generation)" = failed ] \
     || fail "health does not report the unreadable generation: $(vm 'sudo sparewall health --verbose' || true)"
-vm 'sudo sparewall health --verbose' | grep -q "generation $gen cannot be read" \
-    || fail "health does not say which generation cannot be read"
+# Captured first: grep -q stops reading, and pipefail would take vm's
+# SIGPIPE for a failure.
+vm 'sudo sparewall health --verbose' > unreadable-health.txt || true
+grep -q "generation $gen cannot be read" unreadable-health.txt \
+    || fail "health does not say which generation cannot be read: $(cat unreadable-health.txt)"
 vm 'sudo sparewall rollback' >/dev/null || fail "cannot roll back from an unreadable generation"
 [ "$(check_level generation)" = ok ] || fail "generation not ok after the rollback: $(vm 'sudo sparewall health --verbose' || true)"
 [ "$(check_level applied)" = ok ] || fail "the rollback is not applied: $(vm 'sudo sparewall health --verbose' || true)"
