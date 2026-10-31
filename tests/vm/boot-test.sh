@@ -446,6 +446,30 @@ for c in 'guest-exec:{"path": "/bin/true"}' 'guest-file-open:{"path": "/etc/shad
         || fail "the guest agent allows ${c%%:*}"
 done
 
+log "an unreadable document: the node boots reachable, and recovers (#169)"
+# A field this release does not know, as a newer release's document
+# leaves it after an image rollback. Written in place, so the file keeps
+# its label.
+gen=$(vm 'sudo sparewall status -o json' | jq .sync.active)
+doc=/var/lib/sparewall/generations/$gen/document.json
+vm "sudo jq -c '.management.from_the_future = true' $doc > /tmp/doc.json && sudo sh -c 'cat /tmp/doc.json > $doc'"
+vm 'sudo systemctl reboot' || true
+sleep 15
+wait_ssh 600
+vm 'systemctl is-active sparewall-early.service sparewalld.service' \
+    || fail "a coordinator unit failed on an unreadable document: $(vm 'sudo journalctl -b -u sparewall-early -u sparewalld --no-pager | tail -20' || true)"
+check_level() { vm 'sudo sparewall status -o json' | jq -r --arg c "$1" '.health.checks[] | select(.name == $c) | .level'; }
+[ "$(check_level generation)" = failed ] \
+    || fail "health does not report the unreadable generation: $(vm 'sudo sparewall health --verbose' || true)"
+# Captured first: grep -q stops reading, and pipefail would take vm's
+# SIGPIPE for a failure.
+vm 'sudo sparewall health --verbose' > unreadable-health.txt || true
+grep -q "generation $gen cannot be read" unreadable-health.txt \
+    || fail "health does not say which generation cannot be read: $(cat unreadable-health.txt)"
+vm 'sudo sparewall rollback' >/dev/null || fail "cannot roll back from an unreadable generation"
+[ "$(check_level generation)" = ok ] || fail "generation not ok after the rollback: $(vm 'sudo sparewall health --verbose' || true)"
+[ "$(check_level applied)" = ok ] || fail "the rollback is not applied: $(vm 'sudo sparewall health --verbose' || true)"
+
 log "the coordinator's SELinux domain"
 selinux_report vm fw1
 selinux_health vm fw1

@@ -206,7 +206,10 @@ impl<S: System> Coordinator<S> {
                     &serde_json::to_vec_pretty(&id).expect("json"),
                 )?;
             }
-            if state.active != 0 {
+            // The export is for reading; a restore uses the generations'
+            // own files. A generation this release cannot read has none
+            // (#169), and its files below still go into the bundle.
+            if self.runs(state.active) != 0 {
                 let doc = self.store().document(state.active)?;
                 let text = sparewall_config::export(&doc, sparewall_config::Format::Yaml);
                 add(&mut tar, "document.yaml", text.as_bytes())?;

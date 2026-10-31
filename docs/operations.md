@@ -39,6 +39,21 @@ any change, so it needs the peer reachable (or `--allow-diverge`). The
 exception is a change still waiting for confirmation: `rollback` just
 discards it, with or without the peer, since it was never pushed.
 
+### A generation the node cannot read
+
+If the coordinator cannot read the active generation's document at boot,
+it runs the bootstrap configuration instead of stopping. That happens to a
+document from a newer release after `bootc rollback`, or to a damaged
+file. Only the management port comes up, with SSH and HTTPS; forwarding is
+dropped and the providers stop. Health reports `generation` **failed**,
+naming the generation and why it cannot be read, so in a pair the peer
+keeps or takes the gateway addresses. The node stays in this state until
+you run `sparewall rollback` to a generation it can read, or apply a whole
+document with `sparewall apply -f`. `sparewall set` and other partial
+changes are refused, since there is no document to change. A change left
+unconfirmed reverts to the bootstrap configuration again. Backups still
+work: the bundle keeps the unreadable generation's files as they are.
+
 ## Secrets and tokens
 
 Secrets never appear in the document; it refers to them as
@@ -326,6 +341,7 @@ running system, each repeated on every health request:
 
 | Check | Verifies | Does not verify |
 | --- | --- | --- |
+| `generation` | A configuration is applied: degraded in bootstrap mode, failed when the active generation cannot be read ([above](#a-generation-the-node-cannot-read)) | |
 | `applied` | The last activation of the desired generation succeeded, and the live firewall still matches it | Anything the other checks do not |
 | `nft` | The live `inet sparewall` table matches, rule for rule, what was loaded for the generation: chains with their hooks and policies, every rule, static set elements. What traffic changes (counters, quota use, `last` timestamps, element timeouts), handles, and the sets networkd fills at runtime are excluded. If the table cannot be read back right after a load, the node fails this check until the next reload | Tables other software owns |
 | `links` | Every interface that carries traffic exists and is up (failed otherwise, so VRRP moves the gateway addresses). A trunk shared by the sync VLAN and service networks counts as carrying traffic | Addresses, routes or bond membership on them |

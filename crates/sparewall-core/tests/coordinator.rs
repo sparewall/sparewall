@@ -3238,3 +3238,187 @@ fn users_log_in_to_sessions() {
     // API tokens cannot pose as sessions.
     assert!(t.c.token_create("session-x", Role::Admin, None).is_err());
 }
+
+/// Two confirmed generations, the second's document then rewritten with a
+/// field this release does not know, as a newer release would leave it
+/// (#169). Returns the store's directory and the bootstrap firewall.
+fn with_unreadable_generation() -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let bootstrap = {
+        let mut c = Coordinator::new(
+            Store::open(dir.path()).unwrap(),
+            Fake::default(),
+            identity(),
+        );
+        c.boot(false).unwrap();
+        let bootstrap = c.system().nft_body.clone().unwrap();
+        c.apply(example(), &opts(0, None)).unwrap();
+        let mut v = example();
+        v["policy"]["wan->self"]["action"] = json!("reject");
+        c.apply(v, &opts(1, None)).unwrap();
+        bootstrap
+    };
+    let p = dir.path().join("generations/2/document.json");
+    let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    doc["management"]["from_the_future"] = json!(true);
+    std::fs::write(&p, serde_json::to_string(&doc).unwrap()).unwrap();
+    (dir, bootstrap)
+}
+
+fn reopen(dir: &tempfile::TempDir) -> Coordinator<Fake> {
+    Coordinator::new(
+        Store::open(dir.path()).unwrap(),
+        Fake::default(),
+        identity(),
+    )
+}
+
+#[test]
+fn unreadable_generation_boots_into_bootstrap() {
+    let (dir, bootstrap) = with_unreadable_generation();
+    // sparewall-early, then sparewalld: neither fails, and both install the
+    // bootstrap configuration, which keeps management and SSH up.
+    let mut early = reopen(&dir);
+    assert_eq!(early.boot(true).unwrap(), 2);
+    assert_eq!(early.system().nft_body.as_deref(), Some(bootstrap.as_str()));
+    let mut c = reopen(&dir);
+    assert_eq!(c.boot(false).unwrap(), 2);
+    assert_eq!(c.system().nft_body.as_deref(), Some(bootstrap.as_str()));
+    let (id, why) = c.unreadable().next().unwrap();
+    assert_eq!(id, 2);
+    assert!(why.contains("from_the_future"), "{why}");
+    assert!(c.active_document().unwrap().is_none());
+    let h = c.health().unwrap();
+    let g = h.check("generation").unwrap();
+    assert_eq!(g.level, Level::Failed);
+    assert!(
+        g.message.contains("generation 2 cannot be read"),
+        "{}",
+        g.message
+    );
+    assert_eq!(h.check("applied").unwrap().level, Level::Failed);
+    // Rolling back to it reports why it cannot be read.
+    let e = c.rollback(Some(2), "admin").unwrap_err().to_string();
+    assert!(e.contains("from_the_future"), "{e}");
+}
+
+#[test]
+fn unreadable_generation_recovers_by_rollback() {
+    let (dir, _) = with_unreadable_generation();
+    let mut c = reopen(&dir);
+    c.boot(false).unwrap();
+    let g = c.rollback(Some(1), "admin").unwrap();
+    assert_eq!((g.id, &g.hash), (3, &c.generation(1).unwrap().hash));
+    let h = c.health().unwrap();
+    assert_eq!(h.check("generation").unwrap().level, Level::Ok);
+    assert_eq!(h.check("applied").unwrap().level, Level::Ok);
+    assert!(c.active_document().unwrap().is_some());
+}
+
+#[test]
+fn unreadable_generation_recovers_by_apply() {
+    let (dir, bootstrap) = with_unreadable_generation();
+    let mut c = reopen(&dir);
+    c.boot(false).unwrap();
+    // A change left unconfirmed reverts to the unreadable generation, which
+    // runs the bootstrap configuration again.
+    let now = jiff::Timestamp::now().as_second();
+    c.apply(example(), &opts(2, Some(60))).unwrap();
+    assert_ne!(c.system().nft_body.as_deref(), Some(bootstrap.as_str()));
+    assert_eq!(c.tick(now + 61).unwrap(), Some(2));
+    assert_eq!(c.system().nft_body.as_deref(), Some(bootstrap.as_str()));
+    assert_eq!(
+        c.health().unwrap().check("generation").unwrap().level,
+        Level::Failed
+    );
+    let r = c.apply(example(), &opts(2, None)).unwrap();
+    assert_eq!(r.generation.id, 4);
+    let h = c.health().unwrap();
+    assert_eq!(h.check("generation").unwrap().level, Level::Ok);
+    assert_eq!(h.check("applied").unwrap().level, Level::Ok);
+}
+
+#[test]
+fn unreadable_generation_refuses_partial_changes_and_backs_up() {
+    let (dir, _) = with_unreadable_generation();
+    let mut c = reopen(&dir);
+    c.boot(false).unwrap();
+    // `sparewall set` and patches change the active document; there is
+    // none to change.
+    let e = c
+        .merge(
+            &json!({"networks": {"users": {"mtu": 1400}}}),
+            &opts(2, None),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("apply a whole document"), "{e}");
+    let e = c
+        .patch(
+            &json!([{"op": "replace", "path": "/networks/users/mtu", "value": 1400}]),
+            &opts(2, None),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("apply a whole document"), "{e}");
+    // A backup still works, with the unreadable generation's files as
+    // they are.
+    let out = tempfile::tempdir().unwrap();
+    let src = sparewall_core::backup::Sources {
+        leases: None,
+        out_dir: out.path().join("backups"),
+        image_digest: None,
+    };
+    let (bundle, _) = c.backup(&src, 20).unwrap();
+    let m = sparewall_core::backup::manifest(&bundle).unwrap();
+    assert_eq!((m.active, m.generations), (2, vec![1, 2]));
+}
+
+/// Make generation `id`'s document unreadable, as in
+/// [`with_unreadable_generation`].
+fn make_unreadable(dir: &tempfile::TempDir, id: u64) {
+    let p = dir.path().join(format!("generations/{id}/document.json"));
+    let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    doc["management"]["from_the_future"] = json!(true);
+    std::fs::write(&p, serde_json::to_string(&doc).unwrap()).unwrap();
+}
+
+#[test]
+fn unreadable_generations_while_a_sync_link_change_is_in_doubt() {
+    // Generation 2 is a sync-link change from the peer, in doubt, and this
+    // node runs generation 1 in its place while it looks for the peer on
+    // the old link.
+    for unreadable in [vec![1, 2], vec![1]] {
+        let (dir, bootstrap) = with_unreadable_generation();
+        if !unreadable.contains(&2) {
+            // Readable again: only the generation that runs is not.
+            let p = dir.path().join("generations/2/document.json");
+            let mut doc: Value =
+                serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            doc["management"]
+                .as_object_mut()
+                .unwrap()
+                .remove("from_the_future");
+            std::fs::write(&p, serde_json::to_string(&doc).unwrap()).unwrap();
+        }
+        make_unreadable(&dir, 1);
+        let p = dir.path().join("state.json");
+        let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        state["pending"] = json!({
+            "id": 2, "revert_to": 1, "deadline": i64::MAX / 2,
+            "from_peer": true, "link_change": true, "prepared": true, "trying_old": true,
+        });
+        std::fs::write(&p, serde_json::to_string(&state).unwrap()).unwrap();
+        let mut c = reopen(&dir);
+        assert_eq!(c.boot(false).unwrap(), 2, "{unreadable:?}");
+        assert_eq!(
+            c.unreadable().map(|(id, _)| id).collect::<Vec<_>>(),
+            unreadable,
+            "{unreadable:?}"
+        );
+        assert_eq!(c.system().nft_body.as_deref(), Some(bootstrap.as_str()));
+        let g = c.health().unwrap().check("generation").unwrap().clone();
+        assert_eq!(g.level, Level::Failed, "{unreadable:?}: {}", g.message);
+        assert!(g.message.contains("cannot be read"), "{}", g.message);
+    }
+}
