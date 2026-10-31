@@ -12,15 +12,23 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The schema version this crate reads and writes.
-pub const SCHEMA_VERSION: u32 = 1;
+/// The newest schema revision this crate reads. A field added after
+/// revision 1 (what 0.2.0 reads) says which revision added it, with
+/// `#[schemars(extend("x-since" = N))]`, and a document's `schema` is the
+/// newest revision among the fields it uses ([`crate::schema::revision`]),
+/// so a release that reads only older revisions can tell it apart from
+/// an invalid document, and reads every document that needs nothing newer
+/// (#168).
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// A whole deployment: one node or an HA pair.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "Sparewall configuration document")]
 pub struct Document {
-    /// Schema version of this document.
+    /// The oldest schema revision that reads this document: the newest
+    /// revision among the fields it uses. Set when the document is
+    /// applied; a release refuses one newer than it reads.
     pub schema: u32,
     /// Node names and pair-wide settings.
     pub cluster: Cluster,
@@ -167,6 +175,7 @@ pub struct Management {
     /// port, next to the health endpoints. Off by default; reached only
     /// where HTTPS is, the management network.
     #[serde(default, skip_serializing_if = "is_false")]
+    #[schemars(extend("x-since" = 2))]
     pub web: bool,
 }
 

@@ -3276,6 +3276,8 @@ fn reopen(dir: &tempfile::TempDir) -> Coordinator<Fake> {
 #[test]
 fn unreadable_generation_boots_into_bootstrap() {
     let (dir, bootstrap) = with_unreadable_generation();
+    // Nothing older to fall back to: the bootstrap configuration runs.
+    make_unreadable(&dir, 1);
     // sparewall-early, then sparewalld: neither fails, and both install the
     // bootstrap configuration, which keeps management and SSH up.
     let mut early = reopen(&dir);
@@ -3318,6 +3320,8 @@ fn unreadable_generation_recovers_by_rollback() {
 #[test]
 fn unreadable_generation_recovers_by_apply() {
     let (dir, bootstrap) = with_unreadable_generation();
+    // Nothing older to fall back to: the bootstrap configuration runs.
+    make_unreadable(&dir, 1);
     let mut c = reopen(&dir);
     c.boot(false).unwrap();
     // A change left unconfirmed reverts to the unreadable generation, which
@@ -3421,4 +3425,86 @@ fn unreadable_generations_while_a_sync_link_change_is_in_doubt() {
         assert_eq!(g.level, Level::Failed, "{unreadable:?}: {}", g.message);
         assert!(g.message.contains("cannot be read"), "{}", g.message);
     }
+}
+
+#[test]
+fn an_apply_records_the_schema_revision_it_needs() {
+    let mut t = setup();
+    // Whatever the document says, it is stored with the revision it needs:
+    // 1 without fields added since 0.2.0, so 0.2.0 still reads it.
+    let mut v = example();
+    v["schema"] = json!(2);
+    t.c.apply(v, &opts(0, None)).unwrap();
+    assert_eq!(t.c.document_value(1).unwrap()["schema"], 1);
+    t.c.merge(&json!({"management": {"web": true}}), &opts(1, None))
+        .unwrap();
+    assert_eq!(t.c.document_value(2).unwrap()["schema"], 2);
+    // A revision newer than this release reads is refused.
+    let mut v = example();
+    v["schema"] = json!(sparewall_config::SCHEMA_VERSION + 1);
+    let e = t.c.apply(v, &opts(2, None)).unwrap_err().to_string();
+    assert!(e.contains("this release reads revisions 1 to"), "{e}");
+}
+
+#[test]
+fn a_generation_from_the_peer_keeps_its_schema_revision() {
+    // From a release that wrote `schema: 1` with fields added since: kept
+    // as it came, so its hash matches the peer's.
+    let mut a = pair_node("fw1");
+    let mut b = pair_node("fw2");
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
+    let g1 = a.c.generation(1).unwrap();
+    b.c.receive(&g1, a.c.document_value(1).unwrap(), PeerGate::Immediate)
+        .unwrap();
+    let mut v = a.c.document_value(1).unwrap();
+    v["management"]["web"] = json!(true);
+    let doc = sparewall_config::from_value(v.clone()).unwrap();
+    let mut g = g1.clone();
+    g.id = 2;
+    g.base = Some(1);
+    g.hash = sparewall_config::hash(&doc);
+    b.c.receive(&g, v, PeerGate::Immediate).unwrap();
+    assert_eq!(b.c.document_value(2).unwrap()["schema"], 1);
+    assert_eq!(b.c.generation(2).unwrap().hash, g.hash);
+}
+
+#[test]
+fn a_newer_generation_falls_back_to_the_newest_one_this_release_reads() {
+    let (dir, _) = with_unreadable_generation();
+    // As a newer release writes it: a revision this release does not read.
+    let p = dir.path().join("generations/2/document.json");
+    let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    doc["schema"] = json!(sparewall_config::SCHEMA_VERSION + 1);
+    std::fs::write(&p, serde_json::to_string(&doc).unwrap()).unwrap();
+    let gen1 = {
+        let mut c = reopen(&dir);
+        c.boot(false).unwrap();
+        // What generation 1 loads, for comparison.
+        c.rollback(Some(1), "admin").unwrap();
+        c.system().nft_body.clone().unwrap()
+    };
+    let (dir, _) = with_unreadable_generation();
+    std::fs::write(
+        dir.path().join("generations/2/document.json"),
+        serde_json::to_string(&doc).unwrap(),
+    )
+    .unwrap();
+    let mut c = reopen(&dir);
+    assert_eq!(c.boot(false).unwrap(), 2);
+    assert_eq!(c.fallback(), 1);
+    assert_eq!(c.system().nft_body.as_deref(), Some(gen1.as_str()));
+    assert_eq!(
+        c.active_document().unwrap().unwrap().policy,
+        sparewall_config::from_value(example()).unwrap().policy
+    );
+    let g = c.health().unwrap().check("generation").unwrap().clone();
+    assert_eq!(g.level, Level::Failed);
+    assert!(g.message.contains("needs schema revision"), "{}", g.message);
+    assert!(g.message.contains("running generation 1"), "{}", g.message);
+    // An apply from here diffs against what runs, and recovers.
+    c.apply(example(), &opts(2, None)).unwrap();
+    assert_eq!(
+        c.health().unwrap().check("generation").unwrap().level,
+        Level::Ok
+    );
 }

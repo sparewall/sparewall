@@ -225,11 +225,14 @@ impl Validator<'_> {
     }
 
     fn schema(&mut self) {
-        if self.doc.schema != SCHEMA_VERSION {
+        // Older revisions are read too: `schema` is the oldest revision that
+        // reads the document, and documents written before revisions were
+        // tracked may name an older one than the fields they use (#168).
+        if !(1..=SCHEMA_VERSION).contains(&self.doc.schema) {
             self.err(
                 "schema",
                 format!(
-                    "schema version {} is not supported (this coordinator reads {SCHEMA_VERSION})",
+                    "the document needs schema revision {}; this release reads revisions 1 to {SCHEMA_VERSION}: upgrade it first",
                     self.doc.schema
                 ),
             );

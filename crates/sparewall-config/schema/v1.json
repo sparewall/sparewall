@@ -1,0 +1,1709 @@
+{
+  "$defs": {
+    "Acme": {
+      "additionalProperties": false,
+      "properties": {
+        "ca": {
+          "description": "PEM of the CA that signs the directory's TLS certificate, for a\nprivate CA (default: the system trust store).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "challenge": {
+          "description": "`dns-01` (default) or `http-01`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "directory": {
+          "type": "string"
+        },
+        "dns": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AcmeDns"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eab": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Eab"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "External Account Binding key ID and secret reference."
+        },
+        "email": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "directory"
+      ],
+      "type": "object"
+    },
+    "AcmeDns": {
+      "additionalProperties": false,
+      "properties": {
+        "credentials": {
+          "description": "Secret reference, `secret:<name>`. For `rfc2136`, the TSIG key as\n`algorithm:name:secret`; for lego, the provider's credentials as\n`KEY=value` lines.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "For `rfc2136`, `server` (host[:port]) and `zone`; for lego, the\nprovider's other environment variables (`GCE_PROJECT`), and lego's\nown (`LEGO_DNS_RESOLVERS`).",
+          "type": "object"
+        },
+        "provider": {
+          "description": "`rfc2136` (built in), or a lego provider code such as `gcloud`,\n`cloudflare` or `route53` (https://go-acme.github.io/lego/dns/).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "type": "object"
+    },
+    "Action": {
+      "enum": [
+        "accept",
+        "drop",
+        "reject"
+      ],
+      "type": "string"
+    },
+    "Backup": {
+      "additionalProperties": false,
+      "properties": {
+        "credentials": {
+          "description": "Secret reference for repository credentials (not the password).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "generations": {
+          "description": "Generations to include. Default 20.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "repository": {
+          "description": "restic repository URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schedule": {
+          "description": "systemd calendar expression. Default `hourly`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "Bond": {
+      "additionalProperties": false,
+      "properties": {
+        "hash_policy": {
+          "description": "Transmit hash policy, e.g. `layer3+4`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lacp_rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LacpRate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "LACP rate (802.3ad only)."
+        },
+        "members": {
+          "description": "Member NICs, each a permanent MAC address or udev path.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "miimon": {
+          "description": "Link monitoring interval, e.g. `100ms`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/$defs/BondMode",
+          "description": "Bonding mode."
+        },
+        "primary": {
+          "description": "Preferred member (active-backup only).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "members",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "BondMode": {
+      "enum": [
+        "802.3ad",
+        "active-backup"
+      ],
+      "type": "string"
+    },
+    "Cake": {
+      "additionalProperties": false,
+      "properties": {
+        "bandwidth": {
+          "description": "Egress bandwidth, e.g. `900mbit`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bandwidth"
+      ],
+      "type": "object"
+    },
+    "Certificate": {
+      "additionalProperties": false,
+      "properties": {
+        "acme": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Acme"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "names": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "names"
+      ],
+      "type": "object"
+    },
+    "Cidr": {
+      "description": "IPv4 address with prefix length, e.g. 192.0.2.1/24",
+      "pattern": "^\\d{1,3}(\\.\\d{1,3}){3}/\\d{1,2}$",
+      "type": "string"
+    },
+    "Cluster": {
+      "additionalProperties": false,
+      "properties": {
+        "conntrack": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConntrackSizing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Connection-tracking sizing, identical on both nodes."
+        },
+        "hold": {
+          "description": "Stage beside the gateway this replaces: everything runs, but no\ngateway address is claimed (VRRP instances held in FAULT, or not\ninstalled standalone) and DHCP offers nothing. Set false to cut over.",
+          "type": "boolean"
+        },
+        "nodes": {
+          "description": "One node name (standalone) or two (an HA pair). Each is also that\nnode's hostname: up to 31 lowercase letters, digits and '-',\nstarting with a letter and not ending with '-'.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sync_keys": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Each node's sync-tunnel WireGuard public key, from `sparewall status`.",
+          "type": "object"
+        },
+        "sync_network": {
+          "description": "The network with role `sync` that carries the pair's WireGuard tunnel.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sync_port": {
+          "description": "UDP port of the sync tunnel.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "vrrp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Vrrp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "VRRP settings for a pair."
+        }
+      },
+      "required": [
+        "nodes"
+      ],
+      "type": "object"
+    },
+    "ConntrackSizing": {
+      "additionalProperties": false,
+      "properties": {
+        "buckets": {
+          "description": "Hash table buckets (`nf_conntrack_buckets`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max": {
+          "description": "`nf_conntrack_max`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tcp_established_timeout": {
+          "description": "Established-TCP timeout in seconds. Default 86400.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Dhcp": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DhcpNetwork"
+      },
+      "description": "DHCPv4: service-wide settings plus one entry per served network.",
+      "properties": {
+        "ha": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DhcpHa"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "HA mode for a pair. Default `hot-standby`."
+        },
+        "lease_time": {
+          "description": "Default lease time in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ping_check": {
+          "description": "Ping an address before offering it, and skip it if something\nanswers: a host still using it without a lease here (after a\nrestore, or when replacing another DHCP server). Default true; turn\nit off on networks that filter ICMP echo.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "provider": {
+          "description": "Implementation: `kea` (the default). `networkd` is not built yet.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "DhcpHa": {
+      "enum": [
+        "hot-standby",
+        "off"
+      ],
+      "type": "string"
+    },
+    "DhcpNetwork": {
+      "additionalProperties": false,
+      "properties": {
+        "lease_time": {
+          "description": "Lease time in seconds for this network.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DhcpOptions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Options; router, DNS and NTP default to the gateway address."
+        },
+        "ping_check": {
+          "description": "Ping before offering on this network (default: `dhcp.ping_check`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "pool": {
+          "description": "Address range, `first-last`.",
+          "type": "string"
+        },
+        "reservations": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Reservation"
+          },
+          "default": {},
+          "description": "Fixed leases by name.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "pool"
+      ],
+      "type": "object"
+    },
+    "DhcpOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "dns": {
+          "items": {
+            "format": "ipv4",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "domain": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ntp": {
+          "items": {
+            "format": "ipv4",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "router": {
+          "format": "ipv4",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Dns": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "description": "Local domain for reservation names.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "forwarders": {
+          "description": "Forward to these servers instead of recursing.",
+          "items": {
+            "format": "ipv4",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "networks": {
+          "description": "Networks to serve; default every network with DHCP.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "provider": {
+          "description": "Implementation: `unbound` (the default).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "records": {
+          "additionalProperties": {
+            "format": "ipv4",
+            "type": "string"
+          },
+          "description": "Extra local A records, name to address.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "DynamicKind": {
+      "enum": [
+        "address",
+        "prefix"
+      ],
+      "type": "string"
+    },
+    "DynamicSource": {
+      "additionalProperties": false,
+      "properties": {
+        "network": {
+          "description": "The network whose addresses fill the set.",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/DynamicKind",
+          "description": "`address` for the node's own address, `prefix` for the subnet."
+        }
+      },
+      "required": [
+        "network"
+      ],
+      "type": "object"
+    },
+    "Eab": {
+      "additionalProperties": false,
+      "properties": {
+        "hmac": {
+          "type": "string"
+        },
+        "kid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kid",
+        "hmac"
+      ],
+      "type": "object"
+    },
+    "Forward": {
+      "additionalProperties": false,
+      "description": "An inbound port forward.",
+      "properties": {
+        "dport": {
+          "$ref": "#/$defs/Match",
+          "description": "Port(s) on the firewall."
+        },
+        "dst": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Match"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Original destination; default any address of the arriving zone."
+        },
+        "from": {
+          "description": "Zone the connections arrive from. Default `wan`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hairpin": {
+          "description": "Inside zones whose clients may also use the forward by its outside\naddress (NAT reflection), e.g. `[users]`. Needs `dst`. Clients on\nthe server's own network are also source-NATed to the firewall's\naddress there, so that replies come back through it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "log": {
+          "description": "Log forwarded connections.",
+          "type": "boolean"
+        },
+        "proto": {
+          "description": "`tcp` or `udp`.",
+          "type": "string"
+        },
+        "src": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Match"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Allowed sources."
+        },
+        "to": {
+          "description": "Internal address to forward to.",
+          "format": "ipv4",
+          "type": "string"
+        },
+        "to_port": {
+          "description": "Internal port; default unchanged.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "proto",
+        "dport",
+        "to"
+      ],
+      "type": "object"
+    },
+    "LacpRate": {
+      "enum": [
+        "slow",
+        "fast"
+      ],
+      "type": "string"
+    },
+    "Logging": {
+      "additionalProperties": false,
+      "properties": {
+        "connections": {
+          "description": "Record connection start/end with NAT mappings.",
+          "type": "boolean"
+        },
+        "group": {
+          "description": "nflog group used for rule logging. Default 0.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "remote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteLog"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Management": {
+      "additionalProperties": false,
+      "properties": {
+        "anti_lockout": {
+          "description": "Always accept SSH and HTTPS from the management network to `self`.\nOnly an `admin` may turn this off.",
+          "type": "boolean"
+        },
+        "network": {
+          "description": "The network with role `management`.",
+          "type": "string"
+        },
+        "ssh": {
+          "$ref": "#/$defs/ManagementSsh",
+          "description": "SSH to the node."
+        }
+      },
+      "required": [
+        "network"
+      ],
+      "type": "object"
+    },
+    "ManagementSsh": {
+      "additionalProperties": false,
+      "properties": {
+        "password": {
+          "description": "Also accept the `admin` password (`sparewall passwd`) over SSH, not\nonly keys. Off by default: the password is the console's\nbreak-glass path.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Match": {
+      "anyOf": [
+        {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/MatchItem"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A match value: a scalar, a list, or an `@object` reference."
+    },
+    "MatchItem": {
+      "anyOf": [
+        {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "Metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/MetricsMode",
+          "description": "`external`: `/metrics` answers the management network without a\ntoken, for an external Prometheus. `off`: not served. (Without a\n`metrics` section it needs a token.) `local` (a local Prometheus)\nis not built yet and is rejected."
+        },
+        "retention": {
+          "description": "Local Prometheus retention, e.g. `15d`. Not built yet, with the\nlocal mode: rejected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
+    },
+    "MetricsMode": {
+      "enum": [
+        "external",
+        "local",
+        "off"
+      ],
+      "type": "string"
+    },
+    "Nat": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NatMode",
+          "description": "`masquerade`"
+        },
+        {
+          "description": "`{ snat: 203.0.113.5 }`",
+          "properties": {
+            "snat": {
+              "format": "ipv4",
+              "type": "string"
+            }
+          },
+          "required": [
+            "snat"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NatMode": {
+      "enum": [
+        "masquerade"
+      ],
+      "type": "string"
+    },
+    "Network": {
+      "additionalProperties": false,
+      "description": "One layer-2 segment.",
+      "properties": {
+        "addresses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Cidr"
+          },
+          "description": "Each node's own address on this network, in CIDR form.",
+          "type": "object"
+        },
+        "cake": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cake"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "WAN shaping with CAKE, e.g. `{ egress: 900mbit }`."
+        },
+        "dhcp_client": {
+          "description": "Obtain this node's address by DHCP (WAN or management only).",
+          "type": "boolean"
+        },
+        "dns": {
+          "description": "Upstream DNS servers learned statically on this network.",
+          "items": {
+            "format": "ipv4",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "extra_vips": {
+          "description": "More addresses that move with the gateway address (in its VRRP\ninstance in a pair; static standalone), for forwards and SNAT, e.g.\na mail server's public address. In the gateway address's subnet.",
+          "items": {
+            "$ref": "#/$defs/Cidr"
+          },
+          "type": "array"
+        },
+        "gateway": {
+          "description": "Upstream gateway (default route) for a static WAN or a management\nnetwork with its own upstream.",
+          "format": "ipv4",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lldp": {
+          "description": "Emit and receive LLDP on this network. Default true on untagged ports.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mtu": {
+          "description": "MTU of this network's interface.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "port": {
+          "description": "The port role this network rides on.",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/NetworkRole",
+          "description": "What the network is for. Default `service`."
+        },
+        "vip": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cidr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The gateway address clients use. Moved by VRRP in a pair, a plain\nstatic address on a standalone node."
+        },
+        "vlan": {
+          "description": "802.1Q VLAN ID; omit for the untagged network of a port.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "vrid": {
+          "description": "VRRP virtual router ID (1-255), unique across the deployment.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "port"
+      ],
+      "type": "object"
+    },
+    "NetworkRole": {
+      "enum": [
+        "service",
+        "wan",
+        "management",
+        "sync"
+      ],
+      "type": "string"
+    },
+    "Ntp": {
+      "additionalProperties": false,
+      "properties": {
+        "serve": {
+          "description": "Networks to serve time on.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "servers": {
+          "description": "Upstream servers or pools.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Object": {
+      "additionalProperties": false,
+      "description": "A named set: static elements, or a dynamic set filled by networkd.",
+      "properties": {
+        "dynamic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DynamicSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fill from a network's addresses instead (`ipv4` only)."
+        },
+        "elements": {
+          "description": "Static elements: addresses or prefixes for `ipv4`, ports or ranges for\n`port`.",
+          "items": {
+            "$ref": "#/$defs/MatchItem"
+          },
+          "type": "array"
+        },
+        "type": {
+          "$ref": "#/$defs/ObjectKind",
+          "description": "Element type."
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "ObjectKind": {
+      "enum": [
+        "ipv4",
+        "port"
+      ],
+      "type": "string"
+    },
+    "Offload": {
+      "additionalProperties": false,
+      "properties": {
+        "gro": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "gso": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "rx_checksum": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tso": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tx_checksum": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Policy": {
+      "additionalProperties": false,
+      "description": "Policy for traffic from one zone to another.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/Action",
+          "description": "What happens to traffic no rule matched."
+        },
+        "log": {
+          "description": "Log traffic that reaches the default action.",
+          "type": "boolean"
+        },
+        "nat": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Source NAT applied to this zone pair."
+        },
+        "rules": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Rule"
+          },
+          "description": "Named rules, evaluated by ascending `order`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "Port": {
+      "additionalProperties": false,
+      "description": "What a port role is bound to on one node.",
+      "properties": {
+        "bond": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Bond"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A bond of several NICs."
+        },
+        "mtu": {
+          "description": "MTU of the port (VLAN networks may set their own, no larger).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "nic": {
+          "description": "One NIC, matched by permanent MAC address (`52:54:00:aa:00:01`) or by\nudev path (`pci-0000:01:00.0`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Offload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "NIC offload overrides for misbehaving drivers."
+        }
+      },
+      "type": "object"
+    },
+    "RawAt": {
+      "anyOf": [
+        {
+          "properties": {
+            "pair": {
+              "description": "Zone pair, `\"from->to\"`.",
+              "type": "string"
+            },
+            "position": {
+              "$ref": "#/$defs/RawPosition"
+            }
+          },
+          "required": [
+            "pair",
+            "position"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "hook": {
+              "$ref": "#/$defs/RawHook"
+            }
+          },
+          "required": [
+            "hook"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RawEntry": {
+      "additionalProperties": false,
+      "description": "A raw nft statement placed at a hook point.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/RawAt",
+          "description": "Where the statement goes."
+        },
+        "nft": {
+          "description": "The nft statement, without a trailing comment.",
+          "type": "string"
+        },
+        "order": {
+          "description": "Position among raw entries at the same point.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at",
+        "order",
+        "nft"
+      ],
+      "type": "object"
+    },
+    "RawHook": {
+      "oneOf": [
+        {
+          "const": "prerouting-raw",
+          "description": "Prerouting at raw priority (`notrack`, early drops).",
+          "type": "string"
+        },
+        {
+          "const": "forward",
+          "description": "Forward, before zone dispatch (global blocks, MSS clamping).",
+          "type": "string"
+        },
+        {
+          "const": "input",
+          "description": "Input, before zone dispatch.",
+          "type": "string"
+        },
+        {
+          "const": "postrouting",
+          "description": "Postrouting at source-NAT priority (custom SNAT, marks).",
+          "type": "string"
+        }
+      ]
+    },
+    "RawPosition": {
+      "enum": [
+        "before",
+        "after"
+      ],
+      "type": "string"
+    },
+    "RemoteLog": {
+      "additionalProperties": false,
+      "properties": {
+        "destination": {
+          "description": "URL or `host:port`.",
+          "type": "string"
+        },
+        "protocol": {
+          "description": "`udp`, `tcp`, `relp` (syslog only).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "description": "`journal-upload` (the default). `syslog` is not built yet.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tls": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "destination"
+      ],
+      "type": "object"
+    },
+    "Reservation": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "format": "ipv4",
+          "type": "string"
+        },
+        "hostname": {
+          "description": "Hostname to hand out (and publish in local DNS).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mac": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mac",
+        "address"
+      ],
+      "type": "object"
+    },
+    "Rule": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/Action",
+          "description": "What to do with matching packets."
+        },
+        "comment": {
+          "description": "Free-form note, not rendered.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Match"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Destination port(s): a number, `low-high`, a list, or `@object`."
+        },
+        "dst": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Match"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Destination: an address, a prefix, a list of them, or `@object`."
+        },
+        "icmp_type": {
+          "description": "ICMP type names, e.g. `echo-request` (proto `icmp`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "description": "Rate limit, e.g. `10/second` or `100/minute burst 20`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "log": {
+          "description": "Log matching packets.",
+          "type": "boolean"
+        },
+        "order": {
+          "description": "Position within the zone pair; leave gaps (100, 200, ...).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "proto": {
+          "description": "`tcp`, `udp`, `icmp` or another protocol name nft knows.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Match"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Source port(s): a number, `low-high`, a list, or `@object`."
+        },
+        "src": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Match"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Source: an address, a prefix, a list of them, or `@object`."
+        }
+      },
+      "required": [
+        "order",
+        "action"
+      ],
+      "type": "object"
+    },
+    "Tls": {
+      "additionalProperties": false,
+      "properties": {
+        "certificates": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Certificate"
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "UpdateMode": {
+      "enum": [
+        "manual",
+        "windowed"
+      ],
+      "type": "string"
+    },
+    "Updates": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "description": "`stable` or `testing`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UpdateMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`manual` (the default): upgrades run when asked for, with\n`sparewall upgrade`. `windowed` (automatic upgrades in `window`) is\nnot built yet and is rejected."
+        },
+        "window": {
+          "description": "Maintenance window as a systemd calendar expression. Not built yet,\nwith the windowed mode: rejected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Vpn": {
+      "additionalProperties": false,
+      "properties": {
+        "addresses": {
+          "description": "Tunnel addresses of the firewall.",
+          "items": {
+            "$ref": "#/$defs/Cidr"
+          },
+          "type": "array"
+        },
+        "client_allowed_ips": {
+          "description": "Networks routed through the tunnel in client configs; default all.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dns": {
+          "description": "DNS servers pushed in client configs.",
+          "items": {
+            "format": "ipv4",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "endpoint": {
+          "description": "Public name or address clients connect to.",
+          "type": "string"
+        },
+        "extra_ports": {
+          "description": "More UDP ports clients may use from networks that block the listen\nport, e.g. `[53, 443]`: redirected to it on the WAN gateway address.",
+          "items": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "listen_port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/VpnPeer"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "zone": {
+          "description": "The zone the tunnel interface belongs to.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "listen_port",
+        "endpoint",
+        "addresses",
+        "zone"
+      ],
+      "type": "object"
+    },
+    "VpnPeer": {
+      "additionalProperties": false,
+      "properties": {
+        "addresses": {
+          "items": {
+            "$ref": "#/$defs/Cidr"
+          },
+          "type": "array"
+        },
+        "endpoint": {
+          "description": "Static endpoint, for site-to-site peers.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preshared_key": {
+          "description": "WireGuard preshared key, a cluster secret: `secret:<name>`. The\nclient must be configured with the same key (`wg genpsk`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "public_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "public_key",
+        "addresses"
+      ],
+      "type": "object"
+    },
+    "Vrrp": {
+      "additionalProperties": false,
+      "properties": {
+        "advert_interval_cs": {
+          "description": "Advertisement interval in centiseconds (VRRPv3). Default 100 (1 s).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "preempt_delay_s": {
+          "description": "Fail back by itself: the node with the higher priority takes the\ngateway addresses back once it has been up and eligible for this\nmany seconds (1-1000). Unset (the default), the pair never\npreempts, so it cannot bounce while that node flaps; move the\naddresses with `sparewall failover` instead. The delay is then the\nonly protection against flapping.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "priority": {
+          "additionalProperties": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "VRRP priority per node; give the larger node the higher value.",
+          "type": "object"
+        },
+        "unicast": {
+          "description": "Send adverts unicast to the peer instead of multicast.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "use_vmac": {
+          "description": "Use VRRP virtual MAC addresses.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Zone": {
+      "additionalProperties": false,
+      "properties": {
+        "networks": {
+          "default": [],
+          "description": "Member networks.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$id": "https://sparewall.org/schema/v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A whole deployment: one node or an HA pair.",
+  "properties": {
+    "backup": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Backup"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Scheduled backups of the node bundle."
+    },
+    "cluster": {
+      "$ref": "#/$defs/Cluster",
+      "description": "Node names and pair-wide settings."
+    },
+    "dhcp": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Dhcp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "DHCPv4 service per network."
+    },
+    "dns": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Dns"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Recursive DNS for the served networks."
+    },
+    "forwards": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Forward"
+      },
+      "description": "Inbound port forwards (DNAT).",
+      "type": "object"
+    },
+    "logging": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Logging"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Rule-log defaults and remote forwarding."
+    },
+    "management": {
+      "$ref": "#/$defs/Management",
+      "description": "Which network is management, and the anti-lockout switch."
+    },
+    "metrics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Metrics"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Metrics collection."
+    },
+    "networks": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Network"
+      },
+      "description": "Layer-2 segments, keyed by network name (also the interface name).",
+      "type": "object"
+    },
+    "ntp": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ntp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Time service."
+    },
+    "objects": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Object"
+      },
+      "description": "Named address and port sets, referenced from rules as `@name`.",
+      "type": "object"
+    },
+    "policy": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Policy"
+      },
+      "description": "Zone-pair policies keyed by `\"from->to\"`.",
+      "type": "object"
+    },
+    "ports": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "$ref": "#/$defs/Port"
+        },
+        "type": "object"
+      },
+      "description": "Per node: port role name to the hardware it is bound to.",
+      "type": "object"
+    },
+    "provider_options": {
+      "additionalProperties": true,
+      "description": "Per-provider passthrough settings, keyed by provider name. Not\nbuilt yet: any entry is rejected.",
+      "type": "object"
+    },
+    "raw": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RawEntry"
+      },
+      "description": "Raw nft statements placed at named hook points.",
+      "type": "object"
+    },
+    "schema": {
+      "description": "Schema version of this document.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "tls": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Tls"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Certificates."
+    },
+    "updates": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Updates"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "OS image update policy."
+    },
+    "vpn": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Vpn"
+      },
+      "description": "Remote-access WireGuard instances.",
+      "type": "object"
+    },
+    "zones": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Zone"
+      },
+      "description": "Named groups of networks. `self` is built in and cannot be defined.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "cluster",
+    "management"
+  ],
+  "title": "Sparewall configuration document",
+  "type": "object"
+}

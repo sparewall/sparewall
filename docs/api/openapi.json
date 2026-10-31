@@ -142,7 +142,7 @@
             "type": "object"
           },
           "schema": {
-            "description": "Schema version of this document.",
+            "description": "The oldest schema revision that reads this document: the newest\nrevision among the fields it uses. Set when the document is\napplied; a release refuses one newer than it reads.",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
@@ -873,7 +873,8 @@
           },
           "web": {
             "description": "Serve the web UI and the HTTP API (`sparewall-httpd`) on the HTTPS\nport, next to the health endpoints. Off by default; reached only\nwhere HTTPS is, the management network.",
-            "type": "boolean"
+            "type": "boolean",
+            "x-since": 2
           }
         },
         "required": [
