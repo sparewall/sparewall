@@ -399,13 +399,31 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     policies.sort_by_key(|(a, b, _, _)| (*a, *b));
 
     // --- prerouting -----------------------------------------------------------
+    // VRRP adverts are never tracked, in either direction (#174): the
+    // node's own would otherwise match the WAN egress SNAT and leave with
+    // the gateway address as their source, which their checksum covers, so
+    // the peer rejects them. A tracked flow keeps its NAT for as long as
+    // adverts refresh it, so excluding them from the SNAT alone would not
+    // undo it on a running pair; an untracked packet is never NATed. Input
+    // accepts them by protocol (`infra:vrrp`), not by state.
+    let vrrp_notrack = if pair {
+        "ip protocol vrrp notrack comment \"infra:vrrp-notrack\"\n"
+    } else {
+        ""
+    };
     sc.chain(
         "prerouting_raw",
         format!(
-            "type filter hook prerouting priority raw; policy accept;\n{}",
+            "type filter hook prerouting priority raw; policy accept;\n{vrrp_notrack}{}",
             raw_at_hook(doc, RawHook::PreroutingRaw)
         ),
     );
+    if pair {
+        sc.chain(
+            "output_raw",
+            format!("type filter hook output priority raw; policy accept;\n{vrrp_notrack}"),
+        );
+    }
 
     let mut dnat = String::from("type nat hook prerouting priority dstnat; policy accept;\n");
     for (name, f) in &doc.forwards {

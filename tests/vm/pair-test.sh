@@ -131,6 +131,22 @@ check_wan() { # master backup
 wait_for 30 "fw1 reaches the outside" egress fw1
 check_wan fw1 fw2
 
+log "VRRP adverts are untracked, so the WAN egress SNAT leaves them alone (#174)"
+# Rewritten, an advert carries the gateway address as its source, which
+# its checksum covers: the standby rejects every one on the WAN instance.
+for n in fw1 fw2; do
+    # A failed query is a failure, not an empty table.
+    tracked=$(at "$n" 'sudo conntrack -L -p 112 2>/dev/null') \
+        || fail "cannot list $n's conntrack table"
+    [ -z "$tracked" ] || fail "$n tracks VRRP: $tracked"
+done
+at fw2 'sudo journalctl -b -u keepalived --no-pager' > fw2-keepalived.log \
+    || fail "cannot read fw2's keepalived journal"
+grep -q 'Entering BACKUP STATE' fw2-keepalived.log \
+    || fail "fw2's keepalived journal has no BACKUP transition: $(tail -5 fw2-keepalived.log)"
+! grep -q 'Invalid VRRPv3 checksum' fw2-keepalived.log \
+    || fail "the standby rejects the master's adverts: $(grep -m3 'Invalid VRRPv3' fw2-keepalived.log)"
+
 # Staging beside another gateway (#51): held, the pair runs and stays in
 # sync but claims no gateway address and offers no lease; released, it
 # takes over. Twice, so a hold after a release is covered too.

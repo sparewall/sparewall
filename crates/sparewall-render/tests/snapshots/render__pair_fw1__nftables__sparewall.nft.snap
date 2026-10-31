@@ -12,7 +12,12 @@ table inet sparewall {
 	}
 	chain prerouting_raw {
 		type filter hook prerouting priority raw; policy accept;
+		ip protocol vrrp notrack comment "infra:vrrp-notrack"
 		ip protocol vrrp notrack comment "raw:notrack-vrrp"
+	}
+	chain output_raw {
+		type filter hook output priority raw; policy accept;
+		ip protocol vrrp notrack comment "infra:vrrp-notrack"
 	}
 	chain prerouting_nat {
 		type nat hook prerouting priority dstnat; policy accept;

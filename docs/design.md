@@ -535,7 +535,7 @@ A pair does not need a public address per node. With a static block, each node h
 
 - The public addresses are VRRP addresses held by the master, and the public default route is a keepalived `virtual_routes` entry (on-link, metric 100) in the WAN instance, so it moves with them.
 - Both nodes have a default route via the peer's private address, metric 200 (below a management network's 1024): only the backup uses it, so its own traffic (upgrades, ACME, NTP, backups) leaves through the master. The master's forward chain accepts its peer's traffic on the WAN interface (`infra:peer-egress`).
-- In postrouting, traffic from the private subnet leaving the WAN for anything outside it, by a next hop other than the peer, is SNATed to the gateway address (`infra:wan-egress`). That is the master's own traffic and the backup's it forwards; on the backup the next hop is always the peer, so nothing matches there.
+- In postrouting, traffic from the private subnet leaving the WAN for anything outside it, by a next hop other than the peer, is SNATed to the gateway address (`infra:wan-egress`). That is the master's own traffic and the backup's it forwards; on the backup the next hop is always the peer, so nothing matches there. VRRP adverts are never tracked (`infra:vrrp-notrack`, at raw priority in prerouting and output), so this SNAT never rewrites a node's own adverts, whose checksum covers their source address.
 - Reach probes (#41) use the private subnet: the ISP's gateway cannot answer the backup, so a WAN cut on one side is found only through other hosts on the private subnet, and otherwise only degrades health.
 
 With a single DHCP lease (one public address, leased to one MAC), the WAN has `dhcp_client: true`, private `addresses` and a `vrid`, and no `vip`:
