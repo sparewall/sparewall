@@ -180,6 +180,40 @@ pub fn offer(running: &str, booted_digest: Option<&str>, remote: &Result<Remote,
     }
 }
 
+/// Never backwards unless asked: an older release may not read the
+/// configuration (#168). Compared with this node's version, so only the
+/// node that runs the upgrade asks. A target whose version cannot be read
+/// goes ahead, as before versions were compared.
+pub fn older_refusal(
+    running: &str,
+    target: &str,
+    remote: &Result<Remote, String>,
+    allow_downgrade: bool,
+) -> Option<String> {
+    let r = remote.as_ref().ok()?;
+    (!allow_downgrade && compare_versions(running, r.version.as_deref()) == Compared::Older).then(|| {
+        format!(
+            "{target} is {}, older than this node's {running}: an older release may not read this configuration; \
+             sparewall upgrade --allow-downgrade moves to it anyway",
+            r.version.as_deref().unwrap_or_default()
+        )
+    })
+}
+
+async fn refuse_older(target: &str, allow_downgrade: bool) -> Result<(), String> {
+    if allow_downgrade {
+        return Ok(());
+    }
+    let t = target.to_string();
+    let remote = tokio::task::spawn_blocking(move || inspect(&t))
+        .await
+        .map_err(|e| e.to_string())?;
+    match older_refusal(sparewall_core::VERSION, target, &remote, allow_downgrade) {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
 /// A tag that names one build or release (`sha-…`, `0.3.1`), not a
 /// channel: an image installed from release media tracks one, and it never
 /// moves, so it does not count as the node's channel (#170).
@@ -353,26 +387,8 @@ pub async fn plan(
         doc_channel.as_deref(),
         tracked.as_deref(),
     );
-    // Never backwards unless asked: an older release may not read the
-    // configuration (#168). A target whose version cannot be read goes
-    // ahead, as before versions were compared.
-    if !allow_downgrade {
-        let t = target.clone();
-        let remote = tokio::task::spawn_blocking(move || inspect(&t))
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Ok(r) = &remote
-            && compare_versions(sparewall_core::VERSION, r.version.as_deref()) == Compared::Older
-        {
-            return Err(format!(
-                "{target} is {}, older than this node's {}: an older release may not read this configuration; \
-                 sparewall upgrade --allow-downgrade moves to it anyway",
-                r.version.as_deref().unwrap_or_default(),
-                sparewall_core::VERSION
-            ));
-        }
-    }
     let Some((own, peer_addr, peer)) = doc.as_ref().and_then(|d| tunnel_addrs(d, &node)) else {
+        refuse_older(&target, allow_downgrade).await?;
         return Ok(Planned::Run {
             target: target.clone(),
             peer: None,
@@ -403,6 +419,9 @@ pub async fn plan(
             ));
         }
     }
+    // Only where this node runs it: a backup forwards to the master above,
+    // which compares with its own version (they may differ mid-upgrade).
+    refuse_older(&target, allow_downgrade).await?;
     Ok(Planned::Run {
         target: target.clone(),
         peer: Some(link),
@@ -763,6 +782,36 @@ mod tests {
         assert_eq!(
             compare_versions("0.3.1", Some("not a version")),
             Compared::Unknown
+        );
+    }
+
+    #[test]
+    fn an_older_target_is_refused_unless_asked() {
+        let at = |v: &str| -> Result<Remote, String> {
+            Ok(Remote {
+                digest: Some("sha256:x".into()),
+                version: Some(v.into()),
+            })
+        };
+        let e = older_refusal("0.3.2", "r:stable", &at("0.3.1"), false).unwrap();
+        assert!(
+            e.contains("r:stable is 0.3.1, older than this node's 0.3.2"),
+            "{e}"
+        );
+        assert_eq!(older_refusal("0.3.2", "r:stable", &at("0.3.1"), true), None);
+        assert_eq!(
+            older_refusal("0.3.1", "r:stable", &at("0.3.2"), false),
+            None
+        );
+        // Mid-upgrade the nodes differ: the master, which runs it, compares
+        // with its own version, so what a backup runs does not matter.
+        assert_eq!(
+            older_refusal("0.3.2", "r:stable", &at("0.3.2"), false),
+            None
+        );
+        assert_eq!(
+            older_refusal("0.3.2", "r:x", &Err("no route".into()), false),
+            None
         );
     }
 
