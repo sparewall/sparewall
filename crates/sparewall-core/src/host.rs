@@ -406,7 +406,17 @@ pub trait UpgradeHost: Send + Sync {
     /// Stage `image` for the next boot. Returns the staged image, or
     /// `None` when the node already runs the newest one.
     fn stage(&self, image: &str) -> Result<Option<String>, String>;
+    /// Download `image` and stage it without queueing it: a reboot
+    /// discards it until [`Self::apply_downloaded`] queues it. Returns the
+    /// downloaded image, or `None` when the node already runs the newest
+    /// one (#175).
+    fn download(&self, image: &str) -> Result<Option<String>, String>;
+    /// Queue what [`Self::download`] staged for the next boot, without the
+    /// network.
     /// Reboot in a few seconds, after the caller's reply has gone out.
+    fn apply_downloaded(&self) -> Result<(), String>;
+    /// The booted image as `reference@digest`, if bootc says.
+    fn booted(&self) -> Option<String>;
     fn reboot_soon(&self) -> Result<(), String>;
     /// Queue keepalived's stop without waiting for the job.
     fn stop_keepalived(&self) -> Result<(), String>;
@@ -443,14 +453,84 @@ pub fn stage_args<'a>(status: Option<&serde_json::Value>, image: &'a str) -> Vec
     }
 }
 
+/// The staged image as `reference@digest`, if one is staged.
+fn staged_image(image: &str) -> Result<Option<String>, String> {
+    let st = bootc_status().ok_or("cannot read bootc status")?;
+    let staged = &st["status"]["staged"]["image"];
+    Ok(staged["imageDigest"]
+        .as_str()
+        .map(|d| format!("{}@{d}", staged["image"]["image"].as_str().unwrap_or(image))))
+}
+
+/// What a download of `image` left staged, from `bootc status` and the
+/// download's own output: `None` if nothing is staged (the node runs the
+/// newest image). A deployment staged before is not this download unless
+/// it is the image bootc just resolved: one of another image, or of this
+/// tag at an older digest (tags move), would be rebooted into, so it is
+/// refused (#175). That holds for a download-only deployment too: one left
+/// by an earlier run stays when bootc finds nothing new.
+pub fn downloaded(
+    status: &serde_json::Value,
+    image: &str,
+    output: &str,
+) -> Result<Option<String>, String> {
+    let staged = &status["status"]["staged"];
+    if staged.is_null() {
+        return Ok(None);
+    }
+    let reference = staged["image"]["image"]["image"]
+        .as_str()
+        .unwrap_or_default();
+    let digest = staged["image"]["imageDigest"].as_str().unwrap_or_default();
+    if reference != image || digest.is_empty() {
+        return Err(format!(
+            "another deployment is staged ({}@{}); remove it (ostree admin undeploy 0) or reboot into it first",
+            if reference.is_empty() {
+                "unknown"
+            } else {
+                reference
+            },
+            if digest.is_empty() { "?" } else { digest }
+        ));
+    }
+    if !output.contains(digest) {
+        return Err(format!(
+            "a deployment of {reference}@{digest} is already staged, not the image just resolved; \
+             remove it (ostree admin undeploy 0) or reboot into it first"
+        ));
+    }
+    Ok(Some(format!("{reference}@{digest}")))
+}
+
 impl UpgradeHost for HostUpgrade {
     fn stage(&self, image: &str) -> Result<Option<String>, String> {
         host("bootc", &stage_args(bootc_status().as_ref(), image))?;
-        let st = bootc_status().ok_or("cannot read bootc status")?;
-        let staged = &st["status"]["staged"]["image"];
-        Ok(staged["imageDigest"]
-            .as_str()
-            .map(|d| format!("{}@{d}", staged["image"]["image"].as_str().unwrap_or(image))))
+        staged_image(image)
+    }
+
+    fn download(&self, image: &str) -> Result<Option<String>, String> {
+        let mut args = stage_args(bootc_status().as_ref(), image);
+        args.insert(1, "--download-only");
+        let out = host("bootc", &args)?;
+        downloaded(
+            &bootc_status().ok_or("cannot read bootc status")?,
+            image,
+            &out,
+        )
+    }
+
+    fn apply_downloaded(&self) -> Result<(), String> {
+        host("bootc", &["upgrade", "--from-downloaded"]).map(|_| ())
+    }
+
+    fn booted(&self) -> Option<String> {
+        let st = bootc_status()?;
+        let img = &st["status"]["booted"]["image"];
+        Some(format!(
+            "{}@{}",
+            img["image"]["image"].as_str().unwrap_or_default(),
+            img["imageDigest"].as_str()?
+        ))
     }
 
     fn reboot_soon(&self) -> Result<(), String> {
@@ -492,6 +572,61 @@ mod tests {
 
     fn status(image: &str, signature: &str) -> serde_json::Value {
         json!({"spec": {"image": {"image": image, "signature": signature, "transport": "registry"}}})
+    }
+
+    fn staged(image: &str, digest: &str, download_only: bool) -> serde_json::Value {
+        json!({"status": {"staged": {
+            "image": {"image": {"image": image, "transport": "registry"}, "imageDigest": digest},
+            "downloadOnly": download_only,
+        }}})
+    }
+
+    /// #175: a download is what is staged for the image asked for. Nothing
+    /// staged means nothing new; a deployment of another image, staged
+    /// before, is refused rather than rebooted into.
+    #[test]
+    fn a_download_is_the_staged_deployment_of_that_image() {
+        let got = "Staged but not queued for next boot: ostree-image-signed:docker://x\n  Digest: sha256:new";
+        let unchanged =
+            "No changes in ostree-image-signed:docker://x => sha256:new\nNo update available.";
+        assert_eq!(
+            downloaded(&json!({"status": {"staged": null}}), STABLE, unchanged),
+            Ok(None)
+        );
+        assert_eq!(
+            downloaded(&staged(STABLE, "sha256:new", true), STABLE, got),
+            Ok(Some(format!("{STABLE}@sha256:new")))
+        );
+        // Queued already, by an earlier run or by hand, at the digest bootc
+        // just resolved: applying it changes nothing, so it is this one.
+        assert_eq!(
+            downloaded(&staged(STABLE, "sha256:new", false), STABLE, unchanged),
+            Ok(Some(format!("{STABLE}@sha256:new")))
+        );
+        // At an older digest of the same tag, queued or left downloaded by
+        // an earlier run: refused.
+        for download_only in [false, true] {
+            let e = downloaded(
+                &staged(STABLE, "sha256:old", download_only),
+                STABLE,
+                unchanged,
+            )
+            .unwrap_err();
+            assert!(e.contains("sha256:old is already staged"), "{e}");
+        }
+        // Of another image: refused.
+        let e = downloaded(
+            &staged("ghcr.io/sparewall/sparewall:testing", "sha256:other", false),
+            STABLE,
+            got,
+        )
+        .unwrap_err();
+        assert!(
+            e.contains(
+                "another deployment is staged (ghcr.io/sparewall/sparewall:testing@sha256:other)"
+            ),
+            "{e}"
+        );
     }
 
     #[test]

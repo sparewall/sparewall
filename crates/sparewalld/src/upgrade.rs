@@ -155,6 +155,9 @@ pub struct Timing {
     /// For the peer to take over the gateway addresses.
     pub master_timeout: Duration,
     pub master_poll: Duration,
+    /// Tries at downloading this node's image, and the wait between them.
+    pub download_tries: u32,
+    pub download_retry: Duration,
 }
 
 pub const TIMING: Timing = Timing {
@@ -165,6 +168,8 @@ pub const TIMING: Timing = Timing {
     stop_poll: Duration::from_millis(500),
     master_timeout: Duration::from_secs(60),
     master_poll: Duration::from_secs(2),
+    download_tries: 3,
+    download_retry: Duration::from_secs(15),
 };
 
 fn event(events: &broadcast::Sender<Value>, step: &str, detail: impl Into<String>) {
@@ -247,10 +252,11 @@ pub async fn plan(
         target: target.clone(),
         peer: Some(link),
         steps: vec![
+            format!("download {target} on {node}, without applying it"),
             format!("stage {target} on {peer} (standby) and reboot it"),
             format!("wait for {peer} to return healthy and in sync"),
-            format!("hand the gateway addresses to {peer}"),
-            format!("stage {target} on {node} and reboot it"),
+            format!("hand the gateway addresses to {peer}, unless {node} already runs {target}"),
+            format!("apply the downloaded image on {node} and reboot it"),
         ],
     })
 }
@@ -422,30 +428,66 @@ pub async fn run_with<P: UpgradePeer>(
 ) -> Result<(), String> {
     let mut handed_over = false;
     let r = async {
-        if let Some(p) = peer {
-            upgrade_peer(p, ours, target, events, t).await?;
+        let Some(p) = peer else {
+            event(events, "stage", format!("staging {target} on this node"));
+            let image = target.to_string();
+            if blocking(host, move |h| h.stage(&image)).await?.is_none() {
+                event(events, "done", "already running the newest image");
+                return Ok(());
+            }
+            event(events, "reboot", "rebooting into the new image");
+            return blocking(host, |h| h.reboot_soon()).await;
+        };
+        // While this node still has its own WAN: once it hands over, its
+        // traffic leaves through the peer, which may not reach out yet
+        // (#175, #176). Nothing after the handover needs the network.
+        event(
+            events,
+            "download",
+            format!("downloading {target} on this node, without applying it"),
+        );
+        let ours_new = download(host, target, t).await?;
+        if ours_new.is_none() {
+            // Nothing new here: if the peer runs the same image, so is
+            // there. References may differ (a channel, a build tag); the
+            // digest says.
+            let digest = |i: &str| i.rsplit_once('@').map_or(i, |(_, d)| d).to_string();
+            let booted = blocking(host, |h| Ok(h.booted())).await?;
+            let peer_image = p.hello().await?.image;
+            if let (Some(b), Some(pi)) = (&booted, &peer_image)
+                && digest(b) == digest(pi)
+            {
+                event(events, "done", "both nodes already run the newest image");
+                return Ok(());
+            }
+        }
+        upgrade_peer(p, ours, target, events, t).await?;
+        let Some(downloaded) = ours_new else {
+            // Already on the target (a run that stopped after the
+            // handover, say): only the peer needed it.
             event(
                 events,
-                "failover",
-                "stopping keepalived to hand over the gateway addresses",
+                "done",
+                "this node already runs the newest image and keeps the gateway addresses",
             );
-            handed_over = true;
-            stop_keepalived(host, t).await?;
-            wait_peer_master(p, t).await?;
-        }
-        event(events, "stage", format!("staging {target} on this node"));
-        let image = target.to_string();
-        let staged = blocking(host, move |h| h.stage(&image)).await?;
-        match staged {
-            None if peer.is_none() => {
-                event(events, "done", "already running the newest image");
-                Ok(())
-            }
-            _ => {
-                event(events, "reboot", "rebooting into the new image");
-                blocking(host, |h| h.reboot_soon()).await
-            }
-        }
+            return Ok(());
+        };
+        event(
+            events,
+            "failover",
+            "stopping keepalived to hand over the gateway addresses",
+        );
+        handed_over = true;
+        stop_keepalived(host, t).await?;
+        wait_peer_master(p, t).await?;
+        event(
+            events,
+            "stage",
+            format!("applying {downloaded}, downloaded earlier, on this node"),
+        );
+        blocking(host, |h| h.apply_downloaded()).await?;
+        event(events, "reboot", "rebooting into the new image");
+        blocking(host, |h| h.reboot_soon()).await
     }
     .await;
     if let Err(e) = &r {
@@ -455,6 +497,30 @@ pub async fn run_with<P: UpgradePeer>(
         }
     }
     r
+}
+
+/// Download this node's image, a few times before giving up: nothing has
+/// moved yet, so a failure only stops the run.
+async fn download(
+    host: &Arc<dyn UpgradeHost>,
+    target: &str,
+    t: &Timing,
+) -> Result<Option<String>, String> {
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let image = target.to_string();
+        match blocking(host, move |h| h.download(&image)).await {
+            Ok(r) => return Ok(r),
+            Err(e) if tries >= t.download_tries => {
+                return Err(format!("cannot download {target} on this node: {e}"));
+            }
+            Err(e) => {
+                tracing::warn!(tries, error = %e, "downloading the image failed; retrying");
+                tokio::time::sleep(t.download_retry).await;
+            }
+        }
+    }
 }
 
 async fn upgrade_peer<P: UpgradePeer>(
@@ -573,6 +639,11 @@ mod tests {
     #[derive(Default)]
     struct FakeHost {
         stage: Option<Result<Option<String>, String>>,
+        download: Option<Result<Option<String>, String>>,
+        /// Downloads that fail before one goes through.
+        download_fails: Mutex<usize>,
+        apply_fails: bool,
+        booted: Option<&'static str>,
         reboot_fails: bool,
         stop_fails: bool,
         /// `keepalived_state` answers, the last repeating.
@@ -593,6 +664,27 @@ mod tests {
             self.stage
                 .clone()
                 .unwrap_or_else(|| Ok(Some(format!("{image}@sha256:new"))))
+        }
+        fn download(&self, image: &str) -> Result<Option<String>, String> {
+            self.note(&format!("download {image}"));
+            let mut fails = self.download_fails.lock().unwrap();
+            if *fails > 0 {
+                *fails -= 1;
+                return Err("connect: no route to host".into());
+            }
+            self.download
+                .clone()
+                .unwrap_or_else(|| Ok(Some(format!("{image}@sha256:new"))))
+        }
+        fn booted(&self) -> Option<String> {
+            self.booted.map(String::from)
+        }
+        fn apply_downloaded(&self) -> Result<(), String> {
+            self.note("apply downloaded");
+            if self.apply_fails {
+                return Err("no staged deployment".into());
+            }
+            Ok(())
         }
         fn reboot_soon(&self) -> Result<(), String> {
             self.note("reboot");
@@ -685,6 +777,8 @@ mod tests {
         stop_poll: Duration::from_millis(1),
         master_timeout: Duration::from_millis(20),
         master_poll: Duration::from_millis(1),
+        download_tries: 3,
+        download_retry: Duration::from_millis(1),
     };
 
     async fn upgrade(host: FakeHost, p: Option<&FakePeer>) -> (Result<(), String>, Vec<String>) {
@@ -752,9 +846,10 @@ mod tests {
         assert_eq!(r, Err("systemd-run failed".into()));
     }
 
-    /// #12: in a pair, the master hands over only once the peer is back
-    /// healthy and in sync on the new image, stages only once the peer is
-    /// master, and takes the addresses back if a later gate fails.
+    /// #12, #175: in a pair, the master downloads its own image first, hands
+    /// over only once the peer is back healthy and in sync on the new
+    /// image, applies the download only once the peer is master, and takes
+    /// the addresses back if a later gate fails.
     #[tokio::test]
     async fn pair_upgrade_gates() {
         // All gates pass. A lost wait on the stop does not matter (#29).
@@ -769,7 +864,15 @@ mod tests {
         )
         .await;
         assert_eq!(r, Ok(()));
-        assert_eq!(log, ["stop keepalived", "stage reg/sw:next", "reboot"]);
+        assert_eq!(
+            log,
+            [
+                "download reg/sw:next",
+                "stop keepalived",
+                "apply downloaded",
+                "reboot"
+            ]
+        );
         assert_eq!(*p.log.lock().unwrap(), ["upgrade reg/sw:next"]);
 
         // Gates before the handover: nothing happens here.
@@ -824,7 +927,7 @@ mod tests {
         ] {
             let (r, log) = upgrade(FakeHost::default(), Some(&p)).await;
             let e = r.expect_err(case);
-            assert!(log.is_empty(), "{case}: {log:?}");
+            assert_eq!(log, ["download reg/sw:next"], "{case}");
             match case {
                 "no image" => assert!(e.contains("does not report its image"), "{e}"),
                 "peer rejects" => assert!(
@@ -850,7 +953,14 @@ mod tests {
             e.contains("keepalived did not stop") && e.contains("D-Bus"),
             "{e}"
         );
-        assert_eq!(log, ["stop keepalived", "start keepalived"]);
+        assert_eq!(
+            log,
+            [
+                "download reg/sw:next",
+                "stop keepalived",
+                "start keepalived"
+            ]
+        );
 
         // The peer never becomes master.
         let p = peer(
@@ -862,33 +972,116 @@ mod tests {
         );
         let (r, log) = upgrade(FakeHost::default(), Some(&p)).await;
         assert_eq!(r, Err("the peer did not become master".into()));
-        assert_eq!(log, ["stop keepalived", "start keepalived"]);
+        assert_eq!(
+            log,
+            [
+                "download reg/sw:next",
+                "stop keepalived",
+                "start keepalived"
+            ]
+        );
 
-        // Staging here fails after the handover: take the addresses back.
+        // Applying the download fails after the handover: take the
+        // addresses back.
         let (r, log) = upgrade(
             FakeHost {
-                stage: Some(Err("no space".into())),
+                apply_fails: true,
                 ..Default::default()
             },
             Some(&good_peer()),
         )
         .await;
-        assert_eq!(r, Err("no space".into()));
+        assert_eq!(r, Err("no staged deployment".into()));
         assert_eq!(
             log,
-            ["stop keepalived", "stage reg/sw:next", "start keepalived"]
+            [
+                "download reg/sw:next",
+                "stop keepalived",
+                "apply downloaded",
+                "start keepalived"
+            ]
         );
+    }
 
-        // In a pair, an image already staged still reboots to finish.
+    /// #175: the master downloads its own image before anything moves. A
+    /// download that keeps failing stops the run there, with the peer
+    /// untouched; one that fails at first is retried.
+    #[tokio::test]
+    async fn the_master_downloads_before_anything_moves() {
+        let p = good_peer();
         let (r, log) = upgrade(
             FakeHost {
-                stage: Some(Ok(None)),
+                download_fails: Mutex::new(3),
                 ..Default::default()
             },
-            Some(&good_peer()),
+            Some(&p),
+        )
+        .await;
+        let e = r.unwrap_err();
+        assert!(
+            e.contains("cannot download reg/sw:next on this node: connect: no route to host"),
+            "{e}"
+        );
+        assert_eq!(log, ["download reg/sw:next"; 3]);
+        assert!(p.log.lock().unwrap().is_empty());
+
+        let p = good_peer();
+        let (r, log) = upgrade(
+            FakeHost {
+                download_fails: Mutex::new(2),
+                ..Default::default()
+            },
+            Some(&p),
         )
         .await;
         assert_eq!(r, Ok(()));
-        assert_eq!(log, ["stop keepalived", "stage reg/sw:next", "reboot"]);
+        assert_eq!(
+            log,
+            [
+                "download reg/sw:next",
+                "download reg/sw:next",
+                "download reg/sw:next",
+                "stop keepalived",
+                "apply downloaded",
+                "reboot"
+            ]
+        );
+    }
+
+    /// #175: a master already on the target (a run that stopped after
+    /// its handover, say) upgrades the peer and keeps the addresses: no
+    /// handover, no reboot.
+    #[tokio::test]
+    async fn a_master_on_the_target_only_upgrades_the_peer() {
+        let p = good_peer();
+        let (r, log) = upgrade(
+            FakeHost {
+                download: Some(Ok(None)),
+                ..Default::default()
+            },
+            Some(&p),
+        )
+        .await;
+        assert_eq!(r, Ok(()));
+        assert_eq!(log, ["download reg/sw:next"]);
+        assert_eq!(*p.log.lock().unwrap(), ["upgrade reg/sw:next"]);
+
+        // Both already run it, under different references: nothing to do.
+        let p = peer(
+            vec![hello("reg/sw:stable@sha256:new", "ok", "cfg", "BACKUP")],
+            Ok(()),
+        );
+        let (r, log) = upgrade(
+            FakeHost {
+                download: Some(Ok(None)),
+                booted: Some("reg/sw:next@sha256:new"),
+                ..Default::default()
+            },
+            Some(&p),
+        )
+        .await;
+        assert_eq!(r, Ok(()));
+        assert_eq!(log, ["download reg/sw:next"]);
+        assert!(p.log.lock().unwrap().is_empty());
     }
 }
