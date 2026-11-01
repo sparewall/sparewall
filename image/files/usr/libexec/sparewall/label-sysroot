@@ -41,10 +41,14 @@ record() {
     # On a first boot this runs before tmpfiles creates the directory:
     # create it as tmpfiles would, labelled for the coordinator, which
     # starts next.
-    if mkdir -p -m 0711 "${stamp%/*}" && printf '%s\n' "$booted" > "$stamp.tmp" \
-        && mv "$stamp.tmp" "$stamp" && restorecon "${stamp%/*}" "$stamp"; then
+    # The stamp is labelled before the rename puts it in place, so a
+    # failure anywhere leaves no stamp and the next boot walks again.
+    if mkdir -p -m 0711 "${stamp%/*}" && restorecon "${stamp%/*}" \
+        && printf '%s\n' "$booted" > "$stamp.tmp" && restorecon "$stamp.tmp" \
+        && mv "$stamp.tmp" "$stamp"; then
         :
     else
+        rm -f "$stamp.tmp"
         echo "cannot record $booted in $stamp; the next boot scans again"
     fi
 }
