@@ -1,6 +1,7 @@
 enable sparewall-early.service
 enable sparewall-label-boot.service
 enable sparewall-label-sysroot.service
+enable sparewall-rekey-credential-secret.service
 enable sparewalld.socket
 enable sparewalld.service
 enable systemd-networkd.service

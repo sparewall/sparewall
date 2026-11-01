@@ -247,6 +247,12 @@ for n in $NODES; do
         || fail "$n does not run $NEXT"
     carried_over "$n"
 done
+# Each node has a machine ID of its own, whatever the release it came from
+# shipped (0.3.2's media gave every install the same one, #196).
+if [ "$MODE" = pair ]; then
+    [ "$(at fw1 'cat /etc/machine-id')" != "$(at fw2 'cat /etc/machine-id')" ] \
+        || fail "fw1 and fw2 share a machine ID after the upgrade"
+fi
 at fw1 "SPAREWALL_TOKEN=$TOKEN sparewall status" >/dev/null \
     || fail "the token made on $FROM is refused"
 

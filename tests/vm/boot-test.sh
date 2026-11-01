@@ -187,11 +187,16 @@ vm 'sudo systemd-analyze has-tpm2' || fail "the node cannot seal to its TPM"
 printf %s 's3cret' | vm 'sudo sparewall secret set log-token'
 
 log "the configuration survives a reboot"
+# The image ships no machine ID (#196): the node made its own, and keeps it.
+vm 'test ! -s /usr/etc/machine-id' || fail "the image ships a machine ID: $(vm 'cat /usr/etc/machine-id' || true)"
+MACHINE_ID=$(vm 'cat /etc/machine-id')
+[ -n "$MACHINE_ID" ] || fail "the node has no machine ID"
 vm 'sudo systemctl reboot' || true
 sleep 15
 wait_ssh 600
 vm 'sudo sparewall status -o json' > status.json
 [ "$(jq -r .sync.active status.json)" = 1 ] || fail "generation 1 not active after reboot"
+[ "$(vm 'cat /etc/machine-id')" = "$MACHINE_ID" ] || fail "the machine ID changed across a reboot"
 vm 'ip -br link' | grep -q '^uplink ' || fail "port not named uplink after reboot"
 # From /etc/hostname at boot, before sparewalld runs: the early unit,
 # which starts before it, logs under the node name already.

@@ -122,6 +122,14 @@ LABEL org.opencontainers.image.title="Sparewall" \
       org.opencontainers.image.vendor="Sparewall"
 
 # networkd owns every link; NetworkManager and cloud-init go.
+#
+# /etc/machine-id must stay empty, as the base image ships it: each node
+# generates its own at first boot. A systemd update pulled in here runs
+# systemd-machine-id-setup in its scriptlet, which writes one into the
+# image. Every install from that image then shares it, and the next image
+# with a different one changes it on upgrade (bootc takes the new image's
+# copy of a file the node never changed), which deletes systemd-creds'
+# host key and with it every secret the node sealed. The last step checks.
 RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManager-team \
              NetworkManager-tui cloud-init firewalld; do \
         if rpm -q "$p" >/dev/null; then dnf -y remove "$p"; fi; \
@@ -149,7 +157,8 @@ RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManag
         libnetfilter_conntrack \
         jansson \
     && dnf clean all \
-    && rm -rf /var/cache/* /var/log/dnf* /var/lib/dnf
+    && rm -rf /var/cache/* /var/log/dnf* /var/lib/dnf \
+    && : > /etc/machine-id
 
 # /usr/sbin is a symlink to /usr/bin on Fedora 45: a stage that ships a
 # real usr/sbin directory would replace it and hide every tool in it.
@@ -174,4 +183,5 @@ RUN test -L /usr/sbin \
     && systemctl mask bootc-fetch-apply-updates.timer \
     && chmod 0440 /etc/sudoers.d/sparewall \
     && /usr/bin/sparewall --version \
+    && { test ! -s /etc/machine-id || { echo "/etc/machine-id is set in the image" >&2; exit 1; }; } \
     && bootc container lint

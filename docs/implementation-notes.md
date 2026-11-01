@@ -22,6 +22,16 @@ Where the implementation departs from, or settles open questions in,
   record the digests they used in the CI run summary, and the SBOM lists
   every package. bootc-image-builder, whose digests are retained, stays
   pinned.
+- **The image ships `/etc/machine-id` empty**, as the base image does,
+  and the build fails otherwise (#196). A systemd update pulled in by
+  the package step runs `systemd-machine-id-setup`, which wrote an ID
+  into 0.3.2-rc1 and 0.3.2: every install from their media shared it,
+  and the next upgrade replaced it (bootc takes the new image's copy of a
+  file the node never changed), so systemd-creds deleted its host key.
+  `sparewall-rekey-credential-secret` rewrites the key's header (the
+  machine ID hashed for systemd-creds' application ID) for the node's
+  new ID before anything decrypts, only when it is one of those two
+  leaked IDs. The key itself does not depend on the machine ID.
 - **Providers order after `sparewall-early.service`, not sparewalld.**
   sparewalld starts them during its own start-up activation, so ordering
   them after sparewalld deadlocked a reboot of a configured node. Early
