@@ -573,6 +573,13 @@ rejects images from anywhere but `ghcr.io/sparewall`, whose images must
 carry a valid signature; to upgrade from a mirror, add it to
 `/etc/containers/policy.json` with its own signature requirement.
 
+**Which upgrades are tested.** Before a release, CI upgrades a single
+node and a pair from the newest earlier release to it, and a pair from
+the newest release of the previous minor series too (for 0.3.2: from
+0.3.1, and from 0.2.0), each installed from that release's own disk
+image, then rolls one node back with `bootc rollback`. Upgrade from one of
+those; from anything older, upgrade through them in turn.
+
 Upgrades run only when asked for: scheduled upgrades
 (`updates.mode: windowed`, `updates.window`) are not built yet and are
 rejected.
