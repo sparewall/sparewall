@@ -32,7 +32,9 @@ For maintainers. A release is a tested commit on `main`, tagged.
    ruleset limiting who may create `v*` tags, and move the signing key
    into a `release` environment that needs a maintainer's approval.
 3. The image workflow runs again for the tag: it rebuilds the image, runs
-   every VM suite, publishes the image as `sha-<commit>` (and `testing`),
+   every VM suite, including upgrades to it from earlier releases
+   (`tests/vm/upgrade-test.sh`, from the releases
+   `.github/upgrade-from.sh` names, see [operations](operations.md#upgrades)), publishes the image as `sha-<commit>` (and `testing`),
    then the **release assets** job drafts a GitHub release with:
    - `sparewall-VERSION-x86_64.iso`: the unattended installer (to the
      first fixed disk, if it is blank);

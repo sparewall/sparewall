@@ -114,4 +114,16 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT
 git -C "$t/v" tag -f v1.3.0 >/dev/null
 [ "$(cd "$t/v" && env -u GITHUB_REF "$repo/.github/version.sh")" = 1.3.0 ] \
     || fail "version.sh on an untagged build of a tagged commit"
+
+# The releases a candidate is upgrade-tested from (#166): the newest before
+# it, and the newest of the previous minor series; never a prerelease, the
+# candidate itself or anything after it.
+from() { # candidate: the releases, one line
+    printf '%s\n' v0.1.3 v0.2.0 v0.3.0-rc1 v0.3.0 v0.3.1 v0.10.0 junk \
+        | "$repo/.github/upgrade-from.sh" "$1" | paste -sd' '
+}
+for c in "0.3.2:0.3.1 0.2.0" "0.3.2-dev.4+gabcdef123456:0.3.1 0.2.0" "0.4.0:0.3.1" \
+    "0.4.0-rc1.dev.2:0.3.1" "0.3.1:0.3.0 0.2.0" "0.2.1:0.2.0 0.1.3" "0.1.0:" "0.11.0:0.10.0"; do
+    [ "$(from "${c%%:*}")" = "${c#*:}" ] || fail "upgrade-from.sh ${c%%:*}: $(from "${c%%:*}"), not ${c#*:}"
+done
 echo "release tag checks: ok"
