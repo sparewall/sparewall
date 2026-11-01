@@ -4,10 +4,12 @@ Documentation=https://github.com/sparewall/sparewall
 # A disk built by bootc-image-builder on an SELinux-enforcing host leaves
 # ostree's metadata unlabelled, and the coordinator's restorecon is
 # denied searching it (#152). A no-op once it is labelled; it fixes such
-# a disk on its first boot and an older node after an upgrade. Before
-# sparewall-early, which runs restorecon too.
+# a disk on its first boot and an older node after an upgrade, and later
+# boots of a deployment it found clean skip the walk (its stamp in
+# /var/lib/sparewall, #172). Before sparewall-early, which runs
+# restorecon too.
 DefaultDependencies=no
-RequiresMountsFor=/sysroot
+RequiresMountsFor=/sysroot /var/lib/sparewall
 Before=sparewall-early.service sparewalld.service sysinit.target shutdown.target
 Conflicts=shutdown.target
 
