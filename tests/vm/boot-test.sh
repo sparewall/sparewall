@@ -202,6 +202,11 @@ if vm 'sudo journalctl -b -u sparewalld --no-pager' | grep -q 'renaming interfac
     fail "the port was renamed late, by sparewalld, not at coldplug"
 fi
 [ "$(jq -r .health.level status.json)" = ok ] || fail "health not ok after reboot: $(jq -c .health status.json)"
+# The first boot found /sysroot labelled (or labelled it) and stamped
+# the deployment; this boot of the same deployment skips the walk (#172).
+vm 'sudo journalctl -b -u sparewall-label-sysroot --no-pager' > label-sysroot.txt || true
+grep -q 'was scanned on an earlier boot' label-sysroot.txt \
+    || fail "sparewall-label-sysroot walked /sysroot again on a second boot: $(cat label-sysroot.txt; vm 'sudo cat /var/lib/sparewall/sysroot-labelled' || true)"
 
 log "metrics, with host metrics from node_exporter"
 token=$(vm 'sudo sparewall token create ci-monitor --role monitor -q')

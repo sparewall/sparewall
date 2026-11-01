@@ -126,7 +126,9 @@ Where the implementation departs from, or settles open questions in,
   policy labels its path with `/sysroot` taken off (ostree's own rule);
   `restorecon -R` would replace the file objects' labels, which are the
   labels of the files they are. The VM suites fail on anything
-  unlabelled under `/sysroot`.
+  unlabelled under `/sysroot`. A deployment it found clean is recorded
+  in `/var/lib/sparewall/sysroot-labelled`, and later boots of it skip
+  the walk, which costs a few seconds on every boot otherwise.
 - **SELinux stays enforcing**, and confined daemons get files they may
   read: networkd's WireGuard keys are copies in `/run/systemd/network`
   (masters stay root-only under `/var/lib/sparewall`); conntrackd's

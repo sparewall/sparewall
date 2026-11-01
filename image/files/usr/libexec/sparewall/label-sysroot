@@ -11,8 +11,47 @@
 # /sysroot taken off, as ostree labels the sysroot. Not restorecon -R:
 # the repo's file objects carry the labels of the files they are (lib_t,
 # bin_t, ...), and the policy's label for their path would overwrite
-# those. A no-op once nothing is unlabelled.
+# those.
+#
+# After a run that leaves nothing unlabelled, a stamp records the booted
+# deployment, and later boots of it skip the walk (#172). Deployments
+# bootc stages on a running node are labelled as they are written, so
+# only a new deployment (an upgrade, a rollback, a fresh disk) is walked.
 set -eu
+stamp=/var/lib/sparewall/sysroot-labelled
+# The booted deployment, from ostree= on the kernel command line: a link
+# to its directory under /sysroot/ostree/deploy. Empty if there is none,
+# and then nothing is stamped.
+deployment() {
+    for arg in $(cat /proc/cmdline); do
+        case $arg in
+        ostree=/*) readlink -f "/sysroot${arg#ostree=}" || true; return ;;
+        esac
+    done
+}
+booted=$(deployment)
+if [ -n "$booted" ] && [ "$(cat "$stamp" 2>/dev/null || true)" = "$booted" ]; then
+    echo "$booted was scanned on an earlier boot; nothing to do"
+    exit 0
+fi
+# Only after a scan that succeeded and left nothing unlabelled. Not
+# being able to write it costs only a walk on the next boot.
+record() {
+    [ -n "$booted" ] || return 0
+    # On a first boot this runs before tmpfiles creates the directory:
+    # create it as tmpfiles would, labelled for the coordinator, which
+    # starts next.
+    # The stamp is labelled before the rename puts it in place, so a
+    # failure anywhere leaves no stamp and the next boot walks again.
+    if mkdir -p -m 0711 "${stamp%/*}" && restorecon "${stamp%/*}" \
+        && printf '%s\n' "$booted" > "$stamp.tmp" && restorecon "$stamp.tmp" \
+        && mv "$stamp.tmp" "$stamp"; then
+        :
+    else
+        rm -f "$stamp.tmp"
+        echo "cannot record $booted in $stamp; the next boot scans again"
+    fi
+}
 cd /sysroot
 # What is unlabelled, as paths from /sysroot. find's own status stops the
 # script (set -e), so a scan that failed is not taken for an empty one;
@@ -22,7 +61,10 @@ unlabelled() {
     printf '%s\n' "$found" | grep -vx -e / -e '' || true
 }
 list=$(unlabelled)
-[ -n "$list" ] || exit 0
+if [ -z "$list" ]; then
+    record
+    exit 0
+fi
 # /sysroot is mounted read-only; its filesystem is read-write (/var is on
 # it), so a read-write bind remount in this namespace is enough.
 mount -o remount,bind,rw /sysroot
@@ -35,3 +77,4 @@ done
 left=$(unlabelled)
 echo "labelled $(printf '%s\n' "$list" | wc -l) files under /sysroot; $(printf '%s' "$left" | grep -c . || true) left"
 [ -z "$left" ]
+record
