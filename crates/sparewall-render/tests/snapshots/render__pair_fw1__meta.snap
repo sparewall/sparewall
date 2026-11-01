@@ -72,5 +72,5 @@ services:
         - "--net"
         - sh
         - "-ec"
-        - "for i in uplink users wan; do ip link add \"$i\" type dummy; ip link set \"$i\" multicast on up; done; exec keepalived --config-test --use-file /run/keepalived/keepalived.conf"
+        - "for i in swwan uplink users wan; do ip link add \"$i\" type dummy; ip link set \"$i\" multicast on up; done; exec keepalived --config-test --use-file /run/keepalived/keepalived.conf"
 bootstrap: false

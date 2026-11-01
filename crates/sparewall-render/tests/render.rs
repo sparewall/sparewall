@@ -601,6 +601,9 @@ fn pair_wan_one_lease_on_the_master() {
         sparewall_render::keepalived::CONF
     )];
     assert!(!ka.contains("VI_wan"), "{ka}");
+    // The lease link is down on the backup by design: tracking it would
+    // hold the backup in FAULT, and it could never become the master.
+    assert!(!ka.contains("swwan"), "{ka}");
     let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
     for line in [
         "iifname \"swwan\" udp sport 67 udp dport 68 accept comment \"infra:dhcp-client\"",
@@ -608,6 +611,8 @@ fn pair_wan_one_lease_on_the_master() {
         "oifname \"swwan\" ip saddr 10.0.10.0/24 counter masquerade comment \"infra:wan-egress\"",
         "iifname \"users\" oifname { \"swwan\", \"wan\" } counter masquerade comment \"nat:users->wan\"",
         "iifname \"swwan\" fib daddr type local udp dport { 53, 443 } counter redirect to :51820 comment \"vpn-roadwarrior:extra-ports\"",
+        // The listen port itself, on the leased address.
+        "iifname { \"swwan\", \"wan\" } udp dport 51820 accept comment \"service:vpn-roadwarrior\"",
     ] {
         assert!(nft.contains(line), "{line}\n{nft}");
     }

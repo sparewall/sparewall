@@ -187,8 +187,8 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         sync_tunnel(doc, node, out);
     }
     for (name, net) in &doc.networks {
-        if doc.leased_wan(name).is_some() {
-            lease_link(doc, name, net, out);
+        if doc.vmac_wan(name) {
+            vmac_link(doc, name, net, out);
         }
     }
     for (name, vpn) in &doc.vpn {
@@ -230,10 +230,12 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
         ini.set("KeepConfiguration", "yes");
     }
     let leased = doc.leased_wan(name).is_some();
-    if leased {
-        // The pair's one lease is the master's, on the macvlan.
+    if doc.vmac_wan(name) {
+        // The public side is on the macvlan with the virtual MAC: the
+        // pair's one lease, or the static block's gateway addresses.
         ini.set("MACVLAN", LEASE_IFACE);
-    } else if net.dhcp_client {
+    }
+    if net.dhcp_client && !leased {
         ini.set("DHCP", "ipv4");
     }
     for d in &net.dns {
@@ -319,18 +321,34 @@ fn dhcp_client(ini: &mut Ini, doc: &Document, name: &str, net: &Network) {
     }
 }
 
-/// A pair's one WAN lease (#54): a macvlan with the VRRP virtual MAC on
-/// the WAN link, running the DHCP client. networkd leaves it down
-/// (`ActivationPolicy=manual`); the coordinator brings it up on the
-/// master only, so the ISP sees one MAC and one client ID.
-fn lease_link(doc: &Document, name: &str, net: &Network, out: &mut Rendered) {
+/// The public side of a pair's WAN with private node addresses (#54,
+/// #176): a macvlan with the VRRP virtual MAC on the WAN link, so the ISP
+/// sees one MAC whichever node is the master.
+///
+/// - **One lease for the pair:** it runs the DHCP client. networkd
+///   leaves it down (`ActivationPolicy=manual`); the coordinator brings
+///   it up on the master only, so the ISP also sees one client ID.
+/// - **A static block:** keepalived puts the gateway addresses and the
+///   public default route on it. It is up on both nodes, since the
+///   kernel refuses a route on a link that is down and keepalived adds
+///   it the moment it becomes master. The backup's has no address and no
+///   IPv6, so it never sends a frame from the virtual MAC.
+fn vmac_link(doc: &Document, name: &str, net: &Network, out: &mut Rendered) {
     let Some(vrid) = net.vrid else { return };
+    let leased = doc.leased_wan(name).is_some();
     let mut nd = Ini::new();
     nd.section("NetDev")
         .set("Name", LEASE_IFACE)
         .set("Kind", "macvlan")
         .set("MACAddress", Document::vrrp_mac(vrid))
-        .set("Description", "Sparewall pair WAN lease");
+        .set(
+            "Description",
+            if leased {
+                "Sparewall pair WAN lease"
+            } else {
+                "Sparewall pair WAN gateway addresses"
+            },
+        );
     nd.section("MACVLAN").set("Mode", "bridge");
     out.add(
         Subsystem::Networkd,
@@ -339,6 +357,21 @@ fn lease_link(doc: &Document, name: &str, net: &Network, out: &mut Rendered) {
     );
     let mut nn = Ini::new();
     nn.section("Match").set("Name", LEASE_IFACE);
+    if !leased {
+        nn.section("Link").set("RequiredForOnline", "no");
+        // Nothing of its own: keepalived's addresses and route, which
+        // networkd keeps.
+        nn.section("Network")
+            .set("LinkLocalAddressing", "no")
+            .set("IPv6AcceptRA", "no")
+            .set("KeepConfiguration", "yes");
+        out.add(
+            Subsystem::Networkd,
+            format!("40-sparewall-{LEASE_IFACE}.network"),
+            nn.build(),
+        );
+        return;
+    }
     nn.section("Link")
         .set("ActivationPolicy", "manual")
         .set("RequiredForOnline", "no");

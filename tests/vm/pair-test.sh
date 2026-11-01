@@ -118,15 +118,42 @@ log "the WAN: private node addresses, the public ones on the master (#54)"
 wan_ns isp 203.0.113.254
 ns isp ip addr add 198.18.0.1/32 dev lo
 ns isp python3 "$HERE/echo.py" whoami &
-public_route() { at "$1" 'ip route show default' | grep -q 'via 203.0.113.254 dev wan'; }
+# Like a cable operator's gateway (#176): it ignores ARP that claims the
+# gateway addresses from a MAC it no longer knows, and trusts the MAC it
+# has cached for minutes. A node's own MAC stands for the unknown one: a
+# standby's is silent toward the ISP for as long as it is the standby.
+# With the VRRP virtual MAC on the master's public side, no node ever
+# claims them from its own MAC, and a handover changes nothing here.
+VMAC=00:00:5e:00:01:0a
+ns isp sysctl -qw net.ipv4.neigh.eth0.base_reachable_time_ms=600000 \
+    net.ipv4.neigh.eth0.delay_first_probe_time=600 net.ipv4.neigh.eth0.gc_stale_time=600
+ns isp nft -f - <<EOF
+table arp isp {
+    chain in {
+        type filter hook input priority 0;
+        arp saddr ip { 203.0.113.1, 203.0.113.5 } arp saddr ether { ${FW1[3]}, ${FW2[3]} } counter drop comment "own-mac-claims"
+    }
+}
+EOF
+public_route() { at "$1" 'ip route show default' | grep -q 'via 203.0.113.254 dev swwan'; }
+swwan_tx() { at "$1" 'cat /sys/class/net/swwan/statistics/tx_packets'; }
+isp_mac() { ns isp ip -j neigh show 203.0.113.1 dev eth0 | jq -r '.[0].lladdr // empty'; }
 check_wan() { # master backup
     public_route "$1" || fail "$1 (master) has no default route via the ISP: $(at "$1" 'ip route show default')"
     ! public_route "$2" || fail "$2 (backup) has the public default route"
-    local n src
+    local n src tx mac
+    tx=$(swwan_tx "$2") || fail "$2 (backup) has no swwan"
     for n in "$1" "$2"; do
         src=$(egress "$n") || fail "$n cannot reach the outside"
         [ "$src" = 203.0.113.1 ] || fail "$n reached the outside as $src, not 203.0.113.1"
     done
+    # The ISP knows the gateway address by the virtual MAC only.
+    mac=$(isp_mac)
+    [ "$mac" = "$VMAC" ] || fail "the ISP has 203.0.113.1 at ${mac:-no MAC}, not the virtual MAC $VMAC"
+    ns isp nft list chain arp isp in | grep -q 'packets 0 ' \
+        || fail "a node claimed a gateway address from its own MAC: $(ns isp nft list chain arp isp in)"
+    # The backup's macvlan sent nothing while its peer's traffic went out.
+    [ "$(swwan_tx "$2")" = "$tx" ] || fail "$2 (backup) sent from the virtual MAC ($tx, then $(swwan_tx "$2") packets)"
 }
 wait_for 30 "fw1 reaches the outside" egress fw1
 check_wan fw1 fw2
@@ -315,10 +342,12 @@ grep -q broken fwd.log && fail "the forwarded connection broke in the failover: 
 fwd_after=$(fwd_echoes) || fail "the forwarded connection stalled: $(tail -5 fwd.log)"
 [ "$fwd_after" -gt "$fwd_before" ] \
     || fail "the forwarded connection stalled after the failover ($fwd_before, $fwd_after)"
-at fw2 'ip -br addr show wan' | grep -q '203.0.113.5/24' || fail "fw2 does not hold 203.0.113.5"
+at fw2 'ip -br addr show swwan' | grep -q '203.0.113.5/24' || fail "fw2 does not hold 203.0.113.5"
 public_route fw2 || fail "fw2 has no default route via the ISP after the failover"
 src=$(egress fw2) || fail "fw2 cannot reach the outside after the failover"
 [ "$src" = 203.0.113.1 ] || fail "fw2 reached the outside as $src after the failover"
+mac=$(isp_mac)
+[ "$mac" = "$VMAC" ] || fail "after the failover the ISP has 203.0.113.1 at ${mac:-no MAC}, not $VMAC"
 wait_for 60 "fw2 reports the peer down" unreachable fw2
 # The client keeps its address, now from fw2. (Without flushing it first:
 # the connection above runs from it.)
@@ -415,6 +444,7 @@ ns users ping -c 3 -W 2 192.0.2.1 >/dev/null || fail "gateway address unreachabl
 grep -q broken flow.log && fail "the connection broke in the upgrade: $(tail -5 flow.log)"
 after=$(echoes) || fail "the connection stalled in the upgrade: $(tail -5 flow.log)"
 [ "$after" -gt "$before" ] || fail "the connection stalled in the upgrade ($before, $after)"
+check_wan fw1 fw2
 vpn_after_move "rolling upgrade"
 
 log "a second rolling upgrade, started on the backup, to the reference the pair already tracks (#116, #117)"
@@ -434,6 +464,7 @@ wait_for 600 "fw1 on the second image" upgraded2 fw1
 wait_for 300 "fw1 in sync" in_sync fw1
 wait_for 120 "fw2 in sync" in_sync fw2
 is_master fw2 || fail "fw2 is $(role fw2) after the second upgrade, not MASTER"
+check_wan fw2 fw1
 hostnames || fail "the upgrades changed the hostnames: $(at fw1 hostname), $(at fw2 hostname)"
 vpn_summary
 log "pair PASS (with two rolling upgrades)"

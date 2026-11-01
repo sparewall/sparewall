@@ -135,6 +135,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
     }
     for (name, net) in &instances {
         let iface = doc.network_iface(name).expect("exists");
+        // Where the gateway addresses go: on a WAN with private node
+        // addresses, the macvlan with the virtual MAC (#176). The
+        // adverts stay on the network's own link, from the private
+        // address.
+        let public = doc.public_iface(name).expect("exists");
         let port = &net.port;
         writeln!(s, "vrrp_instance {} {{", instance_name(name)).unwrap();
         writeln!(s, "    state BACKUP\n    {preempt}\n    interface {iface}").unwrap();
@@ -157,8 +162,22 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         }
         // keepalived tracks the instance's own interface already; add the
         // port a VLAN rides on.
-        if port != iface {
-            writeln!(s, "    track_interface {{\n        {port}\n    }}").unwrap();
+        // A static block's macvlan is up on both nodes: losing it is a
+        // fault. A leased WAN's is down on the backup by design and must
+        // never be tracked (it has no gateway address, so no instance,
+        // but say so here rather than lean on validation).
+        let static_block = doc.split_wan(name).is_some();
+        let tracked: Vec<&str> = [Some(port.as_str()), static_block.then_some(public)]
+            .into_iter()
+            .flatten()
+            .filter(|l| *l != iface)
+            .collect();
+        if !tracked.is_empty() {
+            s.push_str("    track_interface {\n");
+            for l in tracked {
+                writeln!(s, "        {l}").unwrap();
+            }
+            s.push_str("    }\n");
         }
         s.push_str("    track_script {\n        sparewall_health\n        sparewall_yield\n");
         if hold {
@@ -173,7 +192,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         // in the same step.
         s.push_str("    virtual_ipaddress {\n");
         for a in net.vip.iter().chain(&net.extra_vips) {
-            writeln!(s, "        {a} dev {iface}").unwrap();
+            writeln!(s, "        {a} dev {public}").unwrap();
         }
         s.push_str("    }\n");
         // A WAN with private node addresses: the public default route
@@ -183,7 +202,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         {
             writeln!(
                 s,
-                "    virtual_routes {{\n        0.0.0.0/0 via {gw} dev {iface} metric {} onlink\n    }}",
+                "    virtual_routes {{\n        0.0.0.0/0 via {gw} dev {public} metric {} onlink\n    }}",
                 crate::networkd::WAN_METRIC
             )
             .unwrap();
@@ -193,6 +212,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
     let mut links: Vec<String> = Vec::new();
     for (name, net) in &instances {
         links.push(doc.network_iface(name).expect("exists").to_string());
+        links.push(doc.public_iface(name).expect("exists").to_string());
         links.push(net.port.clone());
     }
     links.sort();

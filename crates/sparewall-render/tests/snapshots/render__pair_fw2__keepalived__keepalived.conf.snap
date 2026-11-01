@@ -66,6 +66,7 @@ vrrp_instance VI_wan {
     garp_master_delay 1
     track_interface {
         uplink
+        swwan
     }
     track_script {
         sparewall_health
@@ -74,10 +75,10 @@ vrrp_instance VI_wan {
     notify "/usr/libexec/keepalived/sparewall-notify"
     notify_deleted
     virtual_ipaddress {
-        203.0.113.1/29 dev wan
-        203.0.113.5/29 dev wan
+        203.0.113.1/29 dev swwan
+        203.0.113.5/29 dev swwan
     }
     virtual_routes {
-        0.0.0.0/0 via 203.0.113.6 dev wan metric 100 onlink
+        0.0.0.0/0 via 203.0.113.6 dev swwan metric 100 onlink
     }
 }

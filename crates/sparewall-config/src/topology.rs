@@ -12,8 +12,11 @@ pub const SYNC_TUNNEL_IFACE: &str = "swsync";
 pub const SYNC_TUNNEL_PORT: u16 = 51871;
 /// The built-in zone for traffic to and from the firewall itself.
 pub const SELF_ZONE: &str = "self";
-/// The interface a pair's leased WAN is reached on (#54): a macvlan with
-/// the VRRP virtual MAC, up on the master only.
+/// The public side of a pair's WAN with private node addresses (#54,
+/// #176): a macvlan with the VRRP virtual MAC, so the ISP sees one MAC
+/// whichever node is the master. A leased WAN's is up on the master only
+/// (it runs the DHCP client); a static block's is up on both nodes and
+/// carries the gateway addresses and the public route on the master.
 pub const LEASE_IFACE: &str = "swwan";
 /// Interface names the coordinator reserves.
 pub const RESERVED_IFACES: &[&str] = &["lo", SYNC_TUNNEL_IFACE, LEASE_IFACE];
@@ -60,7 +63,7 @@ impl Document {
                 if let Some(i) = self.network_iface(n) {
                     out.push(i.to_string());
                 }
-                if self.leased_wan(n).is_some() {
+                if self.vmac_wan(n) {
                     out.push(LEASE_IFACE.to_string());
                 }
             }
@@ -118,6 +121,23 @@ impl Document {
         }
         net.vrid?;
         Some(net.addresses.values().next()?.0.trunc())
+    }
+
+    /// Whether a network is a pair's WAN with private node addresses,
+    /// static or leased, whose public side is [`LEASE_IFACE`] (#176).
+    pub fn vmac_wan(&self, network: &str) -> bool {
+        self.split_wan(network).is_some() || self.leased_wan(network).is_some()
+    }
+
+    /// The interface a network's public addresses are on: [`LEASE_IFACE`]
+    /// for a pair's WAN with private node addresses, else the network's
+    /// own.
+    pub fn public_iface<'a>(&'a self, network: &'a str) -> Option<&'a str> {
+        if self.vmac_wan(network) {
+            Some(LEASE_IFACE)
+        } else {
+            self.network_iface(network)
+        }
     }
 
     /// The VRRP virtual MAC of a VRRP ID (RFC 5798).
