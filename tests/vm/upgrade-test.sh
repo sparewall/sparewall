@@ -237,6 +237,8 @@ done
 if [ "$MODE" = pair ]; then
     wait_for 300 "fw1 in sync" in_sync fw1
     wait_for 120 "fw2 in sync" in_sync fw2
+    # A node just back may sit in FAULT until its health script passes.
+    wait_for 120 "fw1 BACKUP after the upgrade" is_backup fw1
     roles_are BACKUP MASTER "after the upgrade"
 fi
 for n in $NODES; do
@@ -286,6 +288,7 @@ carried_over fw1
 if [ "$MODE" = pair ]; then
     wait_for 300 "fw1 in sync on $FROM" in_sync fw1
     wait_for 120 "fw2 in sync with fw1 on $FROM" in_sync fw2
+    wait_for 120 "fw1 BACKUP after its rollback" is_backup fw1
     roles_are BACKUP MASTER "after fw1's rollback"
     [ "$(wc -l < gateway.log)" = 2 ] || fail "the gateway moved in fw1's rollback: $(cat gateway.log)"
     grep -q broken flow.log && fail "the connection broke in the rollback: $(tail -5 flow.log)"
