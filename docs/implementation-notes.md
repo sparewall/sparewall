@@ -304,6 +304,18 @@ Where the implementation departs from, or settles open questions in,
   `down` to match the VRRP role. `SendRelease=no` keeps the lease for
   the next master. The VPN extra ports use the standalone `redirect` on
   `swwan`, which only the master has up.
+- **A static block's gateway addresses are on `swwan` too** (#176), with
+  the same virtual MAC, but the link is up on both nodes: keepalived adds
+  the public route as it becomes master, and the kernel refuses a route
+  on a link that is down, so the coordinator could not bring it up in
+  time. The backup's link stays silent instead: no address, IPv6
+  disabled by sysctl (`LinkLocalAddressing=no` alone leaves the kernel
+  free to send MLD), and `arp_ignore=1`, which keepalived's own
+  `use_vmac` interface does not guarantee. `KeepConfiguration=yes`
+  keeps keepalived's addresses through a networkd reload. The pair suite
+  models a gateway that ignores ARP for the public addresses from the
+  nodes' own MACs, and checks that the ISP's cached MAC is the virtual
+  one at every handover and that the backup's link sends nothing.
 - **A generation that never ran gives way.** A local change that fails
   to activate is moved aside (`generations/<id>.failed-<hash>`), out of
   history, and its id is reused. One left by a crash before `state.json`

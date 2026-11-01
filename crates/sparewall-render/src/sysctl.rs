@@ -3,6 +3,7 @@
 use std::fmt::Write;
 
 use sparewall_config::model::Document;
+use sparewall_config::topology::LEASE_IFACE;
 
 use crate::{Rendered, Subsystem};
 
@@ -43,17 +44,28 @@ pub(crate) fn render(doc: &Document, _node: &str, out: &mut Rendered) {
     .unwrap();
     // Interfaces carrying gateway addresses answer ARP only for addresses
     // on the interface asked, from a matching source.
-    let mut ifs: Vec<String> = doc
-        .networks
-        .iter()
-        .filter(|(_, n)| n.vip.is_some())
-        .filter_map(|(name, _)| doc.network_iface(name).map(str::to_string))
-        .collect();
+    // On a WAN with private node addresses that is both the network's
+    // own link, which must not answer for the gateway addresses with the
+    // node's own MAC, and the macvlan with the virtual MAC that carries
+    // them (#176).
+    let mut ifs: Vec<String> = Vec::new();
+    for (name, n) in &doc.networks {
+        if n.vip.is_none() && !doc.vmac_wan(name) {
+            continue;
+        }
+        ifs.extend(doc.network_iface(name).map(str::to_string));
+        ifs.extend(doc.public_iface(name).map(str::to_string));
+    }
     ifs.sort();
     ifs.dedup();
-    for i in ifs {
+    for i in &ifs {
         writeln!(s, "net.ipv4.conf.{i}.arp_ignore = 1").unwrap();
         writeln!(s, "net.ipv4.conf.{i}.arp_announce = 2").unwrap();
+    }
+    // The virtual MAC is the master's alone: the backup's macvlan, up but
+    // with no address, must send nothing, IPv6 included.
+    if doc.networks.keys().any(|n| doc.vmac_wan(n)) {
+        writeln!(s, "net.ipv6.conf.{LEASE_IFACE}.disable_ipv6 = 1").unwrap();
     }
     out.add(Subsystem::Sysctl, FILE, s);
 }

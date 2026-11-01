@@ -216,52 +216,35 @@ fn static_dynamic_elements(doc: &Document, node: &str, d: &DynamicSource) -> Vec
     out.into_iter().collect()
 }
 
-/// WANs with private node addresses (#54), as `node` sees them: the
-/// interface, the private subnet, the gateway address and the peer's
-/// private address.
-fn split_wans<'a>(
-    doc: &'a Document,
-    node: &str,
-) -> Vec<(
-    &'a str,
-    ipnet::Ipv4Net,
-    std::net::Ipv4Addr,
-    std::net::Ipv4Addr,
-)> {
+/// A pair's WAN with private node addresses (#54), static or leased,
+/// as `node` sees it.
+struct PrivateWan<'a> {
+    /// The network's own link: the private addresses and VRRP.
+    link: &'a str,
+    /// The private subnet.
+    private: ipnet::Ipv4Net,
+    /// The static block's gateway address; `None` for a leased WAN.
+    vip: Option<std::net::Ipv4Addr>,
+    /// The peer's private address.
+    peer: std::net::Ipv4Addr,
+}
+
+fn private_wans<'a>(doc: &'a Document, node: &str) -> Vec<PrivateWan<'a>> {
     doc.networks
         .iter()
         .filter_map(|(name, n)| {
-            let private = doc.split_wan(name)?;
+            let (private, vip) = match (doc.split_wan(name), doc.leased_wan(name)) {
+                (Some(p), _) => (p, Some(n.vip?.0.addr())),
+                (None, Some(p)) => (p, None),
+                (None, None) => return None,
+            };
             let peer = n.addresses.get(doc.peer_of(node)?)?;
-            Some((
-                doc.network_iface(name)?,
+            Some(PrivateWan {
+                link: doc.network_iface(name)?,
                 private,
-                n.vip?.0.addr(),
-                peer.0.addr(),
-            ))
-        })
-        .collect()
-}
-
-/// The interface a network's DHCP client runs on: a pair's lease link
-/// for its leased WAN, else the network's own.
-fn dhcp_iface<'a>(doc: &'a Document, name: &'a str) -> Option<&'a str> {
-    if doc.leased_wan(name).is_some() {
-        Some(LEASE_IFACE)
-    } else {
-        doc.network_iface(name)
-    }
-}
-
-/// Leased WANs (#54), as `node` sees them: the WAN interface and the
-/// peer's private address.
-fn leased_wans<'a>(doc: &'a Document, node: &str) -> Vec<(&'a str, std::net::Ipv4Addr)> {
-    doc.networks
-        .iter()
-        .filter_map(|(name, n)| {
-            doc.leased_wan(name)?;
-            let peer = n.addresses.get(doc.peer_of(node)?)?;
-            Some((doc.network_iface(name)?, peer.0.addr()))
+                vip,
+                peer: peer.0.addr(),
+            })
         })
         .collect()
 }
@@ -315,7 +298,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 let dhcp = doc.networks.get(&d.network).is_some_and(|n| n.dhcp_client);
                 if dhcp {
                     out.meta.preserved_sets.push(name.clone());
-                    if let Some(i) = dhcp_iface(doc, &d.network) {
+                    if let Some(i) = doc.public_iface(&d.network) {
                         out.meta.set_links.insert(name.clone(), i.to_string());
                     }
                     ("ipv4_addr", vec![])
@@ -472,7 +455,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 .collect(),
         ));
         for (net, n) in doc.networks_with_role(NetworkRole::Wan) {
-            let Some(i) = dhcp_iface(doc, net) else {
+            let Some(i) = doc.public_iface(net) else {
                 continue;
             };
             // A pair's lease is on the master's lease link, as a
@@ -578,7 +561,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     }
     for (name, net) in &doc.networks {
         if net.dhcp_client
-            && let Some(i) = dhcp_iface(doc, name)
+            && let Some(i) = doc.public_iface(name)
         {
             writeln!(
                 input,
@@ -650,20 +633,15 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     fwd.push_str("meta nfproto ipv6 drop\n");
     // On a WAN with private node addresses the backup's own traffic
     // leaves through the master (#54).
-    for (i, _, _, peer) in split_wans(doc, node) {
+    // It arrives on the WAN's own link and leaves by the macvlan with the
+    // virtual MAC.
+    for w in private_wans(doc, node) {
         writeln!(
             fwd,
-            "iifname {i} oifname {i} ip saddr {peer} counter accept comment \"infra:peer-egress\"",
-            i = q(i)
-        )
-        .unwrap();
-    }
-    for (i, peer) in leased_wans(doc, node) {
-        writeln!(
-            fwd,
-            "iifname {} oifname {} ip saddr {peer} counter accept comment \"infra:peer-egress\"",
-            q(i),
-            q(LEASE_IFACE)
+            "iifname {} oifname {} ip saddr {} counter accept comment \"infra:peer-egress\"",
+            q(w.link),
+            q(LEASE_IFACE),
+            w.peer
         )
         .unwrap();
     }
@@ -714,14 +692,22 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         // tunnel when that node goes (WireGuard follows the source of any
         // authenticated packet).
         for (net, n) in doc.networks_with_role(NetworkRole::Wan) {
-            let (Some(vip), Some(i)) = (n.vip, doc.network_iface(net)) else {
+            let (Some(vip), Some(own), Some(public)) =
+                (n.vip, doc.network_iface(net), doc.public_iface(net))
+            else {
                 continue;
             };
+            // Both links: the gateway address's (the macvlan on a WAN
+            // with private node addresses, #176), and the network's own,
+            // by which a backup's replies would leave through its peer.
+            let mut ifs = vec![own.to_string(), public.to_string()];
+            ifs.sort();
+            ifs.dedup();
             for (name, vpn) in &doc.vpn {
                 writeln!(
                     output,
                     "oifname {} udp sport {} ip saddr != {} drop comment {}",
-                    q(i),
+                    ifset(&ifs),
                     vpn.listen_port,
                     vip.0.addr(),
                     q(&format!("vpn-{name}:gateway-address-only"))
@@ -750,25 +736,20 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // own traffic and the backup's, which it forwards, take the gateway
     // address. On the backup everything outside leaves via the peer, so
     // nothing matches there.
-    for (i, private, vip, peer) in split_wans(doc, node) {
+    // Only the master sends by the macvlan with the virtual MAC: its own
+    // traffic and its peer's take the gateway address, or the leased one.
+    for w in private_wans(doc, node) {
+        let to = match w.vip {
+            Some(vip) => format!("snat ip to {vip}"),
+            None => "masquerade".into(),
+        };
         writeln!(
             post,
-            "oifname {} ip saddr {private} ip daddr != {private} rt ip nexthop != {peer} counter snat ip to {vip} comment \"infra:wan-egress\"",
-            q(i)
+            "oifname {} ip saddr {} counter {to} comment \"infra:wan-egress\"",
+            q(LEASE_IFACE),
+            w.private
         )
         .unwrap();
-    }
-    // With one lease for the pair, only the master has the lease link:
-    // its own traffic and its peer's take the leased address.
-    for name in doc.networks.keys() {
-        if let Some(private) = doc.leased_wan(name) {
-            writeln!(
-                post,
-                "oifname {} ip saddr {private} counter masquerade comment \"infra:wan-egress\"",
-                q(LEASE_IFACE)
-            )
-            .unwrap();
-        }
     }
     // The server would answer a client on its own network directly, past
     // the reverse translation: make the firewall the source.

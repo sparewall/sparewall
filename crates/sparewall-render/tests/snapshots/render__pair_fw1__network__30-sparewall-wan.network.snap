@@ -10,6 +10,7 @@ Name=wan
 [Network]
 Address=10.0.10.2/24
 KeepConfiguration=yes
+MACVLAN=swwan
 LinkLocalAddressing=ipv6
 IPv6AcceptRA=no
 

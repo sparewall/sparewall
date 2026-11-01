@@ -59,6 +59,21 @@ upgrades, ACME, NTP and backups work on either node. Nothing from the
 private addresses reaches the ISP. Public node addresses in the same
 subnet as `vip` still work as before.
 
+The public addresses sit on `swwan`, a link with the VRRP virtual MAC
+(`00:00:5e:00:01:0a` here), so the ISP sees them behind one MAC whichever
+node is the master. Many ISP gateways ignore gratuitous ARP, or ignore it
+from a MAC they have not heard from in a while, which a standby's own MAC
+always is. If the MAC behind the gateway addresses changed at a handover,
+such a gateway would drop the site's traffic until its ARP cache expired,
+often for minutes. The upstream sees one more MAC than the nodes' own:
+an upstream that limits MACs per port (port security, or a modem in
+bridge mode with a CPE limit) must allow it.
+
+Upgrading a pair from a release before 0.3.3 moves the public addresses
+from a node's own MAC to the virtual MAC once, at the upgrade's
+handover: a gateway that ignores gratuitous ARP may drop traffic then,
+once, until its cache expires.
+
 With one public address leased by DHCP, give the nodes private addresses
 and a `vrid`, and no `vip`:
 
