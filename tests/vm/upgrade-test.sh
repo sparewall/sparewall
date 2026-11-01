@@ -185,19 +185,44 @@ if [ "$MODE" = pair ]; then
     [ "$(awk '{print $2}' gateway.log)" = "${FW1[3]}" ] || fail "the gateway is not fw1's: $(cat gateway.log)"
 fi
 
-log "the candidate ($CANDIDATE) in a local registry"
+log "the candidate ($CANDIDATE) and its provider images in a local registry"
 # QEMU user networking reaches the host at 10.0.2.2.
 sudo podman run -d --name sw-registry -p 5000:5000 quay.io/libpod/registry:2.8.2 >/dev/null
 wait_for 30 "the registry" curl -sf http://127.0.0.1:5000/v2/
 sudo podman push --tls-verify=false "$IMAGE" docker://127.0.0.1:5000/sparewall:candidate
 NEXT=10.0.2.2:5000/sparewall:candidate
+# Staging pulls the candidate's bound provider images
+# (ghcr.io/sparewall/kea:sha-…), which a pull request builds but never
+# pushes, and a pair reaches nothing outside through its test WAN: the
+# nodes get them from the same registry, as a mirror of ghcr.io/sparewall.
+PROVIDERS=$(sudo podman run --rm --entrypoint sh "$IMAGE" -c \
+    'for f in /usr/lib/bootc/bound-images.d/*; do sed -n "s/^Image=//p" "$f"; done')
+[ -n "$PROVIDERS" ] || fail "the candidate names no bound images"
+for ref in $PROVIDERS; do
+    case $ref in ghcr.io/sparewall/*) ;; *) fail "a bound image outside ghcr.io/sparewall: $ref" ;; esac
+    sudo podman image exists "$ref" || sudo podman pull "$ref"
+    sudo podman push --tls-verify=false "$ref" "docker://127.0.0.1:5000/${ref#ghcr.io/}"
+done
+# The provider repositories accept anything once the release's own
+# signature has been checked above; ghcr.io/sparewall/sparewall does not.
+repos=$(for ref in $PROVIDERS; do echo "${ref%:*}"; done | sort -u | jq -R . | jq -cs .)
 for n in $NODES; do
     at "$n" 'sudo tee /etc/containers/registries.conf.d/50-test.conf >/dev/null' <<'TOML'
 [[registry]]
 location = "10.0.2.2:5000"
 insecure = true
+
+[[registry]]
+location = "ghcr.io/sparewall"
+[[registry.mirror]]
+location = "10.0.2.2:5000/sparewall"
+insecure = true
+pull-from-mirror = "all"
 TOML
-    at "$n" 'sudo jq ".transports.docker[\"10.0.2.2:5000\"] = [{\"type\": \"insecureAcceptAnything\"}]" /etc/containers/policy.json > /tmp/policy.json && sudo install -m 0644 /tmp/policy.json /etc/containers/policy.json'
+    at "$n" "sudo jq --argjson repos '$repos' '.transports.docker[\"10.0.2.2:5000\"] = [{\"type\": \"insecureAcceptAnything\"}]
+        | reduce \$repos[] as \$r (.; .transports.docker[\$r] = [{\"type\": \"insecureAcceptAnything\"}])' \
+        /etc/containers/policy.json > /tmp/policy.json && sudo install -m 0644 /tmp/policy.json /etc/containers/policy.json"
+    at "$n" 'sudo jq -c ".transports.docker | keys" /etc/containers/policy.json'
 done
 
 log "$FROM's sparewall upgrade, to $CANDIDATE"
