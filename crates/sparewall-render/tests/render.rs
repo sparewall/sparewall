@@ -601,6 +601,9 @@ fn pair_wan_one_lease_on_the_master() {
         sparewall_render::keepalived::CONF
     )];
     assert!(!ka.contains("VI_wan"), "{ka}");
+    // The lease link is down on the backup by design: tracking it would
+    // hold the backup in FAULT, and it could never become the master.
+    assert!(!ka.contains("swwan"), "{ka}");
     let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
     for line in [
         "iifname \"swwan\" udp sport 67 udp dport 68 accept comment \"infra:dhcp-client\"",

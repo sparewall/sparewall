@@ -162,8 +162,14 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         }
         // keepalived tracks the instance's own interface already; add the
         // port a VLAN rides on.
-        let tracked: Vec<&str> = [port.as_str(), public]
+        // A static block's macvlan is up on both nodes: losing it is a
+        // fault. A leased WAN's is down on the backup by design and must
+        // never be tracked (it has no gateway address, so no instance,
+        // but say so here rather than lean on validation).
+        let static_block = doc.split_wan(name).is_some();
+        let tracked: Vec<&str> = [Some(port.as_str()), static_block.then_some(public)]
             .into_iter()
+            .flatten()
             .filter(|l| *l != iface)
             .collect();
         if !tracked.is_empty() {
