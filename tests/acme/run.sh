@@ -50,7 +50,10 @@ podman run -d --name sw-bind --network host \
 # Pebble rejects 5% of nonces by default to exercise clients' retries.
 # instant-acme 0.8.5 retries a badNonce only 3 times, and a DNS-01 order
 # makes enough requests that 4 rejections in a row on one of them happen
-# often enough to fail CI (#171). 1% still exercises the retry path.
+# often enough to fail CI (#171). Neither rate makes a run take the retry
+# path for certain: the retry is instant-acme's own (sparewalld has no
+# nonce handling), covered by its tests. This suite tests sparewalld's
+# use of it, and at 1% still meets a rejected nonce now and then.
 podman run -d --name sw-pebble --network host -e PEBBLE_VA_NOSLEEP=1 \
     -e PEBBLE_WFE_NONCEREJECT="${PEBBLE_WFE_NONCEREJECT:-1}" \
     "$PEBBLE_IMAGE" -config /test/config/pebble-config.json -dnsserver 127.0.0.1:5353 >/dev/null
