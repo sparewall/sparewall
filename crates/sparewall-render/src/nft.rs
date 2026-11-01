@@ -924,7 +924,15 @@ fn service_rules(doc: &Document, input: &mut String) {
             .unwrap();
         }
     }
-    let wan_ifs = ifs(&mut doc.networks_with_role(NetworkRole::Wan).map(|(n, _)| n));
+    // The WAN's own links, and its public side where that is the
+    // macvlan with the virtual MAC (#54, #176): the VPN endpoint is a
+    // public address.
+    let mut wan_ifs = ifs(&mut doc.networks_with_role(NetworkRole::Wan).map(|(n, _)| n));
+    for (n, _) in doc.networks_with_role(NetworkRole::Wan) {
+        wan_ifs.extend(doc.public_iface(n).map(str::to_string));
+    }
+    wan_ifs.sort();
+    wan_ifs.dedup();
     for (name, vpn) in &doc.vpn {
         if !wan_ifs.is_empty() {
             writeln!(

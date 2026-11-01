@@ -40,7 +40,7 @@ table inet sparewall {
 		ip daddr 203.0.113.5 tcp dport 25 counter reject with tcp reset comment "forward:mail:not-here"
 		iifname "users" udp dport 67 accept comment "service:dhcp"
 		iifname { "users", "roadwarrior" } meta l4proto { tcp, udp } th dport 53 accept comment "service:dns"
-		iifname "wan" udp dport 51820 accept comment "service:vpn-roadwarrior"
+		iifname { "swwan", "wan" } udp dport 51820 accept comment "service:vpn-roadwarrior"
 		iifname vmap { "swwan" : jump in_wan, "wan" : jump in_wan }
 		counter comment "default:input"
 	}
