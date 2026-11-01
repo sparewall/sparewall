@@ -67,7 +67,7 @@ jobs:
       # suite for each release .github/upgrade-from.sh names and a
       # single-node one from the newest: on a tag (the release waits for
       # them), on main, in a manual run, and in a pull request that
-      # changes them.
+      # changes them (or the version they are picked by).
       - name: Suites
         id: suites
         env:
@@ -81,7 +81,7 @@ jobs:
           run=true
           if [ "$EVENT" = pull_request ]; then
             files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')
-            grep -qxE 'tests/vm/upgrade-test\.sh|\.github/upgrade-from\.sh|\.github/workflows/image\.yml' <<<"$files" \
+            grep -qxE 'tests/vm/upgrade-test\.sh|\.github/upgrade-from\.sh|\.github/version\.sh|\.github/workflows/image\.yml' <<<"$files" \
               || run=false
           fi
           if [ "$run" = true ]; then
