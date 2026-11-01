@@ -358,12 +358,21 @@ impl PeerService {
         more: bool,
         channel: Option<String>,
         image: Option<String>,
+        allow_downgrade: Option<bool>,
     ) -> impl Stream<Item = Reply<EventReply>> + Unpin + 'static {
         let rx = self.events.subscribe();
         let first = {
             let _change = self.changes.lock().await;
-            match crate::upgrade::start(&self.core, &self.events, &self.pair, channel, image, false)
-                .await
+            match crate::upgrade::start(
+                &self.core,
+                &self.events,
+                &self.pair,
+                channel,
+                image,
+                allow_downgrade.unwrap_or(false),
+                false,
+            )
+            .await
             {
                 Ok(plan) => json!({"type": "upgrade", "step": "plan", "plan": plan}),
                 Err(detail) => json!({"type": "upgrade", "step": "failed", "detail": detail}),

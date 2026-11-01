@@ -372,6 +372,10 @@ enum Cmd {
         /// Only report whether a newer image is available.
         #[arg(long)]
         check: bool,
+        /// Move to an older release than this node's. It may not read the
+        /// configuration: roll that back to a generation it reads first.
+        #[arg(long)]
+        allow_downgrade: bool,
     },
 }
 
@@ -1418,6 +1422,7 @@ impl App {
                 channel,
                 image,
                 check,
+                allow_downgrade,
             } => {
                 let r = self
                     .conn()
@@ -1426,7 +1431,19 @@ impl App {
                     .await??;
                 println!("booted:    {}", r.booted.as_deref().unwrap_or("unknown"));
                 println!("target:    {}", r.target);
+                if let Some(v) = &r.version {
+                    println!(
+                        "version:   {v}{}",
+                        r.running
+                            .as_deref()
+                            .map(|run| format!(" (this node: {run})"))
+                            .unwrap_or_default()
+                    );
+                }
                 println!("available: {}", if r.available { "yes" } else { "no" });
+                if let Some(n) = &r.note {
+                    println!("note:      {n}");
+                }
                 if check {
                     return Ok(());
                 }
@@ -1435,7 +1452,13 @@ impl App {
                 let plan = self
                     .conn()
                     .await?
-                    .start(channel.as_deref(), image.as_deref())
+                    .start(
+                        channel.as_deref(),
+                        image.as_deref(),
+                        // Only when asked: a node from before 0.3.2 does
+                        // not take it.
+                        allow_downgrade.then_some(true),
+                    )
                     .await??;
                 for (i, step) in plan.plan.iter().enumerate() {
                     println!("{}. {step}", i + 1);

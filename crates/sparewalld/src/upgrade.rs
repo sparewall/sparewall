@@ -25,7 +25,13 @@ use crate::service::{Core, with_core_raw};
 pub static REBOOTING: AtomicBool = AtomicBool::new(false);
 
 pub const IMAGE_REPO: &str = "ghcr.io/sparewall/sparewall";
-pub const DEFAULT_CHANNEL: &str = "testing";
+/// The channel of a node that names none and tracks no channel: a node
+/// installed from release media tracks the build it came from (#170).
+pub const DEFAULT_CHANNEL: &str = "stable";
+/// The image label with the Sparewall version (`.github/version.sh`). Not
+/// `org.opencontainers.image.version`, which is the base image's Fedora
+/// version (`45.20261030.0`) in every image, older ones included.
+pub const VERSION_LABEL: &str = "org.sparewall.version";
 
 /// Run a host command outside this service's sandbox.
 pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, String> {
@@ -49,10 +55,177 @@ fn split_ref(r: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// A Sparewall version as semver. What builds before #170 report, git
+/// describe's `0.3.0-1-gfe4180b` (one commit after 0.3.0), is read as the
+/// prerelease of the next version it now is, `0.3.1-dev.1+gfe4180b`.
+pub fn parse_version(v: &str) -> Option<semver::Version> {
+    let v = v.trim().trim_start_matches('v');
+    if let Some((rest, sha)) = v.rsplit_once("-g")
+        && !sha.is_empty()
+        && sha.chars().all(|c| c.is_ascii_hexdigit())
+        && let Some((base, n)) = rest.rsplit_once('-')
+        && n.parse::<u64>().is_ok()
+    {
+        let mut b = semver::Version::parse(base).ok()?;
+        b.pre = if b.pre.is_empty() {
+            b.patch += 1;
+            semver::Prerelease::new(&format!("dev.{n}")).ok()?
+        } else {
+            semver::Prerelease::new(&format!("{}.dev.{n}", b.pre)).ok()?
+        };
+        b.build = semver::BuildMetadata::new(&format!("g{sha}")).ok()?;
+        return Some(b);
+    }
+    semver::Version::parse(v).ok()
+}
+
+/// How a target image's version compares with this node's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Compared {
+    Newer,
+    /// The same version: a rebuild, offered if its digest differs.
+    Same,
+    Older,
+    /// Either version cannot be read (an image from before #170, or a
+    /// mirror that drops labels).
+    Unknown,
+}
+
+pub fn compare_versions(running: &str, target: Option<&str>) -> Compared {
+    match (parse_version(running), target.and_then(parse_version)) {
+        (Some(r), Some(t)) => match t.cmp_precedence(&r) {
+            std::cmp::Ordering::Greater => Compared::Newer,
+            std::cmp::Ordering::Equal => Compared::Same,
+            std::cmp::Ordering::Less => Compared::Older,
+        },
+        _ => Compared::Unknown,
+    }
+}
+
+/// What the registry says of an image, without pulling it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Remote {
+    pub digest: Option<String>,
+    pub version: Option<String>,
+}
+
+/// Read an image's digest and version label (`skopeo inspect`).
+pub fn inspect(image: &str) -> Result<Remote, String> {
+    let out = host_run(
+        "skopeo",
+        &["inspect", "--no-tags", &format!("docker://{image}")],
+    )?;
+    let v: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
+    let text = |x: &Value| x.as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    Ok(Remote {
+        digest: text(&v["Digest"]),
+        version: text(&v["Labels"][VERSION_LABEL]),
+    })
+}
+
+/// Whether a target is offered, from its version and digest against this
+/// node's: `available` is `None` when nothing can be compared (the caller
+/// falls back to asking bootc), with a note when it is not plainly newer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Offer {
+    pub available: Option<bool>,
+    pub note: Option<String>,
+}
+
+pub fn offer(running: &str, booted_digest: Option<&str>, remote: &Result<Remote, String>) -> Offer {
+    let r = match remote {
+        Ok(r) => r,
+        Err(e) => {
+            return Offer {
+                available: None,
+                note: Some(format!(
+                    "cannot read the target's version ({e}), so it is not checked to be newer"
+                )),
+            };
+        }
+    };
+    let version = r.version.as_deref().unwrap_or_default();
+    match compare_versions(running, r.version.as_deref()) {
+        Compared::Newer => Offer {
+            available: Some(true),
+            note: None,
+        },
+        Compared::Older => Offer {
+            available: Some(false),
+            note: Some(format!(
+                "the target is {version}, older than this node's {running}; \
+                 sparewall upgrade --allow-downgrade moves to it anyway"
+            )),
+        },
+        Compared::Same => match (r.digest.as_deref(), booted_digest) {
+            (Some(t), Some(b)) if t == b => Offer {
+                available: Some(false),
+                note: None,
+            },
+            (Some(_), Some(_)) => Offer {
+                available: Some(true),
+                note: Some(format!("the same version ({version}), rebuilt")),
+            },
+            _ => Offer {
+                available: None,
+                note: None,
+            },
+        },
+        Compared::Unknown => Offer {
+            available: None,
+            note: Some(
+                "the target does not say its version, so it is not checked to be newer".into(),
+            ),
+        },
+    }
+}
+
+/// Never backwards unless asked: an older release may not read the
+/// configuration (#168). Compared with this node's version, so only the
+/// node that runs the upgrade asks. A target whose version cannot be read
+/// goes ahead, as before versions were compared.
+pub fn older_refusal(
+    running: &str,
+    target: &str,
+    remote: &Result<Remote, String>,
+    allow_downgrade: bool,
+) -> Option<String> {
+    let r = remote.as_ref().ok()?;
+    (!allow_downgrade && compare_versions(running, r.version.as_deref()) == Compared::Older).then(|| {
+        format!(
+            "{target} is {}, older than this node's {running}: an older release may not read this configuration; \
+             sparewall upgrade --allow-downgrade moves to it anyway",
+            r.version.as_deref().unwrap_or_default()
+        )
+    })
+}
+
+async fn refuse_older(target: &str, allow_downgrade: bool) -> Result<(), String> {
+    if allow_downgrade {
+        return Ok(());
+    }
+    let t = target.to_string();
+    let remote = tokio::task::spawn_blocking(move || inspect(&t))
+        .await
+        .map_err(|e| e.to_string())?;
+    match older_refusal(sparewall_core::VERSION, target, &remote, allow_downgrade) {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
+/// A tag that names one build or release (`sha-…`, `0.3.1`), not a
+/// channel: an image installed from release media tracks one, and it never
+/// moves, so it does not count as the node's channel (#170).
+fn build_tag(tag: &str) -> bool {
+    tag.starts_with("sha-") || parse_version(tag).is_some()
+}
+
 /// The image to move to: an explicit `image`, else the requested channel,
-/// else the document's `updates.channel`, else the tag already tracked. A
-/// channel is a tag of the repository the node tracks (so a node installed
-/// from a mirror stays on it).
+/// else the document's `updates.channel`, else the channel already
+/// tracked, else `stable`. A channel is a tag of the repository the node
+/// tracks (so a node installed from a mirror stays on it); a tracked build
+/// or release tag is not one.
 pub fn target_ref(
     image: Option<&str>,
     channel: Option<&str>,
@@ -63,6 +236,7 @@ pub fn target_ref(
         return i.to_string();
     }
     let (repo, tracked_tag) = tracked.map_or((IMAGE_REPO, None), split_ref);
+    let tracked_tag = tracked_tag.filter(|t| !build_tag(t));
     let tag = channel
         .or(doc_channel)
         .or(tracked_tag)
@@ -198,6 +372,7 @@ pub async fn plan(
     pair: &Pair,
     channel: Option<String>,
     image: Option<String>,
+    allow_downgrade: bool,
 ) -> Result<Planned, String> {
     let (doc, node) = with_core_raw(core, events, |c| {
         Ok((c.active_document()?, c.node().to_string()))
@@ -218,6 +393,7 @@ pub async fn plan(
         tracked.as_deref(),
     );
     let Some((own, peer_addr, peer)) = doc.as_ref().and_then(|d| tunnel_addrs(d, &node)) else {
+        refuse_older(&target, allow_downgrade).await?;
         return Ok(Planned::Run {
             target: target.clone(),
             peer: None,
@@ -248,6 +424,9 @@ pub async fn plan(
             ));
         }
     }
+    // Only where this node runs it: a backup forwards to the master above,
+    // which compares with its own version (they may differ mid-upgrade).
+    refuse_older(&target, allow_downgrade).await?;
     Ok(Planned::Run {
         target: target.clone(),
         peer: Some(link),
@@ -270,9 +449,19 @@ pub async fn start(
     pair: &Pair,
     channel: Option<String>,
     image: Option<String>,
+    allow_downgrade: bool,
     forward: bool,
 ) -> Result<Vec<String>, String> {
-    match plan(core, events, pair, channel.clone(), image.clone()).await? {
+    match plan(
+        core,
+        events,
+        pair,
+        channel.clone(),
+        image.clone(),
+        allow_downgrade,
+    )
+    .await?
+    {
         Planned::Run {
             target,
             peer,
@@ -282,7 +471,15 @@ pub async fn start(
             Ok(steps)
         }
         Planned::Forward { link, master } if forward => {
-            forward_to(link, master, channel, image, events.clone()).await
+            forward_to(
+                link,
+                master,
+                channel,
+                image,
+                allow_downgrade,
+                events.clone(),
+            )
+            .await
         }
         Planned::Forward { master, .. } => Err(format!(
             "{master} asked this node to run the upgrade, but this node is the backup"
@@ -304,6 +501,7 @@ async fn forward_to(
     master: String,
     channel: Option<String>,
     image: Option<String>,
+    allow_downgrade: bool,
     events: broadcast::Sender<Value>,
 ) -> Result<Vec<String>, String> {
     let (tx, rx) = oneshot::channel();
@@ -317,7 +515,16 @@ async fn forward_to(
     std::thread::spawn(move || {
         rt.block_on(async move {
             let mut tx = Some(tx);
-            let why = relay(link, &name, channel, image, &events, &mut tx).await;
+            let why = relay(
+                link,
+                &name,
+                channel,
+                image,
+                allow_downgrade,
+                &events,
+                &mut tx,
+            )
+            .await;
             match tx.take() {
                 // The master never answered with a plan.
                 Some(t) => {
@@ -345,6 +552,7 @@ async fn relay(
     name: &str,
     channel: Option<String>,
     image: Option<String>,
+    allow_downgrade: bool,
     events: &broadcast::Sender<Value>,
     tx: &mut Option<Started>,
 ) -> String {
@@ -353,7 +561,12 @@ async fn relay(
         Err(e) => return e,
     };
     let stream = match conn
-        .start_upgrade(channel.as_deref(), image.as_deref())
+        // Only when asked: a master from before #170 does not take it.
+        .start_upgrade(
+            channel.as_deref(),
+            image.as_deref(),
+            allow_downgrade.then_some(true),
+        )
         .await
     {
         Ok(s) => s,
@@ -590,6 +803,131 @@ async fn wait_peer_master<P: UpgradePeer>(peer: &P, t: &Timing) -> Result<(), St
 mod tests {
     use super::*;
 
+    /// #170: versions sort as semver says, with what builds before #170
+    /// reported (git describe) read as the dev prerelease they now are.
+    #[test]
+    fn versions_sort_as_releases_do() {
+        let order = [
+            "0.3.0",
+            "0.3.0-1-gfe4180b",
+            "0.3.1-dev.2+gabc",
+            "0.3.1-rc1",
+            "0.3.1-rc1-3-gabcdef1",
+            "0.3.1-rc2",
+            "0.3.1",
+            "0.3.2-dev.1+gdef",
+            "0.4.0-rc1",
+            "v0.4.0",
+        ];
+        for w in order.windows(2) {
+            assert_eq!(
+                compare_versions(w[0], Some(w[1])),
+                Compared::Newer,
+                "{} < {}",
+                w[0],
+                w[1]
+            );
+            assert_eq!(
+                compare_versions(w[1], Some(w[0])),
+                Compared::Older,
+                "{} > {}",
+                w[1],
+                w[0]
+            );
+        }
+        assert_eq!(
+            parse_version("0.3.0-1-gfe4180b").unwrap().to_string(),
+            "0.3.1-dev.1+gfe4180b"
+        );
+        // Build metadata does not make a version newer.
+        assert_eq!(
+            compare_versions("0.3.2-dev.1+gaaa", Some("0.3.2-dev.1+gbbb")),
+            Compared::Same
+        );
+        assert_eq!(compare_versions("0.3.1", None), Compared::Unknown);
+        assert_eq!(
+            compare_versions("0.3.1", Some("not a version")),
+            Compared::Unknown
+        );
+    }
+
+    #[test]
+    fn an_older_target_is_refused_unless_asked() {
+        let at = |v: &str| -> Result<Remote, String> {
+            Ok(Remote {
+                digest: Some("sha256:x".into()),
+                version: Some(v.into()),
+            })
+        };
+        let e = older_refusal("0.3.2", "r:stable", &at("0.3.1"), false).unwrap();
+        assert!(
+            e.contains("r:stable is 0.3.1, older than this node's 0.3.2"),
+            "{e}"
+        );
+        assert_eq!(older_refusal("0.3.2", "r:stable", &at("0.3.1"), true), None);
+        assert_eq!(
+            older_refusal("0.3.1", "r:stable", &at("0.3.2"), false),
+            None
+        );
+        // Mid-upgrade the nodes differ: the master, which runs it, compares
+        // with its own version, so what a backup runs does not matter.
+        assert_eq!(
+            older_refusal("0.3.2", "r:stable", &at("0.3.2"), false),
+            None
+        );
+        assert_eq!(
+            older_refusal("0.3.2", "r:x", &Err("no route".into()), false),
+            None
+        );
+    }
+
+    #[test]
+    fn an_offer_compares_versions_then_digests() {
+        let remote = |v: Option<&str>, d: &str| -> Result<Remote, String> {
+            Ok(Remote {
+                digest: Some(d.into()),
+                version: v.map(String::from),
+            })
+        };
+        let newer = offer(
+            "0.3.1",
+            Some("sha256:a"),
+            &remote(Some("0.3.2"), "sha256:b"),
+        );
+        assert_eq!((newer.available, newer.note), (Some(true), None));
+        let older = offer(
+            "0.3.2",
+            Some("sha256:b"),
+            &remote(Some("0.3.1"), "sha256:a"),
+        );
+        assert_eq!(older.available, Some(false));
+        assert!(older.note.unwrap().contains("--allow-downgrade"));
+        let same = offer(
+            "0.3.1",
+            Some("sha256:a"),
+            &remote(Some("0.3.1"), "sha256:a"),
+        );
+        assert_eq!((same.available, same.note), (Some(false), None));
+        let rebuilt = offer(
+            "0.3.1",
+            Some("sha256:a"),
+            &remote(Some("0.3.1"), "sha256:b"),
+        );
+        assert_eq!(rebuilt.available, Some(true));
+        assert!(rebuilt.note.unwrap().contains("rebuilt"));
+        let unlabelled = offer("0.3.1", Some("sha256:a"), &remote(None, "sha256:b"));
+        assert_eq!(unlabelled.available, None);
+        assert!(
+            unlabelled
+                .note
+                .unwrap()
+                .contains("does not say its version")
+        );
+        let unreachable = offer("0.3.1", None, &Err("no route to host".into()));
+        assert_eq!(unreachable.available, None);
+        assert!(unreachable.note.unwrap().contains("no route to host"));
+    }
+
     #[test]
     fn target_from_channel() {
         let tracked = "ghcr.io/sparewall/sparewall:testing";
@@ -615,8 +953,17 @@ mod tests {
         );
         assert_eq!(
             target_ref(None, None, None, Some("mirror:5000/sparewall@sha256:ab")),
-            "mirror:5000/sparewall:testing"
+            "mirror:5000/sparewall:stable"
         );
+        // A build or release tag, as release media leave, is no channel:
+        // the default one, stable (#170).
+        for t in ["sha-fe4180be88fa", "0.3.1", "v0.2.0", "0.4.0-rc1"] {
+            assert_eq!(
+                target_ref(None, None, None, Some(&format!("{IMAGE_REPO}:{t}"))),
+                "ghcr.io/sparewall/sparewall:stable",
+                "{t}"
+            );
+        }
         assert_eq!(
             target_ref(Some("r/x:1"), Some("stable"), None, ghcr),
             "r/x:1"

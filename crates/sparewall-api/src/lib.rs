@@ -617,6 +617,7 @@ pub trait PeerUpgradeProxy {
         &mut self,
         channel: Option<&str>,
         image: Option<&str>,
+        allow_downgrade: Option<bool>,
     ) -> zlink::Result<impl futures_util::Stream<Item = zlink::Result<Result<EventReply, PeerError>>>>;
 }
 
@@ -656,6 +657,16 @@ pub struct UpgradeCheckReply {
     pub booted: Option<String>,
     pub target: String,
     pub available: bool,
+    /// The target's Sparewall version, if its image says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// This node's Sparewall version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running: Option<String>,
+    /// Why the target is or is not offered, when it is not plainly newer:
+    /// older than this node, the same version, or no version to compare.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -679,5 +690,6 @@ pub trait UpgradeProxy {
         &mut self,
         channel: Option<&str>,
         image: Option<&str>,
+        allow_downgrade: Option<bool>,
     ) -> zlink::Result<Result<UpgradeStartReply, FirewallError>>;
 }

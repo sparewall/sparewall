@@ -95,4 +95,23 @@ git clone -q "file://$t/origin.git" "$t/ci" 2>/dev/null
 
 [ "$(GITHUB_REF=refs/tags/v1.2.3-rc1 GITHUB_REF_NAME=v1.2.3-rc1 "$repo/.github/version.sh")" = 1.2.3-rc1 ] \
     || fail "version.sh does not take the version from the tag"
+
+# Between tags, a prerelease of what comes next, so builds sort by semver
+# (#170). version.sh runs in the repository it describes.
+versions() { # tag: what a build N commits after it reports
+    git -C "$t/v" tag -f "$1" >/dev/null
+    git -C "$t/v" commit -q --allow-empty -m next
+    git -C "$t/v" commit -q --allow-empty -m next
+    (cd "$t/v" && env -u GITHUB_REF "$repo/.github/version.sh")
+}
+git init -q -b main "$t/v"
+git -C "$t/v" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m first
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+[[ $(versions v1.2.3) =~ ^1\.2\.4-dev\.2\+g[0-9a-f]{12}$ ]] \
+    || fail "version.sh after v1.2.3: $(cd "$t/v" && "$repo/.github/version.sh")"
+[[ $(versions v1.3.0-rc1) =~ ^1\.3\.0-rc1\.dev\.2\+g[0-9a-f]{12}$ ]] \
+    || fail "version.sh after v1.3.0-rc1: $(cd "$t/v" && "$repo/.github/version.sh")"
+git -C "$t/v" tag -f v1.3.0 >/dev/null
+[ "$(cd "$t/v" && env -u GITHUB_REF "$repo/.github/version.sh")" = 1.3.0 ] \
+    || fail "version.sh on an untagged build of a tagged commit"
 echo "release tag checks: ok"

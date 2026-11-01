@@ -107,8 +107,14 @@ FROM quay.io/fedora/fedora-bootc:45
 ARG KEA_IMAGE=ghcr.io/sparewall/kea:testing
 ARG UNBOUND_IMAGE=ghcr.io/sparewall/unbound:testing
 ARG LEGO_IMAGE=ghcr.io/sparewall/lego:testing
+# The Sparewall version (.github/version.sh), which a node reads from the
+# registry to tell a newer image from an older one (#170). A label of its
+# own: org.opencontainers.image.version is the base image's (Fedora's
+# 45.20261030.0), which older Sparewall images carry too.
+ARG SPAREWALL_VERSION=
 
 LABEL org.opencontainers.image.title="Sparewall" \
+      org.sparewall.version="${SPAREWALL_VERSION}" \
       org.opencontainers.image.description="Image-based Linux firewall: one node or an HA pair, configured from one versioned document" \
       org.opencontainers.image.source="https://github.com/sparewall/sparewall" \
       org.opencontainers.image.url="https://sparewall.org" \
