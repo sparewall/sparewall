@@ -1,0 +1,319 @@
+#!/bin/bash
+# Two-NIC nodes behind plain switches, with no VLANs at all (#177): the WAN
+# on one port, and on the other one segment that is the LAN, the
+# management network and, in a pair, the sync network. The nodes have no
+# other NIC: they are managed over the LAN, from sw-tadmin, as a site's
+# admin would.
+#
+#   1. A standalone node: management, DHCP and forwarding on the LAN NIC;
+#      management.sources admits the admin's SSH and refuses another LAN
+#      host's, which may still ping the node.
+#   2. A pair: pairing with the sync tunnel over the LAN, Kea's lease and
+#      conntrack replication over it, and a failover that a connection
+#      through the pair survives, after which the client renews its lease
+#      from the new master.
+#
+#   tests/vm/two-nic-test.sh WORKDIR
+#       (WORKDIR/output/qcow2/disk.qcow2 from build-disk.sh)
+set -euo pipefail
+WORK=${1:?usage: two-nic-test.sh WORKDIR}
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$WORK"
+
+log() { printf '\n=== %s\n' "$*"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ns() { local n=$1; shift; sudo ip netns exec "sw-$n" "$@"; }
+wait_for() { # seconds description command...
+    local deadline=$((SECONDS + $1)) what=$2
+    shift 2
+    until "$@" >/dev/null 2>&1; do
+        [ $SECONDS -lt $deadline ] || fail "timed out waiting for $what"
+        sleep 3
+    done
+}
+
+#        name  wan MAC            lan MAC            wan tap  lan tap  LAN address
+FW1=(fw1 52:54:00:21:00:01 52:54:00:21:00:02 tnwan1 tnlan1 192.168.1.2)
+FW2=(fw2 52:54:00:22:00:01 52:54:00:22:00:02 tnwan2 tnlan2 192.168.1.3)
+ADMIN_MAC=52:54:00:12:34:10
+LEASES=/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv
+
+addr_of() { case $1 in fw1) echo "${FW1[5]}" ;; fw2) echo "${FW2[5]}" ;; esac; }
+
+# Everything the admin does goes over the LAN, from sw-tadmin.
+at() { # node command...
+    local a; a=$(addr_of "$1"); shift
+    timeout "${AT_TIMEOUT:-90}" sudo ip netns exec sw-tadmin \
+        ssh -i "$WORK/id_ed25519" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 -o LogLevel=ERROR -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+        "admin@$a" "$@"
+}
+status() { at "$1" 'sudo sparewall status -o json'; }
+role() { status "$1" | jq -r .role; }
+in_sync() { status "$1" | jq -e '.sync.state == "in-sync"'; }
+is_master() { [ "$(role "$1")" = MASTER ]; }
+healthy() { [ "$(status "$1" | jq -r .health.level)" = ok ]; }
+
+cleanup() {
+    local rc=$?
+    if [ $rc -ne 0 ]; then
+        for f in flow.log; do [ -f "$f" ] && { echo "--- $f"; tail -5 "$f"; }; done
+        for n in fw1 fw2; do
+            [ -f "$n.pid" ] || continue
+            echo "--- $n"
+            at "$n" 'sudo journalctl -b -u sparewalld --no-pager | tail -40
+                timeout 20 sudo sparewall status; ip -br addr; ip -d link show type vlan
+                sudo nft list chain inet sparewall input; sudo wg show swsync 2>&1' 2>/dev/null \
+                || sudo tail -40 "$n.serial" || true
+        done
+    fi
+    sudo pkill -f "$HERE/echo.py" 2>/dev/null || true
+    stop_vm fw1
+    stop_vm fw2
+}
+trap cleanup EXIT
+
+stop_vm() { # node
+    [ -f "$1.pid" ] || return 0
+    sudo kill "$(sudo cat "$1.pid")" 2>/dev/null || true
+    rm -f "$1.pid"
+    sleep 2
+}
+
+# A VM with exactly two NICs, the WAN's and the LAN's, and its identity:
+# the LAN NIC is the management NIC.
+boot() { # name wan-mac lan-mac wan-tap lan-tap address
+    cp output/qcow2/disk.qcow2 "$1.qcow2"
+    cat > "$1.json" <<JSON
+{"node": "$1", "ssh_keys": ["$(cat id_ed25519.pub)"], "management": {"nic": "$3", "address": "$6/24"}}
+JSON
+    sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 1536 -smp 2 \
+        -drive "file=$1.qcow2,if=virtio,format=qcow2" \
+        -netdev "tap,id=n0,ifname=$4,script=no,downscript=no" \
+        -device "virtio-net-pci,netdev=n0,mac=$2" \
+        -netdev "tap,id=n1,ifname=$5,script=no,downscript=no" \
+        -device "virtio-net-pci,netdev=n1,mac=$3" \
+        -smbios "type=11,value=io.systemd.credential.binary:sparewall.identity=$(base64 -w0 "$1.json")" \
+        -display none -serial "file:$1.serial" -pidfile "$1.pid" -daemonize
+}
+
+# A host on a bridge, in a namespace of its own.
+host() { # name bridge mac [address/len]
+    sudo ip netns add "sw-$1"
+    sudo ip link add "v-$1" type veth peer name eth0 netns "sw-$1"
+    sudo ip link set "v-$1" master "$2" up
+    ns "$1" ip link set lo up
+    ns "$1" ip link set eth0 address "$3" up
+    [ -z "${4:-}" ] || ns "$1" ip addr add "$4" dev eth0
+}
+
+cat > "$WORK/udhcpc.sh" <<'SH'
+#!/bin/sh
+case "$1" in
+bound|renew)
+    ip addr flush dev "$interface"
+    ip addr add "$ip/${mask:-24}" dev "$interface"
+    [ -n "$router" ] && ip route replace default via "${router%% *}"
+    ;;
+esac
+SH
+chmod +x "$WORK/udhcpc.sh"
+lease() { # namespace
+    ns "$1" busybox udhcpc -i eth0 -n -q -t 10 -T 3 -s "$WORK/udhcpc.sh" >/dev/null 2>&1 \
+        || fail "no DHCP lease on $1"
+    ns "$1" ip -4 -br addr show dev eth0 | awk '{print $3}' | cut -d/ -f1
+}
+
+log "two plain switches, no VLANs"
+for b in tnwan tnlan; do
+    sudo ip link add "$b" type bridge
+    sudo ip link set "$b" up
+done
+for t in "${FW1[3]}" "${FW2[3]}"; do sudo ip tuntap add "$t" mode tap; sudo ip link set "$t" master tnwan up; done
+for t in "${FW1[4]}" "${FW2[4]}"; do sudo ip tuntap add "$t" mode tap; sudo ip link set "$t" master tnlan up; done
+# The ISP's gateway (203.0.113.6), with an outside address behind it: an
+# echo server, and one that answers with the address a connection came
+# from.
+host tisp tnwan 02:00:00:00:21:06 203.0.113.6/29
+ns tisp ip addr add 198.18.0.1/32 dev lo
+ns tisp python3 "$HERE/echo.py" server &
+ns tisp python3 "$HERE/echo.py" whoami &
+# On the LAN: the admin (by its reservation's address), another host,
+# and a DHCP client.
+host tadmin tnlan "$ADMIN_MAC" 192.168.1.10/24
+host tother tnlan 02:00:00:00:21:20 192.168.1.20/24
+host tclient tnlan 02:00:00:00:21:30
+[ -f id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f id_ed25519
+sleep 1
+
+# --- 1. standalone -----------------------------------------------------------
+log "a standalone two-NIC node, managed over its LAN port"
+boot "${FW1[@]}"
+wait_for 900 "fw1 SSH over the LAN" at fw1 true
+cat > site.yaml <<EOF
+schema: 1
+cluster:
+  nodes: [fw1]
+management:
+  network: lan
+  sources: [192.168.1.10]
+ports:
+  fw1:
+    wan0: { nic: "${FW1[1]}" }
+    lan0: { nic: "${FW1[2]}" }
+networks:
+  wan:
+    port: wan0
+    role: wan
+    addresses: { fw1: 203.0.113.2/29 }
+    gateway: 203.0.113.6
+  lan:
+    port: lan0
+    role: management
+    addresses: { fw1: 192.168.1.2/24 }
+zones:
+  wan: { networks: [wan] }
+  lan: { networks: [lan] }
+policy:
+  lan->wan: { action: accept, nat: masquerade }
+  lan->self:
+    action: drop
+    rules:
+      ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }
+      dns: { order: 200, proto: udp, dport: 53, action: accept }
+  wan->self: { action: drop }
+dhcp:
+  lan:
+    pool: 192.168.1.100-192.168.1.199
+    reservations:
+      admin: { mac: "$ADMIN_MAC", address: 192.168.1.10, hostname: admin }
+EOF
+at fw1 'cat > /tmp/site.yaml' < site.yaml
+# The management port is renamed (mgmt0 -> lan0), which may cut this
+# session.
+at fw1 'sudo sparewall apply -f /tmp/site.yaml --confirm 0' || true
+sleep 5
+wait_for 120 "fw1 SSH after the first apply" at fw1 true
+wait_for 300 "fw1 healthy" healthy fw1
+[ -z "$(at fw1 'ip -d -br link show type vlan')" ] || fail "fw1 has VLAN devices: $(at fw1 'ip -d -br link show type vlan')"
+
+log "DHCP and forwarding on the LAN NIC"
+c=$(lease tclient)
+case $c in 192.168.1.1[0-9][0-9]) ;; *) fail "the client's lease $c is not from the pool" ;; esac
+seen=$(ns tclient python3 "$HERE/echo.py" ask 198.18.0.1 7002) || fail "the client cannot reach the outside"
+[ "$seen" = 203.0.113.2 ] || fail "the client reached the outside as $seen, not 203.0.113.2"
+
+log "management.sources: the admin's SSH only; the rest of the LAN still pings the node"
+ns tother ping -c 2 -W 2 192.168.1.2 >/dev/null || fail "another LAN host cannot ping the node (lan->self allows it)"
+if ns tother timeout 5 bash -c 'exec 3<>/dev/tcp/192.168.1.2/22' 2>/dev/null; then
+    fail "another LAN host reached the node's SSH"
+fi
+if ns tother timeout 5 bash -c 'exec 3<>/dev/tcp/192.168.1.2/443' 2>/dev/null; then
+    fail "another LAN host reached the node's HTTPS"
+fi
+ns tadmin timeout 5 bash -c 'exec 3<>/dev/tcp/192.168.1.2/443' \
+    || fail "the admin cannot reach the node's HTTPS"
+stop_vm fw1
+
+# --- 2. pair ---------------------------------------------------------------
+log "a pair of two-NIC nodes, the sync tunnel over the LAN"
+boot "${FW1[@]}"
+boot "${FW2[@]}"
+wait_for 900 "fw1 SSH over the LAN" at fw1 true
+wait_for 900 "fw2 SSH over the LAN" at fw2 true
+k1=$(status fw1 | jq -r .sync.sync_public_key)
+k2=$(status fw2 | jq -r .sync.sync_public_key)
+cat > pair.yaml <<EOF
+schema: 1
+cluster:
+  nodes: [fw1, fw2]
+  sync_network: lan
+  sync_keys: { fw1: "$k1", fw2: "$k2" }
+  vrrp:
+    priority: { fw1: 110, fw2: 100 }
+management:
+  network: lan
+  sources: [192.168.1.10]
+ports:
+  fw1:
+    wan0: { nic: "${FW1[1]}" }
+    lan0: { nic: "${FW1[2]}" }
+  fw2:
+    wan0: { nic: "${FW2[1]}" }
+    lan0: { nic: "${FW2[2]}" }
+networks:
+  wan:
+    port: wan0
+    role: wan
+    addresses: { fw1: 203.0.113.2/29, fw2: 203.0.113.3/29 }
+    vip: 203.0.113.1/29
+    vrid: 10
+    gateway: 203.0.113.6
+  lan:
+    port: lan0
+    role: management
+    addresses: { fw1: 192.168.1.2/24, fw2: 192.168.1.3/24 }
+    vip: 192.168.1.1/24
+    vrid: 20
+zones:
+  wan: { networks: [wan] }
+  lan: { networks: [lan] }
+policy:
+  lan->wan: { action: accept, nat: { snat: 203.0.113.1 } }
+  lan->self:
+    action: drop
+    rules:
+      ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }
+      dns: { order: 200, proto: udp, dport: 53, action: accept }
+  wan->self: { action: drop }
+dhcp:
+  lan:
+    pool: 192.168.1.100-192.168.1.199
+    reservations:
+      admin: { mac: "$ADMIN_MAC", address: 192.168.1.10, hostname: admin }
+EOF
+for n in fw1 fw2; do
+    at "$n" 'cat > /tmp/pair.yaml' < pair.yaml
+    at "$n" 'sudo sparewall apply -f /tmp/pair.yaml --confirm 0' || true
+done
+sleep 5
+wait_for 300 "fw1 in sync" in_sync fw1
+wait_for 120 "fw2 in sync" in_sync fw2
+wait_for 120 "fw1 master" is_master fw1
+[ "$(role fw2)" = BACKUP ] || fail "fw2 is $(role fw2), not BACKUP"
+at fw1 'sudo wg show swsync endpoints' | grep -q '192.168.1.3:' \
+    || fail "fw1's sync tunnel does not go to fw2's LAN address: $(at fw1 'sudo wg show swsync endpoints')"
+
+log "a lease replicated over the LAN (Kea HA in the tunnel)"
+ns tclient ip addr flush dev eth0
+LEASE=$(lease tclient)
+fw2_has_lease() { at fw2 "sudo grep -q '^$LEASE,02:00:00:00:21:30' $LEASES"; }
+wait_for 60 "fw2 holds the lease of $LEASE" fw2_has_lease
+
+log "a connection through the pair, replicated over the LAN"
+ns tclient python3 "$HERE/echo.py" client 198.18.0.1 > flow.log 2>&1 &
+echoes() { tail -1 flow.log | grep -qE '^[0-9]+$' && tail -1 flow.log; }
+sleep 3
+before=$(echoes) || fail "no echoes through fw1: $(cat flow.log)"
+replicated() { at fw2 'sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -e' | grep -q 'dport=7000'; }
+wait_for 30 "the connection in fw2's conntrackd cache" replicated
+
+log "failover: fw1 goes; fw2 takes the gateway, and the connection carries on"
+stop_vm fw1
+wait_for 120 "fw2 master" is_master fw2
+sleep 5
+grep -q broken flow.log && fail "the connection broke in the failover: $(tail -5 flow.log)"
+after=$(echoes) || fail "the connection stalled: $(tail -5 flow.log)"
+[ "$after" -gt "$before" ] || fail "the connection stalled ($before, $after)"
+seen=$(ns tclient python3 "$HERE/echo.py" ask 198.18.0.1 7002) || fail "the client cannot reach the outside through fw2"
+[ "$seen" = 203.0.113.1 ] || fail "the client reached the outside as $seen, not the gateway address"
+
+log "the client renews its lease from fw2"
+# Kea's standby serves once it finds its partner gone, which takes a
+# while: asked until it answers.
+same_lease() {
+    ns tclient busybox udhcpc -i eth0 -n -q -t 3 -T 3 -s "$WORK/udhcpc.sh" >/dev/null 2>&1 || return 1
+    [ "$(ns tclient ip -4 -br addr show dev eth0 | awk '{print $3}' | cut -d/ -f1)" = "$LEASE" ]
+}
+wait_for 180 "the client to renew $LEASE from fw2" same_lease
+log "two-NIC PASS (standalone, and a pair with management and sync on the LAN)"

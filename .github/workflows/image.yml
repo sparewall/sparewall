@@ -112,6 +112,7 @@ jobs:
         run: |
           suites='[{"suite": "main", "name": "build, boot, publish"},
             {"suite": "faults", "name": "pair faults"},
+            {"suite": "two-nic", "name": "two NICs, no VLANs"},
             {"suite": "installer", "name": "offline install"}]'
           run=true
           if [ "$EVENT" = pull_request ]; then
@@ -292,6 +293,16 @@ jobs:
           echo "$TOKEN" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
           tests/vm/build-disk.sh "$LOCAL" "$RUNNER_TEMP/vm"
           tests/vm/pair-faults.sh "$RUNNER_TEMP/vm"
+
+      - name: Two NICs, no VLANs
+        # The layout most sites start with (#177), as a main suite.
+        if: matrix.suite == 'two-nic'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          tests/vm/build-disk.sh "$LOCAL" "$RUNNER_TEMP/vm"
+          tests/vm/two-nic-test.sh "$RUNNER_TEMP/vm"
 
       - name: Offline install
         if: matrix.suite == 'installer'

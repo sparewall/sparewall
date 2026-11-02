@@ -879,6 +879,18 @@
             "description": "The network with role `management`.",
             "type": "string"
           },
+          "sources": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Match"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who on the management network reaches SSH and HTTPS through the\nanti-lockout rule: addresses, prefixes, ranges or `@objects`. Unset,\nevery host there does. Worth setting when the management network is\nalso an ordinary one, such as a two-NIC box's LAN (#177).",
+            "x-since": 3
+          },
           "ssh": {
             "$ref": "#/components/schemas/Document.ManagementSsh",
             "description": "SSH to the node."

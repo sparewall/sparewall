@@ -241,6 +241,11 @@ export interface Schemas {
     "anti_lockout"?: boolean;
     /** The network with role `management`. */
     "network": string;
+    /** Who on the management network reaches SSH and HTTPS through the
+     * anti-lockout rule: addresses, prefixes, ranges or `@objects`. Unset,
+     * every host there does. Worth setting when the management network is
+     * also an ordinary one, such as a two-NIC box's LAN (#177). */
+    "sources"?: Schemas["Document.Match"] | null;
     /** SSH to the node. */
     "ssh"?: Schemas["Document.ManagementSsh"];
     /** Serve the web UI and the HTTP API (`sparewall-httpd`) on the HTTPS

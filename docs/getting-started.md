@@ -4,6 +4,12 @@ This guide takes one node from a fresh install to a working standalone
 firewall. See [pairing.md](pairing.md) to grow it into an HA pair and
 [operations.md](operations.md) for day-to-day use.
 
+It assumes the usual hardware: a mini PC with two network ports behind
+a plain switch, with no VLANs. One port is the WAN; the other is the
+LAN, which is also how you manage the node. A VLAN-aware switch, with
+management (and in a pair, sync) on networks of their own, is the
+[advanced layout](#advanced-a-vlan-trunk) at the end.
+
 > Sparewall is pre-release software. Expect rough edges.
 
 ## 1. Get an image
@@ -74,9 +80,12 @@ A fresh node needs its name, an admin SSH key and its management NIC:
 ```json
 {"node": "fw1",
  "ssh_keys": ["ssh-ed25519 AAAA... you@laptop"],
- "management": {"nic": "52:54:00:aa:00:01", "vlan": 99,
-                "address": "10.0.99.2/24", "gateway": "10.0.99.1"}}
+ "management": {"nic": "52:54:00:aa:00:02",
+                "address": "192.168.1.1/24"}}
 ```
+
+The management NIC is the LAN port: the one your workstation's switch is
+on. The address is the one the LAN will use as its gateway.
 
 The node's name is its hostname too, and the one it has in the
 configuration document: up to 31 lowercase letters, digits and `-`,
@@ -116,8 +125,11 @@ The node boots into **bootstrap mode**: only the management port is up
 the `admin` user, and nothing is forwarded.
 
 ```shell
-ssh admin@10.0.99.2 sudo sparewall status
+ssh admin@192.168.1.1 sudo sparewall status
 ```
+
+Until the first configuration serves DHCP, give your workstation an
+address on that subnet by hand (`192.168.1.10/24`).
 
 This first `ssh` also asks you to accept the node's host key. Do it
 before using the `sparewall` CLI from your workstation: the CLI runs ssh
@@ -125,8 +137,15 @@ non-interactively, so it cannot ask, and stops at an unknown host key.
 
 ## 3. Write the configuration document
 
-Start from [`examples/standalone.yaml`](../examples/standalone.yaml). Use
-`sparewall explain` to read about any field:
+Start from [`examples/two-nic.yaml`](../examples/two-nic.yaml): the WAN
+on one port, and on the other a `lan` network that is the management
+network too. It is in a zone like any other, with DHCP, DNS and policy;
+the anti-lockout rule keeps SSH and HTTPS open to the node from it
+whatever `lan->self` says. `management.sources` names who may use them
+(your workstation, by its DHCP reservation); without it, every host on
+the LAN can reach the node's SSH and HTTPS (it still needs a key, and the
+web UI a login), and validation warns. Use `sparewall explain` to read
+about any field:
 
 ```shell
 sparewall explain networks.users
@@ -141,7 +160,7 @@ PCI path), and every network rides on a port role, optionally tagged.
 From your workstation, add a context and apply with a confirm window:
 
 ```shell
-sparewall context add home --host admin@10.0.99.2
+sparewall context add home --host admin@192.168.1.1
 sparewall apply -f site.yaml --confirm 120
 ```
 
@@ -219,3 +238,14 @@ with the console password.
 See [the web UI and HTTP API](operations.md#the-web-ui-and-http-api) in
 operations.md for the pages, users and roles, and for calling the API
 with a token.
+
+## Advanced: a VLAN trunk
+
+With a VLAN-aware switch, one port can carry every network as a tagged
+VLAN, and management can have a segment of its own that no client
+reaches: [`examples/standalone.yaml`](../examples/standalone.yaml) for a
+single node on a trunk, and [`examples/pair.yaml`](../examples/pair.yaml)
+for a pair with separate management and sync VLANs. The identity then
+names the management VLAN (`"vlan": 99`), and the management network has
+no zone. [`examples/two-nic-pair.yaml`](../examples/two-nic-pair.yaml) is
+the no-VLAN pair: management and sync on the LAN too.

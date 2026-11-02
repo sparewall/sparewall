@@ -140,7 +140,7 @@ One versioned document describes a whole deployment, one node or a pair, and the
 | --- | --- | --- |
 | `schema` | The oldest schema revision that reads the document, set by the coordinator | No |
 | `cluster` | Node names (one or two), VRRP timing, which network carries sync | No |
-| `management` | Which network is management; anti-lockout switch | No |
+| `management` | Which network is management; anti-lockout switch and who it admits (`sources`) | No |
 | `ports` | Per node: port role → NIC (MAC or PCI path) or bond (members, mode, LACP options); MTU; offload overrides | Yes |
 | `networks` | Name → port role, VLAN, role (`wan`, `management`, `sync`, service), addresses, `vip`, `extra_vips`, `vrid`, MTU, WAN DHCP client | Addresses per node |
 | `zones` | Name → member networks; `self` is built in | No |
@@ -512,11 +512,20 @@ Every script is validated with `nft -c -f` before loading, and the previous gene
 
 ## High availability and standalone mode
 
-A pair is active/standby: keepalived moves the gateway addresses, conntrackd moves connection state with them, and the DHCP provider runs its own HA protocol. All replication runs over a dedicated sync VLAN inside a WireGuard tunnel; no dedicated sync cable is required.
+A pair is active/standby: keepalived moves the gateway addresses, conntrackd moves connection state with them, and the DHCP provider runs its own HA protocol. All replication runs inside a WireGuard tunnel between the nodes, over the sync network: by default the LAN itself, on two-NIC nodes behind a plain switch (#177), or a dedicated sync VLAN on a trunk. No dedicated sync cable is required.
+
+### Sync over the LAN
+
+On the usual hardware, two-NIC nodes behind plain switches, `cluster.sync_network` names the LAN, which is also the management network: the tunnel's endpoints are the nodes' LAN addresses, and nft accepts the tunnel's UDP port on the LAN link only from the peer's address.
+
+- **Confidentiality and integrity do not rest on a separate segment.** Replication, DHCP HA and configuration pushes all travel inside WireGuard, which drops anything not authenticated by the peer's key, and the tunnel's addresses are unreachable from the LAN, so a LAN client cannot read, alter or inject sync traffic or reach the services behind the tunnel.
+- **What a hostile LAN host can still do.** nft admits the tunnel's UDP port only from the peer's address, but a host on the same segment can spoof that address. WireGuard then rejects what it sends, yet the handshake path still processes it: a flood can cost the nodes CPU and packets, and delay replication. That is the case for a dedicated sync VLAN on sites whose LAN clients are untrusted (a guest network on the same segment, for instance); on a LAN whose hosts are the site's own, the shared segment is the practical default.
+- **Failures.** Sync then fails only together with the LAN link, which is the "master loses its whole trunk" case: health fails and VRRP moves the gateway, as it does today. It never fails alone while VRRP stays up, so the split-brain argument for a separate VLAN does not apply.
+- **The trade-off** is the management plane's: management and sync share the clients' broadcast domain. A dedicated sync and management VLAN (below) isolates both, at the cost of a VLAN-aware switch.
 
 ### Sync over a shared trunk
 
-- **Isolation.** `sync` is its own VLAN, never routed or bridged anywhere. nft on it accepts only WireGuard from the peer's sync address. Every switch port between the nodes must carry it.
+- **Isolation.** `sync` is its own VLAN, never routed or bridged anywhere. nft on it accepts only WireGuard from the peer's sync address, and drops everything else that arrives on it. Every switch port between the nodes must carry it.
 - **Authentication and encryption.** conntrackd's protocol has neither, so it runs inside a WireGuard tunnel between the nodes' sync addresses, configured by networkd. DHCP HA and the coordinator's config push use the same tunnel. Each node generates its sync key at first boot; only public keys appear in the document.
 - **Split-brain behaviour.** VRRP adverts stay on the service VLANs, never on `sync`. Losing only the sync VLAN degrades state and lease replication but cannot move or duplicate gateway addresses; losing a whole trunk takes VRRP and sync down together, which is what VRRP is built to handle. Sync loss raises its own alert.
 - **Contention (optional).** The sync VLAN can carry an 802.1p priority (networkd `EgressQOSMaps=`), honoured by switches and OVS.
@@ -775,14 +784,18 @@ The data plane (networkd, nft, keepalived, conntrackd, WireGuard) stays in the r
 
 | Service | Listens on | Restriction |
 | --- | --- | --- |
-| sshd | Management addresses | `RestrictNetworkInterfaces=` to the management interface; keys only; no root login over SSH |
-| Coordinator HTTPS (health, metrics) | Management addresses | `RestrictNetworkInterfaces=`; `IPAddressAllow=` for the management prefix |
+| sshd | All addresses | nft: the anti-lockout rule admits it from the management network only (narrowed by `management.sources`), or a zone's `->self` policy; keys only; no root login over SSH |
+| Coordinator HTTPS (health, metrics, web UI) | All addresses | nft, as sshd; the web UI and API need a login or token |
 | DHCP provider | Service networks | Host network; minimal capabilities; nft limits it to DHCP |
 | DNS resolver | Gateway addresses of served networks | Host network; may only query out through the WAN |
 | chrony | Served networks (NTP) | Host network |
 | Remote-access WireGuard | WAN, one UDP port | Kernel; silent to packets without a valid key |
 
 Nothing else listens on the WAN. ICMP is rate-limited and invalid packets are dropped. The anti-lockout rule keeps SSH and HTTPS reachable from the management network unless an `admin` disables it.
+
+The management network may be a network of its own, in no zone, which no client reaches, or, on two-NIC hardware with no VLANs, the LAN itself (#177): in a zone like any other, served DHCP and DNS, with its zone policy applying to everything but SSH and HTTPS to the node. Those the anti-lockout rule admits first, so `lan->self: drop` cannot lock the admin out; `management.sources` narrows it to the admin's addresses, and without it validation warns that every host on the LAN reaches them. The shared LAN is the default layout; a separate management VLAN is the stronger one, for sites with a VLAN-aware switch.
+
+The design once planned `RestrictNetworkInterfaces=` and `IPAddressAllow=` on sshd and the coordinator as well; they are not rendered, so nftables is the one gate, and the rows above say so.
 
 ### Host hardening
 

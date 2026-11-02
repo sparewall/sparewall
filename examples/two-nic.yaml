@@ -1,0 +1,43 @@
+# A standalone firewall on a two-NIC mini PC behind a plain switch, with no
+# VLANs: the WAN on one port; on the other, one segment that is the LAN
+# and management at once (#177).
+schema: 1
+cluster:
+  nodes: [fw1]
+management:
+  network: lan
+  # The admin's workstation, by its DHCP reservation: other LAN hosts do
+  # not reach SSH and HTTPS.
+  sources: [192.168.1.10]
+ports:
+  fw1:
+    wan0: { nic: "52:54:00:aa:00:01" }
+    lan0: { nic: "52:54:00:aa:00:02" }
+networks:
+  wan:
+    port: wan0
+    role: wan
+    dhcp_client: true
+  lan:
+    port: lan0
+    role: management
+    addresses: { fw1: 192.168.1.1/24 }
+zones:
+  wan: { networks: [wan] }
+  lan: { networks: [lan] }
+policy:
+  lan->wan: { action: accept, nat: masquerade }
+  lan->self:
+    action: drop
+    rules:
+      ping: { order: 100, proto: icmp, icmp_type: [echo-request], action: accept }
+      dns: { order: 200, proto: udp, dport: 53, action: accept }
+  wan->self: { action: drop }
+dhcp:
+  lan:
+    pool: 192.168.1.100-192.168.1.199
+    reservations:
+      admin: { mac: "52:54:00:12:34:10", address: 192.168.1.10, hostname: admin }
+dns:
+  enabled: true
+  domain: home.arpa
