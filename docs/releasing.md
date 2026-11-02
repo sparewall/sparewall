@@ -114,3 +114,43 @@ between tags, `git describe` from the last one (`0.2.0-rc1-4-gabc1234`).
 The release job refuses an image or CLI that reports anything else. A
 local `cargo build` reports the `Cargo.toml` version, which is not bumped
 per release.
+
+## Rebuilds
+
+A release's image is built once, from its tag, on whatever the floating
+Fedora base images (`fedora-bootc:45`, `fedora:45`, `fedora-minimal:45`)
+were that day; each image records the base digests it was built on
+(`org.sparewall.base.bootc`, `.fedora`, `.minimal`). Security fixes reach
+`stable` between releases by a rebuild (#187): the same source on newer
+base images. A code change is a patch release, never a rebuild.
+
+**Deciding.** `rebuild.yml` runs every Monday (and by hand, with
+`force` or `dry_run`). It takes the newest release, checks that `stable`
+is that release or a rebuild of it, and rebuilds it when the `stable`
+image has a security advisory pending (`dnf advisory list --security`
+inside it), or when it was built 30 or more days ago. Its summary says
+which, and why. Scheduled runs act only while the repository variable
+`REBUILDS` is `on`.
+
+**Building.** It dispatches `image.yml` on the release's tag with
+`rebuild=N`, which:
+
+- checks the tag as for a release, against the GitHub users in the
+  repository variable `RELEASE_SIGNERS`, since the bot that dispatches it
+  signs nothing;
+- builds `X.Y.Z+rN` (`sparewall --version` and `org.sparewall.version`):
+  semver build metadata, so a node compares it as the same version and
+  offers it as a rebuild when its digest differs;
+- pushes it under its own immutable tags, `X.Y.Z_rN` (OCI tags cannot
+  hold `+`) and providers' `sha-<commit>-rN`, never `testing`;
+- runs every suite, with an upgrade from the release's own disk image
+  besides the usual ones;
+- only then moves `X.Y.Z`, and `stable` while it still is this release,
+  to the rebuild, signed by CI as every image is, and adds a line under
+  **Rebuilds** in the release's notes: the date, the digest, and the
+  advisories it picks up.
+
+The release's media (ISO, disk images, CLI) are not rebuilt: a fresh
+install from them is offered the rebuild by `sparewall upgrade`. A rebuild
+runs `image.yml` as it was at the tag, so only releases from 0.4.0 on can
+be rebuilt; for an earlier one, the decision says so.
