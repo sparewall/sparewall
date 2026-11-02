@@ -54,7 +54,16 @@ fn lease_file(doc: Option<&sparewall_config::Document>) -> Option<std::path::Pat
 pub async fn run(
     core: &Core,
     events: &broadcast::Sender<Value>,
+    pair: &crate::peer::Pair,
 ) -> Result<BackupReply, FirewallError> {
+    // One prune per pair is enough, and prune locks the repository: the
+    // master's (or a standalone node's). The backup forgets without it.
+    let prune = pair
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .role
+        .as_deref()
+        != Some("BACKUP");
     let made = with_core(core, events, |c| {
         let doc = c.active_document()?;
         let cfg = doc.as_ref().and_then(|d| d.backup.clone());
@@ -85,7 +94,11 @@ pub async fn run(
                     env,
                     cache: c.store().root().join("restic-cache"),
                 };
-                Some((repo, c.node().to_string()))
+                let keep = b
+                    .effective_retention()
+                    .map(|r| r.keep_flags())
+                    .filter(|k| !k.is_empty());
+                Some((repo, c.node().to_string(), keep))
             }
             _ => None,
         };
@@ -109,10 +122,24 @@ pub async fn run(
             return Err(e);
         }
     };
+    let mut retained = None;
     let snapshot = match upload {
-        Some((repo, node)) => {
+        Some((repo, node, keep)) => {
             let p = path.clone();
-            match tokio::task::spawn_blocking(move || send(&repo, &p, &node)).await {
+            let sent = tokio::task::spawn_blocking(move || {
+                let id = send(&repo, &p, &node)?;
+                // Only after a send that worked, and never failing it.
+                let kept = keep.map(|k| retain(&repo, &node, &k, prune));
+                Ok::<_, String>((id, kept))
+            })
+            .await
+            .map(|r| {
+                r.map(|(id, kept)| {
+                    retained = kept;
+                    id
+                })
+            });
+            match sent {
                 Ok(Ok(id)) => Some(id),
                 Ok(Err(e)) => {
                     finish(core, events, Some(&path), None, Some(e.clone())).await;
@@ -133,6 +160,9 @@ pub async fn run(
         None => None,
     };
     finish(core, events, Some(&path), snapshot.clone(), None).await;
+    if let Some(r) = retained {
+        record_retention(core, events, r).await;
+    }
     Ok(BackupReply {
         path: path.display().to_string(),
         digest,
@@ -232,12 +262,127 @@ fn send(repo: &dyn BackupRepository, bundle: &Path, node: &str) -> Result<String
     Ok(id)
 }
 
+/// Apply the retention rules to this node's own snapshots.
+fn retain(
+    repo: &dyn BackupRepository,
+    node: &str,
+    keep: &[String],
+    prune: bool,
+) -> Result<Retained, String> {
+    let removed = repo.forget(node, keep, prune)?;
+    tracing::info!(removed, prune, "applied the backup retention");
+    Ok(Retained {
+        removed,
+        pruned: prune,
+    })
+}
+
+/// What a retention run did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retained {
+    pub removed: usize,
+    pub pruned: bool,
+}
+
+const RETENTION_CHECK: &str = "backup-retention";
+const RETENTION_FILE: &str = "retention.json";
+
+/// The last retention run, kept beside the backup record.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RetentionRecord {
+    pub time: String,
+    pub error: Option<String>,
+    /// The last run that worked.
+    pub success: Option<String>,
+}
+
+fn retention_path(root: &Path) -> std::path::PathBuf {
+    root.join("backups").join(RETENTION_FILE)
+}
+
+pub fn read_retention(root: &Path) -> Option<RetentionRecord> {
+    serde_json::from_slice(&std::fs::read(retention_path(root)).ok()?).ok()
+}
+
+fn retention_check(r: &RetentionRecord) -> Check {
+    match &r.error {
+        // The snapshot is in the repository; only pruning stopped.
+        Some(e) => Check::new(
+            RETENTION_CHECK,
+            Level::Degraded,
+            format!(
+                "the backup was sent, but the repository's old snapshots were not removed: {e}"
+            ),
+        ),
+        None => Check::new(
+            RETENTION_CHECK,
+            Level::Ok,
+            format!("retention applied {}", r.time),
+        ),
+    }
+}
+
+async fn record_retention(
+    core: &Core,
+    events: &broadcast::Sender<Value>,
+    r: Result<Retained, String>,
+) {
+    let _ = with_core_raw(core, events, move |c| {
+        let root = c.store().root().to_path_buf();
+        let now = jiff::Timestamp::now().to_string();
+        let prev = read_retention(&root).unwrap_or_default();
+        let rec = match &r {
+            Ok(_) => RetentionRecord {
+                time: now.clone(),
+                error: None,
+                success: Some(now),
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "backup retention failed");
+                RetentionRecord {
+                    time: now,
+                    error: Some(e.clone()),
+                    success: prev.success,
+                }
+            }
+        };
+        let p = retention_path(&root);
+        if let Err(e) =
+            sparewall_core::store::write_atomic(&p, &serde_json::to_vec(&rec).expect("json"))
+        {
+            tracing::warn!(error = %e, "cannot record the backup retention");
+        }
+        c.set_named_checks(RETENTION_CHECK, vec![retention_check(&rec)]);
+        Ok(())
+    })
+    .await;
+}
+
+/// The retention's line of `/metrics`.
+pub fn metrics(root: &Path) -> String {
+    let Some(t) = read_retention(root)
+        .and_then(|r| r.success)
+        .and_then(|t| t.parse::<jiff::Timestamp>().ok())
+    else {
+        return String::new();
+    };
+    format!(
+        "# HELP sparewall_backup_retention_last_success_timestamp_seconds When the repository's retention last ran without error.\n\
+         # TYPE sparewall_backup_retention_last_success_timestamp_seconds gauge\n\
+         sparewall_backup_retention_last_success_timestamp_seconds {}\n",
+        t.as_second()
+    )
+}
+
 /// Keep the backup timer in line with `backup.schedule`.
 pub async fn schedule_loop(core: Core, events: broadcast::Sender<Value>) {
     // Health reflects the last run from before a restart.
     let _ = with_core_raw(&core, &events, |c| {
         if let Some(last) = sparewall_core::backup::read_last(c.store().root()) {
             c.set_named_checks("backup", vec![check(&last)]);
+        }
+        if let Some(r) = read_retention(c.store().root()) {
+            c.set_named_checks(RETENTION_CHECK, vec![retention_check(&r)]);
         }
         Ok(())
     })
@@ -330,6 +475,7 @@ mod tests {
         exists: Option<Result<bool, String>>,
         init: Option<String>,
         backup: Option<String>,
+        forget: Option<String>,
         calls: Mutex<Vec<String>>,
     }
 
@@ -349,6 +495,79 @@ mod tests {
                 .push(format!("backup {} {name} {host}", bundle.display()));
             self.backup.clone().map_or(Ok("snap1".into()), Err)
         }
+        fn forget(&self, host: &str, keep: &[String], prune: bool) -> Result<usize, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("forget {host} {} prune={prune}", keep.join(" ")));
+            self.forget.clone().map_or(Ok(3), Err)
+        }
+    }
+
+    /// #140: retention forgets this node's own snapshots with the keep
+    /// rules, prunes only where asked, and its failure is its own.
+    #[test]
+    fn retention() {
+        let keep = ["--keep-daily=7".to_string()];
+        let r = FakeRepo::default();
+        assert_eq!(
+            retain(&r, "fw1", &keep, true),
+            Ok(Retained {
+                removed: 3,
+                pruned: true
+            })
+        );
+        assert_eq!(
+            *r.calls.lock().unwrap(),
+            ["forget fw1 --keep-daily=7 prune=true"]
+        );
+        let r = FakeRepo::default();
+        retain(&r, "fw2", &keep, false).unwrap();
+        assert_eq!(
+            *r.calls.lock().unwrap(),
+            ["forget fw2 --keep-daily=7 prune=false"]
+        );
+        let r = FakeRepo {
+            forget: Some("restic forget: repository is already locked".into()),
+            ..Default::default()
+        };
+        let e = retain(&r, "fw1", &keep, true).unwrap_err();
+        let c = retention_check(&RetentionRecord {
+            time: "t2".into(),
+            error: Some(e),
+            success: Some("t1".into()),
+        });
+        assert_eq!(c.level, Level::Degraded);
+        assert!(
+            c.message.starts_with("the backup was sent, but"),
+            "{}",
+            c.message
+        );
+        assert_eq!(
+            retention_check(&RetentionRecord {
+                time: "t".into(),
+                error: None,
+                success: Some("t".into())
+            })
+            .level,
+            Level::Ok
+        );
+    }
+
+    #[test]
+    fn retention_metric_follows_the_last_success() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(metrics(dir.path()), "");
+        std::fs::create_dir_all(dir.path().join("backups")).unwrap();
+        std::fs::write(
+            retention_path(dir.path()),
+            r#"{"time":"2026-11-02T01:00:00Z","error":"locked","success":"2026-11-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert!(
+            metrics(dir.path())
+                .contains("sparewall_backup_retention_last_success_timestamp_seconds 1793491200\n")
+        );
     }
 
     /// #12: each restic failure stops the send with its own error, and a

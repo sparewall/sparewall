@@ -71,7 +71,7 @@ back to one of them keeps its configuration.
 | --- | --- | --- |
 | 1 | Everything up to 0.2.0 | 0.2.0 |
 | 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
-| 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac` | 0.4.0 |
+| 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac`, `backup.retention` | 0.4.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -495,9 +495,34 @@ storage or a restic REST server (a local path must be under
 initialised on first use. Credentials such as `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY` go as `KEY=value` lines in a secret named by
 `backup.credentials` (`secret:backup-s3`). Each run sends one snapshot
-(host = node name, tag `sparewall`); prune with `restic forget` on your
-own schedule. The node keeps its newest five bundles under
+(host = node name, tag `sparewall`). The node keeps its newest five bundles under
 `/var/lib/sparewall/backups`.
+
+**Retention.** After each successful send, the node forgets its own old
+snapshots in the repository (`restic forget --host <node> --tag
+sparewall`), never its peer's, by restic's keep rules:
+
+```yaml
+backup:
+  retention:          # the default, when a repository is set:
+    hourly: 48        # --keep-hourly
+    daily: 30         # --keep-daily
+    weekly: 12        # --keep-weekly
+    monthly: 24       # --keep-monthly
+    # last, yearly: --keep-last, --keep-yearly
+```
+
+A snapshot is kept if any rule keeps it, so the default keeps two days at
+full resolution and two years at monthly resolution. Rules that keep
+nothing are refused; `retention: {enabled: false}` keeps every snapshot,
+for a repository pruned elsewhere. In a pair, the master (or a standalone
+node) also prunes (`--prune`), which removes the data no snapshot refers
+to; the standby only forgets. Both wait up to ten minutes for the other's
+repository lock (`--retry-lock`) instead of failing. A retention that
+fails leaves the backup itself successful: the `backup-retention` check
+turns **degraded**, and
+`sparewall_backup_retention_last_success_timestamp_seconds` stops moving.
+`retention` is schema revision 3.
 
 A failed backup makes health **degraded**, and
 `sparewall_backup_last_success_timestamp_seconds` lets an alert catch

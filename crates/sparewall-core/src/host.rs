@@ -84,7 +84,15 @@ pub trait BackupRepository: Send + Sync {
     fn init(&self) -> Result<(), String>;
     /// Store `bundle` as `filename` for `host`; returns the snapshot ID.
     fn backup(&self, bundle: &Path, filename: &str, host: &str) -> Result<String, String>;
+    /// Forget `host`'s snapshots that `keep` (restic's `--keep-*` flags)
+    /// does not keep, and with `prune` remove the data nothing refers to
+    /// any more; returns how many snapshots it removed (#140).
+    fn forget(&self, host: &str, keep: &[String], prune: bool) -> Result<usize, String>;
 }
+
+/// How long restic waits for another client's repository lock (the pair's
+/// other node, backing up or pruning at the same minute) before giving up.
+pub const RETRY_LOCK: &str = "--retry-lock=10m";
 
 /// A restic repository.
 pub struct Restic {
@@ -164,6 +172,7 @@ impl BackupRepository for Restic {
         match self.run(
             &[
                 "backup",
+                RETRY_LOCK,
                 "--json",
                 "--host",
                 host,
@@ -182,6 +191,42 @@ impl BackupRepository for Restic {
                 .and_then(|v| v["snapshot_id"].as_str().map(str::to_string))
                 .unwrap_or_default()),
             (_, e) => Err(format!("restic backup: {e}")),
+        }
+    }
+
+    fn forget(&self, host: &str, keep: &[String], prune: bool) -> Result<usize, String> {
+        if keep.is_empty() {
+            return Err("no keep rule: refusing to forget every snapshot".into());
+        }
+        let mut args = vec![
+            "forget",
+            RETRY_LOCK,
+            "--json",
+            "--host",
+            host,
+            "--tag",
+            "sparewall",
+        ];
+        args.extend(keep.iter().map(String::as_str));
+        if prune {
+            args.push("--prune");
+        }
+        match self.run(&args, None)? {
+            // A JSON array of groups, each with what it removes; with
+            // --prune, prune's own report follows on later lines.
+            (0, out) => Ok(out
+                .lines()
+                .find_map(|l| {
+                    serde_json::from_str::<serde_json::Value>(l)
+                        .ok()
+                        .filter(|v| v.is_array())
+                })
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .map(|g| g["remove"].as_array().map_or(0, Vec::len))
+                .sum()),
+            (_, e) => Err(format!("restic forget: {e}")),
         }
     }
 }
@@ -569,6 +614,46 @@ mod tests {
     use serde_json::json;
 
     const STABLE: &str = "ghcr.io/sparewall/sparewall:stable";
+
+    /// #140, with the real restic (skipped without it): a node's forget
+    /// keeps what its rules keep of its own snapshots and never touches
+    /// its peer's, in one repository.
+    #[test]
+    fn forget_keeps_the_peers_snapshots() {
+        if Command::new("restic").arg("version").output().is_err() {
+            eprintln!("skipping: restic is not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Restic {
+            repository: dir.path().join("repo").display().to_string(),
+            password: b"pw".to_vec(),
+            env: vec![],
+            cache: dir.path().join("cache"),
+        };
+        repo.init().unwrap();
+        let bundle = dir.path().join("b.tar.gz");
+        for (i, host) in ["fw1", "fw1", "fw1", "fw2", "fw2"].iter().enumerate() {
+            std::fs::write(&bundle, format!("bundle {i}")).unwrap();
+            repo.backup(&bundle, &format!("sparewall-{host}.tar.gz"), host)
+                .unwrap();
+        }
+        let keep = ["--keep-last=1".to_string()];
+        assert_eq!(repo.forget("fw1", &keep, true), Ok(2));
+        let (code, out) = repo.run(&["snapshots", "--json"], None).unwrap();
+        assert_eq!(code, 0, "{out}");
+        let hosts: Vec<String> = serde_json::from_str::<serde_json::Value>(&out)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["hostname"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(hosts.iter().filter(|h| *h == "fw1").count(), 1, "{hosts:?}");
+        assert_eq!(hosts.iter().filter(|h| *h == "fw2").count(), 2, "{hosts:?}");
+        // No rule, no forget: never every snapshot.
+        assert!(repo.forget("fw2", &[], false).is_err());
+    }
 
     fn status(image: &str, signature: &str) -> serde_json::Value {
         json!({"spec": {"image": {"image": image, "signature": signature, "transport": "registry"}}})
