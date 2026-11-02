@@ -386,6 +386,8 @@ log "a local Prometheus (metrics.mode: local, #145)"
 # Each node keeps its own history: Prometheus, in its container, scrapes
 # the coordinator over loopback and listens there only. The API queries it
 # for a monitor token, here over HTTPS through the gateway.
+# Its volume is new here, as on a fresh install.
+! vm 'sudo podman volume exists sparewall-prometheus-data' || fail "the history volume exists before local mode"
 vm 'sudo sparewall set management.web=true metrics.mode=local metrics.retention=2d --confirm 0' >/dev/null
 web_up active
 deadline=$((SECONDS + 120))
@@ -398,6 +400,8 @@ until [ "$(vm 'systemctl is-active sparewall-prometheus' || true)" = active ]; d
 done
 vm 'ps -eo user:12,label,comm' | grep -E '^nobody +system_u:system_r:container_t:.* prometheus$' >/dev/null \
     || fail "Prometheus does not run as nobody in container_t: $(vm 'ps -eo user:12,label,comm' | grep prometheus)"
+[ "$(vm 'sudo stat -c %u:%g /var/lib/containers/storage/volumes/sparewall-prometheus-data/_data')" = 65534:65534 ] \
+    || fail "the history volume is not the user Prometheus runs as"
 # Nothing new on the network: Prometheus answers loopback only.
 vm 'sudo ss -Htlnp' > listen.txt
 grep prometheus listen.txt | grep -v ' 127\.0\.0\.1:9090 ' && fail "Prometheus listens beyond loopback"
