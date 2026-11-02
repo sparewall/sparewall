@@ -21,12 +21,19 @@ patched, keep its own management off the WAN, and treat its admin
 access like the firewall's. If that is more than you want to own, run
 Sparewall on its own hardware.
 
-## The WAN never reaches the hypervisor
+## Keep the host's services off the WAN
 
-The one rule that matters: **the host has no address on the WAN.** The
-WAN port belongs to the Sparewall VM alone, and the host's own
-management (its web UI, SSH, updates) is on the LAN, behind Sparewall,
-like any other machine.
+The one rule that matters: **the host has no address and no route on the
+WAN.** The host's own management (its web UI, SSH, updates) is on the
+LAN, behind Sparewall, like any other machine, so nothing on the host
+answers anyone on the internet.
+
+That limits what the host exposes; it does not keep the WAN out of the
+host. With a bridge, the host's kernel owns the physical WAN port and
+forwards its frames: it still handles the WAN's layer 2 traffic
+(broadcasts, multicast, every frame it bridges), and a compromised host
+could watch or tamper with it. Only PCI passthrough, below, keeps WAN
+frames out of the host's network stack entirely.
 
 Check it on the host:
 
@@ -41,14 +48,15 @@ if nothing listens on it; better, turn IPv6 off on that bridge
 
 ## Passthrough or bridges
 
-- **PCI passthrough** gives the VM the WAN NIC itself: the host never sees
-  a WAN frame, which is the strongest isolation. It ties the VM to that
+- **PCI passthrough** gives the VM the WAN NIC itself: WAN frames never
+  enter the host's network stack, which is the strongest isolation. It ties the VM to that
   machine and that NIC, needs IOMMU support (`intel_iommu=on` or
   `amd_iommu=on`), and the NIC must be in an IOMMU group of its own. On a
   two-port mini PC both ports are often in one group, and then
   passthrough is not possible.
-- **Bridges** are portable and work everywhere. The host's bridges must
-  then stay layer 2 only: no host address on the WAN bridge (above), and
+- **Bridges** are portable and work everywhere, at the cost above: the
+  host's kernel handles the WAN's frames. The bridges must then stay
+  layer 2 only: no host address on the WAN bridge (above), and
   nothing that filters the extra MAC addresses and IP addresses a
   firewall uses. In a pair, the gateway addresses move between VMs, and
   on a static WAN block they move behind the VRRP virtual MAC. Turn off
