@@ -156,7 +156,7 @@ One versioned document describes a whole deployment, one node or a pair, and the
 | `logging` | Rule-log defaults; remote forwarding target | No |
 | `metrics` | Mode: external scrape, local Prometheus, or off; retention | No |
 | `backup` | Enabled flag, restic repository, schedule, credentials reference | No |
-| `updates` | Channel, mode (manual or windowed), maintenance window, background check | No |
+| `updates` | Channel, mode (manual or windowed), maintenance window and its length, background check | No |
 | `provider_options` | Per-provider passthrough settings | No |
 
 Users, API tokens and secrets are coordinator state, not document content.
@@ -877,8 +877,9 @@ The image ships a containers signature policy requiring the project's signature;
 
 - bootc's own automatic update timer is disabled. `sparewall upgrade` stages the new image on the BACKUP node, pre-pulls bound container images, reboots it, waits for **ok** health and matching config hashes, fails over, then repeats on the other node. A failed gate stops the upgrade; `bootc rollback` returns that node.
 - **Channels:** every passing build reaches `testing`; it is promoted to `stable` after the two-node test suite passes. Nodes follow one channel: `updates.channel`, else the channel tag they track, else `stable` (a node installed from release media tracks a build tag, which is no channel).
+- **Rebuilds:** between releases, the newest release is rebuilt from its tag on newer base images when they bring security advisories, and at least monthly, as `X.Y.Z+rN`; it passes every suite before its release's tag and `stable` move to it (#187, docs/releasing.md).
 - **Versions:** a release's image carries its version (`org.sparewall.version`); a build between releases is the next patch's prerelease (`0.3.2-dev.5+g<commit>`), so builds sort as semver says. A node offers only a newer version, or the same one rebuilt, and refuses an older one unless asked (`--allow-downgrade`).
-- **Modes:** manual by default; optionally automatic within a maintenance window (`updates.window`).
+- **Modes:** manual by default; optionally automatic within a maintenance window (`updates.mode: windowed`, `updates.window`, #84). The master (or a standalone node) tries each window once, only with health ok, nothing pending, the pair in sync and not held, and no unacknowledged failure of an earlier scheduled upgrade, then runs the same sequence as `sparewall upgrade`. A failure degrades the `upgrade` check and blocks scheduled upgrades until acknowledged.
 - **Checking:** each node checks its channel every few hours and logs, once, when an update appears or goes away (a fixed journal `MESSAGE_ID`, an event, a metric). An available update never affects health, so it never moves a pair's addresses. `updates.check: false` turns the check off.
 - Standalone nodes use the same command and accept one reboot of downtime.
 - The registry keeps every digest ever deployed, so rollbacks and disaster recovery can always fetch it.

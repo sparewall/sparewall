@@ -92,6 +92,9 @@ pub trait System: Send {
     /// Make `name` the hostname (static and running), if it is not
     /// already; whether it changed.
     fn set_hostname(&mut self, name: &str) -> Result<bool, Error>;
+    /// Check a systemd calendar expression (`OnCalendar=`, the
+    /// maintenance window): Ok, or why systemd rejects it.
+    fn calendar_check(&mut self, expr: &str) -> Result<(), String>;
 }
 
 /// An injected failure's message, cleared after use with `once`.
@@ -346,6 +349,15 @@ impl System for Fake {
         Ok(changed)
     }
 
+    /// Accepts any expression but one containing `bogus`.
+    fn calendar_check(&mut self, expr: &str) -> Result<(), String> {
+        if expr.contains("bogus") {
+            Err(format!("Failed to parse calendar specification '{expr}'"))
+        } else {
+            Ok(())
+        }
+    }
+
     fn install_key(&mut self, file: &str, content: &[u8], _group: &str) -> Result<(), Error> {
         self.runtime_keys.insert(file.to_string(), content.to_vec());
         Ok(())
@@ -428,5 +440,9 @@ impl System for Box<dyn System> {
     }
     fn set_hostname(&mut self, name: &str) -> Result<bool, Error> {
         (**self).set_hostname(name)
+    }
+
+    fn calendar_check(&mut self, expr: &str) -> Result<(), String> {
+        (**self).calendar_check(expr)
     }
 }

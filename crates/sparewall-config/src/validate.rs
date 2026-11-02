@@ -1357,16 +1357,31 @@ impl Validator<'_> {
             }
         }
         if let Some(u) = &doc.updates {
-            if u.mode == Some(UpdateMode::Windowed) {
-                self.err(
-                    "updates.mode",
-                    "scheduled upgrades are not supported yet; use manual and run sparewall upgrade",
-                );
-            }
-            if u.window.is_some() {
-                self.err(
+            let windowed = u.mode == Some(UpdateMode::Windowed);
+            match u.window.as_deref() {
+                None if windowed => self.err(
                     "updates.window",
-                    "maintenance windows apply to scheduled upgrades, which are not supported yet",
+                    "mode: windowed needs a window (a systemd calendar expression, e.g. \"Sun *-*-* 03:00\")",
+                ),
+                // systemd parses the rest when the change is checked.
+                Some(w) if w.trim().is_empty() || w.contains(['\n', '\r']) => {
+                    self.err("updates.window", "must be one systemd calendar expression")
+                }
+                Some(_) if !windowed => self.warn(
+                    "updates.window",
+                    "the window is used only with mode: windowed",
+                ),
+                _ => {}
+            }
+            if let Some(m) = u.window_minutes
+                && !(1..=1440).contains(&m)
+            {
+                self.err("updates.window_minutes", "must be 1-1440");
+            }
+            if windowed && u.channel.as_deref() == Some("testing") {
+                self.warn(
+                    "updates.channel",
+                    "scheduled upgrades on testing install every passing build of main unattended",
                 );
             }
         }

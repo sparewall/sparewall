@@ -425,12 +425,17 @@ export interface Schemas {
      * --check` still asks when run. */
     "check"?: boolean;
     /** `manual` (the default): upgrades run when asked for, with
-     * `sparewall upgrade`. `windowed` (automatic upgrades in `window`) is
-     * not built yet and is rejected. */
+     * `sparewall upgrade`. `windowed`: the pair's master (or a standalone
+     * node) upgrades by itself when `window` opens and the channel offers
+     * a newer image, through the same health-gated sequence (#84). */
     "mode"?: Schemas["Document.UpdateMode"] | null;
-    /** Maintenance window as a systemd calendar expression. Not built yet,
-     * with the windowed mode: rejected. */
+    /** When a scheduled upgrade may start: a systemd calendar expression
+     * (`Sun *-*-* 03:00`), in the node's time zone (UTC unless set).
+     * Required with `mode: windowed`. */
     "window"?: string | null;
+    /** How many minutes after the window opens an upgrade may still start
+     * (default 60). */
+    "window_minutes"?: number | null;
   };
   "Document.Vpn": {
     /** Tunnel addresses of the firewall. */
@@ -1033,6 +1038,8 @@ export interface Calls {
     reply: {
       "available": boolean;
       "booted"?: string | null;
+      /** When the next maintenance window opens (RFC 3339, UTC), with `updates.mode: windowed` (#84). Absent otherwise, and from nodes older than 0.4.0. */
+      "next_window"?: string | null;
       /** Why the target is or is not offered, when it is not plainly newer: older than this node, the same version, or no version to compare. */
       "note"?: string | null;
       /** This node's Sparewall version. */

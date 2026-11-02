@@ -24,6 +24,10 @@ fn error_paths(doc: &Document) -> Vec<String> {
         .collect()
 }
 
+fn warnings(doc: &Document) -> Vec<String> {
+    validate::warnings(&validate(doc))
+}
+
 fn has_error(doc: &Document, needle: &str) -> bool {
     error_paths(doc).iter().any(|e| e.contains(needle))
 }
@@ -506,13 +510,6 @@ fn rejects_settings_not_built_yet() {
         json!({"metrics": {"mode": "external", "retention": "15d"}}),
     );
     assert!(has_error(&d, "metrics.retention:"));
-    let d = edit(STANDALONE, json!({"updates": {"mode": "windowed"}}));
-    assert!(has_error(&d, "updates.mode: scheduled upgrades"));
-    let d = edit(
-        STANDALONE,
-        json!({"updates": {"mode": "manual", "window": "Sun 03:00"}}),
-    );
-    assert!(has_error(&d, "updates.window:"));
     // What is built stays valid.
     for metrics in ["external", "off"] {
         assert_valid(&edit(STANDALONE, json!({"metrics": {"mode": metrics}})));
@@ -525,12 +522,66 @@ fn rejects_settings_not_built_yet() {
     let d = edit(
         STANDALONE,
         json!({"metrics": {"mode": "local", "retention": "15d"},
-               "updates": {"mode": "windowed", "window": "Sun 03:00"},
                "provider_options": {"kea": {}}}),
     );
-    assert_eq!(error_paths(&d).len(), 5, "{:?}", error_paths(&d));
+    assert_eq!(error_paths(&d).len(), 3, "{:?}", error_paths(&d));
     let history = validate::validate_history(&d);
     assert!(validate::errors(&history).is_empty(), "{history:?}");
+}
+
+/// Scheduled upgrades (#84): a window is required with `windowed`, used
+/// only with it, and its length bounded; systemd checks the expression
+/// itself when the change is applied.
+#[test]
+fn windowed_upgrades() {
+    let w = |u: serde_json::Value| edit(STANDALONE, json!({"updates": u}));
+    let d = w(json!({"mode": "windowed", "window": "Sun *-*-* 03:00"}));
+    assert_valid(&d);
+    assert!(warnings(&d).is_empty(), "{:?}", warnings(&d));
+    assert!(has_error(
+        &w(json!({"mode": "windowed"})),
+        "updates.window: mode: windowed needs a window"
+    ));
+    assert!(has_error(
+        &w(json!({"mode": "windowed", "window": " "})),
+        "updates.window: must be one systemd calendar expression"
+    ));
+    assert!(has_error(
+        &w(json!({"mode": "windowed", "window": "Sun\n03:00"})),
+        "updates.window: must be one"
+    ));
+    let manual = w(json!({"mode": "manual", "window": "Sun 03:00"}));
+    assert_valid(&manual);
+    assert!(
+        warnings(&manual)
+            .iter()
+            .any(|m| m.starts_with("updates.window: the window is used only"))
+    );
+    for bad in [0, 1441] {
+        assert!(has_error(
+            &w(json!({"mode": "windowed", "window": "daily", "window_minutes": bad})),
+            "updates.window_minutes: must be 1-1440"
+        ));
+    }
+    assert_valid(&w(
+        json!({"mode": "windowed", "window": "daily", "window_minutes": 120}),
+    ));
+    let testing = w(json!({"mode": "windowed", "window": "daily", "channel": "testing"}));
+    assert_valid(&testing);
+    assert!(
+        warnings(&testing)
+            .iter()
+            .any(|m| m.starts_with("updates.channel: scheduled upgrades on testing"))
+    );
+    // window_minutes is new in revision 3; the rest is revision 1.
+    let rev = |d: &Document| crate::schema::revision(&serde_json::to_value(d).unwrap());
+    assert_eq!(rev(&d), 1);
+    assert_eq!(
+        rev(&w(
+            json!({"mode": "windowed", "window": "daily", "window_minutes": 90})
+        )),
+        3
+    );
 }
 
 /// #10: switching a role's provider away from one whose state the new one
