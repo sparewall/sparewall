@@ -531,6 +531,14 @@ installed from a release's ISO or disk image, which come from a build tag)
 follows `stable`. `--channel` is for one upgrade; the node then tracks
 that channel.
 
+**Rebuilds.** Between releases, the current release is rebuilt on newer
+Fedora base images when they bring security fixes, or at least monthly:
+the same Sparewall source, version `X.Y.Z+rN` (`0.4.0+r2` is the second
+rebuild of 0.4.0). It passes the same tests as a release before `stable`
+moves to it, and the release's notes list each rebuild and the advisories
+it picks up. A node offers it as "a rebuild of 0.4.0", and upgrades to it
+as to any image.
+
 **Never backwards by accident.** Images carry their Sparewall version
 (`org.sparewall.version`), and `--check` shows it next to the node's own.
 A newer version is offered; the same version is offered when the image

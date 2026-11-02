@@ -9,9 +9,22 @@
 #
 # or Cargo's version and the commit if no tag is reachable. Describing
 # needs the history: check out with fetch-depth 0.
+#
+# A rebuild of a release (#187: the same source on newer base images) sets
+# REBUILD=N on its tag and is X.Y.Z+rN: semver build metadata, which
+# precedence ignores, so nodes compare it as the same version, rebuilt.
 set -euo pipefail
 case ${GITHUB_REF:-} in
-refs/tags/v*) echo "${GITHUB_REF_NAME#v}" ;;
+refs/tags/v*)
+    v=${GITHUB_REF_NAME#v}
+    if [ -n "${REBUILD:-}" ]; then
+        [[ $REBUILD =~ ^[1-9][0-9]*$ ]] || { echo "REBUILD must be a number from 1: $REBUILD" >&2; exit 1; }
+        [[ $v != *-* ]] || { echo "only a release is rebuilt, not $v" >&2; exit 1; }
+        echo "$v+r$REBUILD"
+    else
+        echo "$v"
+    fi
+    ;;
 *)
     if d=$(git describe --tags --long --abbrev=12 --match 'v[0-9]*' 2>/dev/null); then
         # vX.Y.Z[-PRE]-N-gSHA
