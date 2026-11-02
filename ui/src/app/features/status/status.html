@@ -40,16 +40,16 @@
             @if (n.notes) {
               <p><a [href]="n.notes" target="_blank" rel="noopener">Release notes</a></p>
             }
-            @if (session.can('operator')) {
-              <p>
-                Upgrade with <code>sparewall upgrade</code> (<a
-                  [href]="upgradeDocs"
-                  target="_blank"
-                  rel="noopener"
-                  >how upgrades work</a
-                >).
-              </p>
-            }
+            <p>
+              <a [href]="upgradeDocs" target="_blank" rel="noopener">How upgrades work</a>
+            </p>
+          }
+          @if (notice() || mixed()) {
+            <app-upgrade-panel
+              [node]="status.value().node"
+              [paired]="!!sync()?.peer"
+              [offer]="notice()?.title ?? ''"
+            />
           }
           @if (checkProblem(); as p) {
             <p>{{ p }}</p>
@@ -57,9 +57,6 @@
           @if (mixed(); as m) {
             <p>
               {{ m }}
-              @if (session.can('operator')) {
-                (<code>sparewall upgrade</code>)
-              }
             </p>
           }
         </mat-card-content>

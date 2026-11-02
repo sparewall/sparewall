@@ -522,6 +522,17 @@ async fn tick(
         .await;
         return Ok(());
     }
+    // One started by hand (or another window's) is not this one's
+    // failure: skip, rather than block the next windows.
+    if crate::upgrade::running() {
+        record(
+            core,
+            events,
+            skipped("an upgrade is already running".into()),
+        )
+        .await;
+        return Ok(());
+    }
     let Some(from_image) = booted_image_digest() else {
         record(
             core,
@@ -536,6 +547,16 @@ async fn tick(
     let mut rx = events.subscribe();
     let plan = crate::upgrade::start(core, events, pair, None, None, false, false).await;
     match plan {
+        // Claimed by another run between the check above and this start.
+        Err(e) if e == crate::upgrade::ALREADY_RUNNING => {
+            record(
+                core,
+                events,
+                skipped("an upgrade is already running".into()),
+            )
+            .await;
+            return Ok(());
+        }
         Err(e) => {
             let a = Attempt {
                 window: window.clone(),

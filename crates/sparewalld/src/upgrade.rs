@@ -23,6 +23,37 @@ use crate::service::{Core, with_core_raw};
 
 /// Set once this node has staged an upgrade and is about to reboot.
 pub static REBOOTING: AtomicBool = AtomicBool::new(false);
+/// Set while this node runs an upgrade (#191): a second start, from the
+/// CLI, the web UI or a schedule, is refused until it ends.
+static RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Clears [`RUNNING`] when a run ends, however it ends.
+#[derive(Debug)]
+struct Running;
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Why a start is refused while another run holds [`RUNNING`]: the
+/// scheduler tells it from other refusals by this text.
+pub const ALREADY_RUNNING: &str =
+    "an upgrade is already running on this node; follow it with sparewall events";
+
+/// Whether this node runs an upgrade now.
+pub fn running() -> bool {
+    RUNNING.load(Ordering::SeqCst)
+}
+
+/// Take the run, or say why not.
+fn claim_run() -> Result<Running, String> {
+    RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map(|_| Running)
+        .map_err(|_| ALREADY_RUNNING.to_string())
+}
 
 pub const IMAGE_REPO: &str = "ghcr.io/sparewall/sparewall";
 /// The channel of a node that names none and tracks no channel: a node
@@ -466,6 +497,10 @@ pub async fn start(
     allow_downgrade: bool,
     forward: bool,
 ) -> Result<Vec<String>, String> {
+    // The common case, before planning; claim_run() decides atomically.
+    if running() {
+        return Err(ALREADY_RUNNING.to_string());
+    }
     match plan(
         core,
         events,
@@ -481,7 +516,12 @@ pub async fn start(
             peer,
             steps,
         } => {
-            tokio::spawn(run(core.clone(), events.clone(), target, peer));
+            let running = claim_run()?;
+            let (core, events) = (core.clone(), events.clone());
+            tokio::spawn(async move {
+                let _running = running;
+                run(core, events, target, peer).await;
+            });
             Ok(steps)
         }
         Planned::Forward { link, master } if forward => {
@@ -1002,6 +1042,14 @@ mod tests {
             target_ref(Some("r/x:1"), Some("stable"), None, ghcr),
             "r/x:1"
         );
+    }
+
+    #[test]
+    fn one_run_at_a_time() {
+        let first = claim_run().unwrap();
+        assert!(claim_run().unwrap_err().contains("already running"));
+        drop(first);
+        drop(claim_run().unwrap());
     }
 
     #[test]
