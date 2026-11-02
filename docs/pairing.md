@@ -74,6 +74,15 @@ from a node's own MAC to the virtual MAC once, at the upgrade's
 handover: a gateway that ignores gratuitous ARP may drop traffic then,
 once, until its cache expires.
 
+If the upstream cannot learn one more MAC, set `vmac: false` on the WAN
+(schema revision 3, read by 0.4.0 and later): the public addresses and
+the public route go on the WAN link itself, on the master's own MAC, as
+before 0.3.3. The cost is the problem above: every handover changes the
+MAC behind the gateway addresses, and a gateway that ignores gratuitous
+ARP drops traffic until its cache expires. Only a pair's WAN with
+private node addresses and a static block takes `vmac`; a leased WAN
+always uses the virtual MAC.
+
 With one public address leased by DHCP, give the nodes private addresses
 and a `vrid`, and no `vip`:
 
