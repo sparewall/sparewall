@@ -292,6 +292,16 @@ pub struct Network {
     /// VRRP virtual router ID (1-255), unique across the deployment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vrid: Option<u8>,
+    /// On a pair's WAN with private node addresses and a static block:
+    /// carry the gateway addresses and the public route behind the VRRP
+    /// virtual MAC (`00:00:5e:00:01:<vrid>`), so a handover changes no MAC
+    /// the upstream sees (the default). `false` puts them on the nodes'
+    /// own MACs, for an upstream that limits the MACs it learns on a port.
+    /// Not `cluster.vrrp.use_vmac`, keepalived's own virtual MAC for the
+    /// other networks' instances.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    #[schemars(extend("x-since" = 3))]
+    pub vmac: bool,
     /// Upstream gateway (default route) for a static WAN or a management
     /// network with its own upstream.
     #[serde(default, skip_serializing_if = "Option::is_none")]

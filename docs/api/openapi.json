@@ -1072,6 +1072,11 @@
               "null"
             ]
           },
+          "vmac": {
+            "description": "On a pair's WAN with private node addresses and a static block:\ncarry the gateway addresses and the public route behind the VRRP\nvirtual MAC (`00:00:5e:00:01:<vrid>`), so a handover changes no MAC\nthe upstream sees (the default). `false` puts them on the nodes'\nown MACs, for an upstream that limits the MACs it learns on a port.\nNot `cluster.vrrp.use_vmac`, keepalived's own virtual MAC for the\nother networks' instances.",
+            "type": "boolean",
+            "x-since": 3
+          },
           "vrid": {
             "description": "VRRP virtual router ID (1-255), unique across the deployment.",
             "format": "uint8",
