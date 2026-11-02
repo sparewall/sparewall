@@ -466,6 +466,11 @@ jq -e '.level == "degraded" and any(.checks[]; .name == "services" and .level ==
     -d "'{\"query\": \"up\"}'" https://localhost/call/org.sparewall.Metrics.Query)" = 503 ] \
     || fail "a query with Prometheus down is not answered as unavailable"
 vm 'sudo systemctl start sparewall-prometheus'
+deadline=$((SECONDS + 60))
+until vm 'curl -sf http://127.0.0.1:9090/-/ready' >/dev/null; do
+    [ $SECONDS -lt $deadline ] || fail "Prometheus is not back after a start"
+    sleep 2
+done
 # Back to external: it stops, and the API says there is no history.
 vm 'sudo sparewall set metrics.mode=external --confirm 0' >/dev/null
 deadline=$((SECONDS + 60))

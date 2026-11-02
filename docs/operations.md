@@ -72,7 +72,7 @@ back to one of them keeps its configuration.
 | 1 | Everything up to 0.2.0 | 0.2.0 |
 | 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
 | 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac`, `backup.retention`, `management.sources`; the value `updates.mode: windowed` | 0.4.0 |
-| 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
+| 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -340,6 +340,63 @@ does not start the recovery timer, so lowering it does not shorten the
 outage. A client that cannot wait can reconnect (`wg-quick down`/`up`) to
 handshake at once.
 
+## Site-to-site tunnels
+
+A peer with an `endpoint` is another site: the node connects to it as
+well as accepting it, and routes the networks behind it through the
+tunnel. It is a peer of a `vpn` instance like any other, and the
+instance's zone takes policies like any zone:
+
+```yaml
+vpn:
+  branch:
+    listen_port: 51821
+    endpoint: hq.example.org          # what the other site connects to
+    addresses: [10.98.0.1/30]
+    zone: branch
+    peers:
+      office-b:
+        public_key: "<the branch's public key>"
+        endpoint: office-b.example.net:51821
+        addresses: [10.98.0.2/32, 192.168.20.0/24]   # its tunnel address, and its network
+        keepalive: 25
+zones:
+  branch: {}
+policy:
+  users->branch: { action: accept }   # no nat: the sites see each other's addresses
+  branch->users: { action: accept }
+```
+
+- **Routes:** the peer's addresses outside the tunnel's subnet are
+  routed through it. Validation refuses one that is, or overlaps, a
+  network of this node, a tunnel's subnet or another site's network, and
+  the default route (a tunnel for all traffic is a different feature,
+  #149).
+- **`keepalive`** (seconds) keeps the tunnel up while it is idle, and
+  open through NAT on either side. With it, health is degraded
+  (`tunnels`) when the peer has had no handshake for three minutes.
+- **Endpoint names** are resolved when the interface is created, and
+  again whenever the peer has had no handshake for over two minutes, so a
+  site on a dynamic address is found again.
+- **The other site's configuration:** `sparewall vpn peer-config
+  office-b` (the same as `client-config`) prints it, for wg-quick: its
+  tunnel address, the port its endpoint names, this node's public key and
+  endpoint, and as `AllowedIPs` (which wg-quick routes) the tunnel's
+  subnet and this node's networks other than the WAN, or the instance's
+  `client_allowed_ips`. Fill in its private key. Between two Sparewall
+  nodes, each document lists the other as a peer instead.
+
+In a pair, site-to-site peers need exactly one WAN, with static
+addresses, a gateway address and a gateway (not one DHCP lease for the
+pair). Only the master sends to a site, from the gateway address:
+WireGuard marks its packets, and on the master they leave through a
+routing table keepalived fills with routes from that address; on the
+backup the table is empty, and the firewall drops what the backup would
+send from its own address. After a failover the new master starts the
+tunnel itself, without the other site's help, within its `keepalive`
+and a handshake: the pair test measures it, with a 10-second keepalive.
+Connections inside the tunnel are synced, as for remote access.
+
 ## Monitoring
 
 | Endpoint | Purpose |
@@ -419,6 +476,7 @@ running system, each repeated on every health request:
 | `replication` | Every replication-only interface (the sync network, and a port carrying nothing else) exists and is up. Losing one is **degraded**, never failed: traffic still flows, so the gateway addresses stay where they are while the pair stops replicating | |
 | `services` | Every provider unit the generation needs (Kea, Unbound, keepalived, conntrackd, ulogd, journal-upload or rsyslog, Prometheus) is active in systemd. A management service down (the web UI, Prometheus) is degraded, not failed | That a daemon still runs the files installed for it; those passed the daemon's own config test before they were installed |
 | `pair`, `tls`, `backup` | Sync tunnel and peer state, certificate validity, the last backup | |
+| `tunnels` | On the node that holds them (standalone, or the master), every site-to-site peer with a `keepalive` has had a handshake in the last three minutes. Degraded, never failed | Peers without a keepalive, whose idle tunnels have no handshakes |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
 
 Any change to the firewall made outside Sparewall (`nft flush`, an extra

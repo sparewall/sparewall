@@ -1595,6 +1595,35 @@ fn status_and_metrics_wait_for_the_peers_confirmation() {
     }
 }
 
+/// The other end of a site-to-site peer (#148): the site's own tunnel
+/// address and listen port, and this side's tunnel and networks (not
+/// the WAN or the sync network).
+#[test]
+fn vpn_site_config() {
+    let mut a = pair_node("fw1");
+    let mut doc = pair_example();
+    doc["vpn"]["roadwarrior"]["peers"]["office-b"] = json!({
+        "public_key": "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=",
+        "endpoint": "office-b.example.net:51821",
+        "addresses": ["10.99.0.20/32", "192.168.20.0/24"],
+        "keepalive": 10,
+    });
+    a.c.apply(doc, &opts(0, None)).unwrap();
+    let cfg = a.c.vpn_client_config(None, "office-b", None).unwrap();
+    assert!(cfg.starts_with("# Sparewall site-to-site"), "{cfg}");
+    assert!(
+        cfg.contains("Address = 10.99.0.20/32\nListenPort = 51821\n"),
+        "{cfg}"
+    );
+    assert!(cfg.contains("Endpoint = vpn.example.org:51820"), "{cfg}");
+    assert!(
+        cfg.contains("AllowedIPs = 10.99.0.0/24, 10.0.99.0/24, 192.0.2.0/24\n"),
+        "{cfg}"
+    );
+    assert!(cfg.contains("PersistentKeepalive = 10"), "{cfg}");
+    assert!(!cfg.contains("DNS ="), "{cfg}");
+}
+
 #[test]
 fn vpn_keys_and_client_config() {
     let mut a = pair_node("fw1");

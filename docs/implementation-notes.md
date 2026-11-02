@@ -537,6 +537,26 @@ Where the implementation departs from, or settles open questions in,
   from its own address, so an active client roamed to it and was cut off
   for good once it rebooted; the output chain now drops remote-access
   packets from anything but the gateway address.
+- **Site-to-site peers are started by the master, from the gateway
+  address** (#148). A peer with an `endpoint` gets `RouteTable=main`
+  (its networks are routed through the tunnel) and its
+  `PersistentKeepalive`. On a WAN whose node addresses share the gateway
+  address's subnet, the kernel would pick the node's own address for a
+  handshake the master starts, and the output chain drops it. So in a
+  pair with site-to-site peers the WireGuard interfaces mark their
+  packets (`FirewallMark=0x5357`), a rule sends marked packets to table
+  5357, and keepalived adds routes from the gateway address there as the
+  node becomes master (`virtual_routes ... src <vip> table 5357`). On
+  the backup the table is empty: the lookup falls through to the main
+  table, the source is the node's own address, and the output chain
+  drops it, so a site never roams to the backup. A pair with site peers
+  needs exactly one WAN, static, with a gateway address and a gateway:
+  with a leased WAN the backup's own traffic is NATed out through the
+  master, its handshakes with it, and nothing would stop them. sparewalld watches the
+  peers (`tunnels.rs`), on the node that holds them: a peer named by DNS
+  is resolved again once it has had no handshake for 135 s (as
+  reresolve-dns does), since networkd resolves it only once, and one
+  with a keepalive and no handshake for 180 s degrades health.
 
 ## Providers
 

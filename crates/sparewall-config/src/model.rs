@@ -730,10 +730,21 @@ pub struct Vpn {
 #[serde(deny_unknown_fields)]
 pub struct VpnPeer {
     pub public_key: String,
+    /// The peer's tunnel address, and for a site-to-site peer the networks
+    /// behind it, which are routed through the tunnel.
     pub addresses: Vec<Cidr>,
-    /// Static endpoint, for site-to-site peers.
+    /// `host:port`, an address or a DNS name: a site-to-site peer, which
+    /// this node connects to as well as accepting it. A name is resolved
+    /// again while the peer does not answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Seconds between keepalives to the peer (WireGuard's
+    /// `PersistentKeepalive`): it keeps a NAT mapping open, and keeps a
+    /// site-to-site tunnel up, so that after a failover the new master
+    /// starts it again within this time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 4))]
+    pub keepalive: Option<u16>,
     /// WireGuard preshared key, a cluster secret: `secret:<name>`. The
     /// client must be configured with the same key (`wg genpsk`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

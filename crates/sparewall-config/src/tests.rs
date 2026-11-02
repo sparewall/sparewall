@@ -795,6 +795,123 @@ fn vm_suite_documents_are_valid() {
     }
 }
 
+/// Site-to-site peers (#148): a `host:port` endpoint, a keepalive, and
+/// networks behind them that overlap nothing local, no tunnel and no
+/// other peer's.
+#[test]
+fn site_to_site_peers() {
+    const KEY: &str = "xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=";
+    const KEY2: &str = "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=";
+    let site = |peer: serde_json::Value| {
+        edit(
+            PAIR,
+            json!({"vpn": {"roadwarrior": {"peers": {"office-b": peer}}}}),
+        )
+    };
+    let peer = |endpoint: &str, addresses: serde_json::Value| json!({"public_key": KEY2, "endpoint": endpoint, "addresses": addresses, "keepalive": 25});
+    let d = site(peer(
+        "office-b.example.net:51821",
+        json!(["10.99.0.20/32", "192.168.20.0/24"]),
+    ));
+    assert_valid(&d);
+    assert_eq!(
+        crate::schema::revision(&serde_json::to_value(&d).unwrap()),
+        4
+    );
+    assert_valid(&site(peer(
+        "198.51.100.7:51821",
+        json!(["10.99.0.20/32", "172.16.0.0/16"]),
+    )));
+    for e in [
+        "office-b.example.net",
+        "198.51.100.7",
+        "1.2.3:51821",
+        "-x.example:1",
+        ":51821",
+        "a.example:0",
+        "[2001:db8::1]:51821",
+    ] {
+        assert!(
+            has_error(
+                &site(peer(e, json!(["10.99.0.20/32"]))),
+                "office-b.endpoint"
+            ),
+            "{e}"
+        );
+    }
+    assert!(has_error(
+        &site(json!({"public_key": KEY2, "addresses": ["10.99.0.20/32"], "keepalive": 0})),
+        "office-b.keepalive: seconds between keepalives"
+    ));
+    // The networks behind it: not a local one, a tunnel's, another
+    // peer's, or everything.
+    for (net, what) in [
+        ("192.0.2.0/25", "overlaps network users"),
+        ("10.99.0.0/16", "overlaps vpn roadwarrior's tunnel"),
+        ("0.0.0.0/0", "cannot take the default route"),
+    ] {
+        let d = site(peer(
+            "office-b.example.net:51821",
+            json!(["10.99.0.20/32", net]),
+        ));
+        assert!(
+            has_error(
+                &d,
+                &format!(
+                    "vpn.roadwarrior.peers.office-b.addresses: {}",
+                    if net == "0.0.0.0/0" { "" } else { net }
+                )
+            ) && has_error(&d, what),
+            "{net}: {:?}",
+            validate::errors(&validate::validate(&d))
+        );
+    }
+    let d = edit(
+        PAIR,
+        json!({"vpn": {"roadwarrior": {"peers": {
+            "office-b": peer("b.example.net:51821", json!(["10.99.0.20/32", "192.168.20.0/24"])),
+            "office-c": {"public_key": KEY, "endpoint": "c.example.net:51821",
+                         "addresses": ["10.99.0.21/32", "192.168.20.128/25"]},
+        }}}}),
+    );
+    assert!(has_error(
+        &d,
+        "office-c.addresses: 192.168.20.128/25 overlaps vpn.roadwarrior.peers.office-b"
+    ));
+    // In a pair, only with one static WAN with a gateway address and a
+    // gateway: not a WAN leased by DHCP, none, or two.
+    let one = site(peer("b.example.net:51821", json!(["10.99.0.20/32"])));
+    let mut leased = serde_json::to_value(&one).unwrap();
+    let wan = leased["networks"]["wan"].as_object_mut().unwrap();
+    for k in ["vip", "gateway", "extra_vips"] {
+        wan.remove(k);
+    }
+    wan.insert("dhcp_client".into(), json!(true));
+    wan.insert("vrid".into(), json!(10));
+    let leased: Document = serde_json::from_value(leased).unwrap();
+    assert!(
+        has_error(
+            &leased,
+            "vpn: site-to-site peers in a pair need exactly one WAN"
+        ),
+        "{:?}",
+        validate::errors(&validate::validate(&leased))
+    );
+    let mut none = serde_json::to_value(&one).unwrap();
+    none["networks"]["wan"]["role"] = json!("service");
+    let none: Document = serde_json::from_value(none).unwrap();
+    assert!(
+        has_error(&none, "this pair has none"),
+        "{:?}",
+        validate::errors(&validate::validate(&none))
+    );
+    // A road warrior's addresses stay inside the tunnel.
+    assert!(has_error(
+        &site(json!({"public_key": KEY2, "addresses": ["192.168.20.0/24"]})),
+        "is outside the tunnel's subnet"
+    ));
+}
+
 #[test]
 fn vpn_extra_ports_must_be_free() {
     let ports =

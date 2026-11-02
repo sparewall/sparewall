@@ -323,6 +323,75 @@ fn vpn_peer_preshared_key() {
     assert!(!netdev.contains("psk-alice\n"), "{netdev}");
 }
 
+/// A site-to-site peer (#148): its keepalive, and routes through the
+/// tunnel for its networks; a road warrior gets neither.
+#[test]
+fn vpn_site_to_site_peer() {
+    use sparewall_config::model::{Cidr, VpnPeer};
+    let mut doc = example("pair.yaml");
+    doc.vpn.get_mut("roadwarrior").unwrap().peers.insert(
+        "office-b".into(),
+        VpnPeer {
+            public_key: "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=".into(),
+            addresses: vec![
+                Cidr("10.99.0.20/32".parse().unwrap()),
+                Cidr("192.168.20.0/24".parse().unwrap()),
+            ],
+            endpoint: Some("office-b.example.net:51821".into()),
+            keepalive: Some(25),
+            preshared_key: None,
+        },
+    );
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw2").unwrap();
+    let netdev = &r.files[&format!(
+        "{}/50-sparewall-roadwarrior.netdev",
+        Subsystem::Networkd.dir()
+    )];
+    let peers: Vec<&str> = netdev.split("[WireGuardPeer]").skip(1).collect();
+    let site = peers
+        .iter()
+        .find(|p| p.contains("Endpoint=office-b.example.net:51821"))
+        .expect("the site's peer");
+    assert!(
+        site.contains("AllowedIPs=10.99.0.20/32,192.168.20.0/24"),
+        "{site}"
+    );
+    assert!(site.contains("PersistentKeepalive=25"), "{site}");
+    assert!(site.contains("RouteTable=main"), "{site}");
+    // In a pair, WireGuard's packets route from the gateway address,
+    // through a table only the master's keepalived fills.
+    assert!(netdev.contains("FirewallMark=21335"), "{netdev}");
+    let network = &r.files[&format!(
+        "{}/50-sparewall-roadwarrior.network",
+        Subsystem::Networkd.dir()
+    )];
+    assert!(
+        network.contains("[RoutingPolicyRule]\nFirewallMark=21335\nTable=5357\n"),
+        "{network}"
+    );
+    let ka = r
+        .files
+        .iter()
+        .find(|(p, _)| p.ends_with("keepalived.conf"))
+        .unwrap()
+        .1;
+    assert!(
+        ka.contains("0.0.0.0/0 via 203.0.113.6 dev swwan src 203.0.113.1 table 5357 onlink"),
+        "{ka}"
+    );
+    assert!(
+        ka.contains("203.0.113.0/29 dev swwan src 203.0.113.1 table 5357"),
+        "{ka}"
+    );
+    let alice = peers.iter().find(|p| !p.contains("Endpoint=")).unwrap();
+    assert!(
+        !alice.contains("RouteTable") && !alice.contains("PersistentKeepalive"),
+        "{alice}"
+    );
+}
+
 #[test]
 fn vpn_extra_ports_standalone_redirect() {
     let mut doc = example("standalone.yaml");

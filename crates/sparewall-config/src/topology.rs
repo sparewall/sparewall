@@ -18,6 +18,13 @@ pub const SELF_ZONE: &str = "self";
 /// (it runs the DHCP client); a static block's is up on both nodes and
 /// carries the gateway addresses and the public route on the master.
 pub const LEASE_IFACE: &str = "swwan";
+/// The mark WireGuard puts on its own packets in a pair with site-to-site
+/// peers, and the routing table marked packets use (#148): keepalived fills
+/// it on the master with routes from the gateway address, so the master's
+/// handshakes leave from it; on the backup it is empty, and the output
+/// chain drops them.
+pub const VPN_FWMARK: u32 = 0x5357;
+pub const VPN_TABLE: u32 = 5357;
 /// Interface names the coordinator reserves.
 pub const RESERVED_IFACES: &[&str] = &["lo", SYNC_TUNNEL_IFACE, LEASE_IFACE];
 
@@ -109,6 +116,32 @@ impl Document {
         let vip = net.vip.as_ref()?;
         let private = net.addresses.values().next()?.0.trunc();
         (!private.contains(&vip.0.addr())).then_some(private)
+    }
+
+    /// Whether any VPN has a site-to-site peer (one with an endpoint).
+    pub fn has_site_peers(&self) -> bool {
+        self.vpn
+            .values()
+            .any(|v| v.peers.values().any(|p| p.endpoint.is_some()))
+    }
+
+    /// The WANs with a static gateway address and gateway, whose routes
+    /// from that address the master puts in [`VPN_TABLE`] in a pair with
+    /// site-to-site peers (#148).
+    pub fn site_source_wans(&self) -> Vec<&str> {
+        if !self.is_pair() || !self.has_site_peers() {
+            return vec![];
+        }
+        self.networks
+            .iter()
+            .filter(|(_, n)| {
+                n.role == NetworkRole::Wan
+                    && !n.dhcp_client
+                    && n.vip.is_some()
+                    && n.gateway.is_some()
+            })
+            .map(|(k, _)| k.as_str())
+            .collect()
     }
 
     /// For a pair's WAN with one DHCP lease for the pair (#54), the

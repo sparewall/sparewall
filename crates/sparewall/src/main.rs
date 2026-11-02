@@ -469,7 +469,9 @@ enum UserCmd {
 #[derive(Subcommand)]
 enum VpnCmd {
     /// Print a WireGuard client configuration (and a QR code with
-    /// --qr, using qrencode) for one peer.
+    /// --qr, using qrencode) for one peer; for a site-to-site peer, the
+    /// other site's configuration.
+    #[command(visible_alias = "peer-config")]
     ClientConfig {
         peer: String,
         #[arg(long)]

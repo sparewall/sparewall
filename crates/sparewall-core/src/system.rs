@@ -78,6 +78,22 @@ pub trait System: Send {
     /// The public key of a WireGuard private key.
     fn wg_public(&mut self, private: &str) -> Result<String, Error>;
 
+    /// A WireGuard interface's peers as the kernel has them (`wg show
+    /// IFACE dump`); none when the interface does not exist.
+    fn wg_peers(&mut self, _iface: &str) -> Result<Vec<WgPeer>, Error> {
+        Ok(vec![])
+    }
+
+    /// Point a WireGuard peer at a resolved endpoint (`wg set`).
+    fn wg_set_endpoint(
+        &mut self,
+        _iface: &str,
+        _public_key: &str,
+        _endpoint: &str,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Make a secret available to a daemon in tmpfs (`/run/sparewall/keys`),
     /// readable by `group`.
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error>;
@@ -105,6 +121,37 @@ pub trait System: Send {
 /// An injected failure's message, cleared after use with `once`.
 fn injected(slot: &mut Option<String>, once: bool) -> Option<String> {
     if once { slot.take() } else { slot.clone() }
+}
+
+/// One peer of a WireGuard interface, as the kernel has it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WgPeer {
+    pub public_key: String,
+    /// `address:port`, once known.
+    pub endpoint: Option<String>,
+    /// Unix time of the last handshake; 0 for none.
+    pub latest_handshake: u64,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
+/// The peers in `wg show IFACE dump`: one line for the interface, then one
+/// per peer (public key, preshared key, endpoint, allowed IPs, latest
+/// handshake, received, sent, keepalive), tab-separated.
+pub fn parse_wg_dump(text: &str) -> Vec<WgPeer> {
+    text.lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f.len() >= 7).then(|| WgPeer {
+                public_key: f[0].to_string(),
+                endpoint: (f[2] != "(none)").then(|| f[2].to_string()),
+                latest_handshake: f[4].parse().unwrap_or(0),
+                rx_bytes: f[5].parse().unwrap_or(0),
+                tx_bytes: f[6].parse().unwrap_or(0),
+            })
+        })
+        .collect()
 }
 
 /// A recording fake for tests.
@@ -164,6 +211,10 @@ pub struct Fake {
     pub admin_password: Option<String>,
     /// The hostname, as last set.
     pub hostname: Option<String>,
+    /// What `wg_peers` reports, by interface.
+    pub wg: BTreeMap<String, Vec<WgPeer>>,
+    /// Endpoints set with `wg_set_endpoint`: (interface, key, endpoint).
+    pub wg_endpoints: Vec<(String, String, String)>,
 }
 
 impl System for Fake {
@@ -340,6 +391,21 @@ impl System for Fake {
         ))
     }
 
+    fn wg_peers(&mut self, iface: &str) -> Result<Vec<WgPeer>, Error> {
+        Ok(self.wg.get(iface).cloned().unwrap_or_default())
+    }
+
+    fn wg_set_endpoint(
+        &mut self,
+        iface: &str,
+        public_key: &str,
+        endpoint: &str,
+    ) -> Result<(), Error> {
+        self.wg_endpoints
+            .push((iface.into(), public_key.into(), endpoint.into()));
+        Ok(())
+    }
+
     fn netdev_recreate(&mut self, name: &str) -> Result<(), Error> {
         self.log.push(format!("recreate {name}"));
         Ok(())
@@ -444,6 +510,17 @@ impl System for Box<dyn System> {
     fn wg_public(&mut self, private: &str) -> Result<String, Error> {
         (**self).wg_public(private)
     }
+    fn wg_peers(&mut self, iface: &str) -> Result<Vec<WgPeer>, Error> {
+        (**self).wg_peers(iface)
+    }
+    fn wg_set_endpoint(
+        &mut self,
+        iface: &str,
+        public_key: &str,
+        endpoint: &str,
+    ) -> Result<(), Error> {
+        (**self).wg_set_endpoint(iface, public_key, endpoint)
+    }
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
         (**self).install_key(file, content, group)
     }
@@ -462,5 +539,23 @@ impl System for Box<dyn System> {
 
     fn calendar_check(&mut self, expr: &str) -> Result<(), String> {
         (**self).calendar_check(expr)
+    }
+}
+
+#[cfg(test)]
+mod wg_tests {
+    #[test]
+    fn dump_is_parsed() {
+        let d = "priv\tpub\t51821\toff\n\
+                 KEY1\t(none)\t198.51.100.7:51821\t10.98.0.2/32,192.168.20.0/24\t1793637591\t1200\t3400\t25\n\
+                 KEY2\t(none)\t(none)\t10.98.0.3/32\t0\t0\t0\toff\n";
+        let p = super::parse_wg_dump(d);
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].endpoint.as_deref(), Some("198.51.100.7:51821"));
+        assert_eq!(
+            (p[0].latest_handshake, p[0].rx_bytes, p[0].tx_bytes),
+            (1793637591, 1200, 3400)
+        );
+        assert_eq!((p[1].endpoint.as_deref(), p[1].latest_handshake), (None, 0));
     }
 }

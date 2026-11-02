@@ -27,7 +27,7 @@ Sparewall turns a Linux box or VM into a firewall appliance that is upgraded and
 | One WAN | Multiple WANs, WAN failover, load balancing |
 | IPv4 routing, NAT and DHCP; IPv6 link-local only | IPv6 routing: SLAAC and RA, prefix delegation, DHCPv6 |
 | Zone-based firewall with raw nftables rules | IPsec, captive portal, multi-tenancy |
-| WireGuard remote-access VPN | Site-to-site beyond static WireGuard peers |
+| WireGuard remote-access VPN; site-to-site tunnels with static WireGuard peers | Site-to-site beyond static WireGuard peers (dynamic routing, many sites) |
 | Optional recursive DNS (Unbound), NTP, logging, metrics, health endpoints | DHCP-to-DNS updates (DDNS), IDS/IPS (Suricata), dynamic routing (BGP, OSPF) |
 | `sparewall` CLI and the Varlink API; a first web UI and HTTP API (0.3.0) | A web UI and HTTP API covering every CLI operation (milestone 7, which 1.0 waits for) |
 
@@ -677,7 +677,7 @@ The coordinator renders a WireGuard `.netdev` (`ListenPort=`, `PrivateKeyFile=`,
 - Flows inside the tunnel are tracked and synced by conntrackd like any other traffic, so an inner TCP connection survives the outage as long as its retransmissions (and the application's own timeouts) outlast it, and inner UDP resumes once the tunnel does.
 - The remote-access interface and the sync tunnel are separate WireGuard interfaces with separate ports and keys.
 
-Standalone nodes run the same configuration. Static-endpoint peers can later cover simple site-to-site tunnels with the same mechanism.
+Standalone nodes run the same configuration. Static-endpoint peers are site-to-site tunnels with the same mechanism: their networks are routed through the tunnel, and in a pair the master starts the tunnel from the gateway address.
 
 ## Observability and health
 

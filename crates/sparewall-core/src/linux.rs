@@ -736,7 +736,9 @@ impl System for Linux {
         }
         let wanted: BTreeSet<&str> = meta.services.values().map(|s| s.unit.as_str()).collect();
         for unit in PROVIDER_UNITS.iter().filter(|u| !wanted.contains(*u)) {
-            if self.unit_active(unit) {
+            // Starting, or reloading, counts: stopped only once it is up,
+            // it would be left running.
+            if self.unit_running(unit) {
                 tracing::info!(unit, "stopping service");
                 systemctl(&["stop", unit])?;
             }
@@ -802,6 +804,31 @@ impl System for Linux {
         Ok(run("wg", &["pubkey"], Some(private.trim()))?
             .trim()
             .to_string())
+    }
+
+    fn wg_peers(&mut self, iface: &str) -> Result<Vec<crate::system::WgPeer>, Error> {
+        if !self.sys_class_net.join(iface).exists() {
+            return Ok(vec![]);
+        }
+        Ok(crate::system::parse_wg_dump(&run(
+            "wg",
+            &["show", iface, "dump"],
+            None,
+        )?))
+    }
+
+    fn wg_set_endpoint(
+        &mut self,
+        iface: &str,
+        public_key: &str,
+        endpoint: &str,
+    ) -> Result<(), Error> {
+        run(
+            "wg",
+            &["set", iface, "peer", public_key, "endpoint", endpoint],
+            None,
+        )
+        .map(|_| ())
     }
 
     fn netdev_recreate(&mut self, name: &str) -> Result<(), Error> {
@@ -932,6 +959,19 @@ impl Linux {
             }
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
+    }
+
+    /// Whether a unit is anything but stopped (inactive or failed).
+    fn unit_running(&self, unit: &str) -> bool {
+        Command::new("systemctl")
+            .args(["is-active", unit])
+            .output()
+            .is_ok_and(|o| {
+                !matches!(
+                    String::from_utf8_lossy(&o.stdout).trim(),
+                    "inactive" | "failed" | "unknown" | ""
+                )
+            })
     }
 
     fn unit_active(&self, unit: &str) -> bool {
