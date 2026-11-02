@@ -77,10 +77,20 @@ jobs:
       - name: Check the tag
         if: startsWith(github.ref, 'refs/tags/v')
         env:
-          # A rebuild is dispatched by the bot, which signs nothing: the
-          # tag must still carry a maintainer's signature.
-          RELEASE_SIGNERS: ${{ inputs.rebuild && vars.RELEASE_SIGNERS || github.actor }}
-        run: .github/check-tag.sh "$GITHUB_REF_NAME"
+          ACTOR: ${{ github.actor }}
+          SIGNERS: ${{ vars.RELEASE_SIGNERS }}
+        run: |
+          # A rebuild is dispatched by whoever (or whatever bot) runs it,
+          # which proves nothing about the tag: it must carry the signature
+          # of one of the maintainers the repository names, and there must
+          # be some. A release is signed by whoever pushed its tag.
+          if [ -n "$REBUILD" ]; then
+            [ -n "$SIGNERS" ] || { echo "::error::a rebuild needs the repository variable RELEASE_SIGNERS"; exit 1; }
+            export RELEASE_SIGNERS=$SIGNERS
+          else
+            export RELEASE_SIGNERS=$ACTOR
+          fi
+          .github/check-tag.sh "$GITHUB_REF_NAME"
 
       - name: A rebuild is of a release tag
         if: env.REBUILD != ''
@@ -686,8 +696,14 @@ jobs:
     # release keeps its source, its signed tag and its media; its notes say
     # when it was rebuilt and why.
     name: promote the rebuild
-    needs: image
+    # Every job of the run: the VM suites and both CLI builds.
+    needs: [image, cli-macos, cli-linux-arm64]
     if: inputs.rebuild != '' && startsWith(github.ref, 'refs/tags/v')
+    # One writer of stable at a time: release.yml's promote takes the same
+    # lock, so a release published meanwhile is seen below.
+    concurrency:
+      group: promote-stable
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -714,13 +730,16 @@ jobs:
           cosign verify --key cosign.pub --new-bundle-format=false "$src" > /dev/null
           digest=$(skopeo inspect --no-tags "docker://$src" | jq -r .Digest)
           # stable moves only while it is this release (or an earlier
-          # rebuild of it): a newer release keeps it.
+          # rebuild of it) and this is still the newest release: a newer
+          # one keeps it. Read under the promote-stable lock, which
+          # release.yml holds while it moves stable.
           current=$(skopeo inspect --no-tags "docker://$IMAGE:stable" | jq -r '.Labels["org.sparewall.version"] // ""')
+          latest=$(gh release view --json tagName --jq .tagName)
           tags=("$release")
-          if [ "${current%%+*}" = "$release" ]; then
+          if [ "${current%%+*}" = "$release" ] && [ "$latest" = "$GITHUB_REF_NAME" ]; then
             tags+=(stable)
           else
-            echo "stable is $current, not $release: left alone" >> "$GITHUB_STEP_SUMMARY"
+            echo "stable is $current and the newest release $latest, not $release: stable left alone" >> "$GITHUB_STEP_SUMMARY"
           fi
           for t in "${tags[@]}"; do
             skopeo copy --all --preserve-digests "docker://$src" "docker://$IMAGE:$t"
