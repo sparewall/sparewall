@@ -4,7 +4,8 @@
 //! returns the health level: 200 for ok and degraded, 503 for failed.
 //! Unauthenticated requests get only the level; `?verbose`,
 //! `/readyz/<check>` and `/metrics` need an API token
-//! (`Authorization: Bearer`), unless `metrics.mode` is `external`.
+//! (`Authorization: Bearer`), unless `metrics.mode` is `external` (or,
+//! over loopback, `local`).
 //!
 //! Every other path goes to `sparewall-httpd` over its socket, when the
 //! document turns it on (`management.web`): the web UI and the HTTP API
@@ -313,7 +314,10 @@ async fn handle(
     }
     if path == "/metrics" {
         // With a token, or to anyone on the management network when the
-        // document asks for an unauthenticated external scrape.
+        // document asks for an unauthenticated external scrape. The local
+        // Prometheus scrapes it over loopback, where node_exporter answers
+        // without a token too.
+        let loopback = peer.ip().to_canonical().is_loopback();
         let r = with_core(&core, &events, move |c| {
             let mode = c
                 .active()
@@ -328,7 +332,8 @@ async fn handle(
             let allowed = match mode {
                 Some(sparewall_config::model::MetricsMode::Off) => false,
                 Some(sparewall_config::model::MetricsMode::External) => true,
-                _ => trusted,
+                Some(sparewall_config::model::MetricsMode::Local) => trusted || loopback,
+                None => trusted,
             };
             if allowed {
                 c.metrics().map(|mut m| {

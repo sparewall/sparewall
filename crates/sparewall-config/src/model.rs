@@ -852,14 +852,23 @@ pub struct RemoteLog {
 #[serde(deny_unknown_fields)]
 pub struct Metrics {
     /// `external`: `/metrics` answers the management network without a
-    /// token, for an external Prometheus. `off`: not served. (Without a
-    /// `metrics` section it needs a token.) `local` (a local Prometheus)
-    /// is not built yet and is rejected.
+    /// token, for an external Prometheus. `local`: each node also keeps
+    /// its own history in a local Prometheus, which the API queries
+    /// (`org.sparewall.Metrics`); `/metrics` needs a token, as it does
+    /// without a `metrics` section. `off`: not served.
+    #[schemars(extend("x-since-values" = {"local": 4}))]
     pub mode: MetricsMode,
-    /// Local Prometheus retention, e.g. `15d`. Not built yet, with the
-    /// local mode: rejected.
+    /// With `mode: local`, how long history is kept, in Prometheus's units
+    /// (`15d`, `12h`, `1y`). Default `15d`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 4))]
     pub retention: Option<String>,
+    /// With `mode: local`, the most history may take on disk (`512MB`,
+    /// `2GB`): past it, the oldest goes first, whatever `retention` says.
+    /// Default `1GB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 4))]
+    pub retention_size: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

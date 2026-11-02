@@ -873,3 +873,50 @@ fn syslog_forwarding() {
     assert_eq!(file(&relp, SYSLOG_CA).unwrap(), format!("{PEM}\n"));
     insta::assert_snapshot!("syslog_relp_tls", conf);
 }
+
+/// A local Prometheus (#145): rendered only with `metrics.mode: local`,
+/// scraping this node's coordinator over loopback, with the document's
+/// retention or the defaults; a management service, reloaded on change
+/// and checked with promtool.
+#[test]
+fn local_metrics() {
+    use sparewall_config::model::{Metrics, MetricsMode};
+    use sparewall_render::metrics::{CONF, UNIT};
+    let with = |m: Option<Metrics>| {
+        let mut doc = example("pair.yaml");
+        doc.metrics = m;
+        let errs = validate::errors(&validate(&doc));
+        assert!(errs.is_empty(), "{errs:#?}");
+        render(&doc, "fw2").unwrap()
+    };
+    let conf = |r: &Rendered| r.files.get(&format!("metrics/{CONF}")).cloned();
+    let mode = |mode| Metrics {
+        mode,
+        retention: None,
+        retention_size: None,
+    };
+    for m in [
+        None,
+        Some(mode(MetricsMode::External)),
+        Some(mode(MetricsMode::Off)),
+    ] {
+        let r = with(m);
+        assert!(conf(&r).is_none());
+        assert!(!r.meta.services.contains_key("metrics"));
+    }
+    let r = with(Some(mode(MetricsMode::Local)));
+    let c = conf(&r).expect("prometheus.yml");
+    assert!(c.contains("      time: 15d\n      size: 1GB\n"), "{c}");
+    assert!(c.contains("targets: [\"127.0.0.1:443\"]"), "{c}");
+    assert!(c.contains("instance: fw2"), "{c}");
+    let s = &r.meta.services["metrics"];
+    assert_eq!(s.unit, UNIT);
+    assert!(s.management && s.reload);
+    assert_eq!(s.check.as_ref().unwrap().command[0], "promtool");
+    let r = with(Some(Metrics {
+        retention: Some("30d".into()),
+        retention_size: Some("512MB".into()),
+        ..mode(MetricsMode::Local)
+    }));
+    insta::assert_snapshot!("local_metrics", conf(&r).unwrap());
+}

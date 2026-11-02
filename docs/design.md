@@ -600,7 +600,7 @@ The document says what a service must do; a **provider** turns that intent into 
 | DNS resolver | Enabled flag, listening networks, forwarders or full recursion, local records from reservations | Unbound | Disabled; Knot Resolver, dnsmasq: not built yet |
 | ACME DNS-01 | Names, CA directory, provider name, secret reference | Built-in RFC 2136 | lego (Google Cloud DNS, Cloudflare, Route 53 and many more) |
 | Log forwarding | Destination, protocol, TLS | `systemd-journal-upload` | Off; rsyslog remote (syslog over UDP, TCP or RELP, with TLS) |
-| Metrics storage | Mode, retention | External scrape | Local Prometheus container; off |
+| Metrics storage | Mode, retention (time and size) | External scrape | Local Prometheus container, queried through the API; off |
 | Backup | Repository, schedule, credentials | restic | Any restic backend; off |
 
 ### What a provider is
@@ -1020,7 +1020,7 @@ The schema, coordinator, providers, web UI and image live in one repository beca
 | Kea | MPL-2.0. All hooks are open source since 3.0 except RBAC and the Configuration Backend, which Sparewall does not use |
 | systemd | LGPL-2.1+ (some tools GPL-2.0) |
 | nftables, conntrack-tools, keepalived, chrony, ulogd2 | GPL-2.0 family |
-| Podman, bootc, cosign, syft, node\_exporter | Apache-2.0 (bootc also MIT) |
+| Podman, bootc, cosign, syft, node\_exporter, Prometheus | Apache-2.0 (bootc also MIT) |
 | zlink | MIT |
 | Unbound | BSD-3-Clause |
 | lego | MIT |

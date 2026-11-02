@@ -25,6 +25,7 @@ const PROVIDER_SUBSYSTEMS: &[Subsystem] = &[
     Subsystem::Conntrackd,
     Subsystem::Logging,
     Subsystem::Ssh,
+    Subsystem::Metrics,
 ];
 
 fn subsystem_files(r: &Rendered, s: Subsystem) -> Files {

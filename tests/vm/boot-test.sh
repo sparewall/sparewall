@@ -382,6 +382,90 @@ vm 'sudo sparewall set management.web=false --confirm 0'
 web_up inactive
 [ "$(status https://localhost/openapi.json)" = 404 ] || fail "the HTTP API still answers after management.web=false"
 
+log "a local Prometheus (metrics.mode: local, #145)"
+# Each node keeps its own history: Prometheus, in its container, scrapes
+# the coordinator over loopback and listens there only. The API queries it
+# for a monitor token, here over HTTPS through the gateway.
+vm 'sudo sparewall set management.web=true metrics.mode=local metrics.retention=2d --confirm 0' >/dev/null
+web_up active
+deadline=$((SECONDS + 120))
+until [ "$(vm 'systemctl is-active sparewall-prometheus' || true)" = active ]; do
+    [ $SECONDS -lt $deadline ] || {
+        vm 'systemctl status --no-pager sparewall-prometheus; sudo journalctl -b -u sparewall-prometheus --no-pager | tail -30' || true
+        fail "sparewall-prometheus is not running"
+    }
+    sleep 3
+done
+vm 'ps -eo user:12,label,comm' | grep -E '^nobody +system_u:system_r:container_t:.* prometheus$' >/dev/null \
+    || fail "Prometheus does not run as nobody in container_t: $(vm 'ps -eo user:12,label,comm' | grep prometheus)"
+# Nothing new on the network: Prometheus answers loopback only.
+vm 'sudo ss -Htlnp' > listen.txt
+grep prometheus listen.txt | grep -v ' 127\.0\.0\.1:9090 ' && fail "Prometheus listens beyond loopback"
+grep -q ' 127\.0\.0\.1:9090 .*prometheus' listen.txt || fail "Prometheus is not on 127.0.0.1:9090: $(cat listen.txt)"
+runtime() { vm 'curl -sf http://127.0.0.1:9090/api/v1/status/runtimeinfo' | jq -r .data.storageRetention; }
+[ "$(runtime)" = "2d or 1GiB" ] || fail "Prometheus keeps $(runtime), not 2d or 1GiB"
+MON=$(vm 'sudo sparewall token create ci-history --role monitor -q')
+query() { # method, parameters (JSON): the reply, failing on an error
+    vm "curl -sk -X POST -H 'Authorization: Bearer $MON' -H 'Content-Type: application/json' \
+        -d '$2' https://localhost/call/org.sparewall.Metrics.$1"
+}
+deadline=$((SECONDS + 120))
+until query Query '{"query": "up{job=\"sparewall\"} == 1"}' > history.json \
+    && jq -e '.result[0].metric.instance == "fw1"' history.json >/dev/null; do
+    [ $SECONDS -lt $deadline ] || {
+        vm 'sudo journalctl -b -u sparewall-prometheus --no-pager | tail -20' || true
+        fail "Prometheus did not scrape the coordinator: $(cat history.json)"
+    }
+    sleep 5
+done
+# The coordinator's series, and node_exporter's through it, over a range.
+now=$(vm 'date +%s')
+query QueryRange "{\"query\": \"sparewall_generation\", \"start\": \"$((now - 300))\", \"end\": \"$now\", \"step\": \"15s\"}" > history.json
+jq -e '.result_type == "matrix" and (.result[0].values | length) > 0' history.json >/dev/null \
+    || fail "no history of the coordinator's metrics: $(cat history.json)"
+query Query '{"query": "node_network_receive_bytes_total{device=\"uplink\"}"}' > history.json
+jq -e '.result | length == 1' history.json >/dev/null || fail "no host metrics in the history: $(cat history.json)"
+[ "$(status -X POST -H "'Authorization: Bearer $MON'" -H "'Content-Type: application/json'" \
+    -d "'{\"query\": \"up{\"}'" https://localhost/call/org.sparewall.Metrics.Query)" = 422 ] \
+    || fail "a query that does not parse is not refused as invalid"
+# /metrics needs no token over loopback only: not from the node's own
+# address on the management network.
+mgmt=$(vm 'ip -4 -o route get 10.0.2.2' | grep -oE 'src [0-9.]+' | cut -d' ' -f2)
+[ "$(status "https://$mgmt/metrics")" = 403 ] || fail "/metrics answers $mgmt without a token in local mode"
+# Retention changes reload it, keeping what it has.
+started=$(vm 'sudo podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage inspect -f "{{.State.StartedAt}}" sparewall-prometheus')
+vm 'sudo sparewall set metrics.retention=3d metrics.retention_size=256MB --confirm 0' >/dev/null
+deadline=$((SECONDS + 30))
+until [ "$(runtime)" = "3d or 256MiB" ]; do
+    [ $SECONDS -lt $deadline ] || fail "Prometheus keeps $(runtime) after the change, not 3d or 256MiB"
+    sleep 2
+done
+[ "$(vm 'sudo podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage inspect -f "{{.State.StartedAt}}" sparewall-prometheus')" = "$started" ] \
+    || fail "Prometheus restarted for a retention change, rather than reloading"
+# Down, it degrades health (a management service), never fails it.
+vm 'sudo systemctl stop sparewall-prometheus'
+vm 'sudo sparewall health -v -o json' > health.json || true
+jq -e '.level == "degraded" and any(.checks[]; .name == "services" and .level == "degraded")' health.json >/dev/null \
+    || fail "health with Prometheus down is not degraded: $(jq -c . health.json)"
+[ "$(status -X POST -H "'Authorization: Bearer $MON'" -H "'Content-Type: application/json'" \
+    -d "'{\"query\": \"up\"}'" https://localhost/call/org.sparewall.Metrics.Query)" = 503 ] \
+    || fail "a query with Prometheus down is not answered as unavailable"
+vm 'sudo systemctl start sparewall-prometheus'
+# Back to external: it stops, and the API says there is no history.
+vm 'sudo sparewall set metrics.mode=external --confirm 0' >/dev/null
+deadline=$((SECONDS + 60))
+until [ "$(vm 'systemctl is-active sparewall-prometheus' || true)" = inactive ]; do
+    [ $SECONDS -lt $deadline ] || fail "sparewall-prometheus still runs with metrics.mode: external"
+    sleep 2
+done
+[ "$(status -X POST -H "'Authorization: Bearer $MON'" -H "'Content-Type: application/json'" \
+    -d "'{\"query\": \"up\"}'" https://localhost/call/org.sparewall.Metrics.Query)" = 400 ] \
+    || fail "a query without the local Prometheus is not refused"
+vm 'sudo sparewall unset metrics --confirm 0' >/dev/null
+vm 'sudo sparewall set management.web=false --confirm 0' >/dev/null
+web_up inactive
+vm 'sudo sparewall token revoke ci-history'
+
 log "forwarding to a syslog collector (#147)"
 # The collector is rsyslog from the image under test, on this host, which
 # the node reaches as 10.0.2.2: UDP and TCP on 1514, TLS on 6514, and

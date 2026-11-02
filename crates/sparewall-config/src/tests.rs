@@ -560,15 +560,8 @@ fn rejects_settings_not_built_yet() {
         &d,
         "provider_options.kea: provider passthrough options"
     ));
-    let d = edit(STANDALONE, json!({"metrics": {"mode": "local"}}));
-    assert!(has_error(&d, "metrics.mode: a local Prometheus"));
-    let d = edit(
-        STANDALONE,
-        json!({"metrics": {"mode": "external", "retention": "15d"}}),
-    );
-    assert!(has_error(&d, "metrics.retention:"));
     // What is built stays valid.
-    for metrics in ["external", "off"] {
+    for metrics in ["external", "local", "off"] {
         assert_valid(&edit(STANDALONE, json!({"metrics": {"mode": metrics}})));
     }
     assert_valid(&edit(
@@ -576,14 +569,56 @@ fn rejects_settings_not_built_yet() {
         json!({"updates": {"channel": "testing", "mode": "manual"}}),
     ));
     // History may hold them: earlier versions accepted them.
-    let d = edit(
-        STANDALONE,
-        json!({"metrics": {"mode": "local", "retention": "15d"},
-               "provider_options": {"kea": {}}}),
-    );
-    assert_eq!(error_paths(&d).len(), 3, "{:?}", error_paths(&d));
+    let d = edit(STANDALONE, json!({"provider_options": {"kea": {}}}));
+    assert_eq!(error_paths(&d).len(), 1, "{:?}", error_paths(&d));
     let history = validate::validate_history(&d);
     assert!(validate::errors(&history).is_empty(), "{history:?}");
+}
+
+/// A local Prometheus (#145): retention and its size in Prometheus's
+/// units, which apply only to it; the document then needs revision 4.
+#[test]
+fn local_metrics() {
+    let m = |v: serde_json::Value| edit(STANDALONE, json!({"metrics": v}));
+    let d = m(json!({"mode": "local", "retention": "30d", "retention_size": "2GB"}));
+    assert_valid(&d);
+    assert!(warnings(&d).is_empty(), "{:?}", warnings(&d));
+    for r in ["15d", "1d12h", "90m", "1y", "500ms", "2w3d"] {
+        assert!(validate::prometheus_duration(r), "{r}");
+    }
+    for r in [
+        "", "15", "d", "0d", "12h1d", "1d1d", "15 d", "1.5d", "-1d", "1M",
+    ] {
+        assert!(!validate::prometheus_duration(r), "{r}");
+    }
+    for r in ["512MB", "2GB", "1TB", "100B"] {
+        assert!(validate::prometheus_size(r), "{r}");
+    }
+    for r in ["", "2G", "0GB", "2 GB", "2gb", "GB", "1.5GB", "2GiB"] {
+        assert!(!validate::prometheus_size(r), "{r}");
+    }
+    assert!(has_error(
+        &m(json!({"mode": "local", "retention": "two weeks"})),
+        "metrics.retention: \"two weeks\" is not a duration"
+    ));
+    assert!(has_error(
+        &m(json!({"mode": "local", "retention_size": "2G"})),
+        "metrics.retention_size: \"2G\" is not a size"
+    ));
+    // Without the local Prometheus they do nothing.
+    let d = m(json!({"mode": "external", "retention": "30d", "retention_size": "2GB"}));
+    assert_valid(&d);
+    let w = warnings(&d);
+    assert!(
+        w.iter()
+            .any(|w| w.starts_with("metrics.retention: retention applies to mode: local"))
+            && w.iter().any(|w| w.starts_with("metrics.retention_size:")),
+        "{w:?}"
+    );
+    let rev = |v: serde_json::Value| crate::schema::revision(&serde_json::json!({"metrics": v}));
+    assert_eq!(rev(json!({"mode": "local"})), 4);
+    assert_eq!(rev(json!({"mode": "external"})), 1);
+    assert_eq!(rev(json!({"mode": "external", "retention_size": "1GB"})), 4);
 }
 
 /// Scheduled upgrades (#84): a window is required with `windowed`, used
