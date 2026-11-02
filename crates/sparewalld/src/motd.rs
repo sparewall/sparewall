@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(
             render(&s),
             "Sparewall fw1: MASTER, generation 4, health ok\n  \
-             update      0.4.1 available (running 0.4.0); sparewall upgrade\n"
+             update      0.4.1 is available (running 0.4.0); sparewall upgrade\n"
         );
         s.update = Some(json!({"enabled": true, "running": "0.4.0", "available": "none"}));
         assert_eq!(

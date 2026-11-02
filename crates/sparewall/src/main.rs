@@ -1471,7 +1471,10 @@ impl App {
                 if check {
                     // When the node last checked on its own (#188); a node
                     // from before 0.4.0 does not say.
-                    if let Ok(Ok(s)) = self.conn().await?.status().await
+                    // Best effort: the check above is the answer, so a
+                    // failure here never changes the exit code.
+                    if let Ok(mut c) = self.conn().await
+                        && let Ok(Ok(s)) = c.status().await
                         && let Some(line) = s.update.as_ref().and_then(background_check)
                     {
                         println!("{line}");

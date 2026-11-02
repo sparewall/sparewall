@@ -596,7 +596,7 @@ it. The answer is in `sparewall status -o json` (`update`), and in
 | `sparewall_update_last_check_success_timestamp_seconds` | When a check last succeeded |
 
 When an update is available, `sparewall status` and the login banner
-say so in one line ("update: 0.4.1 available (running 0.4.0); sparewall
+say so in one line ("update: 0.4.1 is available (running 0.4.0); sparewall
 upgrade"), which changes neither the health summary nor any exit code,
 and `sparewall upgrade --check` shows when the node last checked on its
 own. In a pair, each node reports its own image; if the two run
