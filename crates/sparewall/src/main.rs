@@ -1444,6 +1444,9 @@ impl App {
                 if let Some(n) = &r.note {
                     println!("note:      {n}");
                 }
+                if let Some(w) = &r.next_window {
+                    println!("window:    next scheduled upgrade window at {w}");
+                }
                 if check {
                     return Ok(());
                 }

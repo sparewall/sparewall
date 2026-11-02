@@ -1555,14 +1555,24 @@
                 "type": "null"
               }
             ],
-            "description": "`manual` (the default): upgrades run when asked for, with\n`sparewall upgrade`. `windowed` (automatic upgrades in `window`) is\nnot built yet and is rejected."
+            "description": "`manual` (the default): upgrades run when asked for, with\n`sparewall upgrade`. `windowed`: the pair's master (or a standalone\nnode) upgrades by itself when `window` opens and the channel offers\na newer image, through the same health-gated sequence (#84)."
           },
           "window": {
-            "description": "Maintenance window as a systemd calendar expression. Not built yet,\nwith the windowed mode: rejected.",
+            "description": "When a scheduled upgrade may start: a systemd calendar expression\n(`Sun *-*-* 03:00`), in the node's time zone (UTC unless set).\nRequired with `mode: windowed`.",
             "type": [
               "string",
               "null"
             ]
+          },
+          "window_minutes": {
+            "description": "How many minutes after the window opens an upgrade may still start\n(default 60).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-since": 3
           }
         },
         "type": "object"
@@ -4356,6 +4366,13 @@
                       "type": "boolean"
                     },
                     "booted": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "next_window": {
+                      "description": "When the next maintenance window opens (RFC 3339, UTC), with `updates.mode: windowed` (#84). Absent otherwise, and from nodes older than 0.4.0.",
                       "type": [
                         "string",
                         "null"

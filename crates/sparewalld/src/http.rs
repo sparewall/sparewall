@@ -331,7 +331,10 @@ async fn handle(
                 _ => trusted,
             };
             if allowed {
-                c.metrics().map(Some)
+                c.metrics().map(|mut m| {
+                    m.push_str(&crate::schedule::metrics(c.store().root()));
+                    Some(m)
+                })
             } else {
                 Ok(None)
             }

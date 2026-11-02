@@ -271,7 +271,7 @@ fn save(path: &Path, s: &State) {
 }
 
 /// Run the check against the registry: blocking.
-fn check(target: &str) -> Result<(Kind, Remote), String> {
+pub fn check(target: &str) -> Result<(Kind, Remote), String> {
     let remote = crate::upgrade::inspect(target)?;
     let booted = booted_image_digest();
     let booted = booted

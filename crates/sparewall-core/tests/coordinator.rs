@@ -98,6 +98,27 @@ fn apply_confirm_and_history() {
     assert_eq!(ev[1], Event::Confirmed { id: 1 });
 }
 
+/// The maintenance window is checked by systemd when a change is applied
+/// (#84): one systemd rejects is refused at its path, and nothing runs.
+#[test]
+fn a_window_systemd_rejects_is_refused() {
+    let mut t = setup();
+    t.c.apply(example(), &opts(0, None)).unwrap();
+    let mut v = example();
+    v["updates"] = json!({"mode": "windowed", "window": "bogus 03:00"});
+    match t.c.apply(v.clone(), &opts(1, None)) {
+        Err(Error::Validation(e)) => assert!(
+            e.iter().any(|m| m.starts_with("updates.window: Failed to parse")),
+            "{e:?}"
+        ),
+        other => panic!("expected a validation error, got {other:?}"),
+    }
+    assert!(t.c.validate(v.clone()).is_err());
+    assert_eq!(t.c.state().unwrap().active, 1);
+    v["updates"]["window"] = json!("Sun *-*-* 03:00");
+    assert_eq!(t.c.apply(v, &opts(1, None)).unwrap().generation.id, 2);
+}
+
 #[test]
 fn stale_base_conflicts() {
     let mut t = setup();
@@ -1765,11 +1786,6 @@ fn unbuilt_settings() -> Vec<(Value, &'static str)> {
         (
             json!({"metrics": {"mode": "external", "retention": "15d"}}),
             "metrics.retention",
-        ),
-        (json!({"updates": {"mode": "windowed"}}), "updates.mode"),
-        (
-            json!({"updates": {"mode": "manual", "window": "Sun 03:00"}}),
-            "updates.window",
         ),
     ]
 }

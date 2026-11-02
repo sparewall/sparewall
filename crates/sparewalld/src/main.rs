@@ -14,6 +14,7 @@ mod motd;
 mod peer;
 mod reach;
 mod rules;
+mod schedule;
 mod seed;
 mod selinux;
 mod service;
@@ -450,6 +451,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 update::check_loop(core.clone(), tx.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no systemd to read windows with.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                schedule::schedule_loop(core.clone(), tx.clone(), pair.clone()).await
             } => Ok(()),
             () = dhcp_ha::takeover_loop(core.clone(), tx.clone(), pair.clone()) => Ok(()),
             () = https => Ok(()),

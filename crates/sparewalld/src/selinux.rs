@@ -168,6 +168,16 @@ pub async fn acknowledge(
     name: String,
     by: String,
 ) -> Result<(), FirewallError> {
+    if name == crate::schedule::CHECK {
+        return match crate::schedule::unblock(core, events, &format!("acknowledged by {by}"))
+            .await?
+        {
+            true => Ok(()),
+            false => Err(FirewallError::NotSupported {
+                message: "no failed scheduled upgrade to acknowledge".into(),
+            }),
+        };
+    }
     if name != CHECK {
         return Err(FirewallError::NotSupported {
             message: format!("health check {name} has nothing to acknowledge"),

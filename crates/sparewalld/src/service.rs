@@ -721,12 +721,22 @@ where
         channel: Option<String>,
         image: Option<String>,
     ) -> Result<UpgradeCheckReply, FirewallError> {
-        let doc_channel = with_core(&self.core, &self.events, |c| {
-            Ok(c.active_document()?
-                .and_then(|d| d.updates)
-                .and_then(|u| u.channel))
+        let updates = with_core(&self.core, &self.events, |c| {
+            Ok(c.active_document()?.and_then(|d| d.updates))
         })
         .await?;
+        let doc_channel = updates.as_ref().and_then(|u| u.channel.clone());
+        // The next maintenance window, with scheduled upgrades on (#84).
+        let window = updates
+            .filter(|u| u.mode == Some(sparewall_config::model::UpdateMode::Windowed))
+            .and_then(|u| u.window);
+        let next_window = match window {
+            Some(w) => tokio::task::spawn_blocking(move || crate::schedule::next_window(&w))
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
         let tracked = crate::upgrade::tracked_ref();
         let target = crate::upgrade::target_ref(
             image.as_deref(),
@@ -774,6 +784,7 @@ where
             version: remote.ok().and_then(|r| r.version),
             running: Some(sparewall_core::VERSION.to_string()),
             note: offer.note,
+            next_window,
         })
     }
 
@@ -798,6 +809,10 @@ where
         )
         .await
         .map_err(|message| FirewallError::ApplyFailed { message })?;
+        // An upgrade started by hand lifts a failed scheduled one's block
+        // (#84): someone is looking.
+        let _ =
+            crate::schedule::unblock(&self.core, &self.events, "an upgrade started by hand").await;
         Ok(UpgradeStartReply { plan })
     }
 
