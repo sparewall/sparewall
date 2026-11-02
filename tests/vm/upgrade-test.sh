@@ -281,15 +281,18 @@ at "$M" 'sudo sparewall set updates.channel=newer --confirm 0'
 sees_newer() { status "$1" | jq -e '.update.available == "newer" and .update.version == "99.0.0"' >/dev/null; }
 for n in $NODES; do
     wait_for 240 "$n sees 99.0.0" sees_newer "$n"
-    at "$n" "sudo journalctl -b -u sparewalld MESSAGE_ID=c8f95979678447529aa9b5914a38a3a0 -o cat --no-pager" \
-        | grep -qx "99.0.0 is available on 10.0.2.2:5000/sparewall:newer (running $CANDIDATE)" \
-        || fail "$n did not log the update with its MESSAGE_ID"
+    logged=$(at "$n" "sudo journalctl -b -u sparewalld MESSAGE_ID=c8f95979678447529aa9b5914a38a3a0 -o cat --no-pager")
+    grep -qx "99.0.0 is available on 10.0.2.2:5000/sparewall:newer (running $CANDIDATE)" <<<"$logged" \
+        || fail "$n did not log the update with its MESSAGE_ID: $logged"
     healthy "$n" || fail "$n is not healthy with an update available: $(status "$n" | jq -c .health)"
     # The login banner and sparewall status say so too (#189).
     wait_for 30 "$n's login banner names 99.0.0" at "$n" \
         "grep -qF 'update      99.0.0 is available (running $CANDIDATE); sparewall upgrade' /run/motd.d/50-sparewall"
-    at "$n" 'sudo sparewall status' | grep -qxF "update:      99.0.0 is available (running $CANDIDATE); sparewall upgrade" \
-        || fail "sparewall status on $n does not name 99.0.0"
+    # Read whole before grep -q stops early: with pipefail, the SSH
+    # session it cuts short would count as a failure.
+    out=$(at "$n" 'sudo sparewall status')
+    grep -qxF "update:      99.0.0 is available (running $CANDIDATE); sparewall upgrade" <<<"$out" \
+        || fail "sparewall status on $n does not name 99.0.0: $out"
 done
 [ "$MODE" = single ] || roles_are BACKUP MASTER "with an update available"
 
@@ -378,8 +381,8 @@ if [ "$MODE" = single ]; then
 
     log "a window opens while a change waits for confirmation: skipped"
     at fw1 "sudo sparewall set updates.mode=windowed 'updates.window=$(soon)' updates.window_minutes=5 --confirm 0"
-    at fw1 'sudo sparewall upgrade --check' | grep -q '^window: ' \
-        || fail "upgrade --check does not show the next window"
+    check=$(at fw1 'sudo sparewall upgrade --check')
+    grep -q '^window: ' <<<"$check" || fail "upgrade --check does not show the next window: $check"
     at fw1 'sudo sparewall set updates.window_minutes=6 --confirm 900 --no-prompt'
     skipped() { attempts | grep -qx 'scheduled upgrade skipped: a change waits for confirmation'; }
     wait_for 300 "the window to be skipped for the pending change" skipped
@@ -396,6 +399,7 @@ if [ "$MODE" = single ]; then
         || fail "fw1 does not run the 99.0.0 image after the scheduled upgrade"
     settled_ok() { at fw1 'sudo cat /var/lib/sparewall/scheduled-upgrade.json' | jq -e '.last.result == "succeeded" and (.blocking | not)' >/dev/null; }
     wait_for 120 "the scheduled upgrade recorded as succeeded" settled_ok
-    attempts | grep -q '^scheduled upgrade succeeded: ' || fail "the success is not in the journal"
+    logged=$(attempts)
+    grep -q '^scheduled upgrade succeeded: ' <<<"$logged" || fail "the success is not in the journal: $logged"
 fi
 log "upgrade $MODE PASS ($FROM -> $CANDIDATE, and back)"
