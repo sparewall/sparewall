@@ -97,6 +97,7 @@ mod tests {
             services: json!({}),
             tls: json!({}),
             health,
+            update: None,
         }
     }
 

@@ -411,6 +411,11 @@ export interface Schemas {
   "Document.Updates": {
     /** `stable` or `testing`. */
     "channel"?: string | null;
+    /** Check the channel for a newer image every few hours, and log when
+     * one appears (on by default). `false` keeps the node from contacting
+     * the registry on its own, for an air-gapped site; `sparewall upgrade
+     * --check` still asks when run. */
+    "check"?: boolean;
     /** `manual` (the default): upgrades run when asked for, with
      * `sparewall upgrade`. `windowed` (automatic upgrades in `window`) is
      * not built yet and is rejected. */
@@ -929,6 +934,8 @@ export interface Calls {
       "sync": Record<string, unknown>;
       /** The certificate served on the management network. */
       "tls": Record<string, unknown>;
+      /** The background update check (#188): whether it is on, the image it checks, what that offers (`none`, `newer`, `rebuild`, `different`), its version and digest, when it last ran and succeeded, and its last error. Absent from nodes older than 0.4.0. */
+      "update"?: Record<string, unknown> | null;
       "vrrp": Record<string, unknown>;
     };
     role: "viewer";

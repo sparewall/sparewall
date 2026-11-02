@@ -1541,6 +1541,11 @@
               "null"
             ]
           },
+          "check": {
+            "description": "Check the channel for a newer image every few hours, and log when\none appears (on by default). `false` keeps the node from contacting\nthe registry on its own, for an air-gapped site; `sparewall upgrade\n--check` still asks when run.",
+            "type": "boolean",
+            "x-since": 3
+          },
           "mode": {
             "anyOf": [
               {
@@ -3860,6 +3865,13 @@
                     "tls": {
                       "description": "The certificate served on the management network.",
                       "type": "object"
+                    },
+                    "update": {
+                      "description": "The background update check (#188): whether it is on, the image it checks, what that offers (`none`, `newer`, `rebuild`, `different`), its version and digest, when it last ran and succeeded, and its last error. Absent from nodes older than 0.4.0.",
+                      "type": [
+                        "object",
+                        "null"
+                      ]
                     },
                     "vrrp": {
                       "type": "object"

@@ -19,7 +19,7 @@ use serde_json::Value;
 /// so a release that reads only older revisions can tell it apart from
 /// an invalid document, and reads every document that needs nothing newer
 /// (#168).
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// A whole deployment: one node or an HA pair.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -865,6 +865,13 @@ pub struct Updates {
     /// with the windowed mode: rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<String>,
+    /// Check the channel for a newer image every few hours, and log when
+    /// one appears (on by default). `false` keeps the node from contacting
+    /// the registry on its own, for an air-gapped site; `sparewall upgrade
+    /// --check` still asks when run.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    #[schemars(extend("x-since" = 3))]
+    pub check: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -17,6 +17,7 @@ mod rules;
 mod seed;
 mod selinux;
 mod service;
+mod update;
 mod upgrade;
 mod varlink;
 mod vrrp;
@@ -89,10 +90,25 @@ fn init_logging() {
         .unwrap_or_else(|_| "info".into());
     let registry = tracing_subscriber::registry().with(filter);
     if std::env::var_os("JOURNAL_STREAM").is_some()
-        && let Ok(journald) = tracing_journald::layer()
+        && let (Ok(journald), Ok(catalog)) = (tracing_journald::layer(), tracing_journald::layer())
     {
+        use tracing_subscriber::filter::filter_fn;
+        // Entries meant to be filtered on (update::JOURNAL_TARGET) keep
+        // their field names, so `message_id` is the journal's MESSAGE_ID;
+        // everything else has its fields prefixed (F_…), as before.
+        let ours = |m: &tracing::Metadata<'_>| m.target() == update::JOURNAL_TARGET;
         registry
-            .with(journald.with_syslog_identifier("sparewalld".into()))
+            .with(
+                journald
+                    .with_syslog_identifier("sparewalld".into())
+                    .with_filter(filter_fn(move |m| !ours(m))),
+            )
+            .with(
+                catalog
+                    .with_syslog_identifier("sparewalld".into())
+                    .with_field_prefix(None)
+                    .with_filter(filter_fn(ours)),
+            )
             .init();
         return;
     }
@@ -427,6 +443,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 backup::schedule_loop(core.clone(), tx.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no registry to ask.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                update::check_loop(core.clone(), tx.clone()).await
             } => Ok(()),
             () = dhcp_ha::takeover_loop(core.clone(), tx.clone(), pair.clone()) => Ok(()),
             () = https => Ok(()),

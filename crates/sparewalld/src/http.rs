@@ -341,6 +341,7 @@ async fn handle(
             // Host metrics from node_exporter, which listens only on
             // localhost so this endpoint's access rules cover it too.
             Ok(Some(mut text)) => {
+                text.push_str(&crate::update::metrics());
                 if let Some(host) = node_exporter().await {
                     text.push_str(&host);
                 }
