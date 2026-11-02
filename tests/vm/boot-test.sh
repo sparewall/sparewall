@@ -465,6 +465,8 @@ forward '{"provider": "journal-upload", "destination": "http://10.0.2.2:19532", 
     || fail "rsyslog still runs after switching to journal-upload"
 vm 'sudo test ! -e /run/sparewall/secrets/syslog-client.key' || fail "the client key outlived its use"
 vm 'sudo sparewall unset logging --confirm 0' >/dev/null
+# The backup below counts the secrets it restores.
+vm 'sudo sparewall secret delete log-client' >/dev/null
 sudo podman rm -f sw-syslog >/dev/null
 
 log "backup to a restic REST server"
