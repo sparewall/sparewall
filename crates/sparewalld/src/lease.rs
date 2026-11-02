@@ -1,9 +1,15 @@
-//! A pair's one WAN lease (#54). Both nodes have the lease link (a
-//! macvlan with the VRRP virtual MAC, running the DHCP client), which
-//! networkd leaves down; it is up on the master only, so the ISP sees one
-//! MAC and one client ID, and the lease moves with the gateway. The link
-//! is reconciled on every keepalived transition and every few seconds, so
-//! a link created by an apply, or a restart of this daemon, catches up.
+//! Links a pair keeps up on the master only, which networkd leaves down
+//! (`ActivationPolicy=manual`):
+//!
+//! - the one WAN lease (#54): both nodes have the lease link (a macvlan
+//!   with the VRRP virtual MAC, running the DHCP client), so the ISP sees
+//!   one MAC and one client ID, and the lease moves with the gateway;
+//! - the VPN clients (#149): both nodes hold the same key, so the
+//!   service sees one client, which moves with the gateway.
+//!
+//! The links are reconciled on every keepalived transition and every few
+//! seconds, so a link created by an apply, or a restart of this daemon,
+//! catches up.
 
 use std::time::Duration;
 
@@ -31,6 +37,20 @@ async fn link_up(iface: &str) -> Option<bool> {
     Some(flags.iter().any(|f| f == "UP"))
 }
 
+/// The links up on a pair's master only: the WAN lease's, and the VPN
+/// clients'. None on a standalone node, which keeps them up.
+pub fn master_links(doc: &sparewall_config::Document) -> Vec<String> {
+    if !doc.is_pair() {
+        return vec![];
+    }
+    let mut v: Vec<String> = Vec::new();
+    if doc.networks.keys().any(|n| doc.leased_wan(n).is_some()) {
+        v.push(LEASE_IFACE.to_string());
+    }
+    v.extend(doc.vpn_clients.keys().cloned());
+    v
+}
+
 /// What to do with the lease link, if anything: `Some(true)` to bring it
 /// up, `Some(false)` to take it down.
 pub fn wanted(master: bool, up: Option<bool>) -> Option<bool> {
@@ -43,31 +63,31 @@ pub fn wanted(master: bool, up: Option<bool>) -> Option<bool> {
 pub async fn lease_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair) {
     let mut rx = events.subscribe();
     loop {
-        let leased = with_core_raw(&core, &events, |c| {
+        let links = with_core_raw(&core, &events, |c| {
             Ok(c.active_document()?
-                .is_some_and(|d| d.networks.keys().any(|n| d.leased_wan(n).is_some())))
+                .map(|d| master_links(&d))
+                .unwrap_or_default())
         })
         .await
-        .unwrap_or(false);
-        if leased {
-            let master = {
-                let p = pair.lock().unwrap_or_else(|p| p.into_inner());
-                p.role.as_deref() == Some("MASTER")
-            };
-            if let Some(up) = wanted(master, link_up(LEASE_IFACE).await) {
+        .unwrap_or_default();
+        let master = {
+            let p = pair.lock().unwrap_or_else(|p| p.into_inner());
+            p.role.as_deref() == Some("MASTER")
+        };
+        for link in &links {
+            if let Some(up) = wanted(master, link_up(link).await) {
                 let verb = if up { "up" } else { "down" };
                 let ok = tokio::process::Command::new("networkctl")
-                    .args([verb, LEASE_IFACE])
+                    .args([verb, link])
                     .status()
                     .await
                     .is_ok_and(|s| s.success());
                 if ok {
-                    tracing::info!(link = LEASE_IFACE, verb, "WAN lease link");
+                    tracing::info!(link, verb, "a link that follows the master");
                 } else {
-                    tracing::warn!(link = LEASE_IFACE, verb, "cannot change the WAN lease link");
+                    tracing::warn!(link, verb, "cannot change a link that follows the master");
                 }
-                let _ =
-                    events.send(json!({"type": "lease", "link": LEASE_IFACE, "up": up, "ok": ok}));
+                let _ = events.send(json!({"type": "lease", "link": link, "up": up, "ok": ok}));
             }
         }
         // Wake on a transition, or after a round.

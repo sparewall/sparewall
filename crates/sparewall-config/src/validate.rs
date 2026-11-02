@@ -466,7 +466,7 @@ impl Validator<'_> {
             if net.vlan.is_some() && roles.contains(name.as_str()) {
                 self.err(&p, "a VLAN network cannot share its name with a port role");
             }
-            if doc.vpn.contains_key(name) {
+            if doc.vpn.contains_key(name) || doc.vpn_clients.contains_key(name) {
                 self.err(&p, "name is already used by a VPN instance");
             }
             if !roles.contains(net.port.as_str()) && !doc.ports.is_empty() {
@@ -810,7 +810,10 @@ impl Validator<'_> {
                     );
                 }
             }
-            if z.networks.is_empty() && !doc.vpn.values().any(|v| &v.zone == name) {
+            if z.networks.is_empty()
+                && !doc.vpn.values().any(|v| &v.zone == name)
+                && !doc.vpn_clients.values().any(|c| &c.zone == name)
+            {
                 self.warn(&p, "zone has no networks");
             }
         }
@@ -1594,6 +1597,7 @@ impl Validator<'_> {
             }
         }
         self.routed_through_peers();
+        self.vpn_clients();
         // In a pair, the master's handshakes leave from the gateway
         // address of the one WAN, static, through routes keepalived adds
         // (#148). Elsewhere (a WAN leased by DHCP, or several) nothing
@@ -1615,6 +1619,90 @@ impl Validator<'_> {
                             wans.join(", ")
                         }
                     ),
+                );
+            }
+        }
+    }
+
+    /// WireGuard clients (#149).
+    fn vpn_clients(&mut self) {
+        let doc = self.doc;
+        let mut routed: BTreeMap<&str, &str> = BTreeMap::new();
+        for (name, c) in &doc.vpn_clients {
+            let p = format!("vpn_clients.{name}");
+            if !iface_name_ok(name) || RESERVED_IFACES.contains(&name.as_str()) {
+                self.err(&p, "VPN client names become interface names: lowercase, start with a letter, at most 15 characters");
+            }
+            if doc.vpn.contains_key(name) {
+                self.err(&p, "name is already used by a VPN instance");
+            }
+            if !doc.zones.contains_key(&c.zone) {
+                self.err(format!("{p}.zone"), format!("no zone named {:?}", c.zone));
+            } else if doc.zones[&c.zone]
+                .networks
+                .iter()
+                .any(|n| c.route.networks.contains(n))
+            {
+                self.err(
+                    format!("{p}.zone"),
+                    "the tunnel's zone cannot hold the networks it routes",
+                );
+            }
+            if c.addresses.is_empty() {
+                self.err(
+                    format!("{p}.addresses"),
+                    "the tunnel needs the address the service assigned",
+                );
+            }
+            if !wg_key_ok(&c.peer.public_key) {
+                self.err(
+                    format!("{p}.peer.public_key"),
+                    "not a WireGuard public key (44 base64 characters)",
+                );
+            }
+            if wg_endpoint(&c.peer.endpoint).is_none() {
+                self.err(
+                    format!("{p}.peer.endpoint"),
+                    format!(
+                        "{:?} is not host:port, with an IPv4 address or a DNS name",
+                        c.peer.endpoint
+                    ),
+                );
+            }
+            if let Some(k) = c.peer.keepalive
+                && !(1..=3600).contains(&k)
+            {
+                self.err(
+                    format!("{p}.peer.keepalive"),
+                    "seconds between keepalives, 1 to 3600",
+                );
+            }
+            if c.route.networks.is_empty() {
+                // A client for everything would take the node's own
+                // default route, and its way to the endpoint with it.
+                self.err(
+                    format!("{p}.route.networks"),
+                    "name the networks whose traffic leaves through the tunnel",
+                );
+            }
+            for (i, n) in c.route.networks.iter().enumerate() {
+                let np = format!("{p}.route.networks[{i}]");
+                match doc.networks.get(n) {
+                    None => self.err(np, format!("no network named {n:?}")),
+                    Some(net) if matches!(net.role, NetworkRole::Wan | NetworkRole::Sync) => {
+                        self.err(np, "only the networks behind the node are routed")
+                    }
+                    Some(_) => {
+                        if let Some(prev) = routed.insert(n.as_str(), name.as_str()) {
+                            self.err(np, format!("{n:?} already leaves through {prev:?}"));
+                        }
+                    }
+                }
+            }
+            if !c.route.kill_switch {
+                self.warn(
+                    format!("{p}.route.kill_switch"),
+                    "while the tunnel is down, the routed networks' traffic may leave through the WAN",
                 );
             }
         }
@@ -1786,6 +1874,12 @@ impl Validator<'_> {
                 if let Some(k) = &p.preshared_key {
                     refs.push((format!("vpn.{name}.peers.{peer}.preshared_key"), k));
                 }
+            }
+        }
+        for (name, c) in &doc.vpn_clients {
+            refs.push((format!("vpn_clients.{name}.private_key"), &c.private_key));
+            if let Some(k) = &c.peer.preshared_key {
+                refs.push((format!("vpn_clients.{name}.peer.preshared_key"), k));
             }
         }
         for (p, r) in refs {

@@ -643,6 +643,7 @@ impl<S: System> Coordinator<S> {
             warnings.extend(sparewall_config::providers::switch_warnings(&old, &doc));
         }
         warnings.extend(missing_psk_messages(&self.missing_vpn_psks(&doc)?));
+        warnings.extend(self.missing_vpn_client_secrets(&doc)?);
         warnings.extend(self.log_certificate_problem(&doc)?);
         let hash = sparewall_config::hash(&doc);
         let active_gen = self.generation(state.active)?;
@@ -2124,7 +2125,8 @@ impl<S: System> Coordinator<S> {
         }
 
         if let Some(doc) = self.active_document()? {
-            let missing = missing_psk_messages(&self.missing_vpn_psks(&doc)?);
+            let mut missing = missing_psk_messages(&self.missing_vpn_psks(&doc)?);
+            missing.extend(self.missing_vpn_client_secrets(&doc)?);
             if !missing.is_empty() {
                 checks.push(Check::new("vpn", Level::Degraded, missing.join("; ")));
             }

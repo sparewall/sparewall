@@ -176,6 +176,14 @@
             "description": "Remote-access WireGuard instances.",
             "type": "object"
           },
+          "vpn_clients": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.VpnClient"
+            },
+            "description": "WireGuard tunnels this node connects to as a client, of a service\nit does not run (a VPN provider, a cloud host, another\norganisation's hub): chosen networks' traffic leaves through the\ntunnel instead of the WAN (#149).",
+            "type": "object",
+            "x-since": 4
+          },
           "zones": {
             "additionalProperties": {
               "$ref": "#/components/schemas/Document.Zone"
@@ -1768,6 +1776,103 @@
           "endpoint",
           "addresses",
           "zone"
+        ],
+        "type": "object"
+      },
+      "Document.VpnClient": {
+        "additionalProperties": false,
+        "properties": {
+          "addresses": {
+            "description": "The tunnel addresses the service assigned.",
+            "items": {
+              "$ref": "#/components/schemas/Document.Cidr"
+            },
+            "type": "array"
+          },
+          "dns": {
+            "description": "DNS servers DHCP hands to the routed networks, unless a network\nsets its own (`dhcp.<network>.options.dns`): usually the service's\nresolvers, which are reached through the tunnel.",
+            "items": {
+              "format": "ipv4",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "peer": {
+            "$ref": "#/components/schemas/Document.VpnClientPeer"
+          },
+          "private_key": {
+            "description": "This node's private key, as the service issued it: a cluster\nsecret, `secret:<name>` (in a pair both nodes are the same client).",
+            "type": "string"
+          },
+          "route": {
+            "$ref": "#/components/schemas/Document.VpnClientRoute",
+            "description": "What leaves through the tunnel."
+          },
+          "zone": {
+            "description": "The zone the tunnel interface belongs to: policies from the routed\nnetworks' zones to it let their traffic through.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "private_key",
+          "addresses",
+          "zone",
+          "peer",
+          "route"
+        ],
+        "type": "object"
+      },
+      "Document.VpnClientPeer": {
+        "additionalProperties": false,
+        "properties": {
+          "endpoint": {
+            "description": "`host:port`, an address or a DNS name.",
+            "type": "string"
+          },
+          "keepalive": {
+            "description": "Seconds between keepalives (default 25): they keep the service's\nNAT mapping open, and let health tell a dead tunnel.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "preshared_key": {
+            "description": "A preshared key, if the service issued one: `secret:<name>`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "public_key",
+          "endpoint"
+        ],
+        "type": "object"
+      },
+      "Document.VpnClientRoute": {
+        "additionalProperties": false,
+        "properties": {
+          "kill_switch": {
+            "description": "While the tunnel is down, drop these networks' traffic to the WAN\nrather than let it leave there (default true).",
+            "type": "boolean"
+          },
+          "networks": {
+            "description": "The networks whose traffic to anywhere but this node's own\nnetworks leaves through the tunnel. The node's own traffic, and\nevery other network's, keeps the WAN.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "networks"
         ],
         "type": "object"
       },

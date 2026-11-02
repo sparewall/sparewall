@@ -46,6 +46,11 @@ export interface Schemas {
     "updates"?: Schemas["Document.Updates"] | null;
     /** Remote-access WireGuard instances. */
     "vpn"?: Record<string, Schemas["Document.Vpn"]>;
+    /** WireGuard tunnels this node connects to as a client, of a service
+     * it does not run (a VPN provider, a cloud host, another
+     * organisation's hub): chosen networks' traffic leaves through the
+     * tunnel instead of the WAN (#149). */
+    "vpn_clients"?: Record<string, Schemas["Document.VpnClient"]>;
     /** Named groups of networks. `self` is built in and cannot be defined. */
     "zones"?: Record<string, Schemas["Document.Zone"]>;
   };
@@ -502,6 +507,42 @@ export interface Schemas {
     "peers"?: Record<string, Schemas["Document.VpnPeer"]>;
     /** The zone the tunnel interface belongs to. */
     "zone": string;
+  };
+  "Document.VpnClient": {
+    /** The tunnel addresses the service assigned. */
+    "addresses": Array<Schemas["Document.Cidr"]>;
+    /** DNS servers DHCP hands to the routed networks, unless a network
+     * sets its own (`dhcp.<network>.options.dns`): usually the service's
+     * resolvers, which are reached through the tunnel. */
+    "dns"?: Array<string>;
+    "peer": Schemas["Document.VpnClientPeer"];
+    /** This node's private key, as the service issued it: a cluster
+     * secret, `secret:<name>` (in a pair both nodes are the same client). */
+    "private_key": string;
+    /** What leaves through the tunnel. */
+    "route": Schemas["Document.VpnClientRoute"];
+    /** The zone the tunnel interface belongs to: policies from the routed
+     * networks' zones to it let their traffic through. */
+    "zone": string;
+  };
+  "Document.VpnClientPeer": {
+    /** `host:port`, an address or a DNS name. */
+    "endpoint": string;
+    /** Seconds between keepalives (default 25): they keep the service's
+     * NAT mapping open, and let health tell a dead tunnel. */
+    "keepalive"?: number | null;
+    /** A preshared key, if the service issued one: `secret:<name>`. */
+    "preshared_key"?: string | null;
+    "public_key": string;
+  };
+  "Document.VpnClientRoute": {
+    /** While the tunnel is down, drop these networks' traffic to the WAN
+     * rather than let it leave there (default true). */
+    "kill_switch"?: boolean;
+    /** The networks whose traffic to anywhere but this node's own
+     * networks leaves through the tunnel. The node's own traffic, and
+     * every other network's, keeps the WAN. */
+    "networks": Array<string>;
   };
   "Document.VpnPeer": {
     /** The peer's tunnel address, and for a site-to-site peer the networks

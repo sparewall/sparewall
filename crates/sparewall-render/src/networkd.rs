@@ -194,6 +194,9 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     for (name, vpn) in &doc.vpn {
         remote_access(doc, name, vpn, out);
     }
+    for (name, c) in &doc.vpn_clients {
+        vpn_client(doc, name, c, out);
+    }
     out.meta.required_links.sort();
     out.meta.required_links.dedup();
     out.meta.replication_links.sort();
@@ -508,6 +511,82 @@ fn remote_access(doc: &Document, name: &str, vpn: &Vpn, out: &mut Rendered) {
             .set("FirewallMark", sparewall_config::topology::VPN_FWMARK)
             .set("Table", sparewall_config::topology::VPN_TABLE)
             .set("Priority", 1000);
+    }
+    out.add(
+        Subsystem::Networkd,
+        format!("50-sparewall-{name}.network"),
+        nn.build(),
+    );
+}
+
+/// A WireGuard client (#149): everything through the peer goes to the
+/// client's own routing table, which only the routed networks' traffic
+/// reaches, by rules on the interfaces it arrives on. Their traffic to
+/// this node's own networks keeps the main table, which is looked up
+/// first without its default route; the node's own traffic never meets
+/// the rules. In a pair only the master's interface is up (the
+/// coordinator brings it up and down with the role), so the service sees
+/// one client.
+fn vpn_client(
+    doc: &Document,
+    name: &str,
+    c: &sparewall_config::model::VpnClient,
+    out: &mut Rendered,
+) {
+    let table = doc.vpn_client_table(name).expect("a client");
+    let mut nd = Ini::new();
+    nd.section("NetDev")
+        .set("Name", name)
+        .set("Kind", "wireguard")
+        .set("Description", format!("Sparewall VPN client {name}"));
+    nd.section("WireGuard").set(
+        "PrivateKeyFile",
+        format!("{KEY_DIR}/{}", crate::vpn_client_key_file(name)),
+    );
+    nd.section("WireGuardPeer")
+        .set("PublicKey", &c.peer.public_key)
+        .set("Endpoint", &c.peer.endpoint)
+        .set("AllowedIPs", "0.0.0.0/0")
+        .set("PersistentKeepalive", c.peer.keepalive.unwrap_or(25))
+        .set("RouteTable", table);
+    if c.peer.preshared_key.is_some() {
+        nd.set(
+            "PresharedKeyFile",
+            format!("{KEY_DIR}/{}", crate::vpn_client_psk_file(name)),
+        );
+    }
+    out.add(
+        Subsystem::Networkd,
+        format!("50-sparewall-{name}.netdev"),
+        nd.build(),
+    );
+    let mut nn = Ini::new();
+    nn.section("Match").set("Name", name);
+    nn.section("Link").set("RequiredForOnline", "no");
+    if doc.is_pair() {
+        nn.set("ActivationPolicy", "manual");
+    }
+    nn.section("Network");
+    for a in &c.addresses {
+        nn.set("Address", a);
+    }
+    nn.set("LinkLocalAddressing", "no")
+        .set("IPv6AcceptRA", "no");
+    let mut priority = sparewall_config::topology::VPN_CLIENT_RULE_PRIORITY;
+    for n in &c.route.networks {
+        let Some(iface) = doc.network_iface(n) else {
+            continue;
+        };
+        nn.section("RoutingPolicyRule")
+            .set("IncomingInterface", iface)
+            .set("Table", "main")
+            .set("SuppressPrefixLength", 0)
+            .set("Priority", priority);
+        nn.section("RoutingPolicyRule")
+            .set("IncomingInterface", iface)
+            .set("Table", table)
+            .set("Priority", priority + 1);
+        priority += 2;
     }
     out.add(
         Subsystem::Networkd,

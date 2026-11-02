@@ -68,6 +68,13 @@ pub struct Document {
     /// Remote-access WireGuard instances.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vpn: BTreeMap<String, Vpn>,
+    /// WireGuard tunnels this node connects to as a client, of a service
+    /// it does not run (a VPN provider, a cloud host, another
+    /// organisation's hub): chosen networks' traffic leaves through the
+    /// tunnel instead of the WAN (#149).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-since" = 4))]
+    pub vpn_clients: BTreeMap<String, VpnClient>,
     /// Certificates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<Tls>,
@@ -749,6 +756,55 @@ pub struct VpnPeer {
     /// client must be configured with the same key (`wg genpsk`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preshared_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VpnClient {
+    /// This node's private key, as the service issued it: a cluster
+    /// secret, `secret:<name>` (in a pair both nodes are the same client).
+    pub private_key: String,
+    /// The tunnel addresses the service assigned.
+    pub addresses: Vec<Cidr>,
+    /// The zone the tunnel interface belongs to: policies from the routed
+    /// networks' zones to it let their traffic through.
+    pub zone: String,
+    pub peer: VpnClientPeer,
+    /// DNS servers DHCP hands to the routed networks, unless a network
+    /// sets its own (`dhcp.<network>.options.dns`): usually the service's
+    /// resolvers, which are reached through the tunnel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns: Vec<Ipv4Addr>,
+    /// What leaves through the tunnel.
+    pub route: VpnClientRoute,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VpnClientPeer {
+    pub public_key: String,
+    /// `host:port`, an address or a DNS name.
+    pub endpoint: String,
+    /// Seconds between keepalives (default 25): they keep the service's
+    /// NAT mapping open, and let health tell a dead tunnel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive: Option<u16>,
+    /// A preshared key, if the service issued one: `secret:<name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preshared_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VpnClientRoute {
+    /// The networks whose traffic to anywhere but this node's own
+    /// networks leaves through the tunnel. The node's own traffic, and
+    /// every other network's, keeps the WAN.
+    pub networks: Vec<String>,
+    /// While the tunnel is down, drop these networks' traffic to the WAN
+    /// rather than let it leave there (default true).
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub kill_switch: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

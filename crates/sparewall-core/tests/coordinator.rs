@@ -1674,6 +1674,56 @@ fn vpn_keys_and_client_config() {
     );
 }
 
+/// A VPN client's key (#149): referenced before it is set, the change
+/// applies with a warning and health says the tunnel cannot come up; set,
+/// it is installed where the netdev reads it and the interface recreated.
+#[test]
+fn vpn_client_key() {
+    use sparewall_core::secrets::SecretClass;
+    let mut doc = pair_example();
+    doc["zones"]["egress"] = json!({});
+    doc["vpn_clients"] = json!({"egress": {
+        "private_key": "secret:provider-key",
+        "addresses": ["10.64.12.34/32"],
+        "zone": "egress",
+        "peer": {"public_key": "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=",
+                 "endpoint": "nl1.provider.example:51820"},
+        "route": {"networks": ["users"]},
+    }});
+    let mut a = pair_node("fw1");
+    let r = a.c.apply(doc, &opts(0, None)).unwrap();
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("vpn_clients.egress: its private key")),
+        "{:?}",
+        r.warnings
+    );
+    assert_eq!(
+        a.c.health().unwrap().check("vpn").unwrap().level,
+        Level::Degraded
+    );
+    a.c.secret_set("provider-key", b"the key", SecretClass::Cluster)
+        .unwrap();
+    a.c.refresh_runtime_secrets(&["provider-key".to_string()])
+        .unwrap();
+    let netdev = &a.c.system().network["50-sparewall-egress.netdev"];
+    let path = netdev
+        .lines()
+        .find_map(|l| l.strip_prefix("PrivateKeyFile="))
+        .unwrap()
+        .to_string();
+    let file = path
+        .strip_prefix(&format!("{}/", sparewall_render::KEY_DIR))
+        .unwrap();
+    assert_eq!(
+        a.c.system().runtime_keys.get(file).map(Vec::as_slice),
+        Some(&b"the key"[..])
+    );
+    assert!(a.c.system().log.iter().any(|l| l == "recreate egress"));
+    assert!(a.c.health().unwrap().check("vpn").is_none());
+}
+
 #[test]
 fn vpn_preshared_keys() {
     use sparewall_core::secrets::SecretClass;

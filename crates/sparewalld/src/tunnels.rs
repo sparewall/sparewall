@@ -1,6 +1,7 @@
-//! Site-to-site tunnels (#148): a peer with an endpoint is one this node
-//! connects to. Every round, on the node that holds the tunnel (a
-//! standalone node, or a pair's master):
+//! Tunnels this node connects to: site-to-site peers (#148), a `vpn`
+//! peer with an endpoint, and VPN clients' peers (#149), which always
+//! have a keepalive (25 s unless set). Every round, on the node that
+//! holds the tunnel (a standalone node, or a pair's master):
 //!
 //! - a peer whose endpoint is a DNS name, and that has not completed a
 //!   handshake lately, has the name resolved again, and the endpoint
@@ -135,6 +136,19 @@ pub async fn tunnel_loop(core: Core, events: broadcast::Sender<Value>, pair: Pai
                         state: peers.iter().find(|s| s.public_key == p.public_key).cloned(),
                     });
                 }
+            }
+            for (client, cl) in &doc.vpn_clients {
+                let state = c.system().wg_peers(client).unwrap_or_default();
+                sites.push(Site {
+                    vpn: client.clone(),
+                    peer: "peer".into(),
+                    public_key: cl.peer.public_key.clone(),
+                    endpoint: cl.peer.endpoint.clone(),
+                    keepalive: Some(cl.peer.keepalive.unwrap_or(25)),
+                    state: state
+                        .into_iter()
+                        .find(|s| s.public_key == cl.peer.public_key),
+                });
             }
             Ok(Some(sites))
         })
