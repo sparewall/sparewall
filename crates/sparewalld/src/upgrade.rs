@@ -37,6 +37,11 @@ impl Drop for Running {
     }
 }
 
+/// Why a start is refused while another run holds [`RUNNING`]: the
+/// scheduler tells it from other refusals by this text.
+pub const ALREADY_RUNNING: &str =
+    "an upgrade is already running on this node; follow it with sparewall events";
+
 /// Whether this node runs an upgrade now.
 pub fn running() -> bool {
     RUNNING.load(Ordering::SeqCst)
@@ -47,10 +52,7 @@ fn claim_run() -> Result<Running, String> {
     RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .map(|_| Running)
-        .map_err(|_| {
-            "an upgrade is already running on this node; follow it with sparewall events"
-                .to_string()
-        })
+        .map_err(|_| ALREADY_RUNNING.to_string())
 }
 
 pub const IMAGE_REPO: &str = "ghcr.io/sparewall/sparewall";
