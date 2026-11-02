@@ -390,6 +390,59 @@ fn pair_wan_with_public_node_addresses_routes_on_both() {
     assert_nft_ok(&r);
 }
 
+#[test]
+fn pair_wan_static_block_without_the_virtual_mac() {
+    // `vmac: false` (#194): the gateway addresses and the public route go
+    // on the WAN's own link, on the nodes' own MACs, as before #176.
+    let mut doc = example("pair.yaml");
+    doc.networks.get_mut("wan").unwrap().vmac = false;
+    let r = render(&doc, "fw1").unwrap();
+    assert!(
+        !r.files.keys().any(|p| p.contains("swwan")),
+        "{:?}",
+        r.files.keys()
+    );
+    let base = &r.files[&format!("{}/30-sparewall-wan.network", Subsystem::Networkd.dir())];
+    assert!(!base.contains("MACVLAN"), "{base}");
+    let ka = &r.files[&format!(
+        "{}/{}",
+        Subsystem::Keepalived.dir(),
+        sparewall_render::keepalived::CONF
+    )];
+    assert!(!ka.contains("swwan"), "{ka}");
+    assert!(ka.contains("        203.0.113.1/29 dev wan\n"), "{ka}");
+    assert!(ka.contains("        203.0.113.5/29 dev wan\n"), "{ka}");
+    assert!(
+        ka.contains("0.0.0.0/0 via 203.0.113.6 dev wan metric 100 onlink"),
+        "{ka}"
+    );
+    let sysctl = &r.files[&format!("{}/90-sparewall.conf", Subsystem::Sysctl.dir())];
+    assert!(!sysctl.contains("swwan"), "{sysctl}");
+    assert!(
+        sysctl.contains("net.ipv4.conf.wan.arp_ignore = 1\n"),
+        "{sysctl}"
+    );
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    assert!(!nft.contains("swwan"), "{nft}");
+    for want in [
+        "iifname \"wan\" oifname \"wan\" ip saddr 10.0.10.3 counter accept comment \"infra:peer-egress\"",
+        "oifname \"wan\" ip saddr 10.0.10.0/24 ip daddr != 10.0.10.0/24 rt ip nexthop != 10.0.10.3 counter snat ip to 203.0.113.1 comment \"infra:wan-egress\"",
+    ] {
+        assert!(nft.contains(want), "{want}\n{nft}");
+    }
+    assert_nft_ok(&r);
+
+    // The default keeps the virtual MAC.
+    doc.networks.get_mut("wan").unwrap().vmac = true;
+    let r = render(&doc, "fw1").unwrap();
+    let ka = &r.files[&format!(
+        "{}/{}",
+        Subsystem::Keepalived.dir(),
+        sparewall_render::keepalived::CONF
+    )];
+    assert!(ka.contains("        203.0.113.1/29 dev swwan\n"), "{ka}");
+}
+
 fn kea_conf(doc: &sparewall_config::Document) -> serde_json::Value {
     let r = render(doc, "fw1").unwrap();
     let text = &r.files[&format!("{}/kea-dhcp4.conf", Subsystem::Dhcp.dir())];
