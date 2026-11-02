@@ -1154,6 +1154,7 @@ pub fn status(
             "peer_active": pair.peer_view.as_ref().map(|v| v.active),
             "peer_desired_hash": pair.peer_view.as_ref().map(|v| v.desired.clone()),
             "peer_applied_hash": pair.peer_view.as_ref().and_then(|v| v.applied.clone()),
+            "image": booted_image_digest(),
             "peer_image": pair.peer_image,
             "sync_public_key": sync_key,
             "last_error": pair.last_error,

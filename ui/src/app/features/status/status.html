@@ -18,6 +18,53 @@
     </section>
   }
   <div class="cards">
+    @if (notice() || checkProblem() || mixed()) {
+      <mat-card appearance="outlined" class="update" data-testid="update">
+        <mat-card-header>
+          <mat-icon matCardAvatar>system_update_alt</mat-icon>
+          <mat-card-title>{{ notice()?.title ?? 'Updates' }}</mat-card-title>
+          @if (update(); as u) {
+            <mat-card-subtitle>
+              Running {{ u.running }}
+              @if (u.checked) {
+                · checked {{ u.checked }}
+              }
+            </mat-card-subtitle>
+          }
+        </mat-card-header>
+        <mat-card-content>
+          @if (notice(); as n) {
+            @if (n.kind === 'rebuild') {
+              <p>The same release, rebuilt with newer base packages.</p>
+            }
+            @if (n.notes) {
+              <p><a [href]="n.notes" target="_blank" rel="noopener">Release notes</a></p>
+            }
+            @if (session.can('operator')) {
+              <p>
+                Upgrade with <code>sparewall upgrade</code> (<a
+                  [href]="upgradeDocs"
+                  target="_blank"
+                  rel="noopener"
+                  >how upgrades work</a
+                >).
+              </p>
+            }
+          }
+          @if (checkProblem(); as p) {
+            <p>{{ p }}</p>
+          }
+          @if (mixed(); as m) {
+            <p>
+              {{ m }}
+              @if (session.can('operator')) {
+                (<code>sparewall upgrade</code>)
+              }
+            </p>
+          }
+        </mat-card-content>
+      </mat-card>
+    }
     @if (health(); as h) {
       <mat-card appearance="outlined" class="wide">
         <mat-card-header>
