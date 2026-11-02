@@ -82,6 +82,11 @@ pub trait System: Send {
     /// readable by `group`.
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error>;
 
+    /// Put a secret where a daemon other than networkd reads it
+    /// ([`sparewall_render::SECRETS_DIR`]), readable by root alone; `None`
+    /// removes it.
+    fn install_secret_file(&mut self, file: &str, content: Option<&[u8]>) -> Result<(), Error>;
+
     /// Delete and recreate a netdev from its (unchanged) files.
     fn netdev_recreate(&mut self, name: &str) -> Result<(), Error>;
 
@@ -153,6 +158,8 @@ pub struct Fake {
     pub keys_made: u32,
     /// Keys installed for daemons, by file name.
     pub runtime_keys: BTreeMap<String, Vec<u8>>,
+    /// Secrets installed for other daemons (`install_secret_file`).
+    pub secret_files: BTreeMap<String, Vec<u8>>,
     /// The admin account's password hash, as last set.
     pub admin_password: Option<String>,
     /// The hostname, as last set.
@@ -363,6 +370,14 @@ impl System for Fake {
         Ok(())
     }
 
+    fn install_secret_file(&mut self, file: &str, content: Option<&[u8]>) -> Result<(), Error> {
+        match content {
+            Some(c) => self.secret_files.insert(file.to_string(), c.to_vec()),
+            None => self.secret_files.remove(file),
+        };
+        Ok(())
+    }
+
     fn sync_public_key(&mut self) -> Result<String, Error> {
         Ok(self
             .sync_key
@@ -431,6 +446,9 @@ impl System for Box<dyn System> {
     }
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
         (**self).install_key(file, content, group)
+    }
+    fn install_secret_file(&mut self, file: &str, content: Option<&[u8]>) -> Result<(), Error> {
+        (**self).install_secret_file(file, content)
     }
     fn netdev_recreate(&mut self, name: &str) -> Result<(), Error> {
         (**self).netdev_recreate(name)

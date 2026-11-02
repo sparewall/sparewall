@@ -398,7 +398,7 @@ impl<S: System> Coordinator<S> {
         }
     }
 
-    fn rendered_for(&self, id: u64) -> Result<Rendered, Error> {
+    pub(crate) fn rendered_for(&self, id: u64) -> Result<Rendered, Error> {
         let id = self.runs(id);
         if id == 0 {
             return Ok(sparewall_render::render_bootstrap(&self.identity));
@@ -534,7 +534,7 @@ impl<S: System> Coordinator<S> {
             }
         }
         if let Ok(Some(doc)) = self.live_document()
-            && let Err(e) = self.install_vpn_keys(&doc)
+            && let Err(e) = self.install_runtime_secrets(&doc)
         {
             tracing::error!(error = %e, "cannot install remote-access keys");
         }
@@ -642,6 +642,7 @@ impl<S: System> Coordinator<S> {
             warnings.extend(sparewall_config::providers::switch_warnings(&old, &doc));
         }
         warnings.extend(missing_psk_messages(&self.missing_vpn_psks(&doc)?));
+        warnings.extend(self.log_certificate_problem(&doc)?);
         let hash = sparewall_config::hash(&doc);
         let active_gen = self.generation(state.active)?;
         let old_value = self.document_value(self.runs(state.active))?;
@@ -723,7 +724,7 @@ impl<S: System> Coordinator<S> {
                 staged: true,
             });
         }
-        self.install_vpn_keys(&doc)?;
+        self.install_runtime_secrets(&doc)?;
         self.store.save(&g, &doc, &rendered)?;
         if let Err(e) = self.activate(g.id, Some(&old_rendered), false) {
             return Err(self.undo_apply(g.id, &rendered, state.active, e));
@@ -888,7 +889,7 @@ impl<S: System> Coordinator<S> {
         let doc = self.store.document(id)?;
         let rendered = self.rendered_for(id)?;
         let old = self.rendered_for(state.active)?;
-        self.install_vpn_keys(&doc)?;
+        self.install_runtime_secrets(&doc)?;
         if let Err(e) = self.activate(id, Some(&old), false) {
             return Err(self.undo_apply(id, &rendered, state.active, e));
         }
@@ -1593,7 +1594,7 @@ impl<S: System> Coordinator<S> {
             let to = self.store.set_aside(g.id, "diverged")?;
             tracing::warn!(id = g.id, kept = %to.display(), "set aside a diverged generation");
         }
-        self.install_vpn_keys(&doc)?;
+        self.install_runtime_secrets(&doc)?;
         self.store.save(g, &doc, &rendered)?;
         self.run_foreign(g, &old_rendered, gate, why)
     }
@@ -2125,6 +2126,9 @@ impl<S: System> Coordinator<S> {
             let missing = missing_psk_messages(&self.missing_vpn_psks(&doc)?);
             if !missing.is_empty() {
                 checks.push(Check::new("vpn", Level::Degraded, missing.join("; ")));
+            }
+            if let Some(m) = self.log_certificate_problem(&doc)? {
+                checks.push(Check::new("log-forwarding", Level::Degraded, m));
             }
         }
 

@@ -815,3 +815,61 @@ fn two_nic_without_vlans() {
     );
     assert_nft_ok(&r);
 }
+
+/// `logging.remote.provider: syslog` (#147): rsyslog reads the journal and
+/// forwards it over the chosen protocol; journal-upload no longer runs.
+#[test]
+fn syslog_forwarding() {
+    use sparewall_config::model::{Logging, RemoteLog};
+    use sparewall_render::logging::{SYSLOG_CA, SYSLOG_CONF, SYSLOG_UNIT, UPLOAD_CONF};
+    let with = |remote: RemoteLog| {
+        let mut doc = example("standalone.yaml");
+        doc.logging = Some(Logging {
+            group: None,
+            connections: false,
+            remote: Some(remote),
+        });
+        let errs = validate::errors(&validate(&doc));
+        assert!(errs.is_empty(), "{errs:#?}");
+        render(&doc, "fw1").unwrap()
+    };
+    let remote = |protocol: Option<&str>, tls: bool, ca: Option<&str>| RemoteLog {
+        provider: Some("syslog".into()),
+        destination: "logs.example.org".into(),
+        protocol: protocol.map(Into::into),
+        tls,
+        ca: ca.map(Into::into),
+        // RELP over TLS needs one; plain TCP over TLS works without.
+        certificate: (protocol == Some("relp")).then(|| "secret:log-client".into()),
+    };
+    let file = |r: &Rendered, name: &str| {
+        r.files
+            .iter()
+            .find(|(p, _)| p.ends_with(&format!("/{name}")))
+            .map(|(_, c)| c.clone())
+    };
+
+    let udp = with(remote(None, false, None));
+    let conf = file(&udp, SYSLOG_CONF).expect("rsyslog.conf");
+    assert!(conf.contains(r#"type="omfwd""#) && conf.contains(r#"protocol="udp""#));
+    assert!(conf.contains(r#"port="514""#));
+    assert!(!conf.contains("StreamDriver"));
+    assert_eq!(udp.meta.services["log-forwarding"].unit, SYSLOG_UNIT);
+    assert!(file(&udp, UPLOAD_CONF).is_none());
+    assert!(file(&udp, SYSLOG_CA).is_none());
+
+    let tls = with(remote(Some("tcp"), true, None));
+    let conf = file(&tls, SYSLOG_CONF).unwrap();
+    assert!(conf.contains(r#"port="6514""#));
+    assert!(conf.contains(r#"StreamDriverPermittedPeers="logs.example.org""#));
+    assert!(conf.contains(r#"StreamDriver.CAFile="/etc/pki/tls/certs/ca-bundle.crt""#));
+    assert!(!conf.contains("StreamDriver.CertFile"));
+
+    const PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
+    let relp = with(remote(Some("relp"), true, Some(PEM)));
+    let conf = file(&relp, SYSLOG_CONF).unwrap();
+    assert!(conf.contains(r#"tls.caCert="/run/sparewall/logging/syslog-ca.pem""#));
+    assert!(conf.contains(r#"tls.myPrivKey="/run/sparewall/secrets/syslog-client.key""#));
+    assert_eq!(file(&relp, SYSLOG_CA).unwrap(), format!("{PEM}\n"));
+    insta::assert_snapshot!("syslog_relp_tls", conf);
+}

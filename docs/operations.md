@@ -71,7 +71,8 @@ back to one of them keeps its configuration.
 | --- | --- | --- |
 | 1 | Everything up to 0.2.0 | 0.2.0 |
 | 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
-| 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac`, `backup.retention`, `management.sources` | 0.4.0 |
+| 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac`, `backup.retention`, `management.sources`; the value `updates.mode: windowed` | 0.4.0 |
+| 4 | `logging.remote.ca`, `logging.remote.certificate`; the value `logging.remote.provider: syslog` | 0.5.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -375,7 +376,7 @@ running system, each repeated on every health request:
 | `nft` | The live `inet sparewall` table matches, rule for rule, what was loaded for the generation: chains with their hooks and policies, every rule, static set elements. What traffic changes (counters, quota use, `last` timestamps, element timeouts), handles, and the sets networkd fills at runtime are excluded. If the table cannot be read back right after a load, the node fails this check until the next reload | Tables other software owns |
 | `links` | Every interface that carries traffic exists and is up (failed otherwise, so VRRP moves the gateway addresses). A trunk shared by the sync VLAN and service networks counts as carrying traffic | Addresses, routes or bond membership on them |
 | `replication` | Every replication-only interface (the sync network, and a port carrying nothing else) exists and is up. Losing one is **degraded**, never failed: traffic still flows, so the gateway addresses stay where they are while the pair stops replicating | |
-| `services` | Every provider unit the generation needs (Kea, Unbound, keepalived, conntrackd, ulogd, journal-upload) is active in systemd | That a daemon still runs the files installed for it; those passed the daemon's own config test before they were installed |
+| `services` | Every provider unit the generation needs (Kea, Unbound, keepalived, conntrackd, ulogd, journal-upload or rsyslog) is active in systemd | That a daemon still runs the files installed for it; those passed the daemon's own config test before they were installed |
 | `pair`, `tls`, `backup` | Sync tunnel and peer state, certificate validity, the last backup | |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
 
@@ -407,6 +408,71 @@ journalctl -u sparewalld F_RULE='guests->users:default'   # one rule
 
 `F_RECORD` holds ulogd's full JSON record. Hits go to the journal and,
 with `logging.remote`, wherever the journal is forwarded.
+
+### Forwarding logs
+
+`logging.remote` sends the journal, rule hits included, to a collector
+off the box. Each node of a pair sends its own.
+
+To a **syslog collector** (rsyslog, syslog-ng, Graylog, a SIEM), with
+`provider: syslog`. The node runs rsyslog, which reads the journal and
+sends each entry as RFC 5424 syslog. A rule hit's message carries the
+rule and the packet (`rule hit rule=guests->users:default tcp
+10.1.2.3:51000 -> 10.1.1.5:22 in=guests out=users`).
+
+```yaml
+logging:
+  remote:
+    provider: syslog
+    destination: logs.example.org     # host, or host:port
+    protocol: tcp                     # udp (the default), tcp or relp
+    tls: true
+    ca: |                             # optional: a private CA
+      -----BEGIN CERTIFICATE-----
+      ...
+      -----END CERTIFICATE-----
+```
+
+| `protocol` | Default port | Delivery |
+| --- | --- | --- |
+| `udp` | 514 | Fire and forget: a message lost on the way is gone, and nothing is encrypted |
+| `tcp` | 514, or 6514 with `tls` (RFC 5425) | Reliable while connected; a message in flight when the connection breaks can be lost |
+| `relp` | 2514 | Each message acknowledged by the collector; none lost across a broken connection |
+
+- **TLS:** with `tls: true`, the collector's certificate must be valid
+  for the destination's host name, signed by `ca` or by a CA the system
+  trusts.
+- **Client certificates:** for a collector that requires one, store the
+  node's private key and certificate (PEM, in one secret) and name it:
+
+  ```shell
+  cat fw-key.pem fw-cert.pem | sparewall secret set log-client
+  sparewall set logging.remote.certificate=secret:log-client
+  ```
+
+  RELP over TLS always needs one: without it, librelp offers only
+  anonymous TLS, which collectors refuse. It is a cluster secret, so a
+  pair's nodes share it; the collector then sees the same certificate
+  from both. Health's `log-forwarding` check is degraded while the
+  secret is missing or holds no key and certificate.
+- **While the collector is unreachable,** messages wait in memory and
+  then on disk under `/var/lib/rsyslog`, up to 256 MB, and are sent when
+  it is back, also across a restart. With the queue full, rsyslog stops
+  reading the journal, and later carries on where it stopped: what
+  the journal still holds is not lost.
+- **The start:** a node forwards from the moment forwarding is turned
+  on, not the journal's earlier history.
+
+To a **systemd-journal-remote** collector, with `provider:
+journal-upload` (the default), which keeps every journal field:
+
+```yaml
+logging:
+  remote:
+    destination: https://logs.example.org:19532
+```
+
+Changing the provider stops the one no longer used.
 
 ## Certificates
 
@@ -737,10 +803,10 @@ what the test suites see, and a denial on a real node is a missing rule.
 
 ## Settings not built yet
 
-`provider_options`, `metrics.mode: local`, `metrics.retention`,
-`dhcp.provider: networkd`, and `logging.remote.provider: syslog` are
-rejected with an error at their path. (`updates.mode: windowed` and
-`updates.window` were too, before 0.4.0 built them.) Earlier versions accepted them, though nothing acted on
+`provider_options`, `metrics.mode: local`, `metrics.retention` and
+`dhcp.provider: networkd` are rejected with an error at their path.
+(`updates.mode: windowed` and `updates.window` were too, before 0.4.0
+built them, and `logging.remote.provider: syslog` before 0.5.0.) Earlier versions accepted them, though nothing acted on
 them. After upgrading:
 
 - A node already running a document with one of them keeps running it,

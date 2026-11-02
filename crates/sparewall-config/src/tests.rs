@@ -416,32 +416,25 @@ fn rejects_dhcp_mistakes() {
 /// history naming it stays readable.
 #[test]
 fn rejects_providers_not_built_yet() {
-    for (patch, path) in [
-        (json!({"dhcp": {"provider": "networkd"}}), "dhcp.provider"),
-        (
-            json!({"logging": {"remote": {"provider": "syslog", "destination": "log.example:514"}}}),
-            "logging.remote.provider",
-        ),
-    ] {
-        let d = edit(STANDALONE, patch);
-        let e = error_paths(&d);
-        assert!(
-            e.iter()
-                .any(|e| e.starts_with(path) && e.contains("not built yet")),
-            "{path}: {e:?}"
-        );
-        assert!(
-            crate::validate::errors(&crate::validate::validate_history(&d)).is_empty(),
-            "{path}: history stays readable"
-        );
-    }
+    let path = "dhcp.provider";
+    let d = edit(STANDALONE, json!({"dhcp": {"provider": "networkd"}}));
+    let e = error_paths(&d);
+    assert!(
+        e.iter()
+            .any(|e| e.starts_with(path) && e.contains("not built yet")),
+        "{path}: {e:?}"
+    );
+    assert!(
+        crate::validate::errors(&crate::validate::validate_history(&d)).is_empty(),
+        "{path}: history stays readable"
+    );
     let d = edit(
         STANDALONE,
         json!({"logging": {"remote": {"provider": "fluentd", "destination": "x:1"}}}),
     );
     assert!(has_error(
         &d,
-        "unknown provider \"fluentd\"; use journal-upload"
+        "unknown provider \"fluentd\"; use journal-upload, syslog"
     ));
     // ACME DNS: any provider but rfc2136 is a lego provider code, whose
     // options are environment variables.
@@ -637,9 +630,11 @@ fn windowed_upgrades() {
             .iter()
             .any(|m| m.starts_with("updates.channel: scheduled upgrades on testing"))
     );
-    // window_minutes is new in revision 3; the rest is revision 1.
+    // `windowed` is new in revision 3 (0.3.x rejects it as not built), as
+    // is window_minutes; `manual` and `window` are revision 1.
     let rev = |d: &Document| crate::schema::revision(&serde_json::to_value(d).unwrap());
-    assert_eq!(rev(&d), 1);
+    assert_eq!(rev(&d), 3);
+    assert_eq!(rev(&manual), 1);
     assert_eq!(
         rev(&w(
             json!({"mode": "windowed", "window": "daily", "window_minutes": 90})
@@ -1038,4 +1033,112 @@ fn node_names_are_hostnames() {
         doc.cluster.nodes = vec![bad.into()];
         assert!(has_error(&doc, "invalid node name"), "{bad:?}");
     }
+}
+
+/// Forwarding to a syslog collector with rsyslog (#147).
+#[test]
+fn syslog_forwarding() {
+    let r = |v: serde_json::Value| edit(STANDALONE, json!({"logging": {"remote": v}}));
+    let rev = |d: &Document| crate::schema::revision(&serde_json::to_value(d).unwrap());
+    let udp = r(json!({"provider": "syslog", "destination": "logs.example.org"}));
+    assert_valid(&udp);
+    assert_eq!(rev(&udp), 4, "syslog is new in revision 4");
+    for dest in [
+        "10.0.0.5:1514",
+        "[2001:db8::5]:6514",
+        "[2001:db8::5]",
+        "logs",
+    ] {
+        assert_valid(&r(
+            json!({"provider": "syslog", "destination": dest, "protocol": "tcp"}),
+        ));
+    }
+    for dest in [
+        "udp://logs:514",
+        "logs:0",
+        "logs:x",
+        "",
+        "[logs]:514",
+        "a b",
+    ] {
+        assert!(
+            has_error(
+                &r(json!({"provider": "syslog", "destination": dest})),
+                "logging.remote.destination: for syslog, a host name or address"
+            ),
+            "{dest:?}"
+        );
+    }
+    assert!(has_error(
+        &r(json!({"provider": "syslog", "destination": "logs", "protocol": "gelf"})),
+        "logging.remote.protocol: unknown protocol \"gelf\""
+    ));
+    assert!(has_error(
+        &r(json!({"provider": "syslog", "destination": "logs", "tls": true})),
+        "logging.remote.tls: TLS needs protocol tcp or relp"
+    ));
+    const PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+    let relp = r(
+        json!({"provider": "syslog", "destination": "logs", "protocol": "relp",
+                        "tls": true, "ca": PEM, "certificate": "secret:log-client"}),
+    );
+    assert_valid(&relp);
+    assert_eq!(rev(&relp), 4);
+    assert!(has_error(
+        &r(json!({"provider": "syslog", "destination": "logs", "protocol": "relp", "tls": true})),
+        "logging.remote.certificate: RELP over TLS needs a client certificate"
+    ));
+    assert_valid(&r(
+        json!({"provider": "syslog", "destination": "logs", "protocol": "relp"}),
+    ));
+    assert_valid(&r(
+        json!({"provider": "syslog", "destination": "logs", "protocol": "tcp", "tls": true,
+               "certificate": "secret:log-client"}),
+    ));
+    assert!(has_error(
+        &r(
+            json!({"provider": "syslog", "destination": "logs", "protocol": "tcp", "tls": true,
+                  "certificate": "-----BEGIN PRIVATE KEY-----"})
+        ),
+        "logging.remote.certificate: secrets are referenced as secret:<name>"
+    ));
+    assert!(has_error(
+        &r(
+            json!({"provider": "syslog", "destination": "logs", "protocol": "tcp",
+                  "certificate": "secret:log-client"})
+        ),
+        "logging.remote.certificate: a client certificate is for tls: true"
+    ));
+    assert!(has_error(
+        &r(json!({"provider": "syslog", "destination": "logs", "protocol": "tcp", "ca": PEM})),
+        "logging.remote.ca: a CA is for tls: true"
+    ));
+    assert!(has_error(
+        &r(
+            json!({"provider": "syslog", "destination": "logs", "protocol": "tcp", "tls": true,
+                  "ca": "not a certificate"})
+        ),
+        "logging.remote.ca: not a PEM certificate"
+    ));
+    // journal-upload takes neither.
+    let ju = |extra: serde_json::Value| {
+        let mut v = json!({"destination": "https://logs:19532"});
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        r(v)
+    };
+    assert_valid(&ju(json!({})));
+    assert!(has_error(
+        &ju(json!({"protocol": "tcp"})),
+        "logging.remote.protocol: only the syslog provider takes a protocol"
+    ));
+    assert!(has_error(
+        &ju(json!({"ca": PEM})),
+        "logging.remote.ca: only the syslog provider takes a CA"
+    ));
+    assert!(has_error(
+        &ju(json!({"certificate": "secret:log-client"})),
+        "logging.remote.certificate: only the syslog provider takes a client certificate"
+    ));
 }

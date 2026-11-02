@@ -385,12 +385,27 @@ export interface Schemas {
   "Document.RawHook": "prerouting-raw" | "forward" | "input" | "postrouting";
   "Document.RawPosition": "before" | "after";
   "Document.RemoteLog": {
-    /** URL or `host:port`. */
+    /** syslog only: PEM of the CA that signs the collector's certificate,
+     * for a private CA (default: the system trust store). */
+    "ca"?: string | null;
+    /** syslog only, with `tls`: this node's client certificate for a
+     * collector that requires one (RELP over TLS always does), as a
+     * secret reference, `secret:<name>`: the private key and the
+     * certificate (with any intermediates), PEM, in one secret. */
+    "certificate"?: string | null;
+    /** For journal-upload, a URL or `host:port`. For syslog, `host` or
+     * `host:port`; the port defaults to 514 (`udp`, `tcp`), 6514 (`tcp`
+     * with `tls`) or 2514 (`relp`). */
     "destination": string;
-    /** `udp`, `tcp`, `relp` (syslog only). */
+    /** syslog only: `udp` (the default; messages can be lost), `tcp`, or
+     * `relp` (acknowledged delivery). */
     "protocol"?: string | null;
-    /** `journal-upload` (the default). `syslog` is not built yet. */
+    /** `journal-upload` (the default): systemd-journal-upload to a
+     * systemd-journal-remote collector. `syslog`: rsyslog, to a syslog
+     * collector (RFC 5424), over `protocol`. */
     "provider"?: string | null;
+    /** Encrypt, and check the collector's certificate: its name must be
+     * the destination's host. syslog: with `tcp` or `relp`. */
     "tls"?: boolean;
   };
   "Document.Reservation": {

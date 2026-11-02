@@ -1669,7 +1669,8 @@ fn vpn_preshared_keys() {
     // recreated so networkd reads it.
     a.c.secret_set("psk-alice", b"the psk", SecretClass::Cluster)
         .unwrap();
-    a.c.refresh_vpn_keys(&["psk-alice".to_string()]).unwrap();
+    a.c.refresh_runtime_secrets(&["psk-alice".to_string()])
+        .unwrap();
     let netdev = &a.c.system().network["50-sparewall-roadwarrior.netdev"];
     let path = netdev
         .lines()
@@ -1701,7 +1702,7 @@ fn vpn_preshared_keys() {
         Level::Degraded
     );
     let changed = b.c.receive_secrets(a.c.cluster_secrets().unwrap()).unwrap();
-    b.c.refresh_vpn_keys(&changed).unwrap();
+    b.c.refresh_runtime_secrets(&changed).unwrap();
     assert_eq!(
         b.c.system().runtime_keys.get(file).map(Vec::as_slice),
         Some(&b"the psk"[..])
@@ -3630,4 +3631,85 @@ fn a_gated_push_reaches_a_node_running_an_older_generation() {
     b.receive(&a.c.generation(3).unwrap(), doc3, PeerGate::PeerConfirms)
         .unwrap();
     assert_eq!(b.active().unwrap(), 3);
+}
+
+/// The syslog client certificate (#147): referenced before it is set, the
+/// change applies with a warning and health says so; once set, its key
+/// and certificate are installed for rsyslog, which restarts; dropping
+/// the reference removes them.
+#[test]
+fn syslog_client_certificate() {
+    use sparewall_core::secrets::SecretClass;
+    use sparewall_render::logging::{SYSLOG_CLIENT_CERT, SYSLOG_CLIENT_KEY};
+    let mut t = setup();
+    let mut doc = example();
+    doc["logging"] = json!({"remote": {
+        "provider": "syslog", "destination": "logs.example.org", "protocol": "relp",
+        "tls": true, "certificate": "secret:log-client",
+    }});
+    let r = t.c.apply(doc.clone(), &opts(0, None)).unwrap();
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("\"log-client\" is not set")),
+        "{:?}",
+        r.warnings
+    );
+    assert_eq!(
+        t.c.health().unwrap().check("log-forwarding").unwrap().level,
+        Level::Degraded
+    );
+    assert!(t.c.system().secret_files.is_empty());
+
+    // Neither a key nor a certificate alone will do.
+    t.c.secret_set(
+        "log-client",
+        b"-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----\n",
+        SecretClass::Cluster,
+    )
+    .unwrap();
+    t.c.refresh_runtime_secrets(&["log-client".to_string()])
+        .unwrap();
+    assert!(t.c.system().secret_files.is_empty());
+    assert!(
+        t.c.health()
+            .unwrap()
+            .check("log-forwarding")
+            .unwrap()
+            .message
+            .contains("needs a private key")
+    );
+
+    let bundle = "-----BEGIN PRIVATE KEY-----\nKK\n-----END PRIVATE KEY-----\n\
+                  -----BEGIN CERTIFICATE-----\nC1\n-----END CERTIFICATE-----\n\
+                  -----BEGIN CERTIFICATE-----\nC2\n-----END CERTIFICATE-----\n";
+    t.c.secret_set("log-client", bundle.as_bytes(), SecretClass::Cluster)
+        .unwrap();
+    let before = t.c.system().log.len();
+    t.c.refresh_runtime_secrets(&["log-client".to_string()])
+        .unwrap();
+    let files = &t.c.system().secret_files;
+    assert_eq!(
+        String::from_utf8_lossy(&files[SYSLOG_CLIENT_KEY]),
+        "-----BEGIN PRIVATE KEY-----\nKK\n-----END PRIVATE KEY-----\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&files[SYSLOG_CLIENT_CERT]),
+        "-----BEGIN CERTIFICATE-----\nC1\n-----END CERTIFICATE-----\n\
+         -----BEGIN CERTIFICATE-----\nC2\n-----END CERTIFICATE-----\n"
+    );
+    assert!(
+        t.c.system().log[before..]
+            .iter()
+            .any(|l| l.starts_with("services ")
+                && l.contains("rsyslog.service")
+                && l.ends_with("changed logging")),
+        "{:?}",
+        &t.c.system().log[before..]
+    );
+    assert!(t.c.health().unwrap().check("log-forwarding").is_none());
+
+    doc["logging"] = json!({"remote": {"destination": "https://logs.example.org:19532"}});
+    t.c.apply(doc, &opts(1, None)).unwrap();
+    assert!(t.c.system().secret_files.is_empty());
 }

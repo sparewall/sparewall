@@ -100,7 +100,7 @@ pub const PROVIDERS: &[Provider] = &[
         role: Role::LogForwarding,
         name: "syslog",
         default: false,
-        built: false,
+        built: true,
         ha: true,
         state: None,
     },

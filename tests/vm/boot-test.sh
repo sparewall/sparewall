@@ -87,6 +87,7 @@ cleanup() {
     if [ -f qemu.pid ]; then sudo kill "$(sudo cat qemu.pid)" 2>/dev/null || true; fi
     pkill -f "tpmstate dir=$WORK/tpm" 2>/dev/null || true
     if [ -f rest-server.pid ]; then kill "$(cat rest-server.pid)" 2>/dev/null || true; fi
+    sudo podman rm -f sw-syslog >/dev/null 2>&1 || true
     sudo chmod a+r serial.log 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -380,6 +381,91 @@ grep -qE '^  services +ok ' restart-health.txt \
 vm 'sudo sparewall set management.web=false --confirm 0'
 web_up inactive
 [ "$(status https://localhost/openapi.json)" = 404 ] || fail "the HTTP API still answers after management.web=false"
+
+log "forwarding to a syslog collector (#147)"
+# The collector is rsyslog from the image under test, on this host, which
+# the node reaches as 10.0.2.2: UDP and TCP on 1514, TLS on 6514, and
+# RELP over TLS on 2514, which takes only the client certificate "fw1".
+# Each message is kept as it arrived on the wire, after the input's name.
+SL=$WORK/syslog
+mkdir -p "$SL/w"
+(
+    cd "$SL"
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 2 -subj /CN=ci-log-ca 2>/dev/null
+    openssl req -newkey rsa:2048 -nodes -keyout srv.key -out srv.csr -subj /CN=10.0.2.2 2>/dev/null
+    printf 'subjectAltName=DNS:10.0.2.2,IP:10.0.2.2\n' > srv.ext
+    openssl x509 -req -in srv.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out srv.pem -days 2 -extfile srv.ext 2>/dev/null
+    openssl req -newkey rsa:2048 -nodes -keyout cl.key -out cl.csr -subj /CN=fw1 2>/dev/null
+    openssl x509 -req -in cl.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out cl.pem -days 2 2>/dev/null
+)
+cat > "$SL/coll.conf" <<'CONF'
+global(workDirectory="/s/w" DefaultNetstreamDriverCAFile="/s/ca.pem"
+       DefaultNetstreamDriverCertFile="/s/srv.pem" DefaultNetstreamDriverKeyFile="/s/srv.key")
+module(load="imudp")
+input(type="imudp" port="1514")
+module(load="imtcp")
+input(type="imtcp" port="1514")
+input(type="imtcp" port="6514" StreamDriver.Name="gtls" StreamDriver.Mode="1" StreamDriver.AuthMode="anon")
+module(load="imrelp")
+input(type="imrelp" port="2514" tls="on" tls.caCert="/s/ca.pem" tls.myCert="/s/srv.pem"
+      tls.myPrivKey="/s/srv.key" tls.authMode="name" tls.permittedPeer=["fw1"])
+template(name="raw" type="string" string="%inputname% %rawmsg%\n")
+action(type="omfile" file="/s/got.log" template="raw")
+CONF
+sudo podman run -d --name sw-syslog --network host -v "$SL:/s:Z" \
+    --entrypoint /usr/sbin/rsyslogd "$IMAGE" -n -f /s/coll.conf >/dev/null
+forward() { # logging.remote to merge, as JSON (null removes a key)
+    jq -n --argjson r "$1" '{logging: {remote: $r}}' | vm 'cat > /tmp/log.json'
+    vm 'sudo sparewall merge -f /tmp/log.json --confirm 0' >/dev/null
+}
+arrives() { # what (for messages), the collector input that must receive it
+    local tag="ci-$RANDOM-$RANDOM" deadline=$((SECONDS + 120)) line=
+    while [ -z "$line" ]; do
+        if [ $SECONDS -ge $deadline ]; then
+            vm 'systemctl status --no-pager rsyslog; sudo journalctl -b -u rsyslog --no-pager | tail -20' || true
+            sudo podman logs --tail 20 sw-syslog || true
+            fail "nothing arrived over $1"
+        fi
+        vm "logger -t sparewall-ci $tag"
+        sleep 5
+        # Captured, then searched: grep -q would cut the pipe short.
+        line=$(sudo cat "$SL/got.log" 2>/dev/null | grep -F "$tag" | head -n 1 || true)
+    done
+    echo "$line"
+    [ "${line%% *}" = "$2" ] || fail "$1 arrived through ${line%% *}, not $2"
+    # RFC 5424, from the node by name.
+    grep -qE "^$2 <[0-9]+>1 [0-9T:.+-]+ fw1 sparewall-ci [0-9-]+ - - $tag\$" <<<"$line" \
+        || fail "$1: not RFC 5424 from fw1: $line"
+}
+forward '{"provider": "syslog", "destination": "10.0.2.2:1514"}'
+arrives udp imudp
+forward '{"protocol": "tcp"}'
+arrives tcp imtcp
+forward "$(jq -n --rawfile ca "$SL/ca.pem" '{destination: "10.0.2.2:6514", tls: true, ca: $ca}')"
+arrives "tcp with TLS" imtcp
+# RELP over TLS needs the client certificate: refused without it, then
+# referenced before it is set (health says so), then set.
+! forward '{"destination": "10.0.2.2:2514", "protocol": "relp"}' 2>/dev/null \
+    || fail "RELP over TLS was accepted without a client certificate"
+forward '{"destination": "10.0.2.2:2514", "protocol": "relp", "certificate": "secret:log-client"}'
+vm 'sudo sparewall health -v -o json' \
+    | jq -e '.checks[] | select(.name == "log-forwarding" and .level == "degraded")' >/dev/null \
+    || fail "health does not say the client certificate is missing"
+cat "$SL/cl.key" "$SL/cl.pem" | vm 'sudo sparewall secret set log-client'
+arrives "RELP with TLS" imrelp
+vm 'sudo sparewall health -v -o json' \
+    | jq -e '[.checks[] | select(.name == "log-forwarding")] == []' >/dev/null \
+    || fail "health still flags the client certificate"
+[ "$(vm 'sudo stat -c %a /run/sparewall/secrets/syslog-client.key')" = 600 ] \
+    || fail "the client key is not root's alone"
+selinux_report vm fw1
+# Back to journal-upload: rsyslog stops, and the client key goes.
+forward '{"provider": "journal-upload", "destination": "http://10.0.2.2:19532", "protocol": null, "tls": null, "ca": null, "certificate": null}'
+[ "$(vm 'systemctl is-active rsyslog' || true)" = inactive ] \
+    || fail "rsyslog still runs after switching to journal-upload"
+vm 'sudo test ! -e /run/sparewall/secrets/syslog-client.key' || fail "the client key outlived its use"
+vm 'sudo sparewall unset logging --confirm 0' >/dev/null
+sudo podman rm -f sw-syslog >/dev/null
 
 log "backup to a restic REST server"
 start_rest_server

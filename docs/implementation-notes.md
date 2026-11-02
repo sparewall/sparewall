@@ -194,7 +194,10 @@ Where the implementation departs from, or settles open questions in,
   0.2.0's schema) and names no revision, and on a removed field. A local
   apply records `schema::revision` of the document; a generation from the
   peer keeps its own, since both nodes must hash it alike. Add the
-  revision to the table in operations.md, "Schema revisions".
+  revision to the table in operations.md, "Schema revisions". A value
+  that earlier releases reject as not built yet (a provider, a mode) is
+  marked on its field with `#[schemars(extend("x-since-values" =
+  {"value": N}))]`, so a document that uses it needs revision N too.
 - **Journal entries to filter on** (#188) log to the tracing target
   `sparewall::journal` (`update::JOURNAL_TARGET`) with a `message_id`
   field. A second journald layer takes only that target and writes field
@@ -588,11 +591,11 @@ through the cut network do not survive that long a stall.
 ## Not built yet
 
 - ACME `http-01`.
-- Alternative providers: networkd's DHCP server (`dhcp.provider:
-  networkd`) and syslog forwarding (`logging.remote.provider: syslog`).
-  Earlier versions accepted them and then rendered nothing, silently
-  turning DHCP or log forwarding off; validation now rejects them as
-  not built yet (#10).
+- An alternative DHCP provider: networkd's DHCP server (`dhcp.provider:
+  networkd`). Earlier versions accepted it and then rendered nothing,
+  silently turning DHCP off; validation now rejects it as not built yet
+  (#10). (Syslog forwarding, `logging.remote.provider: syslog`, was in
+  the same state until 0.5.0 built it.)
 - Schema migrations. Revision 2 only added a field, which needs none
   (see "Adding a field" above).
 - Benchmarks.

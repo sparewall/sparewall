@@ -272,6 +272,13 @@ impl System for RealNft {
     ) -> Result<(), sparewall_core::Error> {
         self.rest.install_key(file, content, group)
     }
+    fn install_secret_file(
+        &mut self,
+        file: &str,
+        content: Option<&[u8]>,
+    ) -> Result<(), sparewall_core::Error> {
+        self.rest.install_secret_file(file, content)
+    }
     fn netdev_recreate(&mut self, name: &str) -> Result<(), sparewall_core::Error> {
         self.rest.netdev_recreate(name)
     }

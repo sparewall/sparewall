@@ -1393,25 +1393,45 @@
       "Document.RemoteLog": {
         "additionalProperties": false,
         "properties": {
+          "ca": {
+            "description": "syslog only: PEM of the CA that signs the collector's certificate,\nfor a private CA (default: the system trust store).",
+            "type": [
+              "string",
+              "null"
+            ],
+            "x-since": 4
+          },
+          "certificate": {
+            "description": "syslog only, with `tls`: this node's client certificate for a\ncollector that requires one (RELP over TLS always does), as a\nsecret reference, `secret:<name>`: the private key and the\ncertificate (with any intermediates), PEM, in one secret.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "x-since": 4
+          },
           "destination": {
-            "description": "URL or `host:port`.",
+            "description": "For journal-upload, a URL or `host:port`. For syslog, `host` or\n`host:port`; the port defaults to 514 (`udp`, `tcp`), 6514 (`tcp`\nwith `tls`) or 2514 (`relp`).",
             "type": "string"
           },
           "protocol": {
-            "description": "`udp`, `tcp`, `relp` (syslog only).",
+            "description": "syslog only: `udp` (the default; messages can be lost), `tcp`, or\n`relp` (acknowledged delivery).",
             "type": [
               "string",
               "null"
             ]
           },
           "provider": {
-            "description": "`journal-upload` (the default). `syslog` is not built yet.",
+            "description": "`journal-upload` (the default): systemd-journal-upload to a\nsystemd-journal-remote collector. `syslog`: rsyslog, to a syslog\ncollector (RFC 5424), over `protocol`.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x-since-values": {
+              "syslog": 4
+            }
           },
           "tls": {
+            "description": "Encrypt, and check the collector's certificate: its name must be\nthe destination's host. syslog: with `tcp` or `relp`.",
             "type": "boolean"
           }
         },
@@ -1649,7 +1669,10 @@
                 "type": "null"
               }
             ],
-            "description": "`manual` (the default): upgrades run when asked for, with\n`sparewall upgrade`. `windowed`: the pair's master (or a standalone\nnode) upgrades by itself when `window` opens and the channel offers\na newer image, through the same health-gated sequence (#84)."
+            "description": "`manual` (the default): upgrades run when asked for, with\n`sparewall upgrade`. `windowed`: the pair's master (or a standalone\nnode) upgrades by itself when `window` opens and the channel offers\na newer image, through the same health-gated sequence (#84).",
+            "x-since-values": {
+              "windowed": 3
+            }
           },
           "window": {
             "description": "When a scheduled upgrade may start: a systemd calendar expression\n(`Sun *-*-* 03:00`), in the node's time zone (UTC unless set).\nRequired with `mode: windowed`.",
