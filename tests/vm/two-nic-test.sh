@@ -7,7 +7,8 @@
 #
 #   1. A standalone node: management, DHCP and forwarding on the LAN NIC;
 #      management.sources admits the admin's SSH and refuses another LAN
-#      host's, which may still ping the node.
+#      host's, which may still ping the node; a site-to-site tunnel to a
+#      branch on the WAN (#148).
 #   2. A pair: pairing with the sync tunnel over the LAN, Kea's lease and
 #      conntrack replication over it, and a failover that a connection
 #      through the pair survives, after which the client renews its lease
@@ -213,6 +214,48 @@ if ns tother timeout 5 bash -c 'exec 3<>/dev/tcp/192.168.1.2/443' 2>/dev/null; t
 fi
 ns tadmin timeout 5 bash -c 'exec 3<>/dev/tcp/192.168.1.2/443' \
     || fail "the admin cannot reach the node's HTTPS"
+
+log "a site-to-site tunnel to a branch (#148)"
+# tsite, beside the ISP, is a branch office: fw1 routes its network,
+# 10.20.0.0/24, through the tunnel and starts the tunnel itself; the
+# branch is configured from what fw1 prints for it, without a keepalive,
+# so it never sends first.
+wg genkey > site.key
+wg pubkey < site.key > site.pub
+host tsite tnwan 02:00:00:00:21:07 203.0.113.3/29
+ns tsite ip link add lan0 type dummy
+ns tsite ip addr add 10.20.0.1/24 dev lan0
+ns tsite ip link set lan0 up
+jq -n --arg k "$(cat site.pub)" '{
+    vpn: {branch: {listen_port: 51821, endpoint: "203.0.113.2", addresses: ["10.98.0.1/30"], zone: "branch",
+        peers: {tsite: {public_key: $k, endpoint: "203.0.113.3:51821",
+            addresses: ["10.98.0.2/32", "10.20.0.0/24"], keepalive: 10}}}},
+    zones: {branch: {}},
+    policy: {"lan->branch": {action: "accept"}, "branch->lan": {action: "accept"}}
+}' | at fw1 'cat > /tmp/site-vpn.json'
+at fw1 'sudo sparewall merge -f /tmp/site-vpn.json --confirm 0' >/dev/null
+at fw1 'sudo sparewall vpn peer-config tsite' > tsite.conf
+grep -qx 'Endpoint = 203.0.113.2:51821' tsite.conf || fail "the branch's config does not name fw1: $(cat tsite.conf)"
+grep -qx 'AllowedIPs = 10.98.0.0/30, 192.168.1.0/24' tsite.conf \
+    || fail "the branch's config does not route fw1's tunnel and LAN: $(grep AllowedIPs tsite.conf)"
+(umask 077; sed -e "s|^PrivateKey = .*|PrivateKey = $(cat site.key)|" \
+    -e '/^PersistentKeepalive/d' -e '/^Address/d' tsite.conf > tsite-wg.conf)
+ns tsite ip link add wg0 type wireguard
+ns tsite wg setconf wg0 "$PWD/tsite-wg.conf"
+ns tsite ip addr add "$(sed -n 's/^Address = //p' tsite.conf)" dev wg0
+ns tsite ip link set wg0 up
+for n in 10.98.0.0/30 192.168.1.0/24; do ns tsite ip route add "$n" dev wg0; done
+site_session() { [ "$(ns tsite wg show wg0 latest-handshakes | awk '{print $2}')" -gt 0 ]; }
+wait_for 60 "fw1 starts the branch's tunnel" site_session
+at fw1 'ip route show 10.20.0.0/24' | grep -q 'dev branch' || fail "fw1 does not route the branch's network through the tunnel"
+# Both ways, without NAT between the sites.
+ns tclient ping -c 2 -W 2 10.20.0.1 >/dev/null || fail "the LAN cannot reach the branch's network"
+ns tsite ping -c 2 -W 2 -I 10.20.0.1 "$c" >/dev/null || fail "the branch's network cannot reach the LAN"
+ns tsite python3 "$HERE/echo.py" whoami &
+sleep 1
+seen=$(ns tclient python3 "$HERE/echo.py" ask 10.20.0.1 7002) || fail "the LAN cannot connect to the branch"
+[ "$seen" = "$c" ] || fail "the branch saw the LAN's connection from $seen, not $c"
+wait_for 60 "fw1 healthy with the tunnel up" healthy fw1
 stop_vm fw1
 
 # --- 2. pair ---------------------------------------------------------------

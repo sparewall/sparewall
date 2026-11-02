@@ -468,6 +468,21 @@ impl<S: System> Coordinator<S> {
                 )]));
             }
         };
+        let psk = match &p.preshared_key {
+            Some(r) => {
+                let secret = r.strip_prefix("secret:").unwrap_or(r);
+                let k = self.secret_get(secret)?.ok_or_else(|| {
+                    Error::Validation(vec![format!(
+                        "vpn.{name}.peers.{peer}: its preshared key {secret:?} is not set"
+                    )])
+                })?;
+                format!("PresharedKey = {}\n", String::from_utf8_lossy(&k).trim())
+            }
+            None => String::new(),
+        };
+        if p.endpoint.is_some() {
+            return Ok(site_config(&doc, name, vpn, peer, p, &server, &psk, port));
+        }
         let allowed = if vpn.client_allowed_ips.is_empty() {
             "0.0.0.0/0".to_string()
         } else {
@@ -492,18 +507,7 @@ impl<S: System> Coordinator<S> {
                     .join(", ")
             ));
         }
-        let psk = match &p.preshared_key {
-            Some(r) => {
-                let secret = r.strip_prefix("secret:").unwrap_or(r);
-                let k = self.secret_get(secret)?.ok_or_else(|| {
-                    Error::Validation(vec![format!(
-                        "vpn.{name}.peers.{peer}: its preshared key {secret:?} is not set"
-                    )])
-                })?;
-                format!("PresharedKey = {}\n", String::from_utf8_lossy(&k).trim())
-            }
-            None => String::new(),
-        };
+
         s.push_str(&format!(
             "\n[Peer]\nPublicKey = {server}\n{psk}Endpoint = {}:{}\nAllowedIPs = {allowed}\n\
              # Keeps NAT mappings open while idle; it does not shorten the outage\n# after a failover (see the operations guide).\nPersistentKeepalive = 25\n",
@@ -511,4 +515,76 @@ impl<S: System> Coordinator<S> {
         ));
         Ok(s)
     }
+}
+
+/// The other end of a site-to-site tunnel (#148), for wg-quick: the
+/// site's tunnel address, the port its endpoint names, and this side's
+/// tunnel and networks as AllowedIPs, which wg-quick routes.
+#[allow(clippy::too_many_arguments)]
+fn site_config(
+    doc: &sparewall_config::Document,
+    name: &str,
+    vpn: &sparewall_config::model::Vpn,
+    peer: &str,
+    p: &sparewall_config::model::VpnPeer,
+    server: &str,
+    psk: &str,
+    port: u16,
+) -> String {
+    let inside: Vec<String> = p
+        .addresses
+        .iter()
+        .filter(|a| {
+            vpn.addresses
+                .iter()
+                .any(|t| t.0.trunc().contains(&a.0.addr()))
+        })
+        .map(ToString::to_string)
+        .collect();
+    let mut allowed: Vec<String> = vpn
+        .addresses
+        .iter()
+        .map(|a| a.0.trunc().to_string())
+        .collect();
+    if vpn.client_allowed_ips.is_empty() {
+        // This side's networks but the WAN and the pair's sync network:
+        // what the site may reach of them is the policy's to say.
+        for (n, net) in &doc.networks {
+            if matches!(
+                net.role,
+                sparewall_config::model::NetworkRole::Wan
+                    | sparewall_config::model::NetworkRole::Sync
+            ) {
+                continue;
+            }
+            if let Some(s) = doc
+                .cluster
+                .nodes
+                .first()
+                .and_then(|node| doc.subnet(n, node))
+            {
+                allowed.push(s.to_string());
+            }
+        }
+    } else {
+        allowed.extend(vpn.client_allowed_ips.iter().cloned());
+    }
+    allowed.dedup();
+    let listen = p
+        .endpoint
+        .as_deref()
+        .and_then(|e| e.rsplit_once(':'))
+        .map(|(_, port)| format!("ListenPort = {port}\n"))
+        .unwrap_or_default();
+    let keepalive = p.keepalive.unwrap_or(25);
+    format!(
+        "# Sparewall site-to-site: {name}, peer {peer}\n[Interface]\n\
+         PrivateKey = <this site's private key: wg genkey>\nAddress = {}\n{listen}\n\
+         [Peer]\nPublicKey = {server}\n{psk}Endpoint = {}:{port}\n\
+         # wg-quick routes these through the tunnel: the other side's tunnel\n\
+         # and networks.\nAllowedIPs = {}\nPersistentKeepalive = {keepalive}\n",
+        inside.join(", "),
+        vpn.endpoint,
+        allowed.join(", ")
+    )
 }

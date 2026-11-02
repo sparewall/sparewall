@@ -1560,6 +1560,78 @@ impl Validator<'_> {
                         );
                     }
                 }
+                if let Some(k) = peer.keepalive
+                    && !(1..=3600).contains(&k)
+                {
+                    self.err(
+                        format!("{pp}.keepalive"),
+                        "seconds between keepalives, 1 to 3600",
+                    );
+                }
+                if let Some(e) = &peer.endpoint
+                    && wg_endpoint(e).is_none()
+                {
+                    self.err(
+                        format!("{pp}.endpoint"),
+                        format!("{e:?} is not host:port, with an IPv4 address or a DNS name"),
+                    );
+                }
+            }
+        }
+        self.routed_through_peers();
+        // The master's handshakes leave from one WAN's gateway address.
+        let wans = doc.site_source_wans();
+        if wans.len() > 1 {
+            self.err(
+                "vpn",
+                format!(
+                    "site-to-site peers in a pair need a single WAN with a gateway address, not {}",
+                    wans.join(", ")
+                ),
+            );
+        }
+    }
+
+    /// The networks behind site-to-site peers (their addresses outside the
+    /// tunnel) are routed through the tunnel: none may be, or overlap, a
+    /// local network, a tunnel's subnet or another peer's network, or be
+    /// the default route.
+    fn routed_through_peers(&mut self) {
+        let doc = self.doc;
+        let mut taken: Vec<(String, ipnet::Ipv4Net)> = Vec::new();
+        for n in doc.networks.keys() {
+            for node in &doc.cluster.nodes {
+                if let Some(s) = doc.subnet(n, node) {
+                    taken.push((format!("network {n}"), s));
+                }
+            }
+        }
+        for (name, v) in &doc.vpn {
+            for a in &v.addresses {
+                taken.push((format!("vpn {name}'s tunnel"), a.0.trunc()));
+            }
+        }
+        for (name, v) in &doc.vpn {
+            for (pn, peer) in v.peers.iter().filter(|(_, p)| p.endpoint.is_some()) {
+                let pp = format!("vpn.{name}.peers.{pn}.addresses");
+                for a in &peer.addresses {
+                    let net = a.0.trunc();
+                    if v.addresses.iter().any(|t| t.0.trunc().contains(&net)) {
+                        continue;
+                    }
+                    if net.prefix_len() == 0 {
+                        self.err(&pp, "a site-to-site peer cannot take the default route");
+                        continue;
+                    }
+                    if let Some((what, _)) = taken
+                        .iter()
+                        .find(|(_, t)| t.contains(&net.network()) || net.contains(&t.network()))
+                    {
+                        let what = what.clone();
+                        self.err(&pp, format!("{net} overlaps {what}"));
+                    }
+                    taken.push((format!("vpn.{name}.peers.{pn}"), net));
+                }
             }
         }
     }
@@ -1765,6 +1837,29 @@ fn match_has_port(doc: &Document, m: &Match, port: u16) -> bool {
             MatchItem::Text(t) => text(doc, t, port),
         }),
     }
+}
+
+/// A WireGuard peer's endpoint, `host:port`: its host (an IPv4 address or
+/// a DNS name) and port.
+pub fn wg_endpoint(v: &str) -> Option<(&str, u16)> {
+    let (host, port) = v.rsplit_once(':')?;
+    let port: u16 = port.parse().ok().filter(|p| *p > 0)?;
+    let name_ok = host.len() <= 253
+        && host.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        });
+    // A dotted quad that does not parse is not a name either.
+    let dotted = host.chars().all(|c| c.is_ascii_digit() || c == '.');
+    let ok = if dotted {
+        host.parse::<std::net::Ipv4Addr>().is_ok()
+    } else {
+        name_ok
+    };
+    ok.then_some((host, port))
 }
 
 /// A syslog destination's host and port, if it is `host`, `host:port` or

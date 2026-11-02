@@ -12,6 +12,9 @@
 #   natc    active, behind NAT (router sw-nat), PersistentKeepalive 25
 #   natk    idle behind NAT, PersistentKeepalive 25: it sends no data
 #           until it has a new handshake, which only rekeying can start
+#   site    a site-to-site peer (#148) with a network behind it,
+#           10.30.0.0/24, that never sends first: the pair starts the
+#           tunnel (keepalive 10), and after a move the new master does
 #
 # All sit on the WAN VLAN 10 and connect to the gateway address
 # 203.0.113.1:51820 (vpnb on 53, an extra port). Inner flows go to the
@@ -29,11 +32,15 @@ VPN_CLIENTS="vpna vpnb vpnc natc natk"
 # keepalive (25 s), plus handshake retries.
 VPN_BOUND=60
 VPN_KEEPALIVE_BOUND=180
+# The site's tunnel, which the pair starts again: the next keepalive or
+# handshake retry from the new master.
+SITE_ADDR=203.0.113.60
+SITE_LAN=10.30.0.1
 
 # Client keys, before pairing: the document lists their public keys.
 vpn_keys() {
     local c
-    for c in $VPN_CLIENTS; do
+    for c in $VPN_CLIENTS site; do
         wg genkey > "$WORK/$c.key"
         wg pubkey < "$WORK/$c.key" > "$WORK/$c.pub"
     done
@@ -46,7 +53,7 @@ vpn_keys() {
 # Substitute the client public keys (@VPNA@...) into a document on stdin.
 vpn_doc() {
     local args=() c
-    for c in $VPN_CLIENTS; do
+    for c in $VPN_CLIENTS site; do
         args+=(-e "s|@${c^^}@|$(cat "$WORK/$c.pub")|")
     done
     sed "${args[@]}"
@@ -164,7 +171,43 @@ vpn_setup() {
     sleep 3
     vpn_tcp_count >/dev/null || fail "no inner TCP echoes: $(cat vpn-tcp.log)"
     grep -q reply vpn-udp.log || fail "no inner UDP echoes: $(cat vpn-udp.log)"
+    site_setup
     printf '| Event | Client | Recovery (s) |\n| --- | --- | --- |\n' > "$VPN_RESULTS"
+}
+
+# The site, configured from what the pair prints for it, without its
+# keepalive: it only answers, so every handshake is the pair's.
+site_setup() {
+    log "a site-to-site peer"
+    at fw1 'sudo sparewall vpn peer-config site' > site.conf
+    grep -q '^# Sparewall site-to-site' site.conf || fail "peer-config is not a site's: $(cat site.conf)"
+    grep -qx 'ListenPort = 51821' site.conf || fail "the site's config has no ListenPort: $(cat site.conf)"
+    grep -qx 'Endpoint = 203.0.113.1:51820' site.conf || fail "the site's config does not name the gateway address"
+    grep -E '^AllowedIPs = ' site.conf | grep -q '198\.51\.100\.0/24' \
+        || fail "the site's config does not route the pair's networks: $(grep AllowedIPs site.conf)"
+    wan_ns site "$SITE_ADDR"
+    ns site ip link add lan0 type dummy
+    ns site ip addr add "$SITE_LAN/24" dev lan0
+    ns site ip link set lan0 up
+    # What wg-quick would strip (Address), and the keepalive.
+    (umask 077; sed -e "s|^PrivateKey = .*|PrivateKey = $(cat "$WORK/site.key")|" \
+        -e '/^PersistentKeepalive/d' -e '/^Address/d' site.conf > site-wg.conf)
+    ns site ip link add wg0 type wireguard
+    ns site wg setconf wg0 "$PWD/site-wg.conf"
+    ns site ip addr add "$(sed -n 's/^Address = //p' site.conf)" dev wg0
+    ns site ip link set wg0 up
+    local n
+    for n in $(sed -n 's/^AllowedIPs = //p' site.conf | tr -d ' ' | tr ',' ' '); do
+        ns site ip route add "$n" dev wg0
+    done
+    has_session() { [ "$(handshake "$1")" -gt 0 ]; }
+    wait_for 60 "the pair starts the site's tunnel" has_session site
+    reach_site() { ns site ping -c 1 -W 1 -I "$SITE_LAN" "$VPN_TARGET" >/dev/null 2>&1; }
+    wait_for 30 "the site's network reaches $VPN_TARGET" reach_site
+    for n in fw1 fw2; do
+        at "$n" 'ip route show 10.30.0.0/24' | grep -q 'dev ra' \
+            || fail "$n does not route the site's network through the tunnel"
+    done
 }
 
 vpn_tcp_count() { tail -1 vpn-tcp.log | grep -E '^[0-9]+$'; }
@@ -218,6 +261,9 @@ vpn_moved() { # event
     idle_recovery vpnc > vpnc.recovery &
     VPN_PROBES+=($!)
     keepalive_recovery natk "$VPN_MOVED_AT" > natk.recovery &
+    VPN_PROBES+=($!)
+    # The site sends nothing: only the new master can start its tunnel.
+    keepalive_recovery site "$VPN_MOVED_AT" > site.recovery &
     VPN_PROBES+=($!)
 }
 
@@ -293,6 +339,11 @@ vpn_after_move() { # event
         check_recovery "$event" "$c (idle)" "$(cat "$c.recovery")" "$VPN_BOUND"
     done
     check_recovery "$event" "natk (idle, keepalives only)" "$(cat natk.recovery)" "$VPN_KEEPALIVE_BOUND"
+    check_recovery "$event" "site (site-to-site, started by the pair)" "$(cat site.recovery)" "$VPN_BOUND"
+    s=$(ns site wg show wg0 endpoints | awk '{print $2}')
+    [ "$s" = "$VPN_SERVER:51820" ] || fail "the site's peer moved to $s after $event"
+    ns site ping -c 3 -W 2 -I "$SITE_LAN" "$VPN_TARGET" >/dev/null \
+        || fail "the site's network cannot reach $VPN_TARGET after $event"
     wait_for 30 "natk reaches $VPN_TARGET after $event" reach natk
     for c in vpna natc; do
         check_recovery "$event" "$c (active, longest gap)" "$(gap "$c.ping" "$since")" "$VPN_BOUND"

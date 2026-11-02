@@ -803,6 +803,31 @@ impl System for Linux {
             .to_string())
     }
 
+    fn wg_peers(&mut self, iface: &str) -> Result<Vec<crate::system::WgPeer>, Error> {
+        if !self.sys_class_net.join(iface).exists() {
+            return Ok(vec![]);
+        }
+        Ok(crate::system::parse_wg_dump(&run(
+            "wg",
+            &["show", iface, "dump"],
+            None,
+        )?))
+    }
+
+    fn wg_set_endpoint(
+        &mut self,
+        iface: &str,
+        public_key: &str,
+        endpoint: &str,
+    ) -> Result<(), Error> {
+        run(
+            "wg",
+            &["set", iface, "peer", public_key, "endpoint", endpoint],
+            None,
+        )
+        .map(|_| ())
+    }
+
     fn netdev_recreate(&mut self, name: &str) -> Result<(), Error> {
         if self.sys_class_net.join(name).exists() {
             run("networkctl", &["delete", name], None)?;

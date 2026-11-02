@@ -18,6 +18,7 @@ mod schedule;
 mod seed;
 mod selinux;
 mod service;
+mod tunnels;
 mod update;
 mod upgrade;
 mod varlink;
@@ -494,6 +495,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 lease::lease_loop(core.clone(), tx.clone(), pair.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no WireGuard interfaces.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                tunnels::tunnel_loop(core.clone(), tx.clone(), pair.clone()).await
             } => Ok(()),
             () = async {
                 // A fake system has no audit stream of its own.

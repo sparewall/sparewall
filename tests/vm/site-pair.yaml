@@ -93,3 +93,11 @@ vpn:
       vpnc: { public_key: "@VPNC@", addresses: [10.99.0.12/32] }
       natc: { public_key: "@NATC@", addresses: [10.99.0.13/32] }
       natk: { public_key: "@NATK@", addresses: [10.99.0.14/32] }
+      # A site-to-site peer (#148), with a network behind it: the pair
+      # starts the tunnel and keeps it up, and the master starts it again
+      # after a failover; the site never sends first.
+      site:
+        public_key: "@SITE@"
+        endpoint: "203.0.113.60:51821"
+        addresses: [10.99.0.30/32, 10.30.0.0/24]
+        keepalive: 10

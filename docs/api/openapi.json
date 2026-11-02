@@ -1763,17 +1763,29 @@
         "additionalProperties": false,
         "properties": {
           "addresses": {
+            "description": "The peer's tunnel address, and for a site-to-site peer the networks\nbehind it, which are routed through the tunnel.",
             "items": {
               "$ref": "#/components/schemas/Document.Cidr"
             },
             "type": "array"
           },
           "endpoint": {
-            "description": "Static endpoint, for site-to-site peers.",
+            "description": "`host:port`, an address or a DNS name: a site-to-site peer, which\nthis node connects to as well as accepting it. A name is resolved\nagain while the peer does not answer.",
             "type": [
               "string",
               "null"
             ]
+          },
+          "keepalive": {
+            "description": "Seconds between keepalives to the peer (WireGuard's\n`PersistentKeepalive`): it keeps a NAT mapping open, and keeps a\nsite-to-site tunnel up, so that after a failover the new master\nstarts it again within this time.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-since": 4
           },
           "preshared_key": {
             "description": "WireGuard preshared key, a cluster secret: `secret:<name>`. The\nclient must be configured with the same key (`wg genpsk`).",

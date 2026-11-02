@@ -499,9 +499,18 @@ export interface Schemas {
     "zone": string;
   };
   "Document.VpnPeer": {
+    /** The peer's tunnel address, and for a site-to-site peer the networks
+     * behind it, which are routed through the tunnel. */
     "addresses": Array<Schemas["Document.Cidr"]>;
-    /** Static endpoint, for site-to-site peers. */
+    /** `host:port`, an address or a DNS name: a site-to-site peer, which
+     * this node connects to as well as accepting it. A name is resolved
+     * again while the peer does not answer. */
     "endpoint"?: string | null;
+    /** Seconds between keepalives to the peer (WireGuard's
+     * `PersistentKeepalive`): it keeps a NAT mapping open, and keeps a
+     * site-to-site tunnel up, so that after a failover the new master
+     * starts it again within this time. */
+    "keepalive"?: number | null;
     /** WireGuard preshared key, a cluster secret: `secret:<name>`. The
      * client must be configured with the same key (`wg genpsk`). */
     "preshared_key"?: string | null;

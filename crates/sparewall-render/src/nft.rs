@@ -706,11 +706,14 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // --- output ---------------------------------------------------------------
     let mut output = String::from("type filter hook output priority filter; policy accept;\n");
     if pair {
-        // Remote-access replies only from the gateway address. A node that
-        // just gave it up still holds its clients' sessions; a reply from
-        // its own address would make a client roam to it and lose the
-        // tunnel when that node goes (WireGuard follows the source of any
-        // authenticated packet).
+        // WireGuard only from the gateway address. A node that just gave
+        // it up still holds its clients' sessions; a reply from its own
+        // address would make a client roam to it and lose the tunnel when
+        // that node goes (WireGuard follows the source of any
+        // authenticated packet). The backup's handshakes to site-to-site
+        // peers stop here too: the master's leave from the gateway
+        // address, its default route's source on the macvlan that holds
+        // it (#148).
         for (net, n) in doc.networks_with_role(NetworkRole::Wan) {
             let (Some(vip), Some(own), Some(public)) =
                 (n.vip, doc.network_iface(net), doc.public_iface(net))

@@ -192,7 +192,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         }
     }
     for (name, vpn) in &doc.vpn {
-        remote_access(name, vpn, out);
+        remote_access(doc, name, vpn, out);
     }
     out.meta.required_links.sort();
     out.meta.required_links.dedup();
@@ -446,7 +446,8 @@ fn sync_tunnel(doc: &Document, node: &str, out: &mut Rendered) {
     );
 }
 
-fn remote_access(name: &str, vpn: &Vpn, out: &mut Rendered) {
+fn remote_access(doc: &Document, name: &str, vpn: &Vpn, out: &mut Rendered) {
+    let marked = !doc.site_source_wans().is_empty();
     let mut nd = Ini::new();
     nd.section("NetDev")
         .set("Name", name)
@@ -458,6 +459,9 @@ fn remote_access(name: &str, vpn: &Vpn, out: &mut Rendered) {
             format!("{KEY_DIR}/{}", crate::vpn_key_file(name)),
         )
         .set("ListenPort", vpn.listen_port);
+    if marked {
+        nd.set("FirewallMark", sparewall_config::topology::VPN_FWMARK);
+    }
     for (pname, peer) in &vpn.peers {
         nd.section("WireGuardPeer")
             .set("PublicKey", &peer.public_key)
@@ -470,6 +474,12 @@ fn remote_access(name: &str, vpn: &Vpn, out: &mut Rendered) {
                     .join(","),
             );
         nd.opt("Endpoint", peer.endpoint.as_deref());
+        nd.opt("PersistentKeepalive", peer.keepalive);
+        // A site-to-site peer's networks are routed through the tunnel.
+        // (A road warrior's address is in the tunnel's own subnet.)
+        if peer.endpoint.is_some() {
+            nd.set("RouteTable", "main");
+        }
         if peer.preshared_key.is_some() {
             nd.set(
                 "PresharedKeyFile",
@@ -491,6 +501,14 @@ fn remote_access(name: &str, vpn: &Vpn, out: &mut Rendered) {
     }
     nn.set("LinkLocalAddressing", "no")
         .set("IPv6AcceptRA", "no");
+    if marked {
+        // Its packets look up the table keepalived fills on the master,
+        // then (empty, on the backup) the main table.
+        nn.section("RoutingPolicyRule")
+            .set("FirewallMark", sparewall_config::topology::VPN_FWMARK)
+            .set("Table", sparewall_config::topology::VPN_TABLE)
+            .set("Priority", 1000);
+    }
     out.add(
         Subsystem::Networkd,
         format!("50-sparewall-{name}.network"),

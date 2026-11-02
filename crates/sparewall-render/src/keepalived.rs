@@ -196,16 +196,33 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         }
         s.push_str("    }\n");
         // A WAN with private node addresses: the public default route
-        // moves with the public addresses (#54).
+        // moves with the public addresses (#54). With site-to-site peers,
+        // WireGuard's own packets route from the gateway address (#148).
+        let mut routes = Vec::new();
         if doc.split_wan(name).is_some()
             && let Some(gw) = net.gateway
         {
-            writeln!(
-                s,
-                "    virtual_routes {{\n        0.0.0.0/0 via {gw} dev {public} metric {} onlink\n    }}",
+            routes.push(format!(
+                "0.0.0.0/0 via {gw} dev {public} metric {} onlink",
                 crate::networkd::WAN_METRIC
-            )
-            .unwrap();
+            ));
+        }
+        if doc.site_source_wans().contains(&name.as_str())
+            && let (Some(vip), Some(gw)) = (net.vip, net.gateway)
+        {
+            let t = sparewall_config::topology::VPN_TABLE;
+            let a = vip.0.addr();
+            routes.push(format!("{} dev {public} src {a} table {t}", vip.0.trunc()));
+            routes.push(format!(
+                "0.0.0.0/0 via {gw} dev {public} src {a} table {t} onlink"
+            ));
+        }
+        if !routes.is_empty() {
+            s.push_str("    virtual_routes {\n");
+            for r in routes {
+                writeln!(s, "        {r}").unwrap();
+            }
+            s.push_str("    }\n");
         }
         s.push_str("}\n\n");
     }
