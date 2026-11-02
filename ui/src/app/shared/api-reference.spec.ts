@@ -74,6 +74,8 @@ describe('curlExample', () => {
     expect(curlExample(call('Secrets.Delete'), 'https://fw1')).toContain(
       `--json '{"name":"<name>"}'`,
     );
+    // A referenced object schema takes an object, not a string (Apply's document).
+    expect(curlExample(call('Firewall.Apply'), 'https://fw1')).toContain(`"config":{}`);
   });
 
   it('leaves a streaming call open, and a call without a role unauthenticated', () => {
@@ -81,6 +83,28 @@ describe('curlExample', () => {
     expect(sub.startsWith('curl -sN ')).toBe(true);
     expect(sub.endsWith('/call/org.sparewall.Firewall.Subscribe?more=true')).toBe(true);
     expect(curlExample(call('Auth.Login'), 'https://fw1')).not.toContain('Authorization');
+  });
+});
+
+describe('example values', () => {
+  it("follow every required parameter's JSON type", () => {
+    const calls = apiReference(doc).flatMap((i) => i.calls);
+    const kind = (v: unknown) =>
+      Array.isArray(v)
+        ? 'array'
+        : v === null
+          ? 'null'
+          : typeof v === 'number'
+            ? 'number'
+            : typeof v;
+    for (const c of calls) {
+      const json = curlExample(c, 'https://fw1').split("--json '")[1].split("' ")[0];
+      const body = JSON.parse(json) as Record<string, unknown>;
+      for (const p of c.parameters.filter((f) => f.required)) {
+        const want = p.json === 'integer' ? 'number' : p.json;
+        expect(kind(body[p.name]), `${c.method} ${p.name}`).toBe(want);
+      }
+    }
   });
 });
 

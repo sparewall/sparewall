@@ -18,7 +18,10 @@ export interface Schema {
 
 export interface Field {
   name: string;
+  /** For people: `string[]`, `Document`, `integer or null`. */
   type: string;
+  /** The JSON type a value must have (a reference resolved): `object`, `array`, `string`… */
+  json: string;
   required: boolean;
   description?: string;
 }
@@ -96,6 +99,7 @@ function fields(schema: Schema | undefined, schemas: Record<string, Schema>): Fi
     .map(([name, p]) => ({
       name,
       type: typeName(p, schemas),
+      json: jsonType(p, schemas),
       required: required.has(name),
       description: resolve(p, schemas)?.description ?? p.description,
     }))
@@ -105,6 +109,18 @@ function fields(schema: Schema | undefined, schemas: Record<string, Schema>): Fi
 function resolve(s: Schema | undefined, schemas: Record<string, Schema>): Schema | undefined {
   if (!s?.$ref) return s;
   return schemas[s.$ref.split('/').pop() ?? ''] ?? s;
+}
+
+/** The JSON type of a value the schema takes: the first of its types that is not null. */
+function jsonType(s: Schema, schemas: Record<string, Schema>): string {
+  const r = resolve(s, schemas) ?? s;
+  const alts = r.anyOf ?? r.oneOf;
+  if (alts) {
+    return alts.map((a) => jsonType(a, schemas)).find((t) => t !== 'null') ?? 'null';
+  }
+  if (r.properties) return 'object';
+  const types = Array.isArray(r.type) ? r.type : r.type ? [r.type] : [];
+  return types.find((t) => t !== 'null') ?? (r.enum ? typeof r.enum[0] : 'any');
 }
 
 /** A field's type in a few words: `string`, `string[]`, `HealthCheck`, `integer or null`. */
@@ -125,8 +141,9 @@ export function allowed(call: Call, can: (role: Role) => boolean): boolean {
 
 /** A placeholder for a required parameter in an example. */
 function example(f: Field): unknown {
-  if (f.type.endsWith('[]')) return [];
-  switch (f.type.split(' ')[0]) {
+  switch (f.json) {
+    case 'array':
+      return [];
     case 'integer':
     case 'number':
       return 0;
