@@ -171,6 +171,7 @@ vpn_setup() {
     sleep 3
     vpn_tcp_count >/dev/null || fail "no inner TCP echoes: $(cat vpn-tcp.log)"
     grep -q reply vpn-udp.log || fail "no inner UDP echoes: $(cat vpn-udp.log)"
+    site_setup
     printf '| Event | Client | Recovery (s) |\n| --- | --- | --- |\n' > "$VPN_RESULTS"
 }
 
@@ -201,12 +202,12 @@ site_debug() {
     ns site ip -br addr || true
 }
 
-# The site, added as a peer of the instance just before the gateway first
-# moves: a keepalive needs schema revision 4, and the sync-VLAN cut
-# before that changes the document with the peer unreachable, which only
-# revision 1 allows. It is configured from what the pair prints for it,
-# without its keepalive: it only answers, so every handshake is the
-# pair's.
+# The site, added as a peer of the instance with the other clients. Its
+# keepalive needs schema revision 4, so the sync-VLAN cut after it
+# changes a revision-4 document with the peer out of reach, which needs
+# what the peer last said it reads (#224). It is configured from what the
+# pair prints for it, without its keepalive: it only answers, so every
+# handshake is the pair's.
 site_setup() {
     log "a site-to-site peer"
     jq -n --arg k "$(cat "$WORK/site.pub")" --arg e "$SITE_ADDR:51821" \
@@ -259,7 +260,6 @@ vpn_tcp_count() { tail -1 vpn-tcp.log | grep -E '^[0-9]+$'; }
 # Make vpnb's session older than WireGuard's REKEY_AFTER_TIME (120 s),
 # and give vpnc a fresh one, just before the master goes.
 vpn_before_loss() {
-    site_setup
     age_session vpnb 125
     wan_ns vpnc 203.0.113.52
     wg_client vpnc 10.99.0.12

@@ -157,9 +157,18 @@ pub struct Coordinator<S: System> {
     /// network and SSH up (#169).
     fallback: u64,
     /// The peer's name and the newest schema revision it reads, as its
-    /// latest hello said; forgotten when a hello fails. A change the peer
-    /// of the running pair could not read is refused (#168).
+    /// latest hello said (kept on disk, [`PEER_READS_FILE`]). A change the
+    /// peer of the running pair could not read is refused (#168).
     peer_reads: Option<(String, u32)>,
+}
+
+/// Where the coordinator keeps what the peer last said it reads.
+pub const PEER_READS_FILE: &str = "peer-reads";
+
+fn load_peer_reads(root: &std::path::Path) -> Option<(String, u32)> {
+    let text = std::fs::read_to_string(root.join(PEER_READS_FILE)).ok()?;
+    let (name, n) = text.trim().split_once(' ')?;
+    Some((name.to_string(), n.parse().ok()?))
 }
 
 /// How much longer than the peer this node waits for the peer to
@@ -256,6 +265,7 @@ fn bootstrap_generation() -> Generation {
 
 impl<S: System> Coordinator<S> {
     pub fn new(store: Store, sys: S, identity: Identity) -> Self {
+        let peer_reads = load_peer_reads(store.root());
         Coordinator {
             store,
             sys,
@@ -270,7 +280,7 @@ impl<S: System> Coordinator<S> {
             decision_unsure: false,
             unreadable: Default::default(),
             fallback: 0,
-            peer_reads: None,
+            peer_reads,
         }
     }
 
@@ -316,9 +326,28 @@ impl<S: System> Coordinator<S> {
         }
     }
 
-    /// Record what the peer reads (from its hello), or forget it (`None`:
-    /// its hello failed, or there is no peer).
+    /// Record what the peer reads, from its hello, or forget it (`None`:
+    /// there is no peer). A failed hello changes nothing: what the peer
+    /// last said holds while it is out of reach, and across a restart
+    /// (#224). If it is rolled back meanwhile, it refuses a generation it
+    /// cannot read when one reaches it, as every node does.
     pub fn set_peer_reads(&mut self, reads: Option<(String, u32)>) {
+        if self.peer_reads == reads {
+            return;
+        }
+        let path = self.store.root().join(PEER_READS_FILE);
+        let r = match &reads {
+            Some((name, n)) => {
+                crate::store::write_atomic(&path, format!("{name} {n}\n").as_bytes())
+            }
+            None => match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            },
+        };
+        if let Err(e) = r {
+            tracing::warn!(error = %e, "cannot record what the peer reads");
+        }
         self.peer_reads = reads;
     }
 

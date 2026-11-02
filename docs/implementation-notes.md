@@ -198,6 +198,14 @@ Where the implementation departs from, or settles open questions in,
   that earlier releases reject as not built yet (a provider, a mode) is
   marked on its field with `#[schemars(extend("x-since-values" =
   {"value": N}))]`, so a document that uses it needs revision N too.
+- **What the peer reads is remembered** (#224): its hello says which
+  schema revisions it reads, and the coordinator keeps the latest answer
+  in `<state>/peer-reads`, through failed hellos and restarts. Forgetting
+  it whenever the peer was out of reach refused every change at
+  revision 2 or newer during a sync cut, `--allow-diverge` included. A
+  peer rolled back meanwhile is no hazard: every node validates a
+  generation it receives, and one that needs a newer revision than it
+  reads is refused there.
 - **Journal entries to filter on** (#188) log to the tracing target
   `sparewall::journal` (`update::JOURNAL_TARGET`) with a `message_id`
   field. A second journald layer takes only that target and writes field
