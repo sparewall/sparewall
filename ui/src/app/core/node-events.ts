@@ -1,4 +1,5 @@
 import { Service, inject, signal } from '@angular/core';
+import { Subject } from 'rxjs';
 
 import { ApiClient, CallFailed } from '../api/api-client';
 import { Session } from './session';
@@ -21,6 +22,10 @@ export class NodeEvents {
   private readonly lastEvent = signal<NodeEvent | undefined>(undefined);
   private readonly seen = signal(0);
   private readonly up = signal(false);
+
+  private readonly each = new Subject<NodeEvent>();
+  /** Every event, in order: for a page that follows a sequence (an upgrade's steps). */
+  readonly events$ = this.each.asObservable();
 
   readonly last = this.lastEvent.asReadonly();
   readonly count = this.seen.asReadonly();
@@ -48,6 +53,7 @@ export class NodeEvents {
           failures = 0;
           this.up.set(true);
           this.lastEvent.set(r.event as NodeEvent);
+          this.each.next(r.event as NodeEvent);
           this.seen.update((n) => n + 1);
         }
       } catch (e) {

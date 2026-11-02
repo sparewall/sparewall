@@ -12,6 +12,7 @@ import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
 import { Conntrack, HealthState, SyncState, UpdateState } from '../../api/status.model';
 import { checkProblem, mixedImages, updateNotice } from '../../shared/update-notice';
+import { UpgradePanel } from './upgrade-panel';
 
 const LEVEL_ICON: Record<string, string> = {
   ok: 'check_circle',
@@ -35,6 +36,7 @@ const LEVEL_TEXT: Record<string, string> = {
     MatChipsModule,
     MatIconModule,
     MatProgressBarModule,
+    UpgradePanel,
   ],
   templateUrl: './status.html',
   styleUrl: './status.scss',
