@@ -736,7 +736,9 @@ impl System for Linux {
         }
         let wanted: BTreeSet<&str> = meta.services.values().map(|s| s.unit.as_str()).collect();
         for unit in PROVIDER_UNITS.iter().filter(|u| !wanted.contains(*u)) {
-            if self.unit_active(unit) {
+            // Starting, or reloading, counts: stopped only once it is up,
+            // it would be left running.
+            if self.unit_running(unit) {
                 tracing::info!(unit, "stopping service");
                 systemctl(&["stop", unit])?;
             }
@@ -957,6 +959,19 @@ impl Linux {
             }
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
+    }
+
+    /// Whether a unit is anything but stopped (inactive or failed).
+    fn unit_running(&self, unit: &str) -> bool {
+        Command::new("systemctl")
+            .args(["is-active", unit])
+            .output()
+            .is_ok_and(|o| {
+                !matches!(
+                    String::from_utf8_lossy(&o.stdout).trim(),
+                    "inactive" | "failed" | "unknown" | ""
+                )
+            })
     }
 
     fn unit_active(&self, unit: &str) -> bool {
