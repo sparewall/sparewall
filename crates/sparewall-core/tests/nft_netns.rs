@@ -281,6 +281,10 @@ impl System for RealNft {
     fn set_hostname(&mut self, name: &str) -> Result<bool, sparewall_core::Error> {
         self.rest.set_hostname(name)
     }
+
+    fn calendar_check(&mut self, expr: &str) -> Result<(), String> {
+        self.rest.calendar_check(expr)
+    }
 }
 
 /// Issue #5 against the real kernel: change the live rules without
