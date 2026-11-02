@@ -384,7 +384,7 @@ if [ "$MODE" = single ]; then
     check=$(at fw1 'sudo sparewall upgrade --check')
     grep -q '^window: ' <<<"$check" || fail "upgrade --check does not show the next window: $check"
     at fw1 'sudo sparewall set updates.window_minutes=6 --confirm 900 --no-prompt'
-    skipped() { attempts | grep -qx 'scheduled upgrade skipped: a change waits for confirmation'; }
+    skipped() { local a; a=$(attempts) && grep -qx 'scheduled upgrade skipped: a change waits for confirmation' <<<"$a"; }
     wait_for 300 "the window to be skipped for the pending change" skipped
     at fw1 'sudo sparewall confirm'
 
