@@ -11,7 +11,7 @@ use std::fmt::Write;
 
 use sparewall_config::identity::Identity;
 use sparewall_config::model::*;
-use sparewall_config::topology::{LEASE_IFACE, SELF_ZONE, SYNC_TUNNEL_IFACE, SYNC_TUNNEL_PORT};
+use sparewall_config::topology::{SELF_ZONE, SYNC_TUNNEL_IFACE, SYNC_TUNNEL_PORT};
 
 use crate::{Error, Rendered, Subsystem};
 
@@ -221,6 +221,9 @@ fn static_dynamic_elements(doc: &Document, node: &str, d: &DynamicSource) -> Vec
 struct PrivateWan<'a> {
     /// The network's own link: the private addresses and VRRP.
     link: &'a str,
+    /// The link the public side is on: the macvlan with the virtual MAC,
+    /// or the network's own for a static block without it (#194).
+    public: &'a str,
     /// The private subnet.
     private: ipnet::Ipv4Net,
     /// The static block's gateway address; `None` for a leased WAN.
@@ -241,6 +244,7 @@ fn private_wans<'a>(doc: &'a Document, node: &str) -> Vec<PrivateWan<'a>> {
             let peer = n.addresses.get(doc.peer_of(node)?)?;
             Some(PrivateWan {
                 link: doc.network_iface(name)?,
+                public: doc.public_iface(name)?,
                 private,
                 vip,
                 peer: peer.0.addr(),
@@ -634,13 +638,13 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // On a WAN with private node addresses the backup's own traffic
     // leaves through the master (#54).
     // It arrives on the WAN's own link and leaves by the macvlan with the
-    // virtual MAC.
+    // virtual MAC, or by the same link without it (#194).
     for w in private_wans(doc, node) {
         writeln!(
             fwd,
             "iifname {} oifname {} ip saddr {} counter accept comment \"infra:peer-egress\"",
             q(w.link),
-            q(LEASE_IFACE),
+            q(w.public),
             w.peer
         )
         .unwrap();
@@ -743,10 +747,19 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             Some(vip) => format!("snat ip to {vip}"),
             None => "masquerade".into(),
         };
+        // Without the virtual MAC (#194) the public side is the WAN's own
+        // link, which also carries the private subnet and the backup's
+        // traffic through its peer: only what leaves for the upstream
+        // takes the gateway address.
+        let only_out = if w.public == w.link {
+            format!(" ip daddr != {} rt ip nexthop != {}", w.private, w.peer)
+        } else {
+            String::new()
+        };
         writeln!(
             post,
-            "oifname {} ip saddr {} counter {to} comment \"infra:wan-egress\"",
-            q(LEASE_IFACE),
+            "oifname {} ip saddr {}{only_out} counter {to} comment \"infra:wan-egress\"",
+            q(w.public),
             w.private
         )
         .unwrap();

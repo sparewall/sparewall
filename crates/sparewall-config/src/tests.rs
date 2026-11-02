@@ -729,6 +729,44 @@ fn pair_wan_public_block_beside_private_node_addresses() {
     assert!(has_error(&standalone, "not in the network's subnet"));
 }
 
+#[test]
+fn vmac_only_on_a_static_block_with_private_node_addresses() {
+    // The pair example's WAN is one (#194).
+    let off = edit(PAIR, json!({"networks": {"wan": {"vmac": false}}}));
+    assert_valid(&off);
+    assert!(!off.vmac_wan("wan"));
+    assert_eq!(off.public_iface("wan"), Some("wan"));
+    assert_eq!(
+        crate::schema::revision(&serde_json::to_value(&off).unwrap()),
+        3
+    );
+    // The default needs nothing newer.
+    assert!(crate::schema::revision(&serde_json::to_value(edit(PAIR, json!({}))).unwrap()) < 3);
+    let on = edit(PAIR, json!({}));
+    assert!(on.vmac_wan("wan"));
+    assert_eq!(on.public_iface("wan"), Some(crate::topology::LEASE_IFACE));
+    // Anywhere else it is refused: public node addresses, a leased WAN,
+    // another network, a standalone node.
+    let msg = "chooses its MAC";
+    assert!(has_error(
+        &edit(
+            PAIR,
+            json!({"networks": {"wan": {"vmac": false,
+                "addresses": {"fw1": "203.0.113.2/29", "fw2": "203.0.113.3/29"}}}})
+        ),
+        msg
+    ));
+    assert!(has_error(&leased_pair(json!({"vmac": false})), msg));
+    assert!(has_error(
+        &edit(PAIR, json!({"networks": {"users": {"vmac": false}}})),
+        msg
+    ));
+    assert!(has_error(
+        &edit(STANDALONE, json!({"networks": {"wan": {"vmac": false}}})),
+        msg
+    ));
+}
+
 /// The pair example with one DHCP lease for the pair on its WAN.
 fn leased_pair(extra: serde_json::Value) -> Document {
     let mut wan = json!({"dhcp_client": true, "vip": null, "extra_vips": [], "gateway": null});

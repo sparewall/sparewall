@@ -123,15 +123,17 @@ impl Document {
         Some(net.addresses.values().next()?.0.trunc())
     }
 
-    /// Whether a network is a pair's WAN with private node addresses,
-    /// static or leased, whose public side is [`LEASE_IFACE`] (#176).
+    /// Whether a network is a pair's WAN with private node addresses
+    /// whose public side is [`LEASE_IFACE`] (#176): a leased one, or a
+    /// static block that keeps `vmac` (#194).
     pub fn vmac_wan(&self, network: &str) -> bool {
-        self.split_wan(network).is_some() || self.leased_wan(network).is_some()
+        let vmac = self.networks.get(network).is_some_and(|n| n.vmac);
+        (vmac && self.split_wan(network).is_some()) || self.leased_wan(network).is_some()
     }
 
     /// The interface a network's public addresses are on: [`LEASE_IFACE`]
-    /// for a pair's WAN with private node addresses, else the network's
-    /// own.
+    /// for a pair's WAN with private node addresses (unless a static
+    /// block turns `vmac` off), else the network's own.
     pub fn public_iface<'a>(&'a self, network: &'a str) -> Option<&'a str> {
         if self.vmac_wan(network) {
             Some(LEASE_IFACE)
