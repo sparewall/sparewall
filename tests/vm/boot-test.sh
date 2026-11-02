@@ -425,10 +425,19 @@ until query Query '{"query": "up{job=\"sparewall\"} == 1"}' > history.json \
     sleep 5
 done
 # The coordinator's series, and node_exporter's through it, over a range.
-now=$(vm 'date +%s')
-query QueryRange "{\"query\": \"sparewall_generation\", \"start\": \"$((now - 300))\", \"end\": \"$now\", \"step\": \"15s\"}" > history.json
-jq -e '.result_type == "matrix" and (.result[0].values | length) > 0' history.json >/dev/null \
-    || fail "no history of the coordinator's metrics: $(cat history.json)"
+# Up to a little past now: the first scrape may be later than the
+# whole second the range would otherwise end on.
+history() {
+    local now
+    now=$(vm 'date +%s')
+    query QueryRange "{\"query\": \"sparewall_generation\", \"start\": \"$((now - 300))\", \"end\": \"$((now + 30))\", \"step\": \"15s\"}" > history.json
+    jq -e '.result_type == "matrix" and (.result[0].values | length) > 0' history.json >/dev/null
+}
+deadline=$((SECONDS + 60))
+until history; do
+    [ $SECONDS -lt $deadline ] || fail "no history of the coordinator's metrics: $(cat history.json)"
+    sleep 5
+done
 query Query '{"query": "node_network_receive_bytes_total{device=\"uplink\"}"}' > history.json
 jq -e '.result | length == 1' history.json >/dev/null || fail "no host metrics in the history: $(cat history.json)"
 [ "$(status -X POST -H "'Authorization: Bearer $MON'" -H "'Content-Type: application/json'" \
