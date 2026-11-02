@@ -61,7 +61,7 @@ pub fn http_status(error: &str, parameters: &Value) -> u16 {
         "PermissionDenied" if parameters["role"] == "none" => 401,
         "PermissionDenied" => 403,
         "NotFound" | "MethodNotFound" | "InterfaceNotFound" => 404,
-        "PeerUnreachable" => 503,
+        "PeerUnreachable" | "ServiceUnavailable" => 503,
         "NotSupported" | "InvalidParameter" | "ExpectedMore" => 400,
         _ => 500,
     }
@@ -170,7 +170,8 @@ pub fn document(idls: &[&str], opts: &Options) -> Result<Value, String> {
                             The HTTP status follows the error (422 ValidationFailed, 409 \
                             Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied \
                             without credentials and 403 with them, 404 NotFound, \
-                            MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 400 \
+                            MethodNotFound and InterfaceNotFound, 503 PeerUnreachable and \
+                            ServiceUnavailable, 400 \
                             NotSupported, InvalidParameter and malformed calls, 500 the rest; \
                             the gateway's own: 502 Unavailable, 404 NotFound, 405 \
                             MethodNotAllowed, 413 TooLarge).",

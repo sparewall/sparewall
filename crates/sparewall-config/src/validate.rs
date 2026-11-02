@@ -1429,17 +1429,32 @@ impl Validator<'_> {
             );
         }
         if let Some(m) = &doc.metrics {
-            if m.mode == MetricsMode::Local {
-                self.err(
-                    "metrics.mode",
-                    "a local Prometheus is not supported yet; use external or off",
-                );
+            let local = m.mode == MetricsMode::Local;
+            if let Some(r) = &m.retention {
+                if !prometheus_duration(r) {
+                    self.err(
+                        "metrics.retention",
+                        format!("{r:?} is not a duration such as 15d, 12h or 1y"),
+                    );
+                } else if !local {
+                    self.warn(
+                        "metrics.retention",
+                        "retention applies to mode: local, which is not set",
+                    );
+                }
             }
-            if m.retention.is_some() {
-                self.err(
-                    "metrics.retention",
-                    "retention applies to a local Prometheus, which is not supported yet",
-                );
+            if let Some(r) = &m.retention_size {
+                if !prometheus_size(r) {
+                    self.err(
+                        "metrics.retention_size",
+                        format!("{r:?} is not a size such as 512MB or 2GB"),
+                    );
+                } else if !local {
+                    self.warn(
+                        "metrics.retention_size",
+                        "retention_size applies to mode: local, which is not set",
+                    );
+                }
             }
         }
         if let Some(b) = &doc.backup
@@ -1873,6 +1888,41 @@ pub fn wg_endpoint(v: &str) -> Option<(&str, u16)> {
         name_ok
     };
     ok.then_some((host, port))
+}
+
+/// A Prometheus duration that is not zero: units from the largest down,
+/// each at most once (`15d`, `1d12h`, `90m`, `1y`).
+pub fn prometheus_duration(v: &str) -> bool {
+    const UNITS: &[&str] = &["y", "w", "d", "h", "m", "s", "ms"];
+    let mut rest = v;
+    let mut next = 0;
+    let mut any = false;
+    while !rest.is_empty() {
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits == 0 || digits > 9 {
+            return false;
+        }
+        let (n, after) = rest.split_at(digits);
+        let Some(u) = UNITS[next..]
+            .iter()
+            .position(|u| after.starts_with(u) && !(*u == "m" && after.starts_with("ms")))
+        else {
+            return false;
+        };
+        any |= n.bytes().any(|b| b != b'0');
+        rest = &after[UNITS[next + u].len()..];
+        next += u + 1;
+    }
+    any
+}
+
+/// A Prometheus size: a whole number, not zero, and a unit (`512MB`,
+/// `2GB`).
+pub fn prometheus_size(v: &str) -> bool {
+    let digits = v.len() - v.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    (1..=12).contains(&digits)
+        && v[..digits].bytes().any(|b| b != b'0')
+        && ["B", "KB", "MB", "GB", "TB", "PB", "EB"].contains(&&v[digits..])
 }
 
 /// A syslog destination's host and port, if it is `host`, `host:port` or

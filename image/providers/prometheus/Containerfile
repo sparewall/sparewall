@@ -1,0 +1,14 @@
+# Prometheus for Sparewall, from Fedora's packages: each node's metrics
+# history with metrics.mode: local (#145). promtool checks a rendered
+# configuration before it is applied.
+FROM quay.io/fedora/fedora-minimal:45
+RUN microdnf -y install --setopt=install_weak_deps=0 prometheus \
+    && microdnf clean all \
+    && rm -rf /var/cache/* /var/log/* \
+    && prometheus --version \
+    && promtool --version
+LABEL org.opencontainers.image.title="Sparewall Prometheus" \
+      org.opencontainers.image.source="https://github.com/sparewall/sparewall" \
+      org.opencontainers.image.licenses="Apache-2.0"
+ENTRYPOINT []
+CMD ["/usr/bin/prometheus", "--config.file=/etc/prometheus/prometheus.yml"]

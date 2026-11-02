@@ -6,6 +6,7 @@ mod author;
 mod backup;
 mod dhcp_ha;
 mod failover;
+mod history;
 mod http;
 #[cfg(test)]
 mod isolation_tests;

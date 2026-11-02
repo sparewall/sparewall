@@ -185,6 +185,17 @@ site_debug() {
             sudo grep -B2 -A4 virtual_routes /run/keepalived/keepalived.conf /run/sparewall/keepalived/*.conf 2>/dev/null
             sudo journalctl -b -u keepalived --no-pager | tail -15' 2>&1 || true
     done
+    # Where the master's packets go: what crosses its WAN for the site
+    # (or ARP), and what the site's stack sees.
+    echo "--- fw1: the WAN for 15 s"
+    ns site nstat -n >/dev/null 2>&1 || true
+    at fw1 'ip neigh show 203.0.113.60; for k in arp_ignore arp_announce rp_filter; do echo "swwan $k $(cat /proc/sys/net/ipv4/conf/swwan/$k)"; done
+        sudo nft list ruleset | grep -nE "postrouting|snat|masquerade|notrack|mark"
+        sudo timeout 15 tcpdump -eni wan -c 40 "host 203.0.113.60 or (arp and host 203.0.113.60)" 2>&1' || true
+    ns site nstat 2>/dev/null | grep -E "Udp|Ip(In|Out)" || true
+    ns site ip neigh || true
+    ns site ip -s link show eth0 || true
+    sudo bridge fdb show br swbr | grep -i '00:00:5e' || true
     echo "--- site"
     ns site wg show || true
     ns site ip route || true

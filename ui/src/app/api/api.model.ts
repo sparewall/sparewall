@@ -264,13 +264,18 @@ export interface Schemas {
   "Document.MatchItem": number | string;
   "Document.Metrics": {
     /** `external`: `/metrics` answers the management network without a
-     * token, for an external Prometheus. `off`: not served. (Without a
-     * `metrics` section it needs a token.) `local` (a local Prometheus)
-     * is not built yet and is rejected. */
+     * token, for an external Prometheus. `local`: each node also keeps
+     * its own history in a local Prometheus, which the API queries
+     * (`org.sparewall.Metrics`); `/metrics` needs a token, as it does
+     * without a `metrics` section. `off`: not served. */
     "mode": Schemas["Document.MetricsMode"];
-    /** Local Prometheus retention, e.g. `15d`. Not built yet, with the
-     * local mode: rejected. */
+    /** With `mode: local`, how long history is kept, in Prometheus's units
+     * (`15d`, `12h`, `1y`). Default `15d`. */
     "retention"?: string | null;
+    /** With `mode: local`, the most history may take on disk (`512MB`,
+     * `2GB`): past it, the oldest goes first, whatever `retention` says.
+     * Default `1GB`. */
+    "retention_size"?: string | null;
   };
   "Document.MetricsMode": "external" | "local" | "off";
   "Document.Nat": Schemas["Document.NatMode"] | {
@@ -537,7 +542,7 @@ export interface Schemas {
     /** Member networks. */
     "networks"?: Array<string>;
   };
-  /** A Varlink error: its name and parameters, and a message in words. The HTTP status follows the error (422 ValidationFailed, 409 Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied without credentials and 403 with them, 404 NotFound, MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 400 NotSupported, InvalidParameter and malformed calls, 500 the rest; the gateway's own: 502 Unavailable, 404 NotFound, 405 MethodNotAllowed, 413 TooLarge). */
+  /** A Varlink error: its name and parameters, and a message in words. The HTTP status follows the error (422 ValidationFailed, 409 Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied without credentials and 403 with them, 404 NotFound, MethodNotFound and InterfaceNotFound, 503 PeerUnreachable and ServiceUnavailable, 400 NotSupported, InvalidParameter and malformed calls, 500 the rest; the gateway's own: 502 Unavailable, 404 NotFound, 405 MethodNotAllowed, 413 TooLarge). */
   "Error": {
     "error": "org.sparewall.Firewall.ApplyFailed";
     "message"?: string;
@@ -587,6 +592,14 @@ export interface Schemas {
     "parameters": {
       "reason"?: string | null;
       "role": string;
+    };
+  } | {
+    "error": "org.sparewall.Firewall.ServiceUnavailable";
+    "message"?: string;
+    /** A service the call needs is not answering (the local Prometheus, for `org.sparewall.Metrics`). */
+    "parameters": {
+      "message": string;
+      "service": string;
     };
   } | {
     "error": "org.sparewall.Firewall.ValidationFailed";
@@ -1049,6 +1062,42 @@ export interface Calls {
       "config": string;
     };
     role: "admin";
+    streams: false;
+  };
+  /** Evaluate a PromQL expression at `time` (RFC 3339 or Unix seconds; default now) over this node's history, kept with `metrics.mode: local`. */
+  "org.sparewall.Metrics.Query": {
+    parameters: {
+      "query": string;
+      "time"?: string | null;
+    };
+    reply: {
+      /** Prometheus's `data.result`. A vector is `[{metric, value: [time, "value"]}]`, a matrix `[{metric, values: [[time, "value"], ...]}]`, a scalar or a string `[time, "value"]`. */
+      "result": Record<string, unknown>;
+      /** `vector`, `matrix`, `scalar` or `string`. */
+      "result_type": string;
+      /** What Prometheus noted about the query (its warnings and infos). */
+      "warnings": Array<string>;
+    };
+    role: "monitor";
+    streams: false;
+  };
+  /** Evaluate a PromQL expression from `start` to `end` (RFC 3339 or Unix seconds), every `step` (a duration such as `1m`, or seconds), over this node's history. */
+  "org.sparewall.Metrics.QueryRange": {
+    parameters: {
+      "end": string;
+      "query": string;
+      "start": string;
+      "step": string;
+    };
+    reply: {
+      /** Prometheus's `data.result`. A vector is `[{metric, value: [time, "value"]}]`, a matrix `[{metric, values: [[time, "value"], ...]}]`, a scalar or a string `[time, "value"]`. */
+      "result": Record<string, unknown>;
+      /** `vector`, `matrix`, `scalar` or `string`. */
+      "result_type": string;
+      /** What Prometheus noted about the query (its warnings and infos). */
+      "warnings": Array<string>;
+    };
+    role: "monitor";
     streams: false;
   };
   /** Whether `password` is the stored backup password, and whether it opens the newest bundle on the node (#142). Nothing derived from the stored secret is returned; a wrong one is answered slowly. */

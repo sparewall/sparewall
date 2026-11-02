@@ -14,6 +14,7 @@ mod ini;
 pub mod kea;
 pub mod keepalived;
 pub mod logging;
+pub mod metrics;
 pub mod networkd;
 pub mod nft;
 pub mod ssh;
@@ -62,6 +63,7 @@ pub enum Subsystem {
     Logging,
     Ssh,
     Web,
+    Metrics,
 }
 
 impl Subsystem {
@@ -80,6 +82,7 @@ impl Subsystem {
             Subsystem::Logging => "logging",
             Subsystem::Ssh => "ssh",
             Subsystem::Web => "web",
+            Subsystem::Metrics => "metrics",
         }
     }
 
@@ -96,6 +99,7 @@ impl Subsystem {
             Subsystem::Logging,
             Subsystem::Ssh,
             Subsystem::Web,
+            Subsystem::Metrics,
         ]
     }
 }
@@ -221,6 +225,7 @@ pub fn render(doc: &Document, node: &str) -> Result<Rendered, Error> {
     logging::render(doc, &mut out);
     ssh::render(doc, &mut out);
     web::render(doc, &mut out);
+    metrics::render(doc, node, &mut out);
     Ok(out)
 }
 

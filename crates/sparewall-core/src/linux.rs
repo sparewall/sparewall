@@ -71,6 +71,7 @@ pub const PROVIDER_UNITS: &[&str] = &[
     "systemd-journal-upload.service",
     sparewall_render::logging::SYSLOG_UNIT,
     sparewall_render::web::UNIT,
+    sparewall_render::metrics::UNIT,
 ];
 
 impl Default for Linux {

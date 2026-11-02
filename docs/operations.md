@@ -72,7 +72,7 @@ back to one of them keeps its configuration.
 | 1 | Everything up to 0.2.0 | 0.2.0 |
 | 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
 | 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac`, `backup.retention`, `management.sources`; the value `updates.mode: windowed` | 0.4.0 |
-| 4 | `logging.remote.ca`, `logging.remote.certificate`, `vpn.<name>.peers.<peer>.keepalive`; the value `logging.remote.provider: syslog` | 0.5.0 |
+| 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -404,14 +404,55 @@ Connections inside the tunnel are synced, as for remote access.
 | `/livez` | The coordinator answers |
 | `/readyz`, `/healthz` | 200 when ok or degraded, 503 when failed |
 | `/readyz?verbose`, `/readyz/<check>` | Detail (needs a token) |
-| `/metrics` | Prometheus metrics: the appliance's own and the host's from node\_exporter, which listens only on localhost (needs a token unless `metrics.mode: external`; `off` disables it) |
+| `/metrics` | Prometheus metrics: the appliance's own and the host's from node\_exporter, which listens only on localhost (needs a token unless `metrics.mode: external`; `off` disables it). With `metrics.mode: local`, loopback needs no token, for the [local Prometheus](#history-a-local-prometheus) |
 
 ```shell
 curl -k -H "Authorization: Bearer $TOKEN" https://fw1/metrics
 ```
 
-There is no local Prometheus yet: `metrics.mode: local` and
-`metrics.retention` are rejected.
+### History: a local Prometheus
+
+Without an external Prometheus, each node can keep its own history:
+
+```shell
+sparewall set metrics.mode=local
+sparewall set metrics.retention=30d metrics.retention_size=2GB   # optional
+```
+
+- **What it keeps:** what `/metrics` shows (the coordinator's metrics
+  and node\_exporter's), every 15 seconds, and Prometheus's own, with
+  the node's name as the `instance` label. In a pair each node keeps its
+  own; for one view of both, use an external Prometheus.
+- **How long:** `metrics.retention` (default `15d`) and
+  `metrics.retention_size` (default `1GB`; Prometheus counts in powers
+  of 1024) cap it: whichever is reached first, the oldest goes. A change
+  to either reloads Prometheus, which keeps what it has.
+- **How it runs:** in its own container, `sparewall-prometheus`, as
+  `nobody` with no capabilities, its memory capped at 512 MB, and after
+  everything else for CPU and disk. It listens on 127.0.0.1:9090 only
+  and scrapes `/metrics` over loopback, which needs no token in this
+  mode; from the management network `/metrics` needs one, as without a
+  `metrics` section.
+- **Querying:** `org.sparewall.Metrics.Query` and `QueryRange` take
+  PromQL, for any token or session from `monitor` up. Over HTTPS (with
+  `management.web` on):
+
+  ```shell
+  curl -k -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"query": "rate(node_network_receive_bytes_total{device=\"uplink\"}[5m])"}' \
+    https://fw1/call/org.sparewall.Metrics.Query
+  ```
+
+  `QueryRange` takes `start` and `end` (RFC 3339 or Unix seconds) and a
+  `step` (`1m`). A call answers 400 when the node keeps no history, 422
+  for a query Prometheus refuses, and 503 while Prometheus is down.
+- **Health:** a stopped Prometheus makes `services` degraded, never
+  failed: it carries no traffic.
+- **Not backed up:** the history (the volume `sparewall-prometheus-data`)
+  is not in the backup bundle and does not survive a reinstall. `external`
+  or `off` stops Prometheus and keeps the volume, which `local` uses again
+  (less what has aged out meanwhile). To delete it, with Prometheus
+  stopped: `podman volume rm sparewall-prometheus-data`.
 
 **At login**, the node says how it is: a line with its role, generation
 and health, and one line per check that is not ok, with what to do
@@ -433,7 +474,7 @@ running system, each repeated on every health request:
 | `nft` | The live `inet sparewall` table matches, rule for rule, what was loaded for the generation: chains with their hooks and policies, every rule, static set elements. What traffic changes (counters, quota use, `last` timestamps, element timeouts), handles, and the sets networkd fills at runtime are excluded. If the table cannot be read back right after a load, the node fails this check until the next reload | Tables other software owns |
 | `links` | Every interface that carries traffic exists and is up (failed otherwise, so VRRP moves the gateway addresses). A trunk shared by the sync VLAN and service networks counts as carrying traffic | Addresses, routes or bond membership on them |
 | `replication` | Every replication-only interface (the sync network, and a port carrying nothing else) exists and is up. Losing one is **degraded**, never failed: traffic still flows, so the gateway addresses stay where they are while the pair stops replicating | |
-| `services` | Every provider unit the generation needs (Kea, Unbound, keepalived, conntrackd, ulogd, journal-upload or rsyslog) is active in systemd | That a daemon still runs the files installed for it; those passed the daemon's own config test before they were installed |
+| `services` | Every provider unit the generation needs (Kea, Unbound, keepalived, conntrackd, ulogd, journal-upload or rsyslog, Prometheus) is active in systemd. A management service down (the web UI, Prometheus) is degraded, not failed | That a daemon still runs the files installed for it; those passed the daemon's own config test before they were installed |
 | `pair`, `tls`, `backup` | Sync tunnel and peer state, certificate validity, the last backup | |
 | `tunnels` | On the node that holds them (standalone, or the master), every site-to-site peer with a `keepalive` has had a handshake in the last three minutes. Degraded, never failed | Peers without a keepalive, whose idle tunnels have no handshakes |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
@@ -861,11 +902,12 @@ what the test suites see, and a denial on a real node is a missing rule.
 
 ## Settings not built yet
 
-`provider_options`, `metrics.mode: local`, `metrics.retention` and
-`dhcp.provider: networkd` are rejected with an error at their path.
-(`updates.mode: windowed` and `updates.window` were too, before 0.4.0
-built them, and `logging.remote.provider: syslog` before 0.5.0.) Earlier versions accepted them, though nothing acted on
-them. After upgrading:
+`provider_options` and `dhcp.provider: networkd` are rejected with an
+error at their path. (`updates.mode: windowed` and `updates.window` were
+too, before 0.4.0 built them, and `logging.remote.provider: syslog`,
+`metrics.mode: local` and `metrics.retention` before 0.5.0.) Builds
+before 0.1.0 accepted them, though nothing acted on them. After
+upgrading:
 
 - A node already running a document with one of them keeps running it,
   across reboots: the running configuration is not re-checked.
@@ -874,7 +916,7 @@ them. After upgrading:
   present in one change, which runs exactly as the old document did:
 
   ```shell
-  sparewall unset provider_options metrics
+  sparewall unset provider_options
   ```
 
   For a provider, unset it to use the built-in default (`sparewall unset
@@ -883,9 +925,8 @@ them. After upgrading:
   each address before offering it, so a client still holding an old
   lease is not given away (`dhcp.ping_check`).
 
-  Unsetting `metrics` returns `/metrics` to needing a token, which is
-  what `local` did; to keep `external` or `off`, unset only
-  `metrics.retention`.
+  A document with `metrics.mode: local` from such a build is valid from
+  0.5.0, and starts the local Prometheus.
 - History may keep such generations: a peer catching up stores them
   without running them, then runs the newest one, which must be valid.
 

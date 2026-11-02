@@ -29,9 +29,9 @@ files_type(sparewalld_var_lib_t)
 # /run/sparewall: rendered configs, sockets, the helper spool.
 type sparewalld_var_run_t;
 files_pid_file(sparewalld_var_run_t)
-# /run/sparewall/dhcp and dns: the providers' rendered configs, which
-# their containers read. Mounted without relabelling (no ":z"), so they
-# keep this type and the coordinator can still rewrite them.
+# /run/sparewall/dhcp, dns and metrics: the providers' rendered configs,
+# which their containers read. Mounted without relabelling (no ":z"), so
+# they keep this type and the coordinator can still rewrite them.
 type sparewalld_provider_conf_t;
 files_pid_file(sparewalld_provider_conf_t)
 # /run/sparewall/ssh: whether sshd accepts the admin password, which
@@ -137,6 +137,7 @@ allow sparewalld_t { chronyd_var_run_t keepalived_var_run_t }:dir { create setat
 manage_dirs_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_var_run_t)
 filetrans_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_provider_conf_t, dir, "dhcp")
 filetrans_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_provider_conf_t, dir, "dns")
+filetrans_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_provider_conf_t, dir, "metrics")
 filetrans_pattern(sparewalld_t, sparewalld_var_run_t, sparewalld_sshd_conf_t, dir, "ssh")
 manage_dirs_pattern(sparewalld_t, sparewalld_sshd_conf_t, sparewalld_sshd_conf_t)
 manage_files_pattern(sparewalld_t, sparewalld_sshd_conf_t, sparewalld_sshd_conf_t)
@@ -170,7 +171,7 @@ corenet_tcp_connect_all_ports(syslogd_t)
 init_nnp_daemon_domain(ulogd_t)
 allow ulogd_t sparewalld_var_run_t:sock_file write_sock_file_perms;
 allow ulogd_t sparewalld_t:unix_stream_socket connectto;
-# Kea and Unbound, in containers, read theirs.
+# Kea, Unbound and Prometheus, in containers, read theirs.
 allow container_t sparewalld_provider_conf_t:dir list_dir_perms;
 allow container_t sparewalld_provider_conf_t:file read_file_perms;
 allow systemd_journal_upload_t sparewalld_var_run_t:lnk_file read_lnk_file_perms;
@@ -235,8 +236,8 @@ allow sparewalld_t cgroup_t:file { open read };
 allow sparewalld_t { sparewalld_unit_file_t chronyd_unit_file_t keepalived_unit_file_t conntrackd_unit_file_t syslogd_unit_file_t }:service { start stop status reload };
 # sshd: reloaded when management.ssh.password changes, never stopped.
 allow sparewalld_t sshd_unit_file_t:service { start status reload };
-# Quadlet generates sparewall-kea and sparewall-unbound at boot, and the
-# generator gives every unit it writes this one type, whatever its
+# Quadlet generates sparewall-kea, -unbound and -prometheus at boot, and
+# the generator gives every unit it writes this one type, whatever its
 # source; file contexts cannot tell them apart.
 allow sparewalld_t systemd_generator_unit_file_t:service { start stop status reload };
 
