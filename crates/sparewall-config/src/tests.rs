@@ -843,6 +843,33 @@ fn site_to_site_peers() {
         &d,
         "office-c.addresses: 192.168.20.128/25 overlaps vpn.roadwarrior.peers.office-b"
     ));
+    // In a pair, only with one static WAN with a gateway address and a
+    // gateway: not a WAN leased by DHCP, none, or two.
+    let one = site(peer("b.example.net:51821", json!(["10.99.0.20/32"])));
+    let mut leased = serde_json::to_value(&one).unwrap();
+    let wan = leased["networks"]["wan"].as_object_mut().unwrap();
+    for k in ["vip", "gateway", "extra_vips"] {
+        wan.remove(k);
+    }
+    wan.insert("dhcp_client".into(), json!(true));
+    wan.insert("vrid".into(), json!(10));
+    let leased: Document = serde_json::from_value(leased).unwrap();
+    assert!(
+        has_error(
+            &leased,
+            "vpn: site-to-site peers in a pair need exactly one WAN"
+        ),
+        "{:?}",
+        validate::errors(&validate::validate(&leased))
+    );
+    let mut none = serde_json::to_value(&one).unwrap();
+    none["networks"]["wan"]["role"] = json!("service");
+    let none: Document = serde_json::from_value(none).unwrap();
+    assert!(
+        has_error(&none, "this pair has none"),
+        "{:?}",
+        validate::errors(&validate::validate(&none))
+    );
     // A road warrior's addresses stay inside the tunnel.
     assert!(has_error(
         &site(json!({"public_key": KEY2, "addresses": ["192.168.20.0/24"]})),

@@ -1579,16 +1579,29 @@ impl Validator<'_> {
             }
         }
         self.routed_through_peers();
-        // The master's handshakes leave from one WAN's gateway address.
-        let wans = doc.site_source_wans();
-        if wans.len() > 1 {
-            self.err(
-                "vpn",
-                format!(
-                    "site-to-site peers in a pair need a single WAN with a gateway address, not {}",
-                    wans.join(", ")
-                ),
-            );
+        // In a pair, the master's handshakes leave from the gateway
+        // address of the one WAN, static, through routes keepalived adds
+        // (#148). Elsewhere (a WAN leased by DHCP, or several) nothing
+        // would keep the backup from starting them too.
+        if doc.is_pair() && doc.has_site_peers() {
+            let wans: Vec<&str> = doc
+                .networks_with_role(NetworkRole::Wan)
+                .map(|(n, _)| n.as_str())
+                .collect();
+            if wans.len() != 1 || doc.site_source_wans().len() != 1 {
+                self.err(
+                    "vpn",
+                    format!(
+                        "site-to-site peers in a pair need exactly one WAN, with static addresses, \
+                         a gateway address (vip) and a gateway; this pair has {}",
+                        if wans.is_empty() {
+                            "none".to_string()
+                        } else {
+                            wans.join(", ")
+                        }
+                    ),
+                );
+            }
         }
     }
 

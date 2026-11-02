@@ -386,7 +386,9 @@ policy:
   `client_allowed_ips`. Fill in its private key. Between two Sparewall
   nodes, each document lists the other as a peer instead.
 
-In a pair, only the master sends to a site, from the gateway address:
+In a pair, site-to-site peers need exactly one WAN, with static
+addresses, a gateway address and a gateway (not one DHCP lease for the
+pair). Only the master sends to a site, from the gateway address:
 WireGuard marks its packets, and on the master they leave through a
 routing table keepalived fills with routes from that address; on the
 backup the table is empty, and the firewall drops what the backup would

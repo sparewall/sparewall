@@ -535,7 +535,9 @@ Where the implementation departs from, or settles open questions in,
   the backup the table is empty: the lookup falls through to the main
   table, the source is the node's own address, and the output chain
   drops it, so a site never roams to the backup. A pair with site peers
-  may have one static WAN with a gateway address. sparewalld watches the
+  needs exactly one WAN, static, with a gateway address and a gateway:
+  with a leased WAN the backup's own traffic is NATed out through the
+  master, its handshakes with it, and nothing would stop them. sparewalld watches the
   peers (`tunnels.rs`), on the node that holds them: a peer named by DNS
   is resolved again once it has had no handshake for 135 s (as
   reresolve-dns does), since networkd resolves it only once, and one
