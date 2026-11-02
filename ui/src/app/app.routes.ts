@@ -51,6 +51,11 @@ export const routes: Routes = [
         loadComponent: () => import('./features/tokens/tokens').then((m) => m.Tokens),
       },
       {
+        path: 'api',
+        title: 'API · Sparewall',
+        loadComponent: () => import('./features/api/api').then((m) => m.Api),
+      },
+      {
         path: 'history',
         title: 'History · Sparewall',
         loadComponent: () => import('./features/history/history').then((m) => m.History),

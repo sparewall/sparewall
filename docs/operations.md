@@ -222,7 +222,9 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
     https://fw1.example.net/call/org.sparewall.Firewall.Status
 ```
 
-`/openapi.json` describes every call; [docs/api](api/README.md) has the
+`/openapi.json` describes every call, and the web UI's **API** page
+shows it, role by role, with a `curl` example for the node;
+[docs/api](api/README.md) has the
 conventions, errors and statuses. Turning `management.web` off stops the
 service, and SSH, the console and the anti-lockout rule never depend on
 it.
