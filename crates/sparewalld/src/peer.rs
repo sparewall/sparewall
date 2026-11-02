@@ -792,13 +792,9 @@ async fn sync_once(
                 status.peer_view = Some(pv);
             }
             Err(e) => {
-                // What it reads may change before it answers again (a
-                // downgrade, or another node): unknown until then.
-                let _ = with_core_raw(core, events, |c| {
-                    c.set_peer_reads(None);
-                    Ok(())
-                })
-                .await;
+                // What it last said it reads holds while it is out of
+                // reach (#224): a rolled-back peer refuses what it cannot
+                // read when it is reached.
                 // In doubt and the peer is not on this link: after a while,
                 // look for it on the other one.
                 if doubt.is_some() {

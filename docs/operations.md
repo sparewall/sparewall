@@ -77,10 +77,14 @@ back to one of them keeps its configuration.
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
 the newest revision it reads, and one that does not say (0.3.1 or older)
-reads revision 1. Until the peer has answered since sparewalld started,
-and while it is unreachable, which revisions it reads is not known, so a
-change that needs more than revision 1 waits until the peer is reached.
-A new pairing is not checked this way: each node checks its own apply.
+reads revision 1. What the peer last said holds while it is out of
+reach, and across a restart, so a change with `--allow-diverge` during
+a cut sync link is checked against it. If the peer is rolled back
+meanwhile, it refuses a generation it cannot read when one reaches it
+(as `sync --from`), so nothing runs that cannot be read. Until a peer
+has answered once (a new pairing), a change that needs more than
+revision 1 waits for it; a new pairing itself is not checked this way:
+each node checks its own apply.
 
 ## Secrets and tokens
 
@@ -394,7 +398,9 @@ routing table keepalived fills with routes from that address; on the
 backup the table is empty, and the firewall drops what the backup would
 send from its own address. After a failover the new master starts the
 tunnel itself, without the other site's help, within its `keepalive`
-and a handshake: the pair test measures it, with a 10-second keepalive.
+and a handshake. In the pair test, with a 10-second keepalive, the new
+master had the tunnel up 8 seconds after the master was lost, and 5
+seconds after the gateway moved in a rolling upgrade.
 Connections inside the tunnel are synced, as for remote access.
 
 ## VPN clients: leaving through a provider
@@ -450,8 +456,9 @@ sparewall secret set provider-key < provider.key
   sees one client. Only the master's tunnel is up: the new master brings
   it up when it takes over, and connections through it carry on if the
   service keeps its translation of the tunnel address (the pair test's
-  does). A service that ties a session to the client's own address may
-  drop them.
+  does: the service saw the new master 3 seconds after the old one went,
+  and a TCP connection through the tunnel carried on). A service that
+  ties a session to the client's own address may drop them.
 
 ## Monitoring
 

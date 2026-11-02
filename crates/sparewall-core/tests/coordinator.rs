@@ -3649,8 +3649,7 @@ fn what_the_peer_reads_is_unknown_until_it_answers() {
     let mut a = pair_node("fw1");
     a.c.apply(web.clone(), &opts(0, None)).unwrap();
     // Once paired, a revision-2 change needs to know what fw2 reads: not
-    // before its first hello (as after a restart), not from another node,
-    // and not once its hello fails.
+    // before its first hello, and not from another node.
     let mut v = web.clone();
     v["networks"]["users"]["mtu"] = json!(1400);
     let e =
@@ -3666,12 +3665,21 @@ fn what_the_peer_reads_is_unknown_until_it_answers() {
     assert!(e.contains("reach fw2 first"), "{e}");
     a.c.set_peer_reads(Some(("fw2".into(), 2)));
     a.c.apply(v.clone(), &opts(1, None)).unwrap();
-    a.c.set_peer_reads(None);
+    // What it said holds while it is out of reach (a failed hello leaves
+    // it), and across a restart (#224).
+    let id = a.c.identity().clone();
+    let root = a.c.store().root().to_path_buf();
+    let mut a2 = Coordinator::new(Store::open(&root).unwrap(), Fake::default(), id);
+    a2.boot(false).unwrap();
     v["networks"]["users"]["mtu"] = json!(1300);
-    let e = a.c.apply(v, &opts(2, None)).unwrap_err().to_string();
+    a2.apply(v.clone(), &opts(2, None)).unwrap();
+    // Forgotten only with the peer.
+    a2.set_peer_reads(None);
+    v["networks"]["users"]["mtu"] = json!(1200);
+    let e = a2.apply(v, &opts(3, None)).unwrap_err().to_string();
     assert!(e.contains("not known until it is reached"), "{e}");
     // A revision-1 change goes ahead regardless.
-    a.c.apply(pair_example(), &opts(2, None)).unwrap();
+    a2.apply(pair_example(), &opts(3, None)).unwrap();
 }
 
 #[test]
