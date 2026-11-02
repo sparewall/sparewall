@@ -27,7 +27,7 @@ Sparewall turns a Linux box or VM into a firewall appliance that is upgraded and
 | One WAN | Multiple WANs, WAN failover, load balancing |
 | IPv4 routing, NAT and DHCP; IPv6 link-local only | IPv6 routing: SLAAC and RA, prefix delegation, DHCPv6 |
 | Zone-based firewall with raw nftables rules | IPsec, captive portal, multi-tenancy |
-| WireGuard remote-access VPN; site-to-site tunnels with static WireGuard peers | Site-to-site beyond static WireGuard peers (dynamic routing, many sites) |
+| WireGuard remote-access VPN; site-to-site tunnels with static WireGuard peers; WireGuard clients for chosen networks' egress | Site-to-site beyond static WireGuard peers (dynamic routing, many sites) |
 | Optional recursive DNS (Unbound), NTP, logging, metrics, health endpoints | DHCP-to-DNS updates (DDNS), IDS/IPS (Suricata), dynamic routing (BGP, OSPF) |
 | `sparewall` CLI and the Varlink API; a first web UI and HTTP API (0.3.0) | A web UI and HTTP API covering every CLI operation (milestone 7, which 1.0 waits for) |
 

@@ -112,8 +112,19 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         if let Some(r) = opts.and_then(|o| o.router).or(gw) {
             option_data.push(json!({"name": "routers", "data": r.to_string()}));
         }
+        // A network a VPN client routes asks the client's resolvers
+        // (#149), unless it names its own.
+        let client_dns = doc
+            .vpn_client_of(name)
+            .map(|c| &doc.vpn_clients[c].dns)
+            .filter(|d| !d.is_empty());
         let dns: Vec<String> = match opts.map(|o| &o.dns).filter(|d| !d.is_empty()) {
             Some(d) => d.iter().map(ToString::to_string).collect(),
+            None if client_dns.is_some() => client_dns
+                .into_iter()
+                .flatten()
+                .map(ToString::to_string)
+                .collect(),
             None if dns_served(doc, name) => gw.iter().map(ToString::to_string).collect(),
             None => vec![],
         };

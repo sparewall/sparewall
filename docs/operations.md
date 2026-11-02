@@ -72,7 +72,7 @@ back to one of them keeps its configuration.
 | 1 | Everything up to 0.2.0 | 0.2.0 |
 | 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
 | 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac`, `backup.retention`, `management.sources`; the value `updates.mode: windowed` | 0.4.0 |
-| 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
+| 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`, `vpn_clients`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -397,6 +397,62 @@ tunnel itself, without the other site's help, within its `keepalive`
 and a handshake: the pair test measures it, with a 10-second keepalive.
 Connections inside the tunnel are synced, as for remote access.
 
+## VPN clients: leaving through a provider
+
+A node can be a WireGuard client of a service it does not run: a VPN
+provider, a cloud host, another organisation's hub. The networks it
+routes then reach everything but this node's own networks through the
+tunnel; the node's own traffic, and every other network's, keep the WAN.
+
+```yaml
+vpn_clients:
+  egress:
+    private_key: secret:provider-key     # as the service issued it
+    addresses: [10.64.12.34/32]          # the address it assigned
+    zone: egress
+    peer:
+      public_key: "<the service's public key>"
+      endpoint: nl1.provider.example:51820
+      keepalive: 25                      # the default
+      # preshared_key: secret:provider-psk
+    dns: [10.64.0.1]                     # optional: its resolvers
+    route:
+      networks: [guests]
+      kill_switch: true                  # the default
+zones:
+  egress: {}
+policy:
+  guests->egress: { action: accept }
+```
+
+```shell
+sparewall secret set provider-key < provider.key
+```
+
+- **Routing:** the client's tunnel has a routing table of its own,
+  with the service as the default route. The routed networks' traffic
+  looks up the main table first without its default route, so it still
+  reaches this node's other networks and tunnels, then the client's.
+- **The service sees one address:** what leaves through the tunnel takes
+  the tunnel address, whatever the policy's `nat` says.
+- **Kill switch:** the routed networks' traffic to the WAN is dropped,
+  so while the tunnel is down it goes nowhere. With `kill_switch: false`
+  it may leave through the WAN instead (validation warns).
+- **DNS:** DHCP hands the routed networks the client's `dns`, unless a
+  network sets its own servers (`dhcp.<network>.options.dns`). The
+  service's resolvers are reached through the tunnel; Unbound on the
+  node is not asked.
+- **Health:** `tunnels` is degraded when the service has not completed a
+  handshake for three minutes, and `vpn` while a referenced key is not
+  set. An endpoint named by DNS is resolved again while the tunnel is
+  quiet.
+- **In a pair** both nodes use the same key and address, so the service
+  sees one client. Only the master's tunnel is up: the new master brings
+  it up when it takes over, and connections through it carry on if the
+  service keeps its translation of the tunnel address (the pair test's
+  does). A service that ties a session to the client's own address may
+  drop them.
+
 ## Monitoring
 
 | Endpoint | Purpose |
@@ -476,7 +532,7 @@ running system, each repeated on every health request:
 | `replication` | Every replication-only interface (the sync network, and a port carrying nothing else) exists and is up. Losing one is **degraded**, never failed: traffic still flows, so the gateway addresses stay where they are while the pair stops replicating | |
 | `services` | Every provider unit the generation needs (Kea, Unbound, keepalived, conntrackd, ulogd, journal-upload or rsyslog, Prometheus) is active in systemd. A management service down (the web UI, Prometheus) is degraded, not failed | That a daemon still runs the files installed for it; those passed the daemon's own config test before they were installed |
 | `pair`, `tls`, `backup` | Sync tunnel and peer state, certificate validity, the last backup | |
-| `tunnels` | On the node that holds them (standalone, or the master), every site-to-site peer with a `keepalive` has had a handshake in the last three minutes. Degraded, never failed | Peers without a keepalive, whose idle tunnels have no handshakes |
+| `tunnels` | On the node that holds them (standalone, or the master), every site-to-site peer with a `keepalive`, and every VPN client, has had a handshake in the last three minutes. Degraded, never failed | Peers without a keepalive, whose idle tunnels have no handshakes |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
 
 Any change to the firewall made outside Sparewall (`nft flush`, an extra

@@ -25,6 +25,12 @@ pub const LEASE_IFACE: &str = "swwan";
 /// chain drops them.
 pub const VPN_FWMARK: u32 = 0x5357;
 pub const VPN_TABLE: u32 = 5357;
+/// The first routing table of the VPN clients (#149), one each in name
+/// order, and the priorities of the rules that send the routed networks'
+/// traffic there (two per network: the main table without its default
+/// route first, then the client's).
+pub const VPN_CLIENT_TABLE: u32 = 5360;
+pub const VPN_CLIENT_RULE_PRIORITY: u32 = 2000;
 /// Interface names the coordinator reserves.
 pub const RESERVED_IFACES: &[&str] = &["lo", SYNC_TUNNEL_IFACE, LEASE_IFACE];
 
@@ -80,6 +86,11 @@ impl Document {
                 out.push(name.clone());
             }
         }
+        for (name, c) in &self.vpn_clients {
+            if c.zone == zone {
+                out.push(name.clone());
+            }
+        }
         out.sort();
         out.dedup();
         out
@@ -116,6 +127,22 @@ impl Document {
         let vip = net.vip.as_ref()?;
         let private = net.addresses.values().next()?.0.trunc();
         (!private.contains(&vip.0.addr())).then_some(private)
+    }
+
+    /// A VPN client's routing table.
+    pub fn vpn_client_table(&self, client: &str) -> Option<u32> {
+        self.vpn_clients
+            .keys()
+            .position(|k| k == client)
+            .map(|i| VPN_CLIENT_TABLE + i as u32)
+    }
+
+    /// The VPN client a network's traffic leaves through, if any.
+    pub fn vpn_client_of(&self, network: &str) -> Option<&str> {
+        self.vpn_clients
+            .iter()
+            .find(|(_, c)| c.route.networks.iter().any(|n| n == network))
+            .map(|(k, _)| k.as_str())
     }
 
     /// Whether any VPN has a site-to-site peer (one with an endpoint).

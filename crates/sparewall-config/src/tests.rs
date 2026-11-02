@@ -912,6 +912,120 @@ fn site_to_site_peers() {
     ));
 }
 
+/// A WireGuard client (#149): the networks it routes, its keys as
+/// secrets, its endpoint and keepalive.
+#[test]
+fn vpn_clients() {
+    const KEY: &str = "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=";
+    let client = |c: serde_json::Value| {
+        edit(
+            PAIR,
+            json!({"vpn_clients": {"egress": c}, "zones": {"egress": {}}}),
+        )
+    };
+    let base = || {
+        json!({"private_key": "secret:provider-key", "addresses": ["10.64.12.34/32"],
+               "zone": "egress",
+               "peer": {"public_key": KEY, "endpoint": "nl1.provider.example:51820"},
+               "dns": ["10.64.0.1"], "route": {"networks": ["users"]}})
+    };
+    let d = client(base());
+    assert_valid(&d);
+    assert!(warnings(&d).is_empty(), "{:?}", warnings(&d));
+    assert_eq!(
+        crate::schema::revision(&serde_json::to_value(&d).unwrap()),
+        4
+    );
+    let with = |path: &str, v: serde_json::Value| {
+        let mut c = base();
+        let mut at = &mut c;
+        let parts: Vec<&str> = path.split('.').collect();
+        for p in &parts[..parts.len() - 1] {
+            at = &mut at[*p];
+        }
+        at[parts[parts.len() - 1]] = v;
+        client(c)
+    };
+    for (path, v, msg) in [
+        (
+            "private_key",
+            json!("aGVsbG8="),
+            "vpn_clients.egress.private_key: secrets are referenced",
+        ),
+        (
+            "peer.preshared_key",
+            json!("plain"),
+            "vpn_clients.egress.peer.preshared_key: secrets",
+        ),
+        (
+            "peer.public_key",
+            json!("nope"),
+            "vpn_clients.egress.peer.public_key: not a WireGuard",
+        ),
+        (
+            "peer.endpoint",
+            json!("nl1.provider.example"),
+            "vpn_clients.egress.peer.endpoint",
+        ),
+        (
+            "peer.keepalive",
+            json!(0),
+            "vpn_clients.egress.peer.keepalive",
+        ),
+        ("addresses", json!([]), "vpn_clients.egress.addresses"),
+        ("zone", json!("nowhere"), "vpn_clients.egress.zone: no zone"),
+        (
+            "zone",
+            json!("users"),
+            "vpn_clients.egress.zone: the tunnel's zone cannot hold",
+        ),
+        (
+            "route.networks",
+            json!([]),
+            "vpn_clients.egress.route.networks: name the networks",
+        ),
+        (
+            "route.networks",
+            json!(["wan"]),
+            "route.networks[0]: only the networks behind",
+        ),
+        (
+            "route.networks",
+            json!(["nope"]),
+            "route.networks[0]: no network named",
+        ),
+    ] {
+        let d = with(path, v);
+        assert!(
+            has_error(&d, msg),
+            "{path}: {:?}",
+            validate::errors(&validate::validate(&d))
+        );
+    }
+    let d = with("route.kill_switch", json!(false));
+    assert_valid(&d);
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("vpn_clients.egress.route.kill_switch"))
+    );
+    // A network leaves through one client.
+    let d = edit(
+        PAIR,
+        json!({"vpn_clients": {"egress": base(), "other": base()}, "zones": {"egress": {}}}),
+    );
+    assert!(has_error(&d, "\"users\" already leaves through \"egress\""));
+    // Names are interfaces: not a network's or a VPN instance's.
+    let d = edit(
+        PAIR,
+        json!({"vpn_clients": {"roadwarrior": base()}, "zones": {"egress": {}}}),
+    );
+    assert!(has_error(
+        &d,
+        "vpn_clients.roadwarrior: name is already used"
+    ));
+}
+
 #[test]
 fn vpn_extra_ports_must_be_free() {
     let ports =

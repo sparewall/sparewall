@@ -557,6 +557,21 @@ Where the implementation departs from, or settles open questions in,
   is resolved again once it has had no handshake for 135 s (as
   reresolve-dns does), since networkd resolves it only once, and one
   with a keepalive and no handshake for 180 s degrades health.
+- **VPN clients route by incoming interface** (#149). The client's peer
+  has `AllowedIPs=0.0.0.0/0` into a table of its own (5360 on, in name
+  order), and each routed network gets two rules on its interface: the
+  main table with `SuppressPrefixLength=0` (everything but its default
+  route: the other networks, site-to-site routes), then the client's
+  table. Matching the incoming interface rather than the source subnet
+  keeps the node's own traffic, even from its address on that network,
+  on the main table, and with it the client's own handshakes. The kill
+  switch is a forward rule from those interfaces to the WAN's, before
+  the state rule. In a pair the client's link is `ActivationPolicy=manual`
+  and `lease.rs`, which already keeps the WAN lease link up on the
+  master only, does the same for it; both nodes hold the same key and
+  address, and conntrackd's entries carry the translation to the tunnel
+  address, so a connection survives a failover when the service keeps
+  its own translation.
 
 ## Providers
 

@@ -222,13 +222,13 @@ log "a site-to-site tunnel to a branch (#148)"
 # so it never sends first.
 wg genkey > site.key
 wg pubkey < site.key > site.pub
-host tsite tnwan 02:00:00:00:21:07 203.0.113.3/29
+host tsite tnwan 02:00:00:00:21:07 203.0.113.5/29
 ns tsite ip link add lan0 type dummy
 ns tsite ip addr add 10.20.0.1/24 dev lan0
 ns tsite ip link set lan0 up
 jq -n --arg k "$(cat site.pub)" '{
     vpn: {branch: {listen_port: 51821, endpoint: "203.0.113.2", addresses: ["10.98.0.1/30"], zone: "branch",
-        peers: {tsite: {public_key: $k, endpoint: "203.0.113.3:51821",
+        peers: {tsite: {public_key: $k, endpoint: "203.0.113.5:51821",
             addresses: ["10.98.0.2/32", "10.20.0.0/24"], keepalive: 10}}}},
     zones: {branch: {}},
     policy: {"lan->branch": {action: "accept"}, "branch->lan": {action: "accept"}}
@@ -256,6 +256,57 @@ sleep 1
 seen=$(ns tclient python3 "$HERE/echo.py" ask 10.20.0.1 7002) || fail "the LAN cannot connect to the branch"
 [ "$seen" = "$c" ] || fail "the branch saw the LAN's connection from $seen, not $c"
 wait_for 60 "fw1 healthy with the tunnel up" healthy fw1
+
+log "a WireGuard client: the LAN's traffic leaves through a provider (#149)"
+# tprov, beside the ISP, is a VPN provider: it gives fw1 10.64.0.2 and
+# masquerades what comes through the tunnel out of its own address,
+# 203.0.113.4, which is what the outside then sees. It stays for the pair.
+wg genkey > prov.key
+wg pubkey < prov.key > prov.pub
+wg genkey > egress.key
+wg pubkey < egress.key > egress.pub
+host tprov tnwan 02:00:00:00:21:04 203.0.113.4/29
+ns tprov ip route add default via 203.0.113.6
+ns tprov sysctl -qw net.ipv4.ip_forward=1
+ns tprov iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+ns tprov ip link add wg0 type wireguard
+ns tprov wg set wg0 listen-port 51820 private-key "$PWD/prov.key" \
+    peer "$(cat egress.pub)" allowed-ips 10.64.0.2/32
+ns tprov ip addr add 10.64.0.1/24 dev wg0
+ns tprov ip link set wg0 up
+# The client's document, for this node and the pair.
+client_doc() {
+    jq -n --arg k "$(cat prov.pub)" '{
+        zones: {egress: {}},
+        vpn_clients: {egress: {private_key: "secret:egress-key", addresses: ["10.64.0.2/32"],
+            zone: "egress", peer: {public_key: $k, endpoint: "203.0.113.4:51820"},
+            route: {networks: ["lan"]}}},
+        policy: {"lan->egress": {action: "accept"}}
+    }'
+}
+at fw1 'sudo sparewall secret set egress-key' < egress.key
+client_doc | at fw1 'cat > /tmp/client.json'
+at fw1 'sudo sparewall merge -f /tmp/client.json --confirm 0' >/dev/null
+prov_session() { [ "$(ns tprov wg show wg0 latest-handshakes | awk '{print $2}')" -gt 0 ]; }
+wait_for 60 "fw1 connects to the provider" prov_session
+via_provider() { [ "$(ns tclient python3 "$HERE/echo.py" ask 198.18.0.1 7002)" = 203.0.113.4 ]; }
+wait_for 30 "the LAN reaches the outside through the provider" via_provider
+# fw1's own traffic keeps the WAN, and the branch keeps its tunnel.
+at fw1 'ip route get 198.18.0.1' | grep -q 'dev wan' || fail "fw1's own traffic does not leave by the WAN: $(at fw1 'ip route get 198.18.0.1')"
+ns tclient ping -c 2 -W 2 10.20.0.1 >/dev/null || fail "the LAN lost the branch to the provider's tunnel"
+# The kill switch: without the tunnel the LAN's traffic goes nowhere,
+# not out of the WAN; networkd brings it back.
+at fw1 'sudo ip link del egress'
+if seen=$(ns tclient python3 "$HERE/echo.py" ask 198.18.0.1 7002 2>/dev/null); then
+    fail "with the tunnel gone the LAN reached the outside as $seen"
+fi
+at fw1 'sudo nft list chain inet sparewall forward' | grep 'vpn-client-egress:kill-switch' | grep -qv 'packets 0 ' \
+    || fail "the kill switch did not drop the LAN's traffic"
+at fw1 'sudo networkctl reload'
+wait_for 60 "the LAN through the provider again" via_provider
+wait_for 120 "fw1 healthy with the client" healthy fw1
+ns tprov wg set wg0 peer "$(cat egress.pub)" remove
+ns tprov wg set wg0 peer "$(cat egress.pub)" allowed-ips 10.64.0.2/32
 stop_vm fw1
 
 # --- 2. pair ---------------------------------------------------------------
@@ -301,8 +352,17 @@ networks:
 zones:
   wan: { networks: [wan] }
   lan: { networks: [lan] }
+  egress: {}
+vpn_clients:
+  egress:
+    private_key: secret:egress-key
+    addresses: [10.64.0.2/32]
+    zone: egress
+    peer: { public_key: "$(cat prov.pub)", endpoint: "203.0.113.4:51820" }
+    route: { networks: [lan] }
 policy:
   lan->wan: { action: accept, nat: { snat: 203.0.113.1 } }
+  lan->egress: { action: accept }
   lan->self:
     action: drop
     rules:
@@ -315,6 +375,8 @@ dhcp:
     reservations:
       admin: { mac: "$ADMIN_MAC", address: 192.168.1.10, hostname: admin }
 EOF
+# The client's key, set on fw1 alone: fw2 gets it as a cluster secret.
+at fw1 'sudo sparewall secret set egress-key' < egress.key
 for n in fw1 fw2; do
     at "$n" 'cat > /tmp/pair.yaml' < pair.yaml
     at "$n" 'sudo sparewall apply -f /tmp/pair.yaml --confirm 0' || true
@@ -333,6 +395,12 @@ LEASE=$(lease tclient)
 fw2_has_lease() { at fw2 "sudo grep -q '^$LEASE,02:00:00:00:21:30' $LEASES"; }
 wait_for 60 "fw2 holds the lease of $LEASE" fw2_has_lease
 
+log "the WireGuard client on the master only (#149)"
+wait_for 60 "fw1 connects to the provider" prov_session
+[ "$(at fw2 'cat /sys/class/net/egress/operstate' 2>/dev/null)" != up ] || fail "fw2, the backup, has the provider's tunnel up"
+at fw2 'ip -br link show egress' | grep -q 'DOWN' || fail "fw2's client link is not down: $(at fw2 'ip -br link show egress')"
+wait_for 30 "the LAN reaches the outside through the provider" via_provider
+
 log "a connection through the pair, replicated over the LAN"
 ns tclient python3 "$HERE/echo.py" client 198.18.0.1 > flow.log 2>&1 &
 echoes() { tail -1 flow.log | grep -qE '^[0-9]+$' && tail -1 flow.log; }
@@ -341,15 +409,20 @@ before=$(echoes) || fail "no echoes through fw1: $(cat flow.log)"
 replicated() { at fw2 'sudo conntrackd -C /run/sparewall/conntrackd/conntrackd.conf -e' | grep -q 'dport=7000'; }
 wait_for 30 "the connection in fw2's conntrackd cache" replicated
 
-log "failover: fw1 goes; fw2 takes the gateway, and the connection carries on"
+log "failover: fw1 goes; fw2 takes the gateway and the provider's tunnel, and the connection carries on"
+# Both nodes are the same client, with the same tunnel address, whose
+# translation the provider keeps: the new master takes the tunnel up and
+# the replicated connection goes on through it.
+t0=$(date +%s)
 stop_vm fw1
 wait_for 120 "fw2 master" is_master fw2
-sleep 5
+advanced() { local n; n=$(echoes) && [ "$n" -gt "$before" ]; }
+wait_for 60 "the connection to carry on through fw2" advanced
 grep -q broken flow.log && fail "the connection broke in the failover: $(tail -5 flow.log)"
-after=$(echoes) || fail "the connection stalled: $(tail -5 flow.log)"
-[ "$after" -gt "$before" ] || fail "the connection stalled ($before, $after)"
-seen=$(ns tclient python3 "$HERE/echo.py" ask 198.18.0.1 7002) || fail "the client cannot reach the outside through fw2"
-[ "$seen" = 203.0.113.1 ] || fail "the client reached the outside as $seen, not the gateway address"
+moved() { [ "$(ns tprov wg show wg0 latest-handshakes | awk '{print $2}')" -ge "$t0" ]; }
+wait_for 60 "fw2 connects to the provider" moved
+echo "  the provider saw fw2 $(( $(ns tprov wg show wg0 latest-handshakes | awk '{print $2}') - t0 )) s after fw1 went"
+wait_for 30 "the LAN reaches the outside through the provider from fw2" via_provider
 
 log "the client renews its lease from fw2"
 # Kea's standby serves once it finds its partner gone, which takes a

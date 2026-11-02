@@ -989,3 +989,100 @@ fn local_metrics() {
     }));
     insta::assert_snapshot!("local_metrics", conf(&r).unwrap());
 }
+
+/// A WireGuard client (#149): its netdev and table, the rules for the
+/// routed networks, the kill switch and source, the routed networks'
+/// DNS; in a pair, up on the master only.
+#[test]
+fn vpn_client() {
+    use sparewall_config::model::{Cidr, VpnClient, VpnClientPeer, VpnClientRoute, Zone};
+    let with = |example_file: &str, kill_switch: bool| {
+        let mut doc = example(example_file);
+        let routed = if doc.networks.contains_key("users") {
+            "users"
+        } else {
+            "lan"
+        };
+        doc.zones.insert("egress".into(), Zone { networks: vec![] });
+        doc.vpn_clients.insert(
+            "egress".into(),
+            VpnClient {
+                private_key: "secret:provider-key".into(),
+                addresses: vec![Cidr("10.64.12.34/32".parse().unwrap())],
+                zone: "egress".into(),
+                peer: VpnClientPeer {
+                    public_key: "HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=".into(),
+                    endpoint: "nl1.provider.example:51820".into(),
+                    keepalive: None,
+                    preshared_key: None,
+                },
+                dns: vec!["10.64.0.1".parse().unwrap()],
+                route: VpnClientRoute {
+                    networks: vec![routed.into()],
+                    kill_switch,
+                },
+            },
+        );
+        let errs = validate::errors(&validate(&doc));
+        assert!(errs.is_empty(), "{errs:#?}");
+        (render(&doc, "fw1").unwrap(), doc)
+    };
+    let (r, doc) = with("pair.yaml", true);
+    let f = |name: &str| r.files[&format!("{}/{name}", Subsystem::Networkd.dir())].clone();
+    let netdev = f("50-sparewall-egress.netdev");
+    for line in [
+        "PrivateKeyFile=/run/systemd/network/sparewall-vpnc-egress.key",
+        "AllowedIPs=0.0.0.0/0",
+        "Endpoint=nl1.provider.example:51820",
+        "PersistentKeepalive=25",
+        "RouteTable=5360",
+    ] {
+        assert!(netdev.contains(line), "{line}: {netdev}");
+    }
+    let network = f("50-sparewall-egress.network");
+    assert!(network.contains("ActivationPolicy=manual"), "{network}");
+    let users = doc.network_iface("users").unwrap();
+    assert!(
+        network.contains(&format!(
+            "[RoutingPolicyRule]\nIncomingInterface={users}\nTable=main\nSuppressPrefixLength=0\nPriority=2000\n"
+        )),
+        "{network}"
+    );
+    assert!(
+        network.contains(&format!(
+            "[RoutingPolicyRule]\nIncomingInterface={users}\nTable=5360\nPriority=2001\n"
+        )),
+        "{network}"
+    );
+    let nft = r
+        .files
+        .iter()
+        .find(|(p, _)| p.ends_with("sparewall.nft"))
+        .unwrap()
+        .1;
+    assert!(
+        nft.contains(&format!(
+            "iifname \"{users}\" oifname {{ \"swwan\", \"wan\" }} counter drop comment \"vpn-client-egress:kill-switch\""
+        )),
+        "{nft}"
+    );
+    assert!(
+        nft.contains(
+            "oifname \"egress\" counter snat ip to 10.64.12.34 comment \"vpn-client-egress:source\""
+        ),
+        "{nft}"
+    );
+    let kea = r
+        .files
+        .iter()
+        .find(|(p, _)| p.ends_with("kea-dhcp4.conf"))
+        .unwrap()
+        .1;
+    assert!(kea.contains("\"data\": \"10.64.0.1\""), "{kea}");
+    // Without the kill switch; and standalone, always up.
+    let (r, _) = with("pair.yaml", false);
+    assert!(!r.files.values().any(|c| c.contains("kill-switch")));
+    let (r, _) = with("standalone.yaml", true);
+    let network = &r.files[&format!("{}/50-sparewall-egress.network", Subsystem::Networkd.dir())];
+    assert!(!network.contains("ActivationPolicy"), "{network}");
+}

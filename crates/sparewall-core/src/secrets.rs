@@ -76,6 +76,30 @@ pub fn vpn_psk_refs(doc: &Document) -> Vec<(String, String, String)> {
     v
 }
 
+/// The secrets the VPN clients reference (#149): `(client, file in
+/// KEY_DIR, what it is, secret name)`.
+pub fn vpn_client_refs(doc: &Document) -> Vec<(String, String, &'static str, String)> {
+    let name = |r: &str| r.strip_prefix("secret:").unwrap_or(r).to_string();
+    let mut v = Vec::new();
+    for (client, c) in &doc.vpn_clients {
+        v.push((
+            client.clone(),
+            sparewall_render::vpn_client_key_file(client),
+            "private key",
+            name(&c.private_key),
+        ));
+        if let Some(r) = &c.peer.preshared_key {
+            v.push((
+                client.clone(),
+                sparewall_render::vpn_client_psk_file(client),
+                "preshared key",
+                name(r),
+            ));
+        }
+    }
+    v
+}
+
 /// The secret `logging.remote.certificate` names, if the syslog provider
 /// forwards with one.
 pub fn log_certificate_ref(doc: &Document) -> Option<String> {
@@ -304,6 +328,12 @@ impl<S: System> Coordinator<S> {
             self.system()
                 .services_apply(&meta, &[sparewall_render::Subsystem::Logging])?;
         }
+        // A client's keys too (#149).
+        for (client, _, _, secret) in vpn_client_refs(&doc) {
+            if changed.contains(&secret) {
+                self.system().netdev_recreate(&client)?;
+            }
+        }
         let psks = vpn_psk_refs(&doc);
         for name in doc.vpn.keys() {
             let psk_changed = psks
@@ -331,6 +361,21 @@ impl<S: System> Coordinator<S> {
         Ok(v)
     }
 
+    /// What the VPN clients reference but the store lacks, in words: those
+    /// tunnels cannot come up.
+    pub fn missing_vpn_client_secrets(&mut self, doc: &Document) -> Result<Vec<String>, Error> {
+        let mut v = Vec::new();
+        for (client, _, what, secret) in vpn_client_refs(doc) {
+            if self.secret_info(&secret)?.is_none() {
+                v.push(format!(
+                    "vpn_clients.{client}: its {what}, secret {secret:?}, is not set, so the tunnel \
+                     cannot come up (sparewall secret set {secret})"
+                ));
+            }
+        }
+        Ok(v)
+    }
+
     /// Hand the remote-access server keys to networkd, and rsyslog its
     /// client certificate (in tmpfs).
     pub fn install_runtime_secrets(&mut self, doc: &Document) -> Result<(), Error> {
@@ -344,6 +389,14 @@ impl<S: System> Coordinator<S> {
                 )?,
                 None => {
                     tracing::warn!(instance = %name, "no server key yet for the remote-access VPN")
+                }
+            }
+        }
+        for (client, file, what, secret) in vpn_client_refs(doc) {
+            match self.secret_get(&secret)? {
+                Some(key) => self.system().install_key(&file, &key, "systemd-network")?,
+                None => {
+                    tracing::warn!(client, what, secret, "a VPN client's key is not set")
                 }
             }
         }

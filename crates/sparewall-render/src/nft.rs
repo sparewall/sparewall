@@ -639,9 +639,44 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         .unwrap();
     }
     fwd.push_str(&raw_at_hook(doc, RawHook::Forward));
-    if !doc.vpn.is_empty() {
+    // A VPN client's kill switch (#149): its networks' traffic never
+    // leaves through the WAN, so while the tunnel is down it goes nowhere.
+    // Before the state rule, so that a flow that began through the WAN
+    // (the tunnel was down) does not carry on there.
+    let mut wan_ifs: Vec<String> = Vec::new();
+    for (n, _) in doc.networks_with_role(NetworkRole::Wan) {
+        wan_ifs.extend(doc.network_iface(n).map(str::to_string));
+        wan_ifs.extend(doc.public_iface(n).map(str::to_string));
+    }
+    wan_ifs.sort();
+    wan_ifs.dedup();
+    for (name, c) in doc.vpn_clients.iter().filter(|(_, c)| c.route.kill_switch) {
+        let from: Vec<String> = c
+            .route
+            .networks
+            .iter()
+            .filter_map(|n| doc.network_iface(n).map(str::to_string))
+            .collect();
+        if from.is_empty() || wan_ifs.is_empty() {
+            continue;
+        }
+        writeln!(
+            fwd,
+            "iifname {} oifname {} counter drop comment {}",
+            ifset(&from),
+            ifset(&wan_ifs),
+            q(&format!("vpn-client-{name}:kill-switch"))
+        )
+        .unwrap();
+    }
+    if !doc.vpn.is_empty() || !doc.vpn_clients.is_empty() {
         // Clamp MSS to the tunnels' smaller MTU.
-        let vpn_ifs: Vec<String> = doc.vpn.keys().cloned().collect();
+        let vpn_ifs: Vec<String> = doc
+            .vpn
+            .keys()
+            .chain(doc.vpn_clients.keys())
+            .cloned()
+            .collect();
         writeln!(
             fwd,
             "oifname {} tcp flags syn tcp option maxseg size set rt mtu comment \"vpn-mss\"",
@@ -782,6 +817,19 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             w.private
         )
         .unwrap();
+    }
+    // A VPN client's service knows only the tunnel address it assigned.
+    for (name, c) in &doc.vpn_clients {
+        if let Some(a) = c.addresses.first() {
+            writeln!(
+                post,
+                "oifname {} counter snat ip to {} comment {}",
+                q(name),
+                a.0.addr(),
+                q(&format!("vpn-client-{name}:source"))
+            )
+            .unwrap();
+        }
     }
     // The server would answer a client on its own network directly, past
     // the reverse translation: make the firewall the source.

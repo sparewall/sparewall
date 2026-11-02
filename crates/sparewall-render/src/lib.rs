@@ -41,6 +41,16 @@ pub fn vpn_psk_file(instance: &str, peer: &str) -> String {
     format!("sparewall-vpn-{instance}-{peer}.psk")
 }
 
+/// The files (in [`KEY_DIR`]) networkd reads a VPN client's private and
+/// preshared keys from (#149).
+pub fn vpn_client_key_file(client: &str) -> String {
+    format!("sparewall-vpnc-{client}.key")
+}
+
+pub fn vpn_client_psk_file(client: &str) -> String {
+    format!("sparewall-vpnc-{client}.psk")
+}
+
 /// Where the coordinator puts secrets for daemons other than networkd
 /// (rsyslog's client certificate), root's alone, in tmpfs.
 pub const SECRETS_DIR: &str = "/run/sparewall/secrets";
