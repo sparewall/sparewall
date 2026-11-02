@@ -171,14 +171,24 @@ vpn_setup() {
     sleep 3
     vpn_tcp_count >/dev/null || fail "no inner TCP echoes: $(cat vpn-tcp.log)"
     grep -q reply vpn-udp.log || fail "no inner UDP echoes: $(cat vpn-udp.log)"
-    site_setup
     printf '| Event | Client | Recovery (s) |\n| --- | --- | --- |\n' > "$VPN_RESULTS"
 }
 
-# The site, configured from what the pair prints for it, without its
-# keepalive: it only answers, so every handshake is the pair's.
+# The site, added as a peer of the instance just before the gateway first
+# moves: a keepalive needs schema revision 4, and the sync-VLAN cut
+# before that changes the document with the peer unreachable, which only
+# revision 1 allows. It is configured from what the pair prints for it,
+# without its keepalive: it only answers, so every handshake is the
+# pair's.
 site_setup() {
     log "a site-to-site peer"
+    jq -n --arg k "$(cat "$WORK/site.pub")" --arg e "$SITE_ADDR:51821" \
+        '{vpn: {ra: {peers: {site: {public_key: $k, endpoint: $e,
+            addresses: ["10.99.0.30/32", "10.30.0.0/24"], keepalive: 10}}}}}' \
+        | at fw1 'cat > /tmp/site.json'
+    at fw1 'sudo sparewall merge -f /tmp/site.json --confirm 0' >/dev/null
+    site_on_fw2() { at fw2 'sudo sparewall get vpn.ra.peers.site.endpoint' | grep -q "$SITE_ADDR"; }
+    wait_for 120 "fw2 has the site's peer" site_on_fw2
     at fw1 'sudo sparewall vpn peer-config site' > site.conf
     grep -q '^# Sparewall site-to-site' site.conf || fail "peer-config is not a site's: $(cat site.conf)"
     grep -qx 'ListenPort = 51821' site.conf || fail "the site's config has no ListenPort: $(cat site.conf)"
@@ -215,6 +225,7 @@ vpn_tcp_count() { tail -1 vpn-tcp.log | grep -E '^[0-9]+$'; }
 # Make vpnb's session older than WireGuard's REKEY_AFTER_TIME (120 s),
 # and give vpnc a fresh one, just before the master goes.
 vpn_before_loss() {
+    site_setup
     age_session vpnb 125
     wan_ns vpnc 203.0.113.52
     wg_client vpnc 10.99.0.12

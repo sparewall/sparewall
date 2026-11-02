@@ -52,8 +52,7 @@ wait_for 300 "fw2 SSH" at fw2 true
 
 log "pairing"
 vpn_keys
-# Without the site-to-site peer: no site answers it here.
-pair_doc < "$HERE/site-pair.yaml" | sed '/# A site-to-site peer/,/keepalive: 10/d' | vpn_doc \
+pair_doc < "$HERE/site-pair.yaml" | vpn_doc \
     | sed "s|    trunk: { nic: \"${FW1[3]}\" }|    trunk:\n      bond:\n        members: [\"${FW1[3]}\", \"$FW1_BOND_MAC\"]\n        mode: active-backup\n        primary: \"${FW1[3]}\"|" \
     > pair.yaml
 grep -q "mode: active-backup" pair.yaml || fail "the bond did not go into the document"
