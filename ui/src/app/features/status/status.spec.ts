@@ -48,7 +48,13 @@ describe('Status, updates', () => {
 
   it('names a newer version, its notes, and how to upgrade', async () => {
     const { card } = await render(
-      reply({ enabled: true, running: '0.4.0', available: 'newer', version: '0.4.1', checked: 't' }),
+      reply({
+        enabled: true,
+        running: '0.4.0',
+        available: 'newer',
+        version: '0.4.1',
+        checked: 't',
+      }),
     );
     expect(card?.textContent).toContain('0.4.1 is available');
     expect(card?.textContent).toContain('Running 0.4.0');
