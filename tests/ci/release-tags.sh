@@ -95,6 +95,12 @@ git clone -q "file://$t/origin.git" "$t/ci" 2>/dev/null
 
 [ "$(GITHUB_REF=refs/tags/v1.2.3-rc1 GITHUB_REF_NAME=v1.2.3-rc1 "$repo/.github/version.sh")" = 1.2.3-rc1 ] \
     || fail "version.sh does not take the version from the tag"
+# A rebuild of a release (#187): build metadata, and only for a release.
+tagv() { GITHUB_REF=refs/tags/$1 GITHUB_REF_NAME=$1 REBUILD=$2 "$repo/.github/version.sh"; }
+[ "$(tagv v1.2.3 2)" = 1.2.3+r2 ] || fail "version.sh does not name a rebuild"
+! tagv v1.2.3-rc1 1 >/dev/null 2>&1 || fail "version.sh rebuilt a prerelease"
+! tagv v1.2.3 0 >/dev/null 2>&1 || fail "version.sh took rebuild 0"
+! tagv v1.2.3 x >/dev/null 2>&1 || fail "version.sh took a rebuild that is not a number"
 
 # Between tags, a prerelease of what comes next, so builds sort by semver
 # (#170). version.sh runs in the repository it describes.

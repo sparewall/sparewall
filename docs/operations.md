@@ -71,7 +71,7 @@ back to one of them keeps its configuration.
 | --- | --- | --- |
 | 1 | Everything up to 0.2.0 | 0.2.0 |
 | 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
-| 3 | `updates.check`, `networks.<name>.vmac` | 0.4.0 |
+| 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac` | 0.4.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -531,6 +531,14 @@ installed from a release's ISO or disk image, which come from a build tag)
 follows `stable`. `--channel` is for one upgrade; the node then tracks
 that channel.
 
+**Rebuilds.** Between releases, the current release is rebuilt on newer
+Fedora base images when they bring security fixes, or at least monthly:
+the same Sparewall source, version `X.Y.Z+rN` (`0.4.0+r2` is the second
+rebuild of 0.4.0). It passes the same tests as a release before `stable`
+moves to it, and the release's notes list each rebuild and the advisories
+it picks up. A node offers it as "a rebuild of 0.4.0", and upgrades to it
+as to any image.
+
 **Never backwards by accident.** Images carry their Sparewall version
 (`org.sparewall.version`), and `--check` shows it next to the node's own.
 A newer version is offered; the same version is offered when the image
@@ -631,9 +639,43 @@ site for instance: `sparewall set updates.check=false` (schema revision
 3, which 0.3.x cannot read). `sparewall upgrade --check` still asks when
 you run it.
 
-Upgrades run only when asked for: scheduled upgrades
-(`updates.mode: windowed`, `updates.window`) are not built yet and are
-rejected.
+**Scheduled upgrades.** With `updates.mode: windowed`, a node upgrades
+itself in a maintenance window, through the same sequence as `sparewall
+upgrade`:
+
+```yaml
+updates:
+  channel: stable
+  mode: windowed
+  window: "Sun *-*-* 03:00"   # a systemd calendar expression: when an upgrade may start
+  window_minutes: 60          # how long after that one may still start (default 60)
+```
+
+The window is in the node's time zone, which is UTC unless set; systemd
+checks the expression when the change is applied, and `sparewall upgrade
+--check` shows when the next window opens. In a pair only the master acts,
+so the two nodes never start at once, and the rolling sequence (the
+standby first, then the handover) runs unchanged. Each window is tried
+once: when it opens, the node checks the channel and, if a newer image is
+there, starts the upgrade. It skips the window, and records why, unless:
+
+- health is `ok`: not degraded, so no unacknowledged SELinux denials;
+- no change waits for confirmation, and the pair is not held
+  (`cluster.hold`);
+- in a pair, the two are in sync;
+- no scheduled upgrade has failed since: a failure makes the `upgrade`
+  health check degraded and stops scheduled upgrades until someone
+  acknowledges it (`sparewall health ack upgrade`) or starts an upgrade by
+  hand.
+
+Every attempt, skipped, started, succeeded or failed, is logged with
+`MESSAGE_ID=4f0b6f0a8f4c4e1f9c7d2b3a5e6d7c81` and sent as a
+`scheduled-upgrade` event; `/metrics` has
+`sparewall_scheduled_upgrade_last_attempt_timestamp_seconds`,
+`sparewall_scheduled_upgrade_last_result{result}` and
+`sparewall_scheduled_upgrade_blocked`. `testing` with a window installs
+every passing build of main unattended, and validation warns about it. A
+standalone node accepts its one reboot of downtime inside the window.
 
 ## SELinux
 
@@ -664,9 +706,9 @@ what the test suites see, and a denial on a real node is a missing rule.
 ## Settings not built yet
 
 `provider_options`, `metrics.mode: local`, `metrics.retention`,
-`updates.mode: windowed`, `updates.window`, `dhcp.provider: networkd`,
-and `logging.remote.provider: syslog` are rejected with an error at
-their path. Earlier versions accepted them, though nothing acted on
+`dhcp.provider: networkd`, and `logging.remote.provider: syslog` are
+rejected with an error at their path. (`updates.mode: windowed` and
+`updates.window` were too, before 0.4.0 built them.) Earlier versions accepted them, though nothing acted on
 them. After upgrading:
 
 - A node already running a document with one of them keeps running it,
@@ -676,7 +718,7 @@ them. After upgrading:
   present in one change, which runs exactly as the old document did:
 
   ```shell
-  sparewall unset provider_options metrics updates.mode updates.window
+  sparewall unset provider_options metrics
   ```
 
   For a provider, unset it to use the built-in default (`sparewall unset

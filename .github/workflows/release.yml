@@ -17,6 +17,11 @@ env:
 jobs:
   promote:
     name: promote the image
+    # One writer of stable at a time, with image.yml's rebuild promotion
+    # (#187), which rechecks stable and the newest release under it.
+    concurrency:
+      group: promote-stable
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     permissions:
       contents: read

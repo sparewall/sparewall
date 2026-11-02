@@ -247,11 +247,16 @@ async fn refuse_older(target: &str, allow_downgrade: bool) -> Result<(), String>
     }
 }
 
-/// A tag that names one build or release (`sha-…`, `0.3.1`), not a
-/// channel: an image installed from release media tracks one, and it never
-/// moves, so it does not count as the node's channel (#170).
+/// A tag that names one build or release (`sha-…`, `0.3.1`, a rebuild's
+/// `0.3.1_r2`), not a channel: an image installed from release media
+/// tracks one, and it never moves, so it does not count as the node's
+/// channel (#170, #187). An OCI tag cannot hold semver's `+`, so a
+/// rebuild's is spelled with `_`.
 fn build_tag(tag: &str) -> bool {
-    tag.starts_with("sha-") || parse_version(tag).is_some()
+    let rebuild = tag.rsplit_once("_r").is_some_and(|(v, n)| {
+        parse_version(v).is_some() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+    });
+    tag.starts_with("sha-") || parse_version(tag).is_some() || rebuild
 }
 
 /// The image to move to: an explicit `image`, else the requested channel,
@@ -885,6 +890,15 @@ mod tests {
             compare_versions("0.3.2-dev.1+gaaa", Some("0.3.2-dev.1+gbbb")),
             Compared::Same
         );
+        // A rebuild (#187) is the same version, either way round.
+        for (a, b) in [
+            ("0.3.3", "0.3.3+r1"),
+            ("0.3.3+r1", "0.3.3+r2"),
+            ("0.3.3+r2", "0.3.3"),
+        ] {
+            assert_eq!(compare_versions(a, Some(b)), Compared::Same, "{a} {b}");
+        }
+        assert_eq!(compare_versions("0.3.3+r4", Some("0.3.4")), Compared::Newer);
         assert_eq!(compare_versions("0.3.1", None), Compared::Unknown);
         assert_eq!(
             compare_versions("0.3.1", Some("not a version")),
@@ -998,13 +1012,24 @@ mod tests {
         );
         // A build or release tag, as release media leave, is no channel:
         // the default one, stable (#170).
-        for t in ["sha-fe4180be88fa", "0.3.1", "v0.2.0", "0.4.0-rc1"] {
+        for t in [
+            "sha-fe4180be88fa",
+            "0.3.1",
+            "v0.2.0",
+            "0.4.0-rc1",
+            "0.3.3_r2",
+        ] {
             assert_eq!(
                 target_ref(None, None, None, Some(&format!("{IMAGE_REPO}:{t}"))),
                 "ghcr.io/sparewall/sparewall:stable",
                 "{t}"
             );
         }
+        // A channel that merely contains "_r" is still a channel.
+        assert_eq!(
+            target_ref(None, None, None, Some("r/sw:lab_rack")),
+            "r/sw:lab_rack"
+        );
         assert_eq!(
             target_ref(Some("r/x:1"), Some("stable"), None, ghcr),
             "r/x:1"

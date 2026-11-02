@@ -674,6 +674,11 @@ pub struct UpgradeCheckReply {
     /// older than this node, the same version, or no version to compare.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// When the next maintenance window opens (RFC 3339, UTC), with
+    /// `updates.mode: windowed` (#84). Absent otherwise, and from nodes
+    /// older than 0.4.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_window: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

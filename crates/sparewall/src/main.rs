@@ -1468,6 +1468,9 @@ impl App {
                 if let Some(n) = &r.note {
                     println!("note:      {n}");
                 }
+                if let Some(w) = &r.next_window {
+                    println!("window:    next scheduled upgrade window at {w}");
+                }
                 if check {
                     // When the node last checked on its own (#188); a node
                     // from before 0.4.0 does not say.

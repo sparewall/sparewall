@@ -867,14 +867,21 @@ pub struct Updates {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
     /// `manual` (the default): upgrades run when asked for, with
-    /// `sparewall upgrade`. `windowed` (automatic upgrades in `window`) is
-    /// not built yet and is rejected.
+    /// `sparewall upgrade`. `windowed`: the pair's master (or a standalone
+    /// node) upgrades by itself when `window` opens and the channel offers
+    /// a newer image, through the same health-gated sequence (#84).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<UpdateMode>,
-    /// Maintenance window as a systemd calendar expression. Not built yet,
-    /// with the windowed mode: rejected.
+    /// When a scheduled upgrade may start: a systemd calendar expression
+    /// (`Sun *-*-* 03:00`), in the node's time zone (UTC unless set).
+    /// Required with `mode: windowed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<String>,
+    /// How many minutes after the window opens an upgrade may still start
+    /// (default 60).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 3))]
+    pub window_minutes: Option<u32>,
     /// Check the channel for a newer image every few hours, and log when
     /// one appears (on by default). `false` keeps the node from contacting
     /// the registry on its own, for an air-gapped site; `sparewall upgrade

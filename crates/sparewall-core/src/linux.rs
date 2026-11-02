@@ -827,6 +827,13 @@ impl System for Linux {
         host_run("hostnamectl", &["set-hostname", name]).map(|_| true)
     }
 
+    fn calendar_check(&mut self, expr: &str) -> Result<(), String> {
+        // Outside this domain, as the scheduler's own reading of it is.
+        host_run("systemd-analyze", &["calendar", "--iterations=1", expr])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
         // WireGuard keys go where networkd may read them (see KEY_DIR).
         let dir = PathBuf::from(sparewall_render::KEY_DIR);

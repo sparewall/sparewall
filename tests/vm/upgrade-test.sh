@@ -322,4 +322,42 @@ if [ "$MODE" = pair ]; then
     [ "$(wc -l < gateway.log)" = 2 ] || fail "the gateway moved in fw1's rollback: $(cat gateway.log)"
     grep -q broken flow.log && fail "the connection broke in the rollback: $(tail -5 flow.log)"
 fi
+if [ "$MODE" = single ]; then
+    # Scheduled upgrades (#84), on the candidate again: bootc rollback
+    # swaps back to the deployment just left.
+    log "back to $CANDIDATE, for a scheduled upgrade"
+    at fw1 'sudo bootc rollback' || fail "bootc rollback to $CANDIDATE failed"
+    at fw1 'sudo systemctl reboot' || true
+    sleep 10
+    wait_for 900 "fw1 back on $CANDIDATE" version_is fw1 "$CANDIDATE"
+    wait_for 300 "fw1 healthy on $CANDIDATE" healthy fw1
+    # The 99.0.0 image from the update check's step is what is on offer.
+    at fw1 'sudo sparewall set updates.channel=newer --confirm 0'
+    # A window that opens a minute or two from now, on the node's clock
+    # (UTC: no time zone is set).
+    soon() { at fw1 "date -u -d '+120 seconds' '+*-*-* %H:%M:00'"; }
+    attempts() { at fw1 'sudo journalctl -b -u sparewalld MESSAGE_ID=4f0b6f0a8f4c4e1f9c7d2b3a5e6d7c81 -o cat --no-pager'; }
+
+    log "a window opens while a change waits for confirmation: skipped"
+    at fw1 "sudo sparewall set updates.mode=windowed 'updates.window=$(soon)' updates.window_minutes=5 --confirm 0"
+    at fw1 'sudo sparewall upgrade --check' | grep -q '^window: ' \
+        || fail "upgrade --check does not show the next window"
+    at fw1 'sudo sparewall set updates.window_minutes=6 --confirm 900 --no-prompt'
+    skipped() { attempts | grep -qx 'scheduled upgrade skipped: a change waits for confirmation'; }
+    wait_for 300 "the window to be skipped for the pending change" skipped
+    at fw1 'sudo sparewall confirm'
+
+    log "the next window upgrades the node to 99.0.0"
+    want=$(sudo skopeo inspect --tls-verify=false --no-tags docker://127.0.0.1:5000/sparewall:newer | jq -r .Digest)
+    boot_id=$(at fw1 'cat /proc/sys/kernel/random/boot_id')
+    at fw1 "sudo sparewall set 'updates.window=$(soon)' --confirm 0"
+    rebooted() { b=$(at fw1 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null) && [ -n "$b" ] && [ "$b" != "$boot_id" ]; }
+    wait_for 900 "fw1 to upgrade in the window and reboot" rebooted
+    wait_for 300 "fw1 healthy after the scheduled upgrade" healthy fw1
+    at fw1 'sudo bootc status --format=json' | jq -e --arg d "$want" '.status.booted.image.imageDigest == $d' >/dev/null \
+        || fail "fw1 does not run the 99.0.0 image after the scheduled upgrade"
+    settled_ok() { at fw1 'sudo cat /var/lib/sparewall/scheduled-upgrade.json' | jq -e '.last.result == "succeeded" and (.blocking | not)' >/dev/null; }
+    wait_for 120 "the scheduled upgrade recorded as succeeded" settled_ok
+    attempts | grep -q '^scheduled upgrade succeeded: ' || fail "the success is not in the journal"
+fi
 log "upgrade $MODE PASS ($FROM -> $CANDIDATE, and back)"

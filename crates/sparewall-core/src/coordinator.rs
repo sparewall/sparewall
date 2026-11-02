@@ -579,15 +579,27 @@ impl<S: System> Coordinator<S> {
 
     /// Validate only: schema, semantics, rendering and the nft dry run.
     pub fn validate(&mut self, value: Value) -> Result<Vec<String>, Error> {
-        let (_, warnings, rendered) = self.check(value)?;
+        let (doc, warnings, rendered) = self.check(value)?;
         let active = self.rendered_for(self.active()?)?;
-        self.dry_run(&rendered, Some(&active))?;
+        self.dry_run(&doc, &rendered, Some(&active))?;
         Ok(warnings)
     }
 
     /// Check every artifact with its own checker: nft, and each provider
     /// whose files differ from `old`.
-    fn dry_run(&mut self, r: &Rendered, old: Option<&Rendered>) -> Result<(), Error> {
+    fn dry_run(
+        &mut self,
+        doc: &Document,
+        r: &Rendered,
+        old: Option<&Rendered>,
+    ) -> Result<(), Error> {
+        // The maintenance window is a systemd calendar expression: systemd
+        // is its only complete parser (#84).
+        if let Some(w) = doc.updates.as_ref().and_then(|u| u.window.as_deref()) {
+            self.sys
+                .calendar_check(w)
+                .map_err(|e| Error::Validation(vec![format!("updates.window: {e}")]))?;
+        }
         let body = r
             .files
             .get(&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT))
@@ -653,7 +665,7 @@ impl<S: System> Coordinator<S> {
                 staged: false,
             });
         }
-        self.dry_run(&rendered, Some(&old_rendered))?;
+        self.dry_run(&doc, &rendered, Some(&old_rendered))?;
 
         let mut summary: Vec<String> = opts.note.iter().cloned().chain(diff.clone()).collect();
         summary.truncate(200);
@@ -1574,7 +1586,7 @@ impl<S: System> Coordinator<S> {
         }
         let from = self.active()?;
         let old_rendered = self.rendered_for(from)?;
-        self.dry_run(&rendered, Some(&old_rendered))?;
+        self.dry_run(&doc, &rendered, Some(&old_rendered))?;
         if self.store.exists(g.id) {
             // `adopt`, or a push replacing one that never ran here: keep
             // the local generation aside.
