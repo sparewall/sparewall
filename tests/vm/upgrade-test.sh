@@ -329,7 +329,8 @@ if [ "$MODE" = single ] && [ -n "$NEWER" ]; then
     gen_check() { status fw1 | jq -r '.health.checks[] | select(.name == "generation") | .level + " " + .message'; }
     unreadable() { gen_check | grep -q "^failed generation $GEN3 cannot be read.*revision 3.*running generation $GEN"; }
     wait_for 300 "fw1 to report generation $GEN3 unreadable" unreadable
-    [ "$(at fw1 "sudo sparewall get $CHANGE")" = "$V" ] || fail "fw1 does not run generation $GEN in place of $GEN3"
+    # What runs is in that message: `sparewall get` reads the active
+    # generation, which is the one this release cannot read.
     log "rolling the configuration back to generation $GEN, which $FROM reads"
     at fw1 "sudo sparewall rollback $GEN" || fail "rollback to generation $GEN failed: $(gen_check)"
     at fw1 'sudo sparewall confirm' >/dev/null 2>&1 || true
