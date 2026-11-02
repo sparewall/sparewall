@@ -497,8 +497,9 @@ pub async fn start(
     allow_downgrade: bool,
     forward: bool,
 ) -> Result<Vec<String>, String> {
-    if RUNNING.load(Ordering::SeqCst) {
-        return Err(claim_run().err().unwrap_or_default());
+    // The common case, before planning; claim_run() decides atomically.
+    if running() {
+        return Err(ALREADY_RUNNING.to_string());
     }
     match plan(
         core,
