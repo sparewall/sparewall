@@ -11,6 +11,10 @@ a test fails when it falls behind them:
 SPAREWALL_UPDATE_OPENAPI=1 cargo test -p sparewalld openapi
 ```
 
+The web UI's **API** page lists the same calls, from the node's own
+`/openapi.json`: each with its role (greyed out above yours), its
+parameters and reply, and a `curl` example for that node.
+
 The conventions follow systemd's
 [varlink-http-bridge](https://github.com/systemd/varlink-http-bridge), so
 a generic Varlink-over-HTTP client works with a token.

@@ -1,0 +1,109 @@
+<div class="page-header">
+  <h1>API</h1>
+  <span class="subtitle">For scripts: the calls this node answers over HTTPS</span>
+</div>
+
+<mat-card appearance="outlined" class="intro">
+  <mat-card-content>
+    <p>
+      Every call is <code>POST /call/&lt;interface&gt;.&lt;Method&gt;</code> with its parameters as
+      a JSON object, and an API token as <code>Authorization: Bearer …</code>. Each needs a role;
+      calls your role cannot make are greyed out.
+    </p>
+    <ul>
+      <li>
+        <strong>Errors</strong> keep their Varlink name, parameters and a message: 400 for a
+        malformed call, 401 without valid credentials, 403 when the role does not allow it.
+      </li>
+      <li>
+        <strong>Streaming</strong> calls take <code>?more=true</code> and answer with a JSON text
+        sequence (<code>application/json-seq</code>) until the connection closes.
+      </li>
+      <li>
+        <strong>Tokens and sessions:</strong> scripts use a token; this page's own session also
+        sends the <code>X-Sparewall-Request</code> header, which a cross-site form cannot.
+      </li>
+    </ul>
+    <p class="links">
+      <a href="/openapi.json" download="openapi.json">Download openapi.json</a>
+      ·
+      <a [href]="readme" target="_blank" rel="noopener">The API's conventions</a>
+      @if (session.can('admin')) {
+        ·
+        <a routerLink="/tokens">Create a token</a>
+      }
+    </p>
+  </mat-card-content>
+</mat-card>
+
+@if (doc.error()) {
+  <p class="problem" role="alert">The node's API description could not be read.</p>
+}
+
+@for (iface of interfaces(); track iface.name) {
+  <h2>{{ iface.name }}</h2>
+  <mat-accordion multi>
+    @for (c of iface.calls; track c.method) {
+      <mat-expansion-panel [class.unavailable]="!allowed(c)" [attr.data-method]="c.method">
+        <mat-expansion-panel-header>
+          <mat-panel-title>
+            <code>{{ short(c.method) }}</code>
+          </mat-panel-title>
+          <mat-panel-description>
+            <span class="summary">{{ c.summary }}</span>
+            <mat-chip-set>
+              @if (c.streams) {
+                <mat-chip disableRipple>streams</mat-chip>
+              }
+              <mat-chip disableRipple [class]="'role role-' + c.role">
+                {{ c.role === 'none' ? 'no login' : c.role }}
+              </mat-chip>
+            </mat-chip-set>
+            @if (!allowed(c)) {
+              <span class="cdk-visually-hidden">: not allowed for your role</span>
+            }
+          </mat-panel-description>
+        </mat-expansion-panel-header>
+        @if (c.description && c.description !== c.summary) {
+          <p>{{ c.description }}</p>
+        }
+        <h3>Parameters</h3>
+        @if (c.parameters.length) {
+          <table>
+            @for (f of c.parameters; track f.name) {
+              <tr>
+                <td>
+                  <code>{{ f.name }}</code
+                  >{{ f.required ? '' : '?' }}
+                </td>
+                <td class="type">{{ f.type }}</td>
+                <td>{{ f.description }}</td>
+              </tr>
+            }
+          </table>
+        } @else {
+          <p>None.</p>
+        }
+        <h3>Reply</h3>
+        @if (c.reply.length) {
+          <table>
+            @for (f of c.reply; track f.name) {
+              <tr>
+                <td>
+                  <code>{{ f.name }}</code
+                  >{{ f.required ? '' : '?' }}
+                </td>
+                <td class="type">{{ f.type }}</td>
+                <td>{{ f.description }}</td>
+              </tr>
+            }
+          </table>
+        } @else {
+          <p>Empty.</p>
+        }
+        <h3>Example</h3>
+        <pre class="curl">{{ curl(c) }}</pre>
+      </mat-expansion-panel>
+    }
+  </mat-accordion>
+}

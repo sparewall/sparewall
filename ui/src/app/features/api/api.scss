@@ -1,0 +1,58 @@
+.intro {
+  margin-bottom: 16px;
+  background: var(--mat-sys-surface-container-lowest);
+  border-radius: 16px;
+
+  ul {
+    padding-left: 20px;
+  }
+}
+
+h2 {
+  font: var(--mat-sys-title-medium);
+  margin: 24px 0 8px;
+}
+
+h3 {
+  font: var(--mat-sys-title-small);
+  margin: 16px 0 4px;
+}
+
+mat-panel-description {
+  justify-content: space-between;
+  gap: 8px;
+
+  .summary {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+// Calls the user's role cannot make: still readable, plainly not theirs.
+.unavailable {
+  opacity: 0.6;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+
+  td {
+    padding: 4px 8px 4px 0;
+    vertical-align: top;
+  }
+
+  .type {
+    font-family: var(--mat-sys-body-small-font, monospace);
+    color: var(--mat-sys-on-surface-variant);
+    white-space: nowrap;
+  }
+}
+
+.curl {
+  overflow-x: auto;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--mat-sys-surface-container-high);
+}
