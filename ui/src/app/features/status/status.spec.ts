@@ -2,6 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { Subject } from 'rxjs';
 
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
@@ -20,14 +21,23 @@ const reply = (update: unknown, sync: Record<string, unknown> = {}) => ({
   update,
 });
 
-async function render(r: object, role = 'operator') {
+async function render(r: object, role = 'admin') {
   const count = signal(0);
   TestBed.configureTestingModule({
     providers: [
       provideHttpClient(),
       provideHttpClientTesting(),
-      { provide: NodeEvents, useValue: { count } },
-      { provide: Session, useValue: { can: (w: string) => w === 'viewer' || role !== 'viewer' } },
+      {
+        provide: NodeEvents,
+        useValue: { count, events$: new Subject(), connected: signal(true) },
+      },
+      {
+        provide: Session,
+        useValue: {
+          can: (w: string) =>
+            w === 'viewer' || (w === 'operator' && role !== 'viewer') || role === 'admin',
+        },
+      },
     ],
   });
   const fixture = TestBed.createComponent(Status);
@@ -46,7 +56,7 @@ describe('Status, updates', () => {
     expect(card).toBeNull();
   });
 
-  it('names a newer version, its notes, and how to upgrade', async () => {
+  it('names a newer version, its notes, and offers an admin the upgrade', async () => {
     const { card } = await render(
       reply({
         enabled: true,
@@ -58,19 +68,20 @@ describe('Status, updates', () => {
     );
     expect(card?.textContent).toContain('0.4.1 is available');
     expect(card?.textContent).toContain('Running 0.4.0');
-    expect(card?.textContent).toContain('sparewall upgrade');
+    expect(card?.querySelector('button')?.textContent).toContain('Upgrade');
     expect(card?.querySelector('a')?.getAttribute('href')).toBe(
       'https://github.com/sparewall/sparewall/releases/tag/v0.4.1',
     );
   });
 
-  it('leaves out how to upgrade for a viewer', async () => {
+  it('tells other roles that an admin can upgrade', async () => {
     const { card } = await render(
       reply({ enabled: true, running: '0.4.0', available: 'newer', version: '0.4.1' }),
       'viewer',
     );
     expect(card?.textContent).toContain('0.4.1 is available');
-    expect(card?.textContent).not.toContain('sparewall upgrade');
+    expect(card?.querySelector('button')).toBeNull();
+    expect(card?.textContent).toContain('An admin can upgrade from here.');
   });
 
   it('names a rebuild as one', async () => {

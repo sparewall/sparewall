@@ -335,6 +335,27 @@ vm "curl -sfk -X POST -H 'Authorization: Bearer $WEB' https://localhost/call/org
     | jq -e '.role' >/dev/null || fail "a viewer token cannot call Status over HTTPS"
 [ "$(status -X POST -H "'Authorization: Bearer $WEB'" https://localhost/call/org.sparewall.Auth.ListUsers)" = 403 ] \
     || fail "a viewer token listed users over HTTPS"
+# The UI's upgrade button calls Upgrade.Start (#191): admins only. An
+# admin reaches the upgrade itself, here with an image that cannot be
+# fetched, so it stops at staging and nothing reboots.
+[ "$(status -X POST -H "'Authorization: Bearer $WEB'" -H "'Content-Type: application/json'" -d "'{}'" \
+    https://localhost/call/org.sparewall.Upgrade.Start)" = 403 ] \
+    || fail "a viewer token could start an upgrade over HTTPS"
+ADMIN=$(vm 'sudo sparewall token create ci-upgrade --role admin -q')
+boot_id=$(vm 'cat /proc/sys/kernel/random/boot_id')
+vm "curl -sfk -X POST -H 'Authorization: Bearer $ADMIN' -H 'Content-Type: application/json' \
+    -d '{\"image\": \"localhost:1/sparewall:none\"}' https://localhost/call/org.sparewall.Upgrade.Start" \
+    | jq -e '.plan | length > 0' >/dev/null || fail "an admin token cannot start an upgrade over HTTPS"
+# The upgrade's steps are in the journal, the step a field of its own.
+deadline=$((SECONDS + 180))
+until vm 'sudo journalctl -b -u sparewalld F_STEP=failed -o cat --no-pager | grep -q .'; do
+    [ $SECONDS -lt $deadline ] || fail "the upgrade to an unreachable image did not stop: \
+$(vm 'sudo journalctl -b -u sparewalld -o verbose --no-pager | grep F_DETAIL | tail -5')"
+    sleep 3
+done
+sleep 10
+[ "$(vm 'cat /proc/sys/kernel/random/boot_id')" = "$boot_id" ] || fail "a failed upgrade rebooted the node"
+vm 'sudo sparewall token revoke ci-upgrade'
 vm 'sudo sparewall token revoke ci-web'
 [ "$(status -X POST -H "'Authorization: Bearer $WEB'" https://localhost/call/org.sparewall.Firewall.Status)" = 401 ] \
     || fail "a revoked token still works over HTTPS"

@@ -601,7 +601,12 @@ upgrade"), which changes neither the health summary nor any exit code,
 and `sparewall upgrade --check` shows when the node last checked on its
 own. The web UI shows the same on its status page, with a link to
 the release notes, and a small update icon beside the node's name on
-every page. In a pair, each node reports its own image; if the two run
+every page. Admins can start the upgrade there: it runs
+what `sparewall upgrade` runs, to the document's channel, after a
+confirmation, and the page follows its steps. When the node serving the
+page reboots, the page says so, reconnects, and shows how the node came
+back; any other dropped connection, or a failed step, is shown as an
+error. `--image` and `--allow-downgrade` stay in the CLI. In a pair, each node reports its own image; if the two run
 different images, status and the banner say that too ("images: …"),
 which usually means an upgrade stopped halfway: run `sparewall upgrade`
 again to finish it.
