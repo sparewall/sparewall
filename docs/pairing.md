@@ -2,8 +2,19 @@
 
 Two nodes run as active/standby: keepalived moves the gateway addresses,
 conntrackd moves connection state with them, and Kea runs its own
-hot-standby HA. All replication runs over a `sync` VLAN inside a WireGuard
-tunnel between the nodes. See [`examples/pair.yaml`](../examples/pair.yaml).
+hot-standby HA. All replication runs inside a WireGuard tunnel between
+the nodes, over the sync network.
+
+On two-NIC nodes behind plain switches, the sync network is the LAN,
+which is the management network too
+([`examples/two-nic-pair.yaml`](../examples/two-nic-pair.yaml)): the WAN
+on one port of each node, everything else on the other, no VLANs at all.
+The tunnel carries everything the nodes say to each other, and WireGuard
+drops anything not from the peer's key, so the LAN's clients gain nothing
+by reaching the port; sync fails only with the LAN link itself, which
+moves the gateway as any lost link does. With a VLAN-aware switch, a
+`sync` VLAN of its own, which nothing else reaches, is the stronger
+choice ([`examples/pair.yaml`](../examples/pair.yaml)).
 
 ## Pairing
 
@@ -17,7 +28,7 @@ tunnel between the nodes. See [`examples/pair.yaml`](../examples/pair.yaml).
    ```yaml
    cluster:
      nodes: [fw1, fw2]
-     sync_network: sync
+     sync_network: lan        # or a dedicated sync VLAN
      sync_keys:
        fw1: "<fw1's key>"
        fw2: "<fw2's key>"

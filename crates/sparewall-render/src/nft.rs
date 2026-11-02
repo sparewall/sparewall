@@ -514,9 +514,17 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     if doc.management.anti_lockout
         && let Some(m) = &mgmt_if
     {
+        // Narrowed to management.sources, where the management network is
+        // also an ordinary one (#177).
+        let from = doc
+            .management
+            .sources
+            .as_ref()
+            .map(|s| format!(" ip saddr {}", match_expr(s)))
+            .unwrap_or_default();
         writeln!(
             input,
-            "iifname {} tcp dport {} accept comment \"anti-lockout\"",
+            "iifname {}{from} tcp dport {} accept comment \"anti-lockout\"",
             q(m),
             set_lit(ANTI_LOCKOUT_PORTS.iter().map(u16::to_string))
         )
@@ -555,12 +563,20 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 q(SYNC_TUNNEL_IFACE)
             )
             .unwrap();
-            writeln!(
-                input,
-                "iifname {} drop comment \"infra:sync-isolation\"",
-                q(sync_if)
-            )
-            .unwrap();
+            // A network of its own carries nothing else to the node; one
+            // shared with the LAN (#177) carries everything else too.
+            if doc
+                .networks
+                .get(sync)
+                .is_some_and(|n| n.role == NetworkRole::Sync)
+            {
+                writeln!(
+                    input,
+                    "iifname {} drop comment \"infra:sync-isolation\"",
+                    q(sync_if)
+                )
+                .unwrap();
+            }
         }
     }
     for (name, net) in &doc.networks {

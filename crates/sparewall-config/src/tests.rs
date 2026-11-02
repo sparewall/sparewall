@@ -5,6 +5,8 @@ use crate::path::{combine, get, parse_assignment, parse_path, set_patch, unset_p
 
 const STANDALONE: &str = include_str!("../../../examples/standalone.yaml");
 const PAIR: &str = include_str!("../../../examples/pair.yaml");
+const TWO_NIC: &str = include_str!("../../../examples/two-nic.yaml");
+const TWO_NIC_PAIR: &str = include_str!("../../../examples/two-nic-pair.yaml");
 
 fn load(text: &str) -> Document {
     parse(text, Format::Yaml).unwrap_or_else(|e| panic!("{e}"))
@@ -36,6 +38,68 @@ fn has_error(doc: &Document, needle: &str) -> bool {
 fn examples_are_valid() {
     assert_valid(&load(STANDALONE));
     assert_valid(&load(PAIR));
+    assert_valid(&load(TWO_NIC));
+    assert_valid(&load(TWO_NIC_PAIR));
+    // The two-NIC examples name their admin, so nothing to warn about.
+    for d in [load(TWO_NIC), load(TWO_NIC_PAIR)] {
+        assert!(
+            !warnings(&d)
+                .iter()
+                .any(|w| w.starts_with("management.sources")),
+            "{:?}",
+            warnings(&d)
+        );
+    }
+}
+
+/// #177: the management network may be an ordinary one, in a zone; then
+/// who reaches the node is worth saying, and the sync tunnel may share it.
+#[test]
+fn management_and_sync_on_the_lan() {
+    let mut open_lan = load(TWO_NIC);
+    open_lan.management.sources = None;
+    assert_valid(&open_lan);
+    assert!(warnings(&open_lan).iter().any(|w| w.starts_with(
+        "management.sources: every host on network \"lan\" reaches the node's SSH and HTTPS"
+    )));
+    // A dedicated management network, in no zone: nothing to warn about.
+    assert!(
+        !warnings(&load(STANDALONE))
+            .iter()
+            .any(|w| w.starts_with("management.sources"))
+    );
+    assert!(has_error(
+        &edit(
+            TWO_NIC,
+            json!({"management": {"sources": ["not-an-address"]}})
+        ),
+        "management.sources: expected an IPv4 address"
+    ));
+    assert!(has_error(
+        &edit(TWO_NIC, json!({"management": {"sources": ["@nowhere"]}})),
+        "management.sources"
+    ));
+    // Sync over the WAN is refused, and over a network without both
+    // nodes' addresses.
+    assert!(has_error(
+        &edit(TWO_NIC_PAIR, json!({"cluster": {"sync_network": "wan"}})),
+        "cluster.sync_network: network \"wan\" is the WAN"
+    ));
+    assert!(has_error(
+        &edit(
+            TWO_NIC_PAIR,
+            json!({"networks": {"lan": {"addresses": {"fw2": null}}}})
+        ),
+        "cluster.sync_network: network \"lan\" needs an address for each node"
+    ));
+    // The usual dedicated sync network still works.
+    assert_valid(&load(PAIR));
+    // A new field: revision 3.
+    assert_eq!(
+        crate::schema::revision(&serde_json::to_value(load(TWO_NIC)).unwrap()),
+        3
+    );
+    assert!(crate::schema::revision(&serde_json::to_value(&open_lan).unwrap()) < 3);
 }
 
 #[test]

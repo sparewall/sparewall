@@ -736,3 +736,82 @@ fn failback_is_on_request_unless_a_preempt_delay_is_set() {
     assert_eq!(priority(&doc, "fw2"), 200);
     assert_eq!(preferred(&doc), Some("fw2"));
 }
+
+/// #177: a two-NIC box with no VLANs. The LAN is the management network
+/// too: its zone policy applies, management.sources narrows the
+/// anti-lockout rule; in a pair it carries the sync tunnel as well, and
+/// the isolation rule of a dedicated sync network is left out.
+#[test]
+fn two_nic_without_vlans() {
+    let doc = example("two-nic.yaml");
+    let issues = sparewall_config::validate::validate(&doc);
+    assert!(
+        sparewall_config::validate::errors(&issues).is_empty(),
+        "{issues:?}"
+    );
+    let r = render(&doc, "fw1").unwrap();
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    for want in [
+        "iifname \"lan0\" ip saddr 192.168.1.10 tcp dport { 22, 443 } accept comment \"anti-lockout\"",
+        "iifname \"lan0\" udp dport 67 accept comment \"service:dhcp\"",
+        "iifname . oifname vmap { \"lan0\" . \"wan0\" : jump fwd_lan_wan }",
+        "counter drop comment \"default:lan->self\"",
+    ] {
+        assert!(nft.contains(want), "{want}\n{nft}");
+    }
+    // The anti-lockout rule comes before the zone's drop.
+    assert!(nft.find("anti-lockout").unwrap() < nft.find("jump in_lan").unwrap());
+    assert!(
+        !r.files.keys().any(|p| p.contains(".netdev")),
+        "no VLANs: {:?}",
+        r.files.keys()
+    );
+    assert_nft_ok(&r);
+
+    let pair = example("two-nic-pair.yaml");
+    let issues = sparewall_config::validate::validate(&pair);
+    assert!(
+        sparewall_config::validate::errors(&issues).is_empty(),
+        "{issues:?}"
+    );
+    let mut pair = pair;
+    pair.cluster.sync_keys = [
+        (
+            "fw1".to_string(),
+            "4f5a3fNaOVfb56yjOv1jvWdAoGXT6O/4N+ySwjjQhW8=".to_string(),
+        ),
+        (
+            "fw2".to_string(),
+            "kJt7Ms2Qy07Mh7z6IFkjWlTZ6x5xlZyMfLy9JQ+Y0Ho=".to_string(),
+        ),
+    ]
+    .into();
+    let r = render(&pair, "fw1").unwrap();
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    assert!(
+        nft.contains("iifname \"lan0\" ip saddr 192.168.1.3 udp dport 51871 accept comment \"infra:sync-tunnel\""),
+        "{nft}"
+    );
+    // The tunnel stays isolated; the LAN link itself is not dropped.
+    assert!(
+        !nft.contains("iifname \"lan0\" drop comment \"infra:sync-isolation\""),
+        "{nft}"
+    );
+    assert!(
+        nft.contains("iifname \"swsync\" drop comment \"infra:sync-isolation\""),
+        "{nft}"
+    );
+    let tunnel = &r.files[&format!("{}/40-sparewall-swsync.netdev", Subsystem::Networkd.dir())];
+    assert!(tunnel.contains("Endpoint=192.168.1.3:51871"), "{tunnel}");
+    assert!(
+        r.meta.required_links.contains(&"lan0".to_string()),
+        "{:?}",
+        r.meta
+    );
+    assert!(
+        !r.meta.replication_links.contains(&"lan0".to_string()),
+        "{:?}",
+        r.meta
+    );
+    assert_nft_ok(&r);
+}

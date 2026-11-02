@@ -274,9 +274,17 @@ impl Validator<'_> {
             ),
             (Some(s), true) => match self.doc.networks.get(s) {
                 None => self.err("cluster.sync_network", format!("no network named {s:?}")),
-                Some(n) if n.role != NetworkRole::Sync => self.err(
+                // The sync tunnel may share an ordinary network, a two-NIC
+                // pair's LAN (#177): what it carries is inside WireGuard,
+                // which drops anything not from the peer's key. Not the
+                // WAN.
+                Some(n) if n.role == NetworkRole::Wan => self.err(
                     "cluster.sync_network",
-                    format!("network {s:?} must have role sync"),
+                    format!("network {s:?} is the WAN: sync over a network of role sync, management or service"),
+                ),
+                Some(n) if c.nodes.iter().any(|node| !n.addresses.contains_key(node)) => self.err(
+                    "cluster.sync_network",
+                    format!("network {s:?} needs an address for each node, the tunnel's endpoints"),
                 ),
                 _ => {}
             },
@@ -746,6 +754,24 @@ impl Validator<'_> {
             self.warn(
                 "management.ssh.password",
                 "SSH accepts the admin password as well as keys",
+            );
+        }
+        if let Some(src) = &m.sources {
+            self.check_addr_match("management.sources", src);
+        } else if self
+            .doc
+            .zones
+            .values()
+            .any(|z| z.networks.contains(&m.network))
+        {
+            // An ordinary network that also manages the node (#177).
+            self.warn(
+                "management.sources",
+                format!(
+                    "every host on network {:?} reaches the node's SSH and HTTPS: \
+                     limit that with management.sources",
+                    m.network
+                ),
             );
         }
     }
