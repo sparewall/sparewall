@@ -71,7 +71,7 @@ back to one of them keeps its configuration.
 | --- | --- | --- |
 | 1 | Everything up to 0.2.0 | 0.2.0 |
 | 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
-| 3 | `updates.check` | 0.4.0 |
+| 3 | `updates.check`, `networks.<name>.vmac` | 0.4.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -596,7 +596,7 @@ it. The answer is in `sparewall status -o json` (`update`), and in
 | `sparewall_update_last_check_success_timestamp_seconds` | When a check last succeeded |
 
 When an update is available, `sparewall status` and the login banner
-say so in one line ("update: 0.4.1 available (running 0.4.0); sparewall
+say so in one line ("update: 0.4.1 is available (running 0.4.0); sparewall
 upgrade"), which changes neither the health summary nor any exit code,
 and `sparewall upgrade --check` shows when the node last checked on its
 own. The web UI shows the same on its status page, with a link to

@@ -609,6 +609,12 @@ impl Validator<'_> {
                     "a VRRP ID needs a gateway address (vip)",
                 );
             }
+            if !net.vmac && doc.split_wan(name).is_none() {
+                self.err(
+                    format!("{p}.vmac"),
+                    "only a pair's WAN with private node addresses and a static block (vip) chooses its MAC",
+                );
+            }
             if let Some(id) = net.vrid {
                 if id == 0 {
                     self.err(format!("{p}.vrid"), "must be 1-255");

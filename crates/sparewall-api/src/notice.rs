@@ -7,18 +7,18 @@ use serde_json::Value;
 use crate::StatusReply;
 
 /// What the background update check (#188) found, if it offers anything:
-/// `0.4.1 available (running 0.4.0); sparewall upgrade`.
+/// `0.4.1 is available (running 0.4.0); sparewall upgrade`.
 pub fn update(s: &StatusReply) -> Option<String> {
     let u = s.update.as_ref()?;
     let running = u["running"].as_str().unwrap_or("?");
     let what = match u["available"].as_str()? {
         "newer" => format!(
-            "{} available (running {running})",
+            "{} is available (running {running})",
             u["version"].as_str().unwrap_or("a newer version")
         ),
-        "rebuild" => format!("a rebuild of {running} available"),
+        "rebuild" => format!("a rebuild of {running} is available"),
         "different" => format!(
-            "a different image available on {}, whose version cannot be read (running {running})",
+            "a different image is available on {}, whose version cannot be read (running {running})",
             u["target"].as_str().unwrap_or("the channel")
         ),
         _ => return None,
@@ -80,13 +80,13 @@ mod tests {
             line(
                 json!({"enabled": true, "running": "0.4.0", "available": "newer", "version": "0.4.1"})
             ),
-            Some("0.4.1 available (running 0.4.0); sparewall upgrade".into())
+            Some("0.4.1 is available (running 0.4.0); sparewall upgrade".into())
         );
         assert_eq!(
             line(
                 json!({"enabled": true, "running": "0.4.0", "available": "rebuild", "version": "0.4.0"})
             ),
-            Some("a rebuild of 0.4.0 available; sparewall upgrade".into())
+            Some("a rebuild of 0.4.0 is available; sparewall upgrade".into())
         );
         assert_eq!(
             line(
@@ -94,7 +94,7 @@ mod tests {
                         "target": "mirror.example:5000/sparewall:stable"})
             ),
             Some(
-                "a different image available on mirror.example:5000/sparewall:stable, \
+                "a different image is available on mirror.example:5000/sparewall:stable, \
                  whose version cannot be read (running 0.4.0); sparewall upgrade"
                     .into()
             )

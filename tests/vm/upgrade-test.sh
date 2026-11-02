@@ -286,8 +286,8 @@ for n in $NODES; do
     healthy "$n" || fail "$n is not healthy with an update available: $(status "$n" | jq -c .health)"
     # The login banner and sparewall status say so too (#189).
     wait_for 30 "$n's login banner names 99.0.0" at "$n" \
-        "grep -qF 'update      99.0.0 available (running $CANDIDATE); sparewall upgrade' /run/motd.d/50-sparewall"
-    at "$n" 'sudo sparewall status' | grep -qxF "update:      99.0.0 available (running $CANDIDATE); sparewall upgrade" \
+        "grep -qF 'update      99.0.0 is available (running $CANDIDATE); sparewall upgrade' /run/motd.d/50-sparewall"
+    at "$n" 'sudo sparewall status' | grep -qxF "update:      99.0.0 is available (running $CANDIDATE); sparewall upgrade" \
         || fail "sparewall status on $n does not name 99.0.0"
 done
 [ "$MODE" = single ] || roles_are BACKUP MASTER "with an update available"
