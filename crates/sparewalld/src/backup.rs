@@ -141,6 +141,56 @@ pub async fn run(
     })
 }
 
+/// Compare a backup password with the stored one, in constant time over
+/// their digests, and try it on the newest bundle's sealed secrets.
+pub fn check_password(
+    c: &mut sparewall_core::Coordinator<Box<dyn sparewall_core::System>>,
+    password: &[u8],
+) -> sparewall_api::CheckBackupPasswordReply {
+    use sha2::{Digest, Sha256};
+    let mut notes = Vec::new();
+    let matches_stored = match c.secret_get(PASSWORD_SECRET) {
+        Ok(Some(stored)) => {
+            let (a, b) = (Sha256::digest(&stored), Sha256::digest(password));
+            a.iter().zip(b.iter()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+        }
+        Ok(None) => {
+            notes.push(format!("no {PASSWORD_SECRET} is stored on this node"));
+            false
+        }
+        Err(e) => {
+            notes.push(format!("cannot read {PASSWORD_SECRET}: {e}"));
+            false
+        }
+    };
+    let dir = c.store().root().join("backups");
+    let bundle = sparewall_core::backup::newest(&dir);
+    let (opens_bundle, secrets) = match &bundle {
+        None => {
+            notes.push("no bundle on the node yet: write one with sparewall backup".into());
+            (None, vec![])
+        }
+        // A bundle written without a password has nothing to open.
+        Some(b) if sparewall_core::backup::manifest(b).is_ok_and(|m| m.secrets.is_empty()) => {
+            notes.push(format!(
+                "the newest bundle holds no secrets: it was written without a {PASSWORD_SECRET}"
+            ));
+            (None, vec![])
+        }
+        Some(b) => match sparewall_core::backup::check_password(b, password) {
+            Ok(names) => (Some(true), names),
+            Err(_) => (Some(false), vec![]),
+        },
+    };
+    sparewall_api::CheckBackupPasswordReply {
+        matches_stored,
+        bundle: bundle.map(|b| b.display().to_string()),
+        opens_bundle,
+        secrets,
+        notes,
+    }
+}
+
 /// Record the run and report it in health.
 async fn finish(
     core: &Core,

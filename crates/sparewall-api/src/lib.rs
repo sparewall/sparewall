@@ -462,6 +462,23 @@ pub struct VpnConfigReply {
     pub config: String,
 }
 
+/// Whether a backup password is the node's (#142). Nothing derived from
+/// the stored secret comes back.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct CheckBackupPasswordReply {
+    /// Whether it is the stored `backup-password`.
+    pub matches_stored: bool,
+    /// The newest bundle on the node, if there is one.
+    pub bundle: Option<String>,
+    /// Whether it opens that bundle's sealed secrets (which may predate a
+    /// change of the password); absent without a bundle with secrets.
+    pub opens_bundle: Option<bool>,
+    /// The secrets it opens there.
+    pub secrets: Vec<String>,
+    /// Why a check could not be made (no stored password, no bundle).
+    pub notes: Vec<String>,
+}
+
 #[zlink::proxy("org.sparewall.Secrets")]
 pub trait SecretsProxy {
     /// Store a secret. Values can never be read back.
@@ -473,6 +490,12 @@ pub trait SecretsProxy {
     ) -> zlink::Result<Result<SecretSetReply, FirewallError>>;
     async fn list(&mut self) -> zlink::Result<Result<SecretListReply, FirewallError>>;
     async fn delete(&mut self, name: &str) -> zlink::Result<Result<Empty, FirewallError>>;
+    /// Whether `password` is the stored backup password and opens the
+    /// newest bundle on the node (admin only).
+    async fn check_backup_password(
+        &mut self,
+        password: &str,
+    ) -> zlink::Result<Result<CheckBackupPasswordReply, FirewallError>>;
 }
 
 #[zlink::proxy("org.sparewall.Firewall")]
