@@ -29,6 +29,15 @@ pub fn render(s: &StatusReply) -> String {
         "Sparewall {}: {}, {generation}, health {level}\n",
         s.node, s.role
     );
+    // Informational: neither changes the health summary.
+    for (name, line) in [
+        ("update", sparewall_api::notice::update(s)),
+        ("images", sparewall_api::notice::mixed_images(s)),
+    ] {
+        if let Some(l) = line {
+            out.push_str(&format!("  {name:<11} {l}\n"));
+        }
+    }
     for c in s.health["checks"].as_array().into_iter().flatten() {
         let l = c["level"].as_str().unwrap_or("?");
         if l != "ok" {
@@ -128,5 +137,23 @@ mod tests {
         assert!(!text.contains("nft"));
         // The countdown is left out, so the file is not rewritten each second.
         assert!(!text.contains("87"));
+    }
+
+    #[test]
+    fn an_update_is_a_line_of_its_own_and_not_a_health_problem() {
+        let mut s = status(json!({"level": "ok", "checks": []}), Value::Null);
+        s.update = Some(
+            json!({"enabled": true, "running": "0.4.0", "available": "newer", "version": "0.4.1"}),
+        );
+        assert_eq!(
+            render(&s),
+            "Sparewall fw1: MASTER, generation 4, health ok\n  \
+             update      0.4.1 available (running 0.4.0); sparewall upgrade\n"
+        );
+        s.update = Some(json!({"enabled": true, "running": "0.4.0", "available": "none"}));
+        assert_eq!(
+            render(&s),
+            "Sparewall fw1: MASTER, generation 4, health ok\n"
+        );
     }
 }

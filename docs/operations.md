@@ -595,6 +595,15 @@ it. The answer is in `sparewall status -o json` (`update`), and in
 | `sparewall_update_available{kind}` | 1 when the channel offers a `newer` version, a `rebuild` of this one, or a `different` image whose version cannot be read; 0 with `kind="none"` |
 | `sparewall_update_last_check_success_timestamp_seconds` | When a check last succeeded |
 
+When an update is available, `sparewall status` and the login banner
+say so in one line ("update: 0.4.1 available (running 0.4.0); sparewall
+upgrade"), which changes neither the health summary nor any exit code,
+and `sparewall upgrade --check` shows when the node last checked on its
+own. In a pair, each node reports its own image; if the two run
+different images, status and the banner say that too ("images: …"),
+which usually means an upgrade stopped halfway: run `sparewall upgrade`
+again to finish it.
+
 When what is available changes, and only then, the node logs it once
 ("0.4.1 is available on ghcr.io/sparewall/sparewall:stable (running
 0.4.0)") with `MESSAGE_ID=c8f95979678447529aa9b5914a38a3a0`, and sends

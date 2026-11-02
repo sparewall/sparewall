@@ -4,6 +4,7 @@
 //! Interface changes are additive only; a breaking change gets a new
 //! interface name (design: "Versioning and compatibility").
 
+pub mod notice;
 pub mod openapi;
 
 use serde::{Deserialize, Serialize};
