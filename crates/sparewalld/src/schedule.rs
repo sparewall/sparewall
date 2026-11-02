@@ -522,6 +522,17 @@ async fn tick(
         .await;
         return Ok(());
     }
+    // One started by hand (or another window's) is not this one's
+    // failure: skip, rather than block the next windows.
+    if crate::upgrade::running() {
+        record(
+            core,
+            events,
+            skipped("an upgrade is already running".into()),
+        )
+        .await;
+        return Ok(());
+    }
     let Some(from_image) = booted_image_digest() else {
         record(
             core,

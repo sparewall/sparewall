@@ -37,6 +37,11 @@ impl Drop for Running {
     }
 }
 
+/// Whether this node runs an upgrade now.
+pub fn running() -> bool {
+    RUNNING.load(Ordering::SeqCst)
+}
+
 /// Take the run, or say why not.
 fn claim_run() -> Result<Running, String> {
     RUNNING
