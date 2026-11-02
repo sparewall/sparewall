@@ -267,9 +267,27 @@ if [ "$MODE" = pair ]; then
     [ "$after" -gt "$before" ] || fail "the connection stalled in the upgrade ($before, $after)"
 fi
 
-log "a change on $CANDIDATE, confirmed"
+log "each node notices a newer image on its channel (#188)"
+# A label-only image on another tag, which says it is a newer version.
+printf 'FROM %s\nLABEL org.sparewall.version=99.0.0\n' "$IMAGE" \
+    | sudo podman build -q -t localhost/sparewall:newer -f - "$(mktemp -d)" >/dev/null
+sudo podman push -q --tls-verify=false localhost/sparewall:newer docker://127.0.0.1:5000/sparewall:newer
+# Changing the channel makes each node check within a minute or two,
+# instead of hours. In a pair, the change reaches both nodes.
 M=fw1
 [ "$MODE" = single ] || M=fw2
+at "$M" 'sudo sparewall set updates.channel=newer --confirm 0'
+sees_newer() { status "$1" | jq -e '.update.available == "newer" and .update.version == "99.0.0"' >/dev/null; }
+for n in $NODES; do
+    wait_for 240 "$n sees 99.0.0" sees_newer "$n"
+    at "$n" "sudo journalctl -b -u sparewalld MESSAGE_ID=c8f95979678447529aa9b5914a38a3a0 -o cat --no-pager" \
+        | grep -qx "99.0.0 is available on 10.0.2.2:5000/sparewall:newer (running $CANDIDATE)" \
+        || fail "$n did not log the update with its MESSAGE_ID"
+    healthy "$n" || fail "$n is not healthy with an update available: $(status "$n" | jq -c .health)"
+done
+[ "$MODE" = single ] || roles_are BACKUP MASTER "with an update available"
+
+log "a change on $CANDIDATE, confirmed"
 if [ "$MODE" = single ]; then V=stable; else V=1800; fi
 at "$M" "sudo sparewall set $CHANGE=$V --confirm 120 --no-prompt"
 at "$M" 'sudo sparewall confirm'

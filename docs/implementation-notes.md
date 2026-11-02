@@ -195,6 +195,13 @@ Where the implementation departs from, or settles open questions in,
   apply records `schema::revision` of the document; a generation from the
   peer keeps its own, since both nodes must hash it alike. Add the
   revision to the table in operations.md, "Schema revisions".
+- **Journal entries to filter on** (#188) log to the tracing target
+  `sparewall::journal` (`update::JOURNAL_TARGET`) with a `message_id`
+  field. A second journald layer takes only that target and writes field
+  names unprefixed, so the field is the journal's `MESSAGE_ID`; every
+  other event keeps tracing-journald's `F_` prefix. The update check's
+  state lives in sparewalld, not the coordinator: status and `/metrics`
+  read it from `update::status()` and `update::metrics()`.
 - **Host operations beyond `System` are narrow adapters** in
   `sparewall_core::host`: `Conntrackd`, `BackupRepository` (restic),
   `Timers` (transient systemd timers), `DnsZone` (RFC 2136) and

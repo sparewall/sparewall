@@ -109,11 +109,20 @@ pub struct Remote {
     pub version: Option<String>,
 }
 
+/// How long `skopeo inspect` may take: it reads a manifest and a config,
+/// so a registry that has not answered by then is not going to.
+pub const INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Read an image's digest and version label (`skopeo inspect`).
 pub fn inspect(image: &str) -> Result<Remote, String> {
     let out = host_run(
         "skopeo",
-        &["inspect", "--no-tags", &format!("docker://{image}")],
+        &[
+            &format!("--command-timeout={}s", INSPECT_TIMEOUT.as_secs()),
+            "inspect",
+            "--no-tags",
+            &format!("docker://{image}"),
+        ],
     )?;
     let v: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
     let text = |x: &Value| x.as_str().filter(|s| !s.is_empty()).map(str::to_string);

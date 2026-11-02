@@ -875,6 +875,13 @@ pub struct Updates {
     /// with the windowed mode: rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<String>,
+    /// Check the channel for a newer image every few hours, and log when
+    /// one appears (on by default). `false` keeps the node from contacting
+    /// the registry on its own, for an air-gapped site; `sparewall upgrade
+    /// --check` still asks when run.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    #[schemars(extend("x-since" = 3))]
+    pub check: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

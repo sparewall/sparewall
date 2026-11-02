@@ -71,7 +71,7 @@ back to one of them keeps its configuration.
 | --- | --- | --- |
 | 1 | Everything up to 0.2.0 | 0.2.0 |
 | 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
-| 3 | `networks.<name>.vmac` | 0.4.0 |
+| 3 | `updates.check`, `networks.<name>.vmac` | 0.4.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -580,6 +580,36 @@ the newest release of the previous minor series too (for 0.3.2: from
 0.3.1, and from 0.2.0), each installed from that release's own disk
 image, then rolls one node back with `bootc rollback`. Upgrade from one of
 those; from anything older, upgrade through them in turn.
+
+**Checking in the background.** Each node, both nodes of a pair, asks
+the registry what its channel offers a few minutes after it starts and
+about every 6 hours after that, with the same comparison as
+`--check`. It contacts only the registry of the image it would upgrade to
+(`ghcr.io` unless the node was installed from a mirror), with `skopeo
+inspect`, which reads the image's manifest and labels without downloading
+it. The answer is in `sparewall status -o json` (`update`), and in
+`/metrics`:
+
+| Metric | Meaning |
+| --- | --- |
+| `sparewall_update_available{kind}` | 1 when the channel offers a `newer` version, a `rebuild` of this one, or a `different` image whose version cannot be read; 0 with `kind="none"` |
+| `sparewall_update_last_check_success_timestamp_seconds` | When a check last succeeded |
+
+When what is available changes, and only then, the node logs it once
+("0.4.1 is available on ghcr.io/sparewall/sparewall:stable (running
+0.4.0)") with `MESSAGE_ID=c8f95979678447529aa9b5914a38a3a0`, and sends
+it as an `update` event (`sparewall events`). A failed check is logged
+once, when checks start failing, with
+`MESSAGE_ID=52e0a9567b834f27aee3019c5703cf13`, and retried about an hour
+later; the last answer is kept meanwhile. Select either with
+`journalctl MESSAGE_ID=…`, or forward them with the rest of the journal
+(`logging.remote`). An available update, or a failing check, never
+changes health, so in a pair it never moves the gateway addresses.
+
+To keep a node from contacting the registry on its own, on an air-gapped
+site for instance: `sparewall set updates.check=false` (schema revision
+3, which 0.3.x cannot read). `sparewall upgrade --check` still asks when
+you run it.
 
 Upgrades run only when asked for: scheduled upgrades
 (`updates.mode: windowed`, `updates.window`) are not built yet and are
