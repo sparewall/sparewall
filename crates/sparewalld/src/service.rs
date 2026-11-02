@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, BackupReply, BindReply, CheckBackupPasswordReply, ConfigReply, Empty, EventReply,
     ExportReply, FailoverReply, FirewallError, GenerationReply, HealthCheck, HealthReply,
-    HistoryReply, LoginReply, SecretInfo, SecretListReply, SecretSetReply, StatusReply,
+    HistoryReply, LoginReply, QueryReply, SecretInfo, SecretListReply, SecretSetReply, StatusReply,
     TokenCreateReply, TokenInfo, TokenListReply, UpgradeCheckReply, UpgradeStartReply, UserInfo,
     UserListReply, ValidateReply, VpnConfigReply,
 };
@@ -1039,6 +1039,63 @@ where
             });
         }
         Ok(Empty {})
+    }
+
+    /// Evaluate a PromQL expression at `time` (RFC 3339 or Unix seconds;
+    /// default now) over this node's history, kept with `metrics.mode:
+    /// local`.
+    #[zlink(interface = "org.sparewall.Metrics", rename = "Query")]
+    async fn metrics_query(
+        &mut self,
+        query: String,
+        time: Option<String>,
+    ) -> Result<QueryReply, FirewallError> {
+        self.history_kept().await?;
+        let mut p = vec![("query", query.as_str())];
+        if let Some(t) = &time {
+            p.push(("time", t));
+        }
+        crate::history::query("/api/v1/query", &p).await
+    }
+
+    /// Evaluate a PromQL expression from `start` to `end` (RFC 3339 or Unix
+    /// seconds), every `step` (a duration such as `1m`, or seconds), over
+    /// this node's history.
+    #[zlink(interface = "org.sparewall.Metrics", rename = "QueryRange")]
+    async fn metrics_query_range(
+        &mut self,
+        query: String,
+        start: String,
+        end: String,
+        step: String,
+    ) -> Result<QueryReply, FirewallError> {
+        self.history_kept().await?;
+        let p = [
+            ("query", query.as_str()),
+            ("start", &start),
+            ("end", &end),
+            ("step", &step),
+        ];
+        crate::history::query("/api/v1/query_range", &p).await
+    }
+}
+
+impl Firewall {
+    /// Whether the live document keeps history here, to query.
+    async fn history_kept(&self) -> Result<(), FirewallError> {
+        let local = with_core(&self.core, &self.events, |c| {
+            Ok(c.active_document()?
+                .and_then(|d| d.metrics)
+                .is_some_and(|m| m.mode == sparewall_config::model::MetricsMode::Local))
+        })
+        .await?;
+        if local {
+            Ok(())
+        } else {
+            Err(FirewallError::NotSupported {
+                message: "this node keeps no history: metrics.mode is not local".into(),
+            })
+        }
     }
 }
 

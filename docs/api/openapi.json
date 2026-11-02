@@ -952,14 +952,26 @@
         "properties": {
           "mode": {
             "$ref": "#/components/schemas/Document.MetricsMode",
-            "description": "`external`: `/metrics` answers the management network without a\ntoken, for an external Prometheus. `off`: not served. (Without a\n`metrics` section it needs a token.) `local` (a local Prometheus)\nis not built yet and is rejected."
+            "description": "`external`: `/metrics` answers the management network without a\ntoken, for an external Prometheus. `local`: each node also keeps\nits own history in a local Prometheus, which the API queries\n(`org.sparewall.Metrics`); `/metrics` needs a token, as it does\nwithout a `metrics` section. `off`: not served.",
+            "x-since-values": {
+              "local": 4
+            }
           },
           "retention": {
-            "description": "Local Prometheus retention, e.g. `15d`. Not built yet, with the\nlocal mode: rejected.",
+            "description": "With `mode: local`, how long history is kept, in Prometheus's units\n(`15d`, `12h`, `1y`). Default `15d`.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "x-since": 4
+          },
+          "retention_size": {
+            "description": "With `mode: local`, the most history may take on disk (`512MB`,\n`2GB`): past it, the oldest goes first, whatever `retention` says.\nDefault `1GB`.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "x-since": 4
           }
         },
         "required": [
@@ -1856,7 +1868,7 @@
         "type": "object"
       },
       "Error": {
-        "description": "A Varlink error: its name and parameters, and a message in words. The HTTP status follows the error (422 ValidationFailed, 409 Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied without credentials and 403 with them, 404 NotFound, MethodNotFound and InterfaceNotFound, 503 PeerUnreachable, 400 NotSupported, InvalidParameter and malformed calls, 500 the rest; the gateway's own: 502 Unavailable, 404 NotFound, 405 MethodNotAllowed, 413 TooLarge).",
+        "description": "A Varlink error: its name and parameters, and a message in words. The HTTP status follows the error (422 ValidationFailed, 409 Conflict, NotPending and ConfirmTimeout, 401 PermissionDenied without credentials and 403 with them, 404 NotFound, MethodNotFound and InterfaceNotFound, 503 PeerUnreachable and ServiceUnavailable, 400 NotSupported, InvalidParameter and malformed calls, 500 the rest; the gateway's own: 502 Unavailable, 404 NotFound, 405 MethodNotAllowed, 413 TooLarge).",
         "oneOf": [
           {
             "properties": {
@@ -2091,6 +2103,39 @@
               "parameters"
             ],
             "title": "org.sparewall.Firewall.PermissionDenied",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
+                "const": "org.sparewall.Firewall.ServiceUnavailable"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "A service the call needs is not answering (the local Prometheus, for `org.sparewall.Metrics`).",
+                "properties": {
+                  "message": {
+                    "type": "string"
+                  },
+                  "service": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "service",
+                  "message"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.sparewall.Firewall.ServiceUnavailable",
             "type": "object"
           },
           {
@@ -2380,6 +2425,7 @@
               "org.sparewall.Firewall.NotSupported",
               "org.sparewall.Firewall.PeerUnreachable",
               "org.sparewall.Firewall.PermissionDenied",
+              "org.sparewall.Firewall.ServiceUnavailable",
               "org.sparewall.Firewall.ValidationFailed",
               "org.sparewall.Httpd.MethodNotAllowed",
               "org.sparewall.Httpd.NotFound",
@@ -4282,6 +4328,160 @@
         "x-sparewall-role": "admin"
       }
     },
+    "/call/org.sparewall.Metrics.Query": {
+      "post": {
+        "description": "Evaluate a PromQL expression at `time` (RFC 3339 or Unix seconds; default now) over this node's history, kept with `metrics.mode: local`.",
+        "operationId": "Metrics.Query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  },
+                  "time": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "result": {
+                      "description": "Prometheus's `data.result`. A vector is `[{metric, value: [time, \"value\"]}]`, a matrix `[{metric, values: [[time, \"value\"], ...]}]`, a scalar or a string `[time, \"value\"]`.",
+                      "type": "object"
+                    },
+                    "result_type": {
+                      "description": "`vector`, `matrix`, `scalar` or `string`.",
+                      "type": "string"
+                    },
+                    "warnings": {
+                      "description": "What Prometheus noted about the query (its warnings and infos).",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "result_type",
+                    "result",
+                    "warnings"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Evaluate a PromQL expression at `time` (RFC 3339 or Unix seconds; default now) over this node's history, kept with `metrics.mode: local`.",
+        "tags": [
+          "org.sparewall.Metrics"
+        ],
+        "x-sparewall-role": "monitor"
+      }
+    },
+    "/call/org.sparewall.Metrics.QueryRange": {
+      "post": {
+        "description": "Evaluate a PromQL expression from `start` to `end` (RFC 3339 or Unix seconds), every `step` (a duration such as `1m`, or seconds), over this node's history.",
+        "operationId": "Metrics.QueryRange",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "end": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "start": {
+                    "type": "string"
+                  },
+                  "step": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query",
+                  "start",
+                  "end",
+                  "step"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "result": {
+                      "description": "Prometheus's `data.result`. A vector is `[{metric, value: [time, \"value\"]}]`, a matrix `[{metric, values: [[time, \"value\"], ...]}]`, a scalar or a string `[time, \"value\"]`.",
+                      "type": "object"
+                    },
+                    "result_type": {
+                      "description": "`vector`, `matrix`, `scalar` or `string`.",
+                      "type": "string"
+                    },
+                    "warnings": {
+                      "description": "What Prometheus noted about the query (its warnings and infos).",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "result_type",
+                    "result",
+                    "warnings"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Evaluate a PromQL expression from `start` to `end` (RFC 3339 or Unix seconds), every `step` (a duration such as `1m`, or seconds), over this node's history.",
+        "tags": [
+          "org.sparewall.Metrics"
+        ],
+        "x-sparewall-role": "monitor"
+      }
+    },
     "/call/org.sparewall.Secrets.CheckBackupPassword": {
       "post": {
         "description": "Whether `password` is the stored backup password, and whether it opens the newest bundle on the node (#142). Nothing derived from the stored secret is returned; a wrong one is answered slowly.",
@@ -4720,6 +4920,9 @@
     },
     {
       "name": "org.sparewall.Auth"
+    },
+    {
+      "name": "org.sparewall.Metrics"
     }
   ]
 }

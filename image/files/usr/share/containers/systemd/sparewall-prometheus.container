@@ -1,0 +1,39 @@
+# Prometheus, each node's metrics history (metrics.mode: local, #145).
+# Started, reloaded and stopped by sparewalld according to the live
+# generation; not enabled on its own.
+[Unit]
+Description=Sparewall metrics history (Prometheus)
+Documentation=https://github.com/sparewall/sparewall
+After=sparewall-early.service
+
+[Container]
+ContainerName=sparewall-prometheus
+Image=@PROMETHEUS_IMAGE@
+Pull=never
+# The image is a logically bound image in bootc's store.
+GlobalArgs=--storage-opt=additionalimagestore=/usr/lib/bootc/storage
+# The host's network, for loopback: it scrapes the coordinator there and
+# listens there only. Nothing is published.
+Network=host
+DropCapability=all
+User=65534:65534
+NoNewPrivileges=true
+ReadOnly=true
+Volume=/run/sparewall/metrics:/etc/prometheus:ro
+# U: owned by the user it runs as, whoever created it (a new rootful
+# volume is root's).
+Volume=sparewall-prometheus-data:/prometheus:z,U
+# The Go runtime collects harder before it reaches MemoryMax below.
+Environment=GOMEMLIMIT=400MiB
+Exec=/usr/bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --web.listen-address=127.0.0.1:9090 --query.timeout=30s
+LogDriver=journald
+
+[Service]
+ExecReload=/usr/bin/podman kill --signal HUP sparewall-prometheus
+Restart=on-failure
+RestartSec=5s
+# Management, not the data plane: its memory is capped, and it comes
+# after everything else for CPU and disk.
+MemoryMax=512M
+CPUWeight=20
+IOWeight=20

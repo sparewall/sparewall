@@ -362,7 +362,22 @@ Where the implementation departs from, or settles open questions in,
 - **Equal-version cluster secrets** made independently by both nodes
   (each applied the pairing document) converge on the one created first.
 - **Health endpoint detail and `/metrics`** need an API token, except
-  `/metrics` when `metrics.mode` is `external`.
+  `/metrics` when `metrics.mode` is `external`, or over loopback when it
+  is `local`.
+- **The local Prometheus** (`metrics.mode: local`, #145) scrapes
+  `/metrics` over loopback, which needs no token in that mode (as
+  node\_exporter answers loopback without one), rather than with a token
+  the coordinator would have to mint and keep for itself. Its certificate
+  is not checked there: it names the management network, not loopback.
+  The API's queries go through the coordinator
+  (`org.sparewall.Metrics`), not a proxy in `sparewall-httpd`, which has
+  no network at all: only the query endpoints are reachable, with the
+  caller's role checked like any call. They need `monitor`, which can
+  read every series on `/metrics` already. Retention is in the rendered
+  `prometheus.yml` (Prometheus 3 deprecated the flags), so a change is a
+  reload. It runs as `nobody`; podman gives a new named volume to the
+  container's user. Its container runs as `container_t`, like Kea's and
+  Unbound's.
 - **Roles are checked per call on the restricted socket** (#11),
   `/run/sparewall-api/org.sparewall.Api`. A connection binds a token
   first (`org.sparewall.Auth.Bind`). A wrapper around the service on
@@ -599,8 +614,7 @@ through the cut network do not survive that long a stall.
 - Schema migrations. Revision 2 only added a field, which needs none
   (see "Adding a field" above).
 - Benchmarks.
-- A local Prometheus (`metrics.mode: local`, `metrics.retention`),
-  scheduled upgrades (`updates.mode: windowed`, `updates.window`) and
-  provider passthrough (`provider_options`). The schema keeps their
-  fields, and validation rejects them with an error at their path, so a
-  document never shows a setting that has no effect.
+- Provider passthrough (`provider_options`). The schema keeps the field,
+  and validation rejects it with an error at its path, so a document
+  never shows a setting that has no effect. (Scheduled upgrades were in
+  the same state until 0.4.0, and a local Prometheus until 0.5.0.)

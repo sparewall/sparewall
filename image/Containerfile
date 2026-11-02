@@ -107,6 +107,7 @@ FROM quay.io/fedora/fedora-bootc:45
 ARG KEA_IMAGE=ghcr.io/sparewall/kea:testing
 ARG UNBOUND_IMAGE=ghcr.io/sparewall/unbound:testing
 ARG LEGO_IMAGE=ghcr.io/sparewall/lego:testing
+ARG PROMETHEUS_IMAGE=ghcr.io/sparewall/prometheus:testing
 # The Sparewall version (.github/version.sh), which a node reads from the
 # registry to tell a newer image from an older one (#170). A label of its
 # own: org.opencontainers.image.version is the base image's (Fedora's
@@ -180,6 +181,7 @@ RUN test -L /usr/sbin \
     && sed -i -e "s|@KEA_IMAGE@|${KEA_IMAGE}|" /usr/share/containers/systemd/sparewall-kea.container \
     && sed -i -e "s|@UNBOUND_IMAGE@|${UNBOUND_IMAGE}|" /usr/share/containers/systemd/sparewall-unbound.container \
     && sed -i -e "s|@LEGO_IMAGE@|${LEGO_IMAGE}|" /usr/share/containers/systemd/sparewall-lego.image \
+    && sed -i -e "s|@PROMETHEUS_IMAGE@|${PROMETHEUS_IMAGE}|" /usr/share/containers/systemd/sparewall-prometheus.container \
     && semodule -i /usr/share/selinux/packages/sparewalld.pp \
     && semodule -l | grep -qx sparewalld \
     && systemctl preset-all \

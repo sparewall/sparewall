@@ -94,7 +94,10 @@ pub fn needed(method: &str) -> Option<Need> {
         "org.sparewall.Auth.Bind" | "org.sparewall.Auth.Login" => return Some(Need::Nothing),
         "org.sparewall.Auth.Logout" => Monitor,
         "org.varlink.service.GetInfo" | "org.varlink.service.GetInterfaceDescription" => Monitor,
-        "org.sparewall.Firewall.Health" => Monitor,
+        // History holds what /metrics shows a monitor token.
+        "org.sparewall.Firewall.Health"
+        | "org.sparewall.Metrics.Query"
+        | "org.sparewall.Metrics.QueryRange" => Monitor,
         "org.sparewall.Firewall.Validate"
         | "org.sparewall.Firewall.GetConfig"
         | "org.sparewall.Firewall.Export"

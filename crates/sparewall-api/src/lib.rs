@@ -170,6 +170,12 @@ pub enum FirewallError {
     NotSupported {
         message: String,
     },
+    /// A service the call needs is not answering (the local Prometheus,
+    /// for `org.sparewall.Metrics`).
+    ServiceUnavailable {
+        service: String,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for FirewallError {
@@ -206,6 +212,9 @@ impl std::fmt::Display for FirewallError {
             }
             FirewallError::ApplyFailed { message } => write!(f, "apply failed: {message}"),
             FirewallError::NotSupported { message } => write!(f, "not supported: {message}"),
+            FirewallError::ServiceUnavailable { service, message } => {
+                write!(f, "{service} is unavailable: {message}")
+            }
         }
     }
 }
@@ -727,4 +736,42 @@ pub trait UpgradeProxy {
         image: Option<&str>,
         allow_downgrade: Option<bool>,
     ) -> zlink::Result<Result<UpgradeStartReply, FirewallError>>;
+}
+
+// ---------------------------------------------------------------------------
+// History, from the local Prometheus (`metrics.mode: local`, #145).
+
+pub const METRICS_INTERFACE: &str = "org.sparewall.Metrics";
+
+/// A PromQL result, as Prometheus's HTTP API gives it.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct QueryReply {
+    /// `vector`, `matrix`, `scalar` or `string`.
+    pub result_type: String,
+    /// Prometheus's `data.result`. A vector is `[{metric, value: [time,
+    /// "value"]}]`, a matrix `[{metric, values: [[time, "value"], ...]}]`,
+    /// a scalar or a string `[time, "value"]`.
+    pub result: Value,
+    /// What Prometheus noted about the query (its warnings and infos).
+    pub warnings: Vec<String>,
+}
+
+#[zlink::proxy("org.sparewall.Metrics")]
+pub trait MetricsProxy {
+    /// Evaluate a PromQL expression at `time` (RFC 3339 or Unix seconds;
+    /// default now) over this node's history.
+    async fn query(
+        &mut self,
+        query: &str,
+        time: Option<&str>,
+    ) -> zlink::Result<Result<QueryReply, FirewallError>>;
+    /// Evaluate a PromQL expression from `start` to `end` (RFC 3339 or Unix
+    /// seconds), every `step` (a duration such as `1m`, or seconds).
+    async fn query_range(
+        &mut self,
+        query: &str,
+        start: &str,
+        end: &str,
+        step: &str,
+    ) -> zlink::Result<Result<QueryReply, FirewallError>>;
 }

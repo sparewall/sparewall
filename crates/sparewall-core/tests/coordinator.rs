@@ -1784,9 +1784,9 @@ fn unbuilt_settings() -> Vec<(Value, &'static str)> {
             json!({"provider_options": {"kea": {"valid-lifetime": 600}}}),
             "provider_options.kea",
         ),
-        (json!({"metrics": {"mode": "local"}}), "metrics.mode"),
+        // Builds before 0.1.0 took any retention, which then did nothing.
         (
-            json!({"metrics": {"mode": "external", "retention": "15d"}}),
+            json!({"metrics": {"mode": "local", "retention": "two weeks"}}),
             "metrics.retention",
         ),
     ]
