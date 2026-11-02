@@ -309,6 +309,18 @@
               "null"
             ]
           },
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Retention"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the repository keeps of this node's snapshots: after each\nsuccessful send the node runs `restic forget` on its own snapshots\n(`--host <node> --tag sparewall`) with these keep rules, restic's own\nnames. Without it, a repository keeps `hourly: 48, daily: 30,\nweekly: 12, monthly: 24`; `enabled: false` keeps everything (#140).",
+            "x-since": 3
+          },
           "schedule": {
             "description": "systemd calendar expression. Default `hourly`.",
             "type": [
@@ -1430,6 +1442,71 @@
           "mac",
           "address"
         ],
+        "type": "object"
+      },
+      "Document.Retention": {
+        "additionalProperties": false,
+        "description": "restic's keep rules (`restic forget --keep-*`): a snapshot is kept if\nany rule keeps it.",
+        "properties": {
+          "daily": {
+            "description": "… days (`--keep-daily`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "enabled": {
+            "description": "`false` keeps every snapshot: prune elsewhere.",
+            "type": "boolean"
+          },
+          "hourly": {
+            "description": "The newest snapshot of each of the last N hours (`--keep-hourly`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last": {
+            "description": "The newest N snapshots (`--keep-last`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "monthly": {
+            "description": "… months (`--keep-monthly`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "weekly": {
+            "description": "… weeks (`--keep-weekly`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "yearly": {
+            "description": "… years (`--keep-yearly`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "Document.Rule": {

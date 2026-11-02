@@ -865,6 +865,86 @@ pub struct Backup {
     /// Generations to include. Default 20.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generations: Option<u32>,
+    /// What the repository keeps of this node's snapshots: after each
+    /// successful send the node runs `restic forget` on its own snapshots
+    /// (`--host <node> --tag sparewall`) with these keep rules, restic's own
+    /// names. Without it, a repository keeps `hourly: 48, daily: 30,
+    /// weekly: 12, monthly: 24`; `enabled: false` keeps everything (#140).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 3))]
+    pub retention: Option<Retention>,
+}
+
+/// restic's keep rules (`restic forget --keep-*`): a snapshot is kept if
+/// any rule keeps it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Retention {
+    /// `false` keeps every snapshot: prune elsewhere.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+    /// The newest N snapshots (`--keep-last`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<u32>,
+    /// The newest snapshot of each of the last N hours (`--keep-hourly`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hourly: Option<u32>,
+    /// … days (`--keep-daily`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily: Option<u32>,
+    /// … weeks (`--keep-weekly`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekly: Option<u32>,
+    /// … months (`--keep-monthly`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly: Option<u32>,
+    /// … years (`--keep-yearly`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yearly: Option<u32>,
+}
+
+impl Retention {
+    /// What a repository keeps when `retention` is not set: two days at
+    /// full resolution, then daily, weekly and monthly for two years.
+    pub fn default_policy() -> Retention {
+        Retention {
+            enabled: true,
+            last: None,
+            hourly: Some(48),
+            daily: Some(30),
+            weekly: Some(12),
+            monthly: Some(24),
+            yearly: None,
+        }
+    }
+
+    /// restic's flags for the rules that keep something.
+    pub fn keep_flags(&self) -> Vec<String> {
+        [
+            ("last", self.last),
+            ("hourly", self.hourly),
+            ("daily", self.daily),
+            ("weekly", self.weekly),
+            ("monthly", self.monthly),
+            ("yearly", self.yearly),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| v.filter(|n| *n > 0).map(|n| format!("--keep-{k}={n}")))
+        .collect()
+    }
+}
+
+impl Backup {
+    /// The retention the node applies after a send, if any: the document's,
+    /// or the default when a repository is set; none when turned off.
+    pub fn effective_retention(&self) -> Option<Retention> {
+        self.repository.as_ref()?;
+        let r = self
+            .retention
+            .clone()
+            .unwrap_or_else(Retention::default_policy);
+        r.enabled.then_some(r)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

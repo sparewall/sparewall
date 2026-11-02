@@ -648,6 +648,65 @@ fn windowed_upgrades() {
     );
 }
 
+/// Backup retention (#140): restic's keep rules, a default with a
+/// repository, never nothing.
+#[test]
+fn backup_retention() {
+    use crate::model::Retention;
+    let b = |v: serde_json::Value| edit(STANDALONE, json!({"backup": v}));
+    let with_repo = b(json!({"enabled": true, "repository": "/srv/restic"}));
+    assert_valid(&with_repo);
+    assert_eq!(
+        with_repo.backup.as_ref().unwrap().effective_retention(),
+        Some(Retention::default_policy())
+    );
+    assert_eq!(
+        Retention::default_policy().keep_flags(),
+        [
+            "--keep-hourly=48",
+            "--keep-daily=30",
+            "--keep-weekly=12",
+            "--keep-monthly=24"
+        ]
+    );
+    let custom = b(json!({"enabled": true, "repository": "/srv/restic",
+        "retention": {"last": 10, "daily": 7, "yearly": 0}}));
+    assert_valid(&custom);
+    assert_eq!(
+        custom
+            .backup
+            .as_ref()
+            .unwrap()
+            .effective_retention()
+            .unwrap()
+            .keep_flags(),
+        ["--keep-last=10", "--keep-daily=7"]
+    );
+    let off =
+        b(json!({"enabled": true, "repository": "/srv/restic", "retention": {"enabled": false}}));
+    assert_valid(&off);
+    assert_eq!(off.backup.as_ref().unwrap().effective_retention(), None);
+    // No repository: nothing to forget in.
+    let local = b(json!({"enabled": true}));
+    assert_eq!(local.backup.as_ref().unwrap().effective_retention(), None);
+    assert!(
+        warnings(&b(json!({"enabled": true, "retention": {"daily": 7}})))
+            .iter()
+            .any(|w| w.starts_with("backup.retention: retention applies to backup.repository"))
+    );
+    for keeps_nothing in [json!({}), json!({"daily": 0, "last": 0})] {
+        assert!(has_error(
+            &b(json!({"enabled": true, "repository": "/srv/restic", "retention": keeps_nothing})),
+            "backup.retention: keeps nothing"
+        ));
+    }
+    // A new field: revision 3.
+    assert_eq!(
+        crate::schema::revision(&serde_json::to_value(&custom).unwrap()),
+        3
+    );
+}
+
 /// #10: switching a role's provider away from one whose state the new one
 /// cannot import warns; keeping it, or a role without state, does not.
 #[test]

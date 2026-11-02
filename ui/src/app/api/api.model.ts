@@ -83,6 +83,12 @@ export interface Schemas {
     "generations"?: number | null;
     /** restic repository URL. */
     "repository"?: string | null;
+    /** What the repository keeps of this node's snapshots: after each
+     * successful send the node runs `restic forget` on its own snapshots
+     * (`--host <node> --tag sparewall`) with these keep rules, restic's own
+     * names. Without it, a repository keeps `hourly: 48, daily: 30,
+     * weekly: 12, monthly: 24`; `enabled: false` keeps everything (#140). */
+    "retention"?: Schemas["Document.Retention"] | null;
     /** systemd calendar expression. Default `hourly`. */
     "schedule"?: string | null;
   };
@@ -392,6 +398,24 @@ export interface Schemas {
     /** Hostname to hand out (and publish in local DNS). */
     "hostname"?: string | null;
     "mac": string;
+  };
+  /** restic's keep rules (`restic forget --keep-*`): a snapshot is kept if
+   * any rule keeps it. */
+  "Document.Retention": {
+    /** … days (`--keep-daily`). */
+    "daily"?: number | null;
+    /** `false` keeps every snapshot: prune elsewhere. */
+    "enabled"?: boolean;
+    /** The newest snapshot of each of the last N hours (`--keep-hourly`). */
+    "hourly"?: number | null;
+    /** The newest N snapshots (`--keep-last`). */
+    "last"?: number | null;
+    /** … months (`--keep-monthly`). */
+    "monthly"?: number | null;
+    /** … weeks (`--keep-weekly`). */
+    "weekly"?: number | null;
+    /** … years (`--keep-yearly`). */
+    "yearly"?: number | null;
   };
   "Document.Rule": {
     /** What to do with matching packets. */
