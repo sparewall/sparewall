@@ -296,6 +296,14 @@ export interface Schemas {
     "vip"?: Schemas["Document.Cidr"] | null;
     /** 802.1Q VLAN ID; omit for the untagged network of a port. */
     "vlan"?: number | null;
+    /** On a pair's WAN with private node addresses and a static block:
+     * carry the gateway addresses and the public route behind the VRRP
+     * virtual MAC (`00:00:5e:00:01:<vrid>`), so a handover changes no MAC
+     * the upstream sees (the default). `false` puts them on the nodes'
+     * own MACs, for an upstream that limits the MACs it learns on a port.
+     * Not `cluster.vrrp.use_vmac`, keepalived's own virtual MAC for the
+     * other networks' instances. */
+    "vmac"?: boolean;
     /** VRRP virtual router ID (1-255), unique across the deployment. */
     "vrid"?: number | null;
   };
