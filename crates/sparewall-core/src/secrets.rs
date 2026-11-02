@@ -76,6 +76,42 @@ pub fn vpn_psk_refs(doc: &Document) -> Vec<(String, String, String)> {
     v
 }
 
+/// The secret `logging.remote.certificate` names, if the syslog provider
+/// forwards with one.
+pub fn log_certificate_ref(doc: &Document) -> Option<String> {
+    let r = doc.logging.as_ref()?.remote.as_ref()?;
+    if sparewall_config::providers::chosen(doc, sparewall_config::providers::Role::LogForwarding)
+        != Some("syslog")
+    {
+        return None;
+    }
+    let c = r.certificate.as_deref()?;
+    Some(c.strip_prefix("secret:").unwrap_or(c).to_string())
+}
+
+/// A PEM bundle split into its certificates (in order) and its private
+/// key: `(certificates, key)`, or `None` without exactly one key and at
+/// least one certificate.
+pub fn split_pem(v: &[u8]) -> Option<(String, String)> {
+    let text = std::str::from_utf8(v).ok()?;
+    let (mut certs, mut keys) = (String::new(), Vec::new());
+    let mut rest = text;
+    while let Some(start) = rest.find("-----BEGIN ") {
+        let after = &rest[start + 11..];
+        let label = &after[..after.find("-----")?];
+        let end_marker = format!("-----END {label}-----");
+        let end = rest[start..].find(&end_marker)? + start + end_marker.len();
+        let block = format!("{}\n", &rest[start..end]);
+        if label == "CERTIFICATE" {
+            certs.push_str(&block);
+        } else if label.ends_with("PRIVATE KEY") {
+            keys.push(block);
+        }
+        rest = &rest[end..];
+    }
+    (keys.len() == 1 && !certs.is_empty()).then(|| (certs, keys.remove(0)))
+}
+
 /// Write an encrypted secret and its metadata into a state directory.
 pub fn store_encrypted(state_dir: &Path, info: &SecretInfo, blob: &[u8]) -> Result<(), Error> {
     let dir = state_dir.join("secrets");
@@ -257,11 +293,17 @@ impl<S: System> Coordinator<S> {
 
     /// After a remote-access key changed: install it and recreate the
     /// WireGuard interface, since networkd reads keys only at creation.
-    pub fn refresh_vpn_keys(&mut self, changed: &[String]) -> Result<(), Error> {
+    pub fn refresh_runtime_secrets(&mut self, changed: &[String]) -> Result<(), Error> {
         let Some(doc) = self.active_document()? else {
             return Ok(());
         };
-        self.install_vpn_keys(&doc)?;
+        self.install_runtime_secrets(&doc)?;
+        // rsyslog reads its client certificate only when it starts.
+        if log_certificate_ref(&doc).is_some_and(|n| changed.contains(&n)) {
+            let meta = self.rendered_for(self.active()?)?.meta;
+            self.system()
+                .services_apply(&meta, &[sparewall_render::Subsystem::Logging])?;
+        }
         let psks = vpn_psk_refs(&doc);
         for name in doc.vpn.keys() {
             let psk_changed = psks
@@ -289,8 +331,10 @@ impl<S: System> Coordinator<S> {
         Ok(v)
     }
 
-    /// Hand the remote-access server keys to networkd (in tmpfs).
-    pub fn install_vpn_keys(&mut self, doc: &Document) -> Result<(), Error> {
+    /// Hand the remote-access server keys to networkd, and rsyslog its
+    /// client certificate (in tmpfs).
+    pub fn install_runtime_secrets(&mut self, doc: &Document) -> Result<(), Error> {
+        self.install_log_certificate(doc)?;
         for name in doc.vpn.keys() {
             match self.secret_get(&vpn_secret(name))? {
                 Some(key) => self.system().install_key(
@@ -316,6 +360,59 @@ impl<S: System> Coordinator<S> {
             }
         }
         Ok(())
+    }
+
+    /// rsyslog's client certificate and key, split from the secret
+    /// `logging.remote.certificate` names, or removed when it names none.
+    /// A secret not set yet, or without both a key and a certificate, is
+    /// left out with a warning (health says so too): rsyslog cannot
+    /// connect until it is set.
+    fn install_log_certificate(&mut self, doc: &Document) -> Result<(), Error> {
+        use sparewall_render::logging::{SYSLOG_CLIENT_CERT, SYSLOG_CLIENT_KEY};
+        let pair = match log_certificate_ref(doc) {
+            None => None,
+            Some(name) => match self.secret_get(&name)? {
+                None => {
+                    tracing::warn!(secret = name, "the syslog client certificate is not set");
+                    None
+                }
+                Some(v) => match split_pem(&v) {
+                    Some(p) => Some(p),
+                    None => {
+                        tracing::warn!(
+                            secret = name,
+                            "the syslog client certificate needs a private key and a certificate, PEM"
+                        );
+                        None
+                    }
+                },
+            },
+        };
+        let (cert, key) = match &pair {
+            Some((c, k)) => (Some(c.as_bytes()), Some(k.as_bytes())),
+            None => (None, None),
+        };
+        self.system().install_secret_file(SYSLOG_CLIENT_KEY, key)?;
+        self.system().install_secret_file(SYSLOG_CLIENT_CERT, cert)
+    }
+
+    /// Why the syslog client certificate is not usable, if it is not: for
+    /// apply's warnings and health.
+    pub fn log_certificate_problem(&mut self, doc: &Document) -> Result<Option<String>, Error> {
+        let Some(name) = log_certificate_ref(doc) else {
+            return Ok(None);
+        };
+        Ok(match self.secret_get(&name)? {
+            None => Some(format!(
+                "logging.remote.certificate: secret {name:?} is not set; rsyslog cannot \
+                 connect to the collector until it is (sparewall secret set {name})"
+            )),
+            Some(v) if split_pem(&v).is_none() => Some(format!(
+                "logging.remote.certificate: secret {name:?} needs a private key and a \
+                 certificate, PEM"
+            )),
+            Some(_) => None,
+        })
     }
 
     /// The server public key of a remote-access instance.

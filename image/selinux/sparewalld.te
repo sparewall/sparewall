@@ -74,6 +74,7 @@ gen_require(`
 	type container_t, container_file_t, container_var_lib_t;
 	type systemd_generator_unit_file_t;
 	type chronyd_unit_file_t, keepalived_unit_file_t, conntrackd_unit_file_t;
+	type syslogd_t, syslogd_unit_file_t;
 	type sshd_t, sshd_unit_file_t;
 	type http_port_t, unreserved_port_t, node_t;
 	class service { start stop status reload };
@@ -153,10 +154,13 @@ manage_files_pattern(sparewalld_t, sparewalld_tmp_t, sparewalld_tmp_t)
 files_tmp_filetrans(sparewalld_t, sparewalld_tmp_t, { dir file })
 
 # Confined daemons that read their rendered configs from /run/sparewall
-# (ulogd, journal-upload) or reach their own file in it (conntrackd).
-# keepalived's scripts run unconfined.
-allow { conntrackd_t ulogd_t systemd_journal_upload_t } sparewalld_var_run_t:dir search_dir_perms;
-allow { ulogd_t systemd_journal_upload_t } sparewalld_var_run_t:file read_file_perms;
+# (ulogd, journal-upload, rsyslog) or reach their own file in it
+# (conntrackd). keepalived's scripts run unconfined.
+allow { conntrackd_t ulogd_t systemd_journal_upload_t syslogd_t } sparewalld_var_run_t:dir search_dir_perms;
+allow { ulogd_t systemd_journal_upload_t syslogd_t } sparewalld_var_run_t:file read_file_perms;
+# rsyslog forwards to the collector's port, whichever the document names
+# (logging.remote.provider: syslog, #147).
+corenet_tcp_connect_all_ports(syslogd_t)
 # sparewall-ulogd runs with NoNewPrivileges=yes, so systemd's transition
 # into ulogd_t is an nnp transition; without it ulogd stays init_t, cannot
 # read its plugins and exits. It streams each logged packet to the
@@ -226,7 +230,7 @@ allow sparewalld_t init_var_run_t:file { getattr open read };
 allow sparewalld_t cgroup_t:dir search;
 # Its own cgroup: restic (Go) reads its CPU quota, cpu.max.
 allow sparewalld_t cgroup_t:file { open read };
-allow sparewalld_t { sparewalld_unit_file_t chronyd_unit_file_t keepalived_unit_file_t conntrackd_unit_file_t }:service { start stop status reload };
+allow sparewalld_t { sparewalld_unit_file_t chronyd_unit_file_t keepalived_unit_file_t conntrackd_unit_file_t syslogd_unit_file_t }:service { start stop status reload };
 # sshd: reloaded when management.ssh.password changes, never stopped.
 allow sparewalld_t sshd_unit_file_t:service { start status reload };
 # Quadlet generates sparewall-kea and sparewall-unbound at boot, and the
@@ -318,8 +322,9 @@ allow sparewall_httpd_t self:unix_stream_socket create_stream_socket_perms;
 # one, and finds out by setting one on a datagram socket of its own. It
 # caches the answer only when the probe runs: denied the socket, it
 # probed again on every call to the coordinator, each a denial. The
-# socket reaches nothing; there is no rule to connect or send it.
-allow sparewall_httpd_t self:unix_dgram_socket { create setattr };
+# socket reaches nothing; there is no rule to connect or send it. zlink
+# 0.7 also needs write on it for the probe's fsetxattr.
+allow sparewall_httpd_t self:unix_dgram_socket { create setattr write };
 manage_sock_files_pattern(sparewall_httpd_t, sparewall_httpd_var_run_t, sparewall_httpd_var_run_t)
 stream_connect_pattern(sparewall_httpd_t, sparewalld_api_var_run_t, sparewalld_api_var_run_t, sparewalld_t)
 stream_connect_pattern(sparewalld_t, sparewall_httpd_var_run_t, sparewall_httpd_var_run_t, sparewall_httpd_t)

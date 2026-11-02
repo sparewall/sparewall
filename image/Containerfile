@@ -152,6 +152,9 @@ RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManag
         node-exporter \
         qemu-guest-agent \
         systemd-journal-remote \
+        rsyslog \
+        rsyslog-gnutls \
+        rsyslog-relp \
         libnfnetlink \
         libmnl \
         libnetfilter_conntrack \

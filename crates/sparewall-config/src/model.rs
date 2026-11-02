@@ -18,8 +18,9 @@ use serde_json::Value;
 /// newest revision among the fields it uses ([`crate::schema::revision`]),
 /// so a release that reads only older revisions can tell it apart from
 /// an invalid document, and reads every document that needs nothing newer
-/// (#168).
-pub const SCHEMA_VERSION: u32 = 3;
+/// (#168). A value that earlier releases reject as not built yet says so
+/// too, with `x-since-values` (`{"syslog": 4}`) on its field.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// A whole deployment: one node or an HA pair.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -815,16 +816,36 @@ pub struct Logging {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteLog {
-    /// `journal-upload` (the default). `syslog` is not built yet.
+    /// `journal-upload` (the default): systemd-journal-upload to a
+    /// systemd-journal-remote collector. `syslog`: rsyslog, to a syslog
+    /// collector (RFC 5424), over `protocol`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since-values" = {"syslog": 4}))]
     pub provider: Option<String>,
-    /// URL or `host:port`.
+    /// For journal-upload, a URL or `host:port`. For syslog, `host` or
+    /// `host:port`; the port defaults to 514 (`udp`, `tcp`), 6514 (`tcp`
+    /// with `tls`) or 2514 (`relp`).
     pub destination: String,
-    /// `udp`, `tcp`, `relp` (syslog only).
+    /// syslog only: `udp` (the default; messages can be lost), `tcp`, or
+    /// `relp` (acknowledged delivery).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
+    /// Encrypt, and check the collector's certificate: its name must be
+    /// the destination's host. syslog: with `tcp` or `relp`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub tls: bool,
+    /// syslog only: PEM of the CA that signs the collector's certificate,
+    /// for a private CA (default: the system trust store).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 4))]
+    pub ca: Option<String>,
+    /// syslog only, with `tls`: this node's client certificate for a
+    /// collector that requires one (RELP over TLS always does), as a
+    /// secret reference, `secret:<name>`: the private key and the
+    /// certificate (with any intermediates), PEM, in one secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 4))]
+    pub certificate: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -958,6 +979,7 @@ pub struct Updates {
     /// node) upgrades by itself when `window` opens and the channel offers
     /// a newer image, through the same health-gated sequence (#84).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since-values" = {"windowed": 3}))]
     pub mode: Option<UpdateMode>,
     /// When a scheduled upgrade may start: a systemd calendar expression
     /// (`Sun *-*-* 03:00`), in the node's time zone (UTC unless set).

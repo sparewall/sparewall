@@ -1324,6 +1324,66 @@ impl Validator<'_> {
             "logging.remote.provider".into(),
             r.provider.as_deref(),
         );
+        let p = "logging.remote";
+        if providers::chosen(self.doc, Role::LogForwarding) != Some("syslog") {
+            if r.protocol.is_some() {
+                self.err(
+                    format!("{p}.protocol"),
+                    "only the syslog provider takes a protocol",
+                );
+            }
+            if r.ca.is_some() {
+                self.err(format!("{p}.ca"), "only the syslog provider takes a CA");
+            }
+            if r.certificate.is_some() {
+                self.err(
+                    format!("{p}.certificate"),
+                    "only the syslog provider takes a client certificate",
+                );
+            }
+            return;
+        }
+        let protocol = r.protocol.as_deref().unwrap_or("udp");
+        if !["udp", "tcp", "relp"].contains(&protocol) {
+            self.err(
+                format!("{p}.protocol"),
+                format!("unknown protocol {protocol:?}; use udp, tcp or relp"),
+            );
+        }
+        if r.tls && protocol == "udp" {
+            self.err(
+                format!("{p}.tls"),
+                "TLS needs protocol tcp or relp; syslog over UDP is never encrypted",
+            );
+        }
+        if let Some(ca) = &r.ca {
+            if !r.tls {
+                self.err(format!("{p}.ca"), "a CA is for tls: true");
+            }
+            if !ca.contains("-----BEGIN CERTIFICATE-----") {
+                self.err(format!("{p}.ca"), "not a PEM certificate");
+            }
+        }
+        if r.certificate.is_some() && !r.tls {
+            self.err(
+                format!("{p}.certificate"),
+                "a client certificate is for tls: true",
+            );
+        }
+        if protocol == "relp" && r.tls && r.certificate.is_none() {
+            self.err(
+                format!("{p}.certificate"),
+                "RELP over TLS needs a client certificate: without one, librelp \
+                 offers only anonymous TLS, which collectors refuse",
+            );
+        }
+        if syslog_target(&r.destination).is_none() {
+            self.err(
+                format!("{p}.destination"),
+                "for syslog, a host name or address, with an optional :port \
+                 (an IPv6 address in brackets)",
+            );
+        }
     }
 
     fn unbuilt(&mut self) {
@@ -1613,6 +1673,14 @@ impl Validator<'_> {
         {
             refs.push(("backup.credentials".into(), c));
         }
+        if let Some(c) = doc
+            .logging
+            .as_ref()
+            .and_then(|l| l.remote.as_ref())
+            .and_then(|r| r.certificate.as_ref())
+        {
+            refs.push(("logging.remote.certificate".into(), c));
+        }
         for (name, v) in &doc.vpn {
             for (peer, p) in &v.peers {
                 if let Some(k) = &p.preshared_key {
@@ -1697,4 +1765,36 @@ fn match_has_port(doc: &Document, m: &Match, port: u16) -> bool {
             MatchItem::Text(t) => text(doc, t, port),
         }),
     }
+}
+
+/// A syslog destination's host and port, if it is `host`, `host:port` or
+/// `[v6]:port` (no scheme, no path). The port, when absent, is the
+/// protocol's default, which the renderer fills in.
+pub fn syslog_target(dest: &str) -> Option<(&str, Option<u16>)> {
+    let (host, port) = if let Some(rest) = dest.strip_prefix('[') {
+        let (h, tail) = rest.split_once(']')?;
+        h.parse::<std::net::Ipv6Addr>().ok()?;
+        match tail {
+            "" => (h, None),
+            t => (h, Some(t.strip_prefix(':')?)),
+        }
+    } else {
+        match dest.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (dest, None),
+        }
+    };
+    let host_ok = !host.is_empty()
+        && host.len() <= 253
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-.:".contains(c));
+    if !host_ok {
+        return None;
+    }
+    let port = match port {
+        Some(p) => Some(p.parse::<u16>().ok().filter(|p| *p != 0)?),
+        None => None,
+    };
+    Some((host, port))
 }

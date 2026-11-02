@@ -40,6 +40,10 @@ pub fn vpn_psk_file(instance: &str, peer: &str) -> String {
     format!("sparewall-vpn-{instance}-{peer}.psk")
 }
 
+/// Where the coordinator puts secrets for daemons other than networkd
+/// (rsyslog's client certificate), root's alone, in tmpfs.
+pub const SECRETS_DIR: &str = "/run/sparewall/secrets";
+
 /// The sync tunnel's private key (node secret); the master copy.
 pub const SYNC_KEY_FILE: &str = "/var/lib/sparewall/keys/sync.key";
 

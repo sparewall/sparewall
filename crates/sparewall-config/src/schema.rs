@@ -81,6 +81,18 @@ fn since(node: &Value) -> u32 {
         .map_or(1, |v| v as u32)
 }
 
+/// The schema revision that first accepts a property's value, for a value
+/// added after the property itself (`x-since-values`, a map from value to
+/// revision: a provider or mode that earlier releases reject as not built),
+/// or 1.
+fn since_value(node: &Value, v: &Value) -> u32 {
+    let Some(s) = v.as_str() else { return 1 };
+    node.get("x-since-values")
+        .and_then(|m| m.get(s))
+        .and_then(Value::as_u64)
+        .map_or(1, |r| r as u32)
+}
+
 /// The oldest schema revision that reads a document: the newest revision
 /// among the fields it uses (#168). Fields the schema does not describe
 /// are left to validation.
@@ -91,7 +103,10 @@ pub fn revision(doc: &Value) -> u32 {
             Value::Object(m) => {
                 for (k, v) in m {
                     if let Some(c) = child(root, node, k) {
-                        rev = rev.max(since(c)).max(walk(root, c, v));
+                        rev = rev
+                            .max(since(c))
+                            .max(since_value(c, v))
+                            .max(walk(root, c, v));
                     }
                 }
             }
@@ -355,5 +370,23 @@ mod tests {
         assert_eq!(revision(&doc), 1);
         doc["management"]["web"] = Value::Bool(true);
         assert_eq!(revision(&doc), 2);
+    }
+
+    /// A value earlier releases reject as not built needs the revision
+    /// that built it, though the field itself is older.
+    #[test]
+    fn a_newly_built_value_needs_its_revision() {
+        let mut doc = serde_json::json!({
+            "schema": 1,
+            "cluster": {"nodes": ["fw1"]},
+            "management": {"network": "mgmt"},
+            "updates": {"mode": "manual"},
+            "logging": {"remote": {"provider": "journal-upload", "destination": "logs:19532"}},
+        });
+        assert_eq!(revision(&doc), 1);
+        doc["updates"]["mode"] = "windowed".into();
+        assert_eq!(revision(&doc), 3);
+        doc["logging"]["remote"]["provider"] = "syslog".into();
+        assert_eq!(revision(&doc), 4);
     }
 }

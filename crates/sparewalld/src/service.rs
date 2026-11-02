@@ -691,7 +691,7 @@ where
             let info = c.secret_set(&name, value.as_bytes(), class)?;
             // A key the live remote-access VPN uses (a server key, or a
             // peer's preshared key) takes effect now.
-            c.refresh_vpn_keys(std::slice::from_ref(&name))?;
+            c.refresh_runtime_secrets(std::slice::from_ref(&name))?;
             if admin_password {
                 c.apply_admin_password()?;
                 c.users_changed(std::slice::from_ref(&name))?;

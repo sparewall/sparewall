@@ -69,6 +69,7 @@ pub const PROVIDER_UNITS: &[&str] = &[
     "conntrackd.service",
     "sparewall-ulogd.service",
     "systemd-journal-upload.service",
+    sparewall_render::logging::SYSLOG_UNIT,
     sparewall_render::web::UNIT,
 ];
 
@@ -843,6 +844,22 @@ impl System for Linux {
         fs::set_permissions(&p, fs::Permissions::from_mode(0o640)).map_err(|e| Error::io(&p, e))?;
         run("chgrp", &[group, &p.display().to_string()], None)?;
         Ok(())
+    }
+
+    fn install_secret_file(&mut self, file: &str, content: Option<&[u8]>) -> Result<(), Error> {
+        let dir = self.runtime_dir.join("secrets");
+        let p = dir.join(file);
+        let Some(content) = content else {
+            return match fs::remove_file(&p) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::io(&p, e)),
+                _ => Ok(()),
+            };
+        };
+        fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+            .map_err(|e| Error::io(&dir, e))?;
+        write_atomic(&p, content).map_err(|e| Error::io(&p, e))?;
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).map_err(|e| Error::io(&p, e))
     }
 
     fn sync_public_key(&mut self) -> Result<String, Error> {

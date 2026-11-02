@@ -299,7 +299,7 @@ impl PeerService {
             let changed = c.receive_secrets(shared)?;
             // Keys for the live generation may have just arrived.
             if !changed.is_empty() {
-                c.refresh_vpn_keys(&changed)?;
+                c.refresh_runtime_secrets(&changed)?;
             }
             if changed.iter().any(|n| n == ADMIN_PASSWORD) {
                 c.apply_admin_password()?;
