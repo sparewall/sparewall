@@ -108,7 +108,8 @@ fn a_window_systemd_rejects_is_refused() {
     v["updates"] = json!({"mode": "windowed", "window": "bogus 03:00"});
     match t.c.apply(v.clone(), &opts(1, None)) {
         Err(Error::Validation(e)) => assert!(
-            e.iter().any(|m| m.starts_with("updates.window: Failed to parse")),
+            e.iter()
+                .any(|m| m.starts_with("updates.window: Failed to parse")),
             "{e:?}"
         ),
         other => panic!("expected a validation error, got {other:?}"),

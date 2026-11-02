@@ -247,6 +247,11 @@ fn open_window(
     Ok(next_after(expr, base)?.filter(|t| *t <= now))
 }
 
+/// Whether a window that closes at `closes` is still open at `now`.
+fn still_open(closes: jiff::Timestamp, now: jiff::Timestamp) -> bool {
+    now < closes
+}
+
 /// When the next window opens, for `sparewall upgrade --check`.
 pub fn next_window(expr: &str) -> Option<String> {
     next_after(expr, jiff::Timestamp::now())
@@ -399,6 +404,12 @@ pub async fn schedule_loop(core: Core, events: broadcast::Sender<Value>, pair: P
                 }
             }
         }
+        // Nothing starts before the booted image is known: an attempt
+        // records it, to tell after the reboot whether the node moved.
+        if !settled {
+            tokio::time::sleep(POLL).await;
+            continue;
+        }
         if let Err(e) = tick(&core, &events, &pair, &mut tried).await {
             tracing::warn!(error = %e, "scheduled upgrades");
         }
@@ -497,10 +508,33 @@ async fn tick(
         }
         Ok((t, _, r)) => (t, r),
     };
+    // The check may have taken a while (skopeo waits up to two minutes):
+    // never start after the window has closed.
+    let closes = opened + jiff::SignedDuration::from_mins(i64::from(minutes));
+    if !still_open(closes, jiff::Timestamp::now()) {
+        record(
+            core,
+            events,
+            skipped(format!(
+                "the window closed at {closes} while the channel was checked"
+            )),
+        )
+        .await;
+        return Ok(());
+    }
+    let Some(from_image) = booted_image_digest() else {
+        record(
+            core,
+            events,
+            skipped("the booted image is not known yet".into()),
+        )
+        .await;
+        return Ok(());
+    };
+    let from_image = Some(from_image);
     // Follow this run's events from before it starts.
     let mut rx = events.subscribe();
     let plan = crate::upgrade::start(core, events, pair, None, None, false, false).await;
-    let from_image = booted_image_digest();
     match plan {
         Err(e) => {
             let a = Attempt {
@@ -632,6 +666,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(blocked.contains("not acknowledged"), "{blocked}");
+    }
+
+    #[test]
+    fn a_window_closes_at_its_end() {
+        let t = |s: &str| s.parse::<jiff::Timestamp>().unwrap();
+        let closes = t("2026-11-08T09:01:00Z");
+        assert!(still_open(closes, t("2026-11-08T09:00:59Z")));
+        assert!(!still_open(closes, t("2026-11-08T09:01:00Z")));
+        assert!(!still_open(closes, t("2026-11-08T09:03:00Z")));
     }
 
     #[test]
