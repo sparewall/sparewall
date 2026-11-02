@@ -398,8 +398,10 @@ until [ "$(vm 'systemctl is-active sparewall-prometheus' || true)" = active ]; d
     }
     sleep 3
 done
-vm 'ps -eo user:12,label,comm' | grep -E '^nobody +system_u:system_r:container_t:.* prometheus$' >/dev/null \
-    || fail "Prometheus does not run as nobody in container_t: $(vm 'ps -eo user:12,label,comm' | grep prometheus)"
+# By number: the node names 65534 nfsnobody, and node_exporter runs as
+# a user named prometheus.
+vm 'ps -eo uid,label,comm' | grep -E '^ *65534 +system_u:system_r:container_t:.* prometheus$' >/dev/null \
+    || fail "Prometheus does not run as 65534 in container_t: $(vm 'ps -eo uid,label,comm' | grep prometheus)"
 [ "$(vm 'sudo stat -c %u:%g /var/lib/containers/storage/volumes/sparewall-prometheus-data/_data')" = 65534:65534 ] \
     || fail "the history volume is not the user Prometheus runs as"
 # Nothing new on the network: Prometheus answers loopback only.
