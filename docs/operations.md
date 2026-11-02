@@ -605,8 +605,12 @@ every page. Admins can start the upgrade there: it runs
 what `sparewall upgrade` runs, to the document's channel, after a
 confirmation, and the page follows its steps. When the node serving the
 page reboots, the page says so, reconnects, and shows how the node came
-back; any other dropped connection, or a failed step, is shown as an
-error. `--image` and `--allow-downgrade` stay in the CLI. In a pair, each node reports its own image; if the two run
+back. On a pair's standby, which the master upgrades first, the page
+then follows the master's part from status until both nodes run the new
+image, in sync. Any other dropped connection, or a failed step, is shown
+as an error. `--image` and `--allow-downgrade` stay in the CLI. A node
+runs one upgrade at a time: a second start, from the CLI, the web UI or a
+schedule, is refused while one runs. In a pair, each node reports its own image; if the two run
 different images, status and the banner say that too ("images: …"),
 which usually means an upgrade stopped halfway: run `sparewall upgrade`
 again to finish it.

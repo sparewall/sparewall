@@ -9,7 +9,7 @@ import { ApiClient, CallFailed } from '../../api/api-client';
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
 import { ConfirmDialog, ConfirmData } from '../../shared/confirm-dialog';
-import { Progress, advance, outcome, started } from '../../shared/upgrade-progress';
+import { Progress, advance, outcome, pairFinished, started } from '../../shared/upgrade-progress';
 
 const STOPPED_HALFWAY =
   'https://github.com/sparewall/sparewall/blob/main/docs/operations.md#upgrades';
@@ -38,6 +38,10 @@ const STOPPED_HALFWAY =
         }
         @case ('rebooting') {
           <p role="status">{{ progress()?.message }} This page reconnects when it is back.</p>
+          <mat-progress-bar mode="indeterminate" />
+        }
+        @case ('finishing') {
+          <p role="status">{{ progress()?.message }}</p>
           <mat-progress-bar mode="indeterminate" />
         }
         @case ('done') {
@@ -89,7 +93,15 @@ export class UpgradePanel {
   protected readonly busy = signal(false);
   protected readonly problem = signal<string | undefined>(undefined);
 
+  /** How often the node is asked again, and how long the master may take. */
+  static readonly RETRY_MS = 5000;
+  static readonly POLL_MS = 10000;
+  static readonly FINISH_MS = 30 * 60 * 1000;
+  private timer?: ReturnType<typeof setInterval>;
+  private finishBy = 0;
+
   constructor() {
+    inject(DestroyRef).onDestroy(() => this.stopTimer());
     // Each upgrade event, in order.
     this.events.events$.pipe(takeUntilDestroyed(inject(DestroyRef))).subscribe((event) => {
       // Another run's events (the other node's, or a CLI's) block a second start.
@@ -105,7 +117,9 @@ export class UpgradePanel {
         if (!up) {
           this.step({ kind: 'disconnected' });
         } else if (this.progress()?.phase === 'rebooting') {
+          // Until status answers: the stream may be back before the rest.
           void this.back();
+          this.startTimer(UpgradePanel.RETRY_MS, () => void this.back());
         }
       });
     });
@@ -140,11 +154,55 @@ export class UpgradePanel {
   }
 
   private async back(): Promise<void> {
+    if (this.progress()?.phase !== 'rebooting') return;
     try {
       const s = await this.api.call('org.sparewall.Firewall.Status', {});
       this.step({ kind: 'back', outcome: outcome(s.node, s as never) });
     } catch {
-      // Not answering yet: the next reconnection tries again.
+      // Not answering yet: the timer asks again.
+      return;
     }
+    this.stopTimer();
+    if (this.progress()?.phase === 'finishing') {
+      // The master goes on alone: follow it from this node's status.
+      this.finishBy = Date.now() + UpgradePanel.FINISH_MS;
+      this.startTimer(UpgradePanel.POLL_MS, () => void this.finishing());
+    }
+  }
+
+  private async finishing(): Promise<void> {
+    if (this.progress()?.phase !== 'finishing') {
+      this.stopTimer();
+      return;
+    }
+    if (Date.now() > this.finishBy) {
+      this.step({ kind: 'timeout' });
+      this.stopTimer();
+      return;
+    }
+    try {
+      const s = await this.api.call('org.sparewall.Firewall.Status', {});
+      const sync = s.sync as Parameters<typeof pairFinished>[0];
+      const version =
+        (s.update as { running?: string } | null | undefined)?.running ?? 'the new image';
+      this.step({
+        kind: 'pair',
+        finished: pairFinished(sync),
+        outcome: `Both nodes run ${version}, in sync.`,
+      });
+    } catch {
+      // Asked again at the next tick.
+    }
+    if (this.progress()?.phase !== 'finishing') this.stopTimer();
+  }
+
+  private startTimer(ms: number, f: () => void): void {
+    this.stopTimer();
+    this.timer = setInterval(f, ms);
+  }
+
+  private stopTimer(): void {
+    if (this.timer !== undefined) clearInterval(this.timer);
+    this.timer = undefined;
   }
 }

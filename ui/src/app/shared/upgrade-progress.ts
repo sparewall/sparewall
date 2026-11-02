@@ -3,7 +3,7 @@
  * (`{"type": "upgrade", "step", "detail"}`) and across the reboot of the
  * node that serves the UI.
  */
-export type Phase = 'running' | 'rebooting' | 'done' | 'failed';
+export type Phase = 'running' | 'rebooting' | 'finishing' | 'done' | 'failed';
 
 export interface Progress {
   phase: Phase;
@@ -13,6 +13,11 @@ export interface Progress {
   log: string[];
   /** Whether a step reboots the node the UI is served by. */
   rebootsHere: boolean;
+  /**
+   * The master that staged this node, when it is the pair's standby: it
+   * goes on alone once this node is back (its relay ends with the reboot).
+   */
+  master?: string;
   /** The failure, or the outcome once done. */
   message?: string;
 }
@@ -22,7 +27,11 @@ export type Input =
   /** The event stream dropped. */
   | { kind: 'disconnected' }
   /** The node answers again after its reboot, with what its status says. */
-  | { kind: 'back'; outcome: string };
+  | { kind: 'back'; outcome: string }
+  /** While the master finishes: whether both nodes now run the same image, in sync. */
+  | { kind: 'pair'; finished: boolean; outcome: string }
+  /** The master did not finish in time. */
+  | { kind: 'timeout' };
 
 export function started(plan: string[]): Progress {
   return { phase: 'running', plan, log: [], rebootsHere: false };
@@ -40,13 +49,14 @@ export function advance(p: Progress, input: Input, node: string): Progress {
       const log = detail ? [...p.log, detail] : p.log;
       // This node's own reboot (a standalone node, or the master at the
       // end), or, relayed from the master, the staging of this node.
-      const rebootsHere =
-        p.rebootsHere ||
-        step === 'reboot' ||
-        (step === 'stage-peer' && detail.endsWith(` on ${node}`));
-      if (step === 'failed') return { ...p, log, rebootsHere, phase: 'failed', message: detail };
-      if (step === 'done') return { ...p, log, rebootsHere, phase: 'done', message: detail };
-      return { ...p, log, rebootsHere };
+      const staged = step === 'stage-peer' && detail.endsWith(` on ${node}`);
+      const rebootsHere = p.rebootsHere || step === 'reboot' || staged;
+      // A relayed event reads "<master>: …".
+      const master = staged ? detail.split(':')[0] : p.master;
+      const next = { ...p, log, rebootsHere, master };
+      if (step === 'failed') return { ...next, phase: 'failed', message: detail };
+      if (step === 'done') return { ...next, phase: 'done', message: detail };
+      return next;
     }
     case 'disconnected':
       if (p.phase !== 'running') return p;
@@ -58,8 +68,45 @@ export function advance(p: Progress, input: Input, node: string): Progress {
             message: `The connection to ${node} was lost during the upgrade.`,
           };
     case 'back':
-      return p.phase === 'rebooting' ? { ...p, phase: 'done', message: input.outcome } : p;
+      if (p.phase !== 'rebooting') return p;
+      // A standby back on the new image: the master still hands over and
+      // upgrades itself, which this page follows from status.
+      return p.master
+        ? {
+            ...p,
+            phase: 'finishing',
+            message: `${input.outcome} ${p.master} now hands over and upgrades itself.`,
+          }
+        : { ...p, phase: 'done', message: input.outcome };
+    case 'pair':
+      return p.phase === 'finishing' && input.finished
+        ? { ...p, phase: 'done', message: input.outcome }
+        : p;
+    case 'timeout':
+      return p.phase === 'finishing'
+        ? {
+            ...p,
+            phase: 'failed',
+            message: `${p.master} has not finished its part: see its status, or run sparewall upgrade again.`,
+          }
+        : p;
   }
+}
+
+/** Whether a pair has finished: both nodes on the same image, in sync. */
+export function pairFinished(sync: {
+  image?: string | null;
+  peer_image?: string | null;
+  peer_reachable?: boolean | null;
+  state?: string;
+}): boolean {
+  const digest = (i: string | null | undefined) => i?.split('@').pop();
+  return (
+    sync.peer_reachable === true &&
+    sync.state === 'in-sync' &&
+    !!digest(sync.image) &&
+    digest(sync.image) === digest(sync.peer_image)
+  );
 }
 
 /** What a node says once it is back: its version, health and, in a pair, sync. */

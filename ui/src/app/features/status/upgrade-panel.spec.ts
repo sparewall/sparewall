@@ -77,6 +77,63 @@ describe('UpgradePanel', () => {
     expect(t.text()).toContain('fw1 is back, running 0.4.1: health ok.');
   });
 
+  it('asks again until the node answers, then follows the master to the end', async () => {
+    vi.useFakeTimers();
+    try {
+      const t = setup();
+      t.fixture.componentRef.setInput('node', 'fw2');
+      t.fixture.componentRef.setInput('paired', true);
+      t.el.querySelector('button')!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      t.http.expectOne('/call/org.sparewall.Upgrade.Start').flush({ plan: [] });
+      await vi.advanceTimersByTimeAsync(0);
+      t.upgrade('stage-peer', 'fw1: staging r/sw:next on fw2');
+      t.connected.set(false);
+      t.fixture.detectChanges();
+      t.connected.set(true);
+      t.fixture.detectChanges();
+      // The first answer fails: asked again.
+      t.http
+        .expectOne('/call/org.sparewall.Firewall.Status')
+        .flush({}, { status: 503, statusText: 'Unavailable' });
+      await vi.advanceTimersByTimeAsync(UpgradePanel.RETRY_MS);
+      t.http.expectOne('/call/org.sparewall.Firewall.Status').flush({
+        node: 'fw2',
+        update: { running: '0.4.1' },
+        health: { level: 'ok' },
+        sync: { peer: 'fw1', state: 'in-sync' },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.text()).toContain('fw1 now hands over and upgrades itself.');
+      // Until both nodes run the new image.
+      const sync = (peer_image: string) => ({
+        node: 'fw2',
+        update: { running: '0.4.1' },
+        health: { level: 'ok' },
+        sync: {
+          peer: 'fw1',
+          state: 'in-sync',
+          peer_reachable: true,
+          image: 'r@sha256:new',
+          peer_image,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(UpgradePanel.POLL_MS);
+      t.http.expectOne('/call/org.sparewall.Firewall.Status').flush(sync('r@sha256:old'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.text()).toContain('now hands over');
+      await vi.advanceTimersByTimeAsync(UpgradePanel.POLL_MS);
+      t.http.expectOne('/call/org.sparewall.Firewall.Status').flush(sync('r@sha256:new'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.text()).toContain('Both nodes run 0.4.1, in sync.');
+      // Nothing asked after the end.
+      await vi.advanceTimersByTimeAsync(UpgradePanel.POLL_MS * 2);
+      t.http.expectNone('/call/org.sparewall.Firewall.Status');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows the step that failed, and in a pair how to finish', async () => {
     const t = setup();
     t.fixture.componentRef.setInput('paired', true);

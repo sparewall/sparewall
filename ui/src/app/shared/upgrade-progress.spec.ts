@@ -1,4 +1,4 @@
-import { advance, outcome, started } from './upgrade-progress';
+import { advance, outcome, pairFinished, started } from './upgrade-progress';
 
 const ev = (step: string, detail = '') => ({
   kind: 'event' as const,
@@ -28,6 +28,45 @@ describe('upgrade progress', () => {
     // On the master, staging the peer reboots nothing here.
     const m = advance(started([]), ev('stage-peer', 'staging reg/sw:stable on fw2'), 'fw1');
     expect(m.rebootsHere).toBe(false);
+  });
+
+  it('follows the master once a standby is back, until both run the new image', () => {
+    let p = started([]);
+    p = advance(p, ev('stage-peer', 'fw1: staging 10.0.2.2:5000/sw:next on fw2'), 'fw2');
+    expect(p.master).toBe('fw1');
+    p = advance(p, { kind: 'disconnected' }, 'fw2');
+    p = advance(p, { kind: 'back', outcome: 'fw2 is back, running 0.4.1: health ok.' }, 'fw2');
+    expect(p).toMatchObject({
+      phase: 'finishing',
+      message: 'fw2 is back, running 0.4.1: health ok. fw1 now hands over and upgrades itself.',
+    });
+    const waiting = advance(p, { kind: 'pair', finished: false, outcome: 'x' }, 'fw2');
+    expect(waiting.phase).toBe('finishing');
+    expect(
+      advance(
+        p,
+        { kind: 'pair', finished: true, outcome: 'Both nodes run 0.4.1, in sync.' },
+        'fw2',
+      ),
+    ).toMatchObject({ phase: 'done', message: 'Both nodes run 0.4.1, in sync.' });
+    expect(advance(p, { kind: 'timeout' }, 'fw2')).toMatchObject({
+      phase: 'failed',
+      message: 'fw1 has not finished its part: see its status, or run sparewall upgrade again.',
+    });
+  });
+
+  it('knows a pair has finished by both images, in sync', () => {
+    const s = {
+      image: 'r/sw:a@sha256:1',
+      peer_image: 'r/sw:b@sha256:1',
+      peer_reachable: true,
+      state: 'in-sync',
+    };
+    expect(pairFinished(s)).toBe(true);
+    expect(pairFinished({ ...s, peer_image: 'r@sha256:2' })).toBe(false);
+    expect(pairFinished({ ...s, state: 'applying' })).toBe(false);
+    expect(pairFinished({ ...s, peer_reachable: false })).toBe(false);
+    expect(pairFinished({ ...s, image: null })).toBe(false);
   });
 
   it('calls any other drop an error', () => {
