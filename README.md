@@ -75,6 +75,8 @@ sparewall user add alice --role operator
 More complete examples live in [`examples/`](examples/). Start with
 [docs/getting-started.md](docs/getting-started.md), then
 [docs/pairing.md](docs/pairing.md) and [docs/operations.md](docs/operations.md).
+To run it as a VM beside other workloads, see
+[docs/virtual-machine.md](docs/virtual-machine.md).
 
 ## Repository layout
 
