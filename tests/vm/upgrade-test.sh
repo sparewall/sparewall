@@ -89,6 +89,7 @@ for n in $NODES; do
     wait_for 900 "$n SSH" at "$n" true
     version_is "$n" "$FROM" || fail "$n runs $(at "$n" 'sparewall --version'), not $FROM"
 done
+FROM_READS=$(at fw1 'sparewall schema show' | jq -r '."$id"' | sed -n 's|.*/v\([0-9]*\)\.json$|\1|p')
 
 log "each node checks its image's signature under its own policy"
 # bootc opens the image through the node's policy (sigstoreSigned for
@@ -298,6 +299,24 @@ for n in $NODES; do
     [ "$(at "$n" "sudo sparewall get $CHANGE")" = "$V" ] || fail "$n does not run the change"
 done
 
+# The newest schema revision each side reads (#168), from the $id of its
+# JSON Schema (https://sparewall.org/schema/vN.json).
+reads() { at "$1" 'sparewall schema show' | jq -r '."$id"' | sed -n 's|.*/v\([0-9]*\)\.json$|\1|p'; }
+CAND_READS=$(reads fw1)
+NEWER=
+# A field only the candidate reads: a document that uses it needs
+# revision 3 (updates.check, #188), which an older release cannot read.
+[ "${FROM_READS:-0}" -lt 3 ] && [ "${CAND_READS:-0}" -ge 3 ] && NEWER=updates.check=false
+
+if [ "$MODE" = single ] && [ -n "$NEWER" ]; then
+    log "a change that needs schema revision 3, which $FROM cannot read (#13)"
+    at fw1 "sudo sparewall set $NEWER --confirm 0"
+    GEN3=$(status fw1 | jq .sync.active)
+    [ "$GEN3" -gt "$GEN" ] || fail "the revision 3 change made no generation"
+    at fw1 'sudo sparewall history -o json' | jq -e --argjson g "$GEN3" '.generations[] | select(.id == $g) | .schema == 3' >/dev/null \
+        || fail "generation $GEN3 is not recorded as schema revision 3"
+fi
+
 # The node rolled back: the only node, or the pair's standby (fw1), which
 # then runs $FROM beside a master on the candidate.
 log "bootc rollback on fw1, back to $FROM"
@@ -305,6 +324,16 @@ at fw1 'sudo bootc rollback' || fail "bootc rollback failed"
 at fw1 'sudo systemctl reboot' || true
 sleep 10
 wait_for 900 "fw1 back on $FROM" version_is fw1 "$FROM"
+if [ "$MODE" = single ] && [ -n "$NEWER" ]; then
+    log "$FROM cannot read generation $GEN3: it runs generation $GEN and says so"
+    gen_check() { status fw1 | jq -r '.health.checks[] | select(.name == "generation") | .level + " " + .message'; }
+    unreadable() { gen_check | grep -q "^failed generation $GEN3 cannot be read.*revision 3.*running generation $GEN"; }
+    wait_for 300 "fw1 to report generation $GEN3 unreadable" unreadable
+    [ "$(at fw1 "sudo sparewall get $CHANGE")" = "$V" ] || fail "fw1 does not run generation $GEN in place of $GEN3"
+    log "rolling the configuration back to generation $GEN, which $FROM reads"
+    at fw1 "sudo sparewall rollback $GEN" || fail "rollback to generation $GEN failed: $(gen_check)"
+    at fw1 'sudo sparewall confirm' >/dev/null 2>&1 || true
+fi
 settle_health fw1
 wait_for 300 "fw1 healthy on $FROM" healthy fw1
 [ "$(at fw1 "sudo sparewall get $CHANGE")" = "$V" ] || fail "fw1 lost the configuration in the rollback"
@@ -316,5 +345,13 @@ if [ "$MODE" = pair ]; then
     roles_are BACKUP MASTER "after fw1's rollback"
     [ "$(wc -l < gateway.log)" = 2 ] || fail "the gateway moved in fw1's rollback: $(cat gateway.log)"
     grep -q broken flow.log && fail "the connection broke in the rollback: $(tail -5 flow.log)"
+fi
+if [ "$MODE" = pair ] && [ -n "$NEWER" ]; then
+    log "mixed versions: fw2 refuses a change that $FROM on fw1 cannot read (#13)"
+    before=$(status fw2 | jq .sync.active)
+    out=$(at fw2 "sudo sparewall set $NEWER --confirm 0" 2>&1) && fail "fw2 took a revision 3 change beside $FROM: $out"
+    grep -q "upgrade fw1 first" <<<"$out" || fail "fw2 refused the change, but not for the peer's schema: $out"
+    [ "$(status fw2 | jq .sync.active)" = "$before" ] || fail "the refused change made a generation on fw2"
+    [ "$(status fw1 | jq .sync.active)" = "$before" ] || fail "the refused change reached fw1"
 fi
 log "upgrade $MODE PASS ($FROM -> $CANDIDATE, and back)"

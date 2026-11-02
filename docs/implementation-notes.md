@@ -548,7 +548,9 @@ Where the implementation departs from, or settles open questions in,
 
 The two-node suite that gates promotion to `stable` (design: "Testing")
 runs as two CI jobs, each booting its own pair: `pair-test.sh` (build,
-boot, publish) and `pair-faults.sh` (pair faults).
+boot, publish) and `pair-faults.sh` (pair faults). `upgrade-test.sh`
+runs once per release to upgrade from and mode (`upgrade from <release>,
+single node` and `, pair`), each installed from that release's disk image.
 
 | Gate | Where | State |
 | --- | --- | --- |
@@ -562,8 +564,9 @@ boot, publish) and `pair-faults.sh` (pair faults).
 | The master loses its whole trunk | pair-faults | Tested |
 | Cut one service VLAN on one side | pair-faults | Tested: see below |
 | Destroy both nodes, restore from bundles, re-pair | pair-faults | Tested |
-| Rolling upgrade from the previous release | | Outstanding: needs a first release |
-| Schema upgrade and downgrade, mixed versions | | Outstanding: needs schema 2 |
+| Rolling upgrade from the previous release, signed, then `bootc rollback` | upgrade-test | Tested (#166), single node and pair, from each release `.github/upgrade-from.sh` names |
+| Schema downgrade: a generation the older release cannot read | upgrade-test | Tested (#13), single node: it runs the newest generation it reads, health says why, and `sparewall rollback` recovers |
+| Mixed versions: a change the peer cannot read is refused | upgrade-test | Tested (#13), pair: with the standby back on the older release |
 
 **A service VLAN cut on the master's side only** leaves every link up,
 and keepalived's sync group keeps the backup's instances BACKUP while it
