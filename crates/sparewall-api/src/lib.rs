@@ -112,6 +112,12 @@ pub struct StatusReply {
     /// The certificate served on the management network.
     pub tls: Value,
     pub health: Value,
+    /// The background update check (#188): whether it is on, the image it
+    /// checks, what that offers (`none`, `newer`, `rebuild`, `different`),
+    /// its version and digest, when it last ran and succeeded, and its last
+    /// error. Absent from nodes older than 0.4.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

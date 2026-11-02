@@ -1165,6 +1165,7 @@ pub fn status(
         services: json!({}),
         tls: json!({"fingerprint": crate::http::FINGERPRINT.get()}),
         health: serde_json::to_value(&health).unwrap_or_default(),
+        update: Some(crate::update::status()),
     })
 }
 
