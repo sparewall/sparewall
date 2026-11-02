@@ -174,6 +174,23 @@ vpn_setup() {
     printf '| Event | Client | Recovery (s) |\n| --- | --- | --- |\n' > "$VPN_RESULTS"
 }
 
+# What decides whether the master reaches the site.
+site_debug() {
+    local n
+    for n in fw1 fw2; do
+        echo "--- $n: $(role "$n" 2>/dev/null || true)"
+        at "$n" 'sudo wg show ra; ip rule; echo "table 5357:"; ip route show table 5357
+            ip route get 203.0.113.60 mark 0x5357; ip route get 203.0.113.60; ip -br addr
+            sudo nft list chain inet sparewall output
+            sudo grep -B2 -A4 virtual_routes /run/keepalived/keepalived.conf /run/sparewall/keepalived/*.conf 2>/dev/null
+            sudo journalctl -b -u keepalived --no-pager | tail -15' 2>&1 || true
+    done
+    echo "--- site"
+    ns site wg show || true
+    ns site ip route || true
+    ns site ip -br addr || true
+}
+
 # The site, added as a peer of the instance just before the gateway first
 # moves: a keepalive needs schema revision 4, and the sync-VLAN cut
 # before that changes the document with the peer unreachable, which only
@@ -211,7 +228,14 @@ site_setup() {
         ns site ip route add "$n" dev wg0
     done
     has_session() { [ "$(handshake "$1")" -gt 0 ]; }
-    wait_for 60 "the pair starts the site's tunnel" has_session site
+    local deadline=$((SECONDS + 60))
+    until has_session site; do
+        if [ $SECONDS -ge $deadline ]; then
+            site_debug
+            fail "the pair did not start the site's tunnel"
+        fi
+        sleep 3
+    done
     reach_site() { ns site ping -c 1 -W 1 -I "$SITE_LAN" "$VPN_TARGET" >/dev/null 2>&1; }
     wait_for 30 "the site's network reaches $VPN_TARGET" reach_site
     for n in fw1 fw2; do
