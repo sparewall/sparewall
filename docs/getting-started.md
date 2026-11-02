@@ -89,7 +89,9 @@ hash for `admin`, made with `openssl passwd -6` (it prompts):
 ([operations](operations.md#the-admin-console-password)) unless one is
 set already. SSH stays keys-only either way.
 
-- **VMs:** pass it as the `sparewall.identity` credential. With libvirt,
+- **VMs:** pass it as the `sparewall.identity` credential (for a VM
+  beside other workloads on one host, see
+  [running Sparewall as a VM](virtual-machine.md) first). With libvirt,
   add to the domain XML:
   ```xml
   <sysinfo type='fwcfg'>
