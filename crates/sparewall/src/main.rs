@@ -680,6 +680,24 @@ fn read_secret(name: &str) -> Result<String, Fail> {
     Ok(v)
 }
 
+/// The background check's last run, for `upgrade --check`.
+fn background_check(u: &Value) -> Option<String> {
+    if u["enabled"].as_bool() != Some(true) {
+        return Some("background: off (updates.check)".into());
+    }
+    let checked = u["checked"].as_str()?;
+    Some(match u["error"].as_str() {
+        Some(e) => format!(
+            "background: checked {checked}, failed: {e}{}",
+            u["succeeded"]
+                .as_str()
+                .map(|t| format!(" (last success {t})"))
+                .unwrap_or_default()
+        ),
+        None => format!("background: checked {checked}"),
+    })
+}
+
 fn print_value(v: &Value, output: Option<Output>) {
     match output {
         Some(Output::Json) => print!("{}", sparewall_config::format_value(v, Format::Json)),
@@ -1085,6 +1103,12 @@ impl App {
                             "applied:     {}",
                             short_hash(s.sync["applied_hash"].as_str().unwrap_or("-"))
                         );
+                        if let Some(l) = sparewall_api::notice::update(&s) {
+                            println!("update:      {l}");
+                        }
+                        if let Some(l) = sparewall_api::notice::mixed_images(&s) {
+                            println!("images:      {l}");
+                        }
                         println!("health:      {}", s.health["level"].as_str().unwrap_or("?"));
                         for c in s.health["checks"].as_array().into_iter().flatten() {
                             println!(
@@ -1445,6 +1469,13 @@ impl App {
                     println!("note:      {n}");
                 }
                 if check {
+                    // When the node last checked on its own (#188); a node
+                    // from before 0.4.0 does not say.
+                    if let Ok(Ok(s)) = self.conn().await?.status().await
+                        && let Some(line) = s.update.as_ref().and_then(background_check)
+                    {
+                        println!("{line}");
+                    }
                     return Ok(());
                 }
                 let mut events = self.conn().await?;
@@ -1883,6 +1914,26 @@ fn main() -> std::process::ExitCode {
 mod tests {
     use super::{Cli, fingerprint, hash_password, node_only, paste_slip};
     use clap::Parser;
+
+    #[test]
+    fn background_check_line() {
+        use serde_json::json;
+        assert_eq!(
+            super::background_check(&json!({"enabled": true, "checked": "2026-11-02T04:00:00Z"})),
+            Some("background: checked 2026-11-02T04:00:00Z".into())
+        );
+        assert_eq!(
+            super::background_check(&json!({"enabled": true, "checked": "t2", "succeeded": "t1",
+                "error": "no route to host"})),
+            Some("background: checked t2, failed: no route to host (last success t1)".into())
+        );
+        assert_eq!(
+            super::background_check(&json!({"enabled": false})),
+            Some("background: off (updates.check)".into())
+        );
+        // Not run yet.
+        assert_eq!(super::background_check(&json!({"enabled": true})), None);
+    }
 
     #[test]
     fn node_only_commands_are_refused_off_linux() {
