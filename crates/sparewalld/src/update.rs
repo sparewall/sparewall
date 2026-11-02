@@ -41,6 +41,8 @@ const RETRY: Duration = Duration::from_secs(3600);
 const SOON: Duration = Duration::from_secs(30);
 /// How often the document is read for those changes.
 const POLL: Duration = Duration::from_secs(60);
+/// The longest a check is waited for.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(crate::upgrade::INSPECT_TIMEOUT.as_secs() + 60);
 
 /// What the channel offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,17 +343,35 @@ pub async fn check_loop(core: Core, events: broadcast::Sender<Value>) {
             }
             if Instant::now() >= next {
                 let ch = channel.clone();
-                let ran = tokio::task::spawn_blocking(move || {
-                    let tracked = crate::upgrade::tracked_ref();
-                    let target =
-                        crate::upgrade::target_ref(None, None, ch.as_deref(), tracked.as_deref());
-                    let r = check(&target);
-                    (target, r)
-                })
+                // skopeo gives up after INSPECT_TIMEOUT; this is in case
+                // something else hangs (the helper unit allows an hour), so
+                // that the loop still sees `updates.check` and the channel
+                // change. A check still running then is not waited for.
+                let ran = tokio::time::timeout(
+                    CHECK_TIMEOUT,
+                    tokio::task::spawn_blocking(move || {
+                        let tracked = crate::upgrade::tracked_ref();
+                        let target = crate::upgrade::target_ref(
+                            None,
+                            None,
+                            ch.as_deref(),
+                            tracked.as_deref(),
+                        );
+                        let r = check(&target);
+                        (target, r)
+                    }),
+                )
                 .await;
                 let (target, result) = match ran {
-                    Ok(v) => v,
-                    Err(e) => (String::new(), Err(e.to_string())),
+                    Ok(Ok(v)) => v,
+                    Ok(Err(e)) => (String::new(), Err(e.to_string())),
+                    Err(_) => (
+                        String::new(),
+                        Err(format!(
+                            "no answer from the registry in {} seconds",
+                            CHECK_TIMEOUT.as_secs()
+                        )),
+                    ),
                 };
                 let failed = result.is_err();
                 let now = jiff::Timestamp::now().to_string();
