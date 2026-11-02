@@ -548,7 +548,9 @@ Where the implementation departs from, or settles open questions in,
 
 The two-node suite that gates promotion to `stable` (design: "Testing")
 runs as two CI jobs, each booting its own pair: `pair-test.sh` (build,
-boot, publish) and `pair-faults.sh` (pair faults). `upgrade-test.sh`
+boot, publish) and `pair-faults.sh` (pair faults). `two-nic-test.sh` (two
+NICs, no VLANs) runs the default layout of #177: a standalone node and a
+pair with no NIC but their WAN and LAN ports, managed over the LAN. `upgrade-test.sh`
 runs once per release to upgrade from and mode (`upgrade from <release>,
 single node` and `upgrade from <release>, pair`), each installed from that release's disk image.
 

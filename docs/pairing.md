@@ -10,11 +10,14 @@ which is the management network too
 ([`examples/two-nic-pair.yaml`](../examples/two-nic-pair.yaml)): the WAN
 on one port of each node, everything else on the other, no VLANs at all.
 The tunnel carries everything the nodes say to each other, and WireGuard
-drops anything not from the peer's key, so the LAN's clients gain nothing
-by reaching the port; sync fails only with the LAN link itself, which
-moves the gateway as any lost link does. With a VLAN-aware switch, a
-`sync` VLAN of its own, which nothing else reaches, is the stronger
-choice ([`examples/pair.yaml`](../examples/pair.yaml)).
+drops anything not authenticated by the peer's key, so a LAN client can
+neither read nor inject sync traffic. It can, by spoofing the peer's
+address, send the tunnel's port packets that WireGuard rejects, which
+costs the nodes some CPU: a flood could slow replication. Sync fails only
+with the LAN link itself, which moves the gateway as any lost link does.
+Where the LAN's clients are not trusted, or with a VLAN-aware switch
+anyway, a `sync` VLAN of its own, which nothing else reaches, is the
+stronger choice ([`examples/pair.yaml`](../examples/pair.yaml)).
 
 ## Pairing
 

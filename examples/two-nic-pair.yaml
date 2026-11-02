@@ -2,7 +2,9 @@
 # WAN on one port of each node; on the other, one segment that is the LAN,
 # management and the sync network at once (#177). Replication, DHCP HA and
 # configuration pushes travel inside the WireGuard sync tunnel, which drops
-# anything not from the peer's key.
+# anything not from the peer's key. Where LAN clients are untrusted, prefer
+# a sync VLAN of its own (examples/pair.yaml): a spoofing host can load
+# the tunnel's handshake path.
 schema: 1
 cluster:
   nodes: [fw1, fw2]
