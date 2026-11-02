@@ -998,7 +998,7 @@ export interface Calls {
     role: "admin";
     streams: false;
   };
-  /** Delete a secret on this node. Whether `password` is the stored backup password, and whether it opens the newest bundle on the node (#142). Nothing derived from the stored secret is returned; a wrong one is answered slowly. */
+  /** Whether `password` is the stored backup password, and whether it opens the newest bundle on the node (#142). Nothing derived from the stored secret is returned; a wrong one is answered slowly. */
   "org.sparewall.Secrets.CheckBackupPassword": {
     parameters: {
       "password": string;
@@ -1018,6 +1018,7 @@ export interface Calls {
     role: "admin";
     streams: false;
   };
+  /** Delete a secret on this node. */
   "org.sparewall.Secrets.Delete": {
     parameters: {
       "name": string;

@@ -998,7 +998,6 @@ where
         Ok(Empty {})
     }
 
-    /// Delete a secret on this node.
     /// Whether `password` is the stored backup password, and whether it
     /// opens the newest bundle on the node (#142). Nothing derived from
     /// the stored secret is returned; a wrong one is answered slowly.
@@ -1019,6 +1018,7 @@ where
         Ok(r)
     }
 
+    /// Delete a secret on this node.
     #[zlink(interface = "org.sparewall.Secrets", rename = "Delete")]
     async fn secret_delete(&mut self, name: String) -> Result<Empty, FirewallError> {
         if name.starts_with(USER_PREFIX) {

@@ -4172,7 +4172,7 @@
     },
     "/call/org.sparewall.Secrets.CheckBackupPassword": {
       "post": {
-        "description": "Delete a secret on this node. Whether `password` is the stored backup password, and whether it opens the newest bundle on the node (#142). Nothing derived from the stored secret is returned; a wrong one is answered slowly.",
+        "description": "Whether `password` is the stored backup password, and whether it opens the newest bundle on the node (#142). Nothing derived from the stored secret is returned; a wrong one is answered slowly.",
         "operationId": "Secrets.CheckBackupPassword",
         "requestBody": {
           "content": {
@@ -4248,7 +4248,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Delete a secret on this node.",
+        "summary": "Whether `password` is the stored backup password, and whether it opens the newest bundle on the node (#142).",
         "tags": [
           "org.sparewall.Secrets"
         ],
@@ -4257,6 +4257,7 @@
     },
     "/call/org.sparewall.Secrets.Delete": {
       "post": {
+        "description": "Delete a secret on this node.",
         "operationId": "Secrets.Delete",
         "requestBody": {
           "content": {
@@ -4294,6 +4295,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
+        "summary": "Delete a secret on this node.",
         "tags": [
           "org.sparewall.Secrets"
         ],
