@@ -12,7 +12,24 @@ export interface SyncState {
   peer: string | null;
   peer_reachable: boolean | null;
   peer_active: number | null;
+  /** This node's booted image and its peer's (`name@digest`). */
+  image?: string | null;
+  peer_image?: string | null;
   last_error: string | null;
+}
+
+/** The background update check (#188): the status reply's `update`. */
+export interface UpdateState {
+  enabled: boolean;
+  running: string;
+  target?: string;
+  /** Absent until a check succeeds. */
+  available?: 'none' | 'newer' | 'rebuild' | 'different';
+  version?: string;
+  digest?: string;
+  checked?: string;
+  succeeded?: string;
+  error?: string;
 }
 
 export interface HealthState {

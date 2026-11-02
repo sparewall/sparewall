@@ -3,7 +3,8 @@ import { Service, computed, inject } from '@angular/core';
 
 import { callUrl } from '../api/api-client';
 import { Reply } from '../api/api.model';
-import { HealthState } from '../api/status.model';
+import { HealthState, UpdateState } from '../api/status.model';
+import { updateNotice } from '../shared/update-notice';
 import { NodeEvents } from './node-events';
 import { Session } from './session';
 
@@ -20,6 +21,12 @@ export class NodeStatus {
   });
 
   readonly node = computed(() => (this.status.hasValue() ? this.status.value().node : undefined));
+  /** What the update check offers, if anything (#188). */
+  readonly update = computed(() =>
+    this.status.hasValue()
+      ? updateNotice(this.status.value().update as unknown as UpdateState | undefined)
+      : undefined,
+  );
   /** ok, degraded or failed. */
   readonly level = computed(() =>
     this.status.hasValue()

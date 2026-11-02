@@ -599,7 +599,9 @@ When an update is available, `sparewall status` and the login banner
 say so in one line ("update: 0.4.1 available (running 0.4.0); sparewall
 upgrade"), which changes neither the health summary nor any exit code,
 and `sparewall upgrade --check` shows when the node last checked on its
-own. In a pair, each node reports its own image; if the two run
+own. The web UI shows the same on its status page, with a link to
+the release notes, and a small update icon beside the node's name on
+every page. In a pair, each node reports its own image; if the two run
 different images, status and the banner say that too ("images: …"),
 which usually means an upgrade stopped halfway: run `sparewall upgrade`
 again to finish it.

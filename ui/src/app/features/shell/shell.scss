@@ -27,6 +27,17 @@ mat-toolbar {
 }
 
 // The node and its health, on every page; it leads to the status.
+// An update on offer: informational, so in the neutral colours, never a level's.
+.update-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 4px;
+  border-radius: 999px;
+  color: var(--mat-sys-on-surface-variant);
+  background: var(--mat-sys-surface-container-high);
+}
+
 .node {
   display: inline-flex;
   align-items: center;

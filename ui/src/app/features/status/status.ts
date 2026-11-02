@@ -10,7 +10,8 @@ import { callUrl } from '../../api/api-client';
 import { Reply } from '../../api/api.model';
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
-import { Conntrack, HealthState, SyncState } from '../../api/status.model';
+import { Conntrack, HealthState, SyncState, UpdateState } from '../../api/status.model';
+import { checkProblem, mixedImages, updateNotice } from '../../shared/update-notice';
 
 const LEVEL_ICON: Record<string, string> = {
   ok: 'check_circle',
@@ -51,6 +52,12 @@ export class Status {
   protected readonly sync = computed(() => this.value()?.sync as SyncState | undefined);
   protected readonly health = computed(() => this.value()?.health as HealthState | undefined);
   protected readonly conntrack = computed(() => this.value()?.conntrack as Conntrack | undefined);
+  protected readonly update = computed(() => this.value()?.update as UpdateState | undefined);
+  protected readonly notice = computed(() => updateNotice(this.update()));
+  protected readonly checkProblem = computed(() => checkProblem(this.update()));
+  protected readonly mixed = computed(() => mixedImages(this.sync()));
+  protected readonly upgradeDocs =
+    'https://github.com/sparewall/sparewall/blob/main/docs/operations.md#upgrades';
   protected readonly links = computed(() =>
     Object.entries((this.value()?.links ?? {}) as Record<string, string>),
   );
