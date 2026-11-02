@@ -313,7 +313,7 @@ if [ "$MODE" = single ] && [ -n "$NEWER" ]; then
     at fw1 "sudo sparewall set $NEWER --confirm 0"
     GEN3=$(status fw1 | jq .sync.active)
     [ "$GEN3" -gt "$GEN" ] || fail "the revision 3 change made no generation"
-    at fw1 'sudo sparewall history -o json' | jq -e --argjson g "$GEN3" '.generations[] | select(.id == $g) | .schema == 3' >/dev/null \
+    at fw1 'sudo sparewall history -o json' | jq -e --argjson g "$GEN3" '.[] | select(.id == $g) | .schema == 3' >/dev/null \
         || fail "generation $GEN3 is not recorded as schema revision 3"
 fi
 

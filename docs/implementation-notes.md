@@ -550,7 +550,7 @@ The two-node suite that gates promotion to `stable` (design: "Testing")
 runs as two CI jobs, each booting its own pair: `pair-test.sh` (build,
 boot, publish) and `pair-faults.sh` (pair faults). `upgrade-test.sh`
 runs once per release to upgrade from and mode (`upgrade from <release>,
-single node` and `, pair`), each installed from that release's disk image.
+single node` and `upgrade from <release>, pair`), each installed from that release's disk image.
 
 | Gate | Where | State |
 | --- | --- | --- |
