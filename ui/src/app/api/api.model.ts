@@ -1027,6 +1027,26 @@ export interface Calls {
     role: "admin";
     streams: false;
   };
+  /** Whether `password` is the stored backup password, and whether it opens the newest bundle on the node (#142). Nothing derived from the stored secret is returned; a wrong one is answered slowly. */
+  "org.sparewall.Secrets.CheckBackupPassword": {
+    parameters: {
+      "password": string;
+    };
+    reply: {
+      /** The newest bundle on the node, if there is one. */
+      "bundle"?: string | null;
+      /** Whether it is the stored `backup-password`. */
+      "matches_stored": boolean;
+      /** Why a check could not be made (no stored password, no bundle). */
+      "notes": Array<string>;
+      /** Whether it opens that bundle's sealed secrets (which may predate a change of the password); absent without a bundle with secrets. */
+      "opens_bundle"?: boolean | null;
+      /** The secrets it opens there. */
+      "secrets": Array<string>;
+    };
+    role: "admin";
+    streams: false;
+  };
   /** Delete a secret on this node. */
   "org.sparewall.Secrets.Delete": {
     parameters: {

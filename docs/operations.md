@@ -471,16 +471,21 @@ sparewall set backup.enabled=true \
     backup.repository=rest:https://backup.example.net/fw1 \
     backup.schedule=hourly      # a systemd calendar expression
 sparewall backup                # a bundle now, sent to the repository
-sudo sparewall backup --check-password   # on the node: try your copy
+sparewall backup --check-password        # try your copy (any context)
 ```
 
 **Check the password before relying on the backups.** After setting it
-and writing a bundle, run `sparewall backup --check-password` on the
-node and paste the password from your password manager: the check tells
-you whether it opens the secrets in the newest local bundle. It needs
-neither restic nor the repository, and changes nothing. `--file` checks
-another bundle, and works on any machine the bundle is copied to. A
-wrong password exits non-zero. Get it right before the first backup
+and writing a bundle, run `sparewall backup --check-password` and paste
+the password from your password manager. Through a context (`-c fw1`, or
+`--host`) the node answers (admins only): whether it is the stored
+`backup-password`, and whether it opens the secrets in the newest bundle
+on the node, which may predate a change of the password. Nothing derived
+from the stored password comes back, and a wrong one is answered after a
+second. On the node itself, `sudo sparewall backup --check-password`
+reads the newest bundle directly, which also works with sparewalld
+stopped. Neither needs restic or the repository, and neither changes
+anything. `--file` checks another bundle, and works on any machine the
+bundle is copied to. A wrong password exits non-zero. Get it right before the first backup
 reaches the repository: restic initialises the repository with the
 password, and changing it later orphans the snapshots already there.
 

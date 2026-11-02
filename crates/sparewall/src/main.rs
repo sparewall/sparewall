@@ -623,6 +623,34 @@ fn fingerprint(v: &str) -> String {
 }
 
 /// The backup password, from a file (one line) or a prompt.
+/// What the node said of a backup password: success only when it is the
+/// stored one and opens the newest bundle (or there is none to open).
+fn print_password_check(r: &sparewall_api::CheckBackupPasswordReply) -> Result<(), Fail> {
+    for n in &r.notes {
+        eprintln!("note: {n}");
+    }
+    eprintln!(
+        "{}",
+        if r.matches_stored {
+            "It is the backup password stored on the node."
+        } else {
+            "It is NOT the backup password stored on the node."
+        }
+    );
+    if let Some(b) = &r.bundle {
+        match r.opens_bundle {
+            Some(true) => eprintln!("It opens the secrets in {b}: {}.", r.secrets.join(", ")),
+            Some(false) => eprintln!("It does NOT open the secrets in {b}."),
+            None => {}
+        }
+    }
+    if r.matches_stored && r.opens_bundle != Some(false) {
+        Ok(())
+    } else {
+        Err(Fail::other(String::new()))
+    }
+}
+
 fn backup_password(file: Option<&Path>) -> Result<String, Fail> {
     let pw = match file {
         Some(p) => {
@@ -1205,6 +1233,19 @@ impl App {
                 };
                 print!("{}", sparewall_config::export(&doc, f));
             }
+            Cmd::Backup {
+                check_password: true,
+                password_file,
+                ..
+            } => {
+                let password = backup_password(password_file.as_deref())?;
+                let r = self
+                    .conn()
+                    .await?
+                    .check_backup_password(&password)
+                    .await??;
+                print_password_check(&r)?;
+            }
             Cmd::Backup { .. } => {
                 let r = self.conn().await?.backup().await??;
                 if !self.quiet {
@@ -1578,8 +1619,14 @@ impl App {
     }
 }
 
-fn local(cmd: &Cmd) -> Result<bool, Fail> {
+fn local(cmd: &Cmd, remote: bool) -> Result<bool, Fail> {
     match cmd {
+        // Through --host or --context, the node checks it (#142).
+        Cmd::Backup {
+            check_password: true,
+            file: None,
+            ..
+        } if remote => Ok(false),
         Cmd::Context(c) => {
             let mut ctxs = Contexts::load()?;
             match c {
@@ -1821,12 +1868,13 @@ fn node_only(cmd: &Cmd, linux: bool, remote: bool) -> Option<&'static str> {
     match cmd {
         Cmd::Init { .. } => Some("init"),
         Cmd::Restore { .. } => Some("restore"),
-        // A bundle copied here can be checked anywhere.
+        // A bundle copied here can be checked anywhere, and through
+        // --host or --context the node checks its own (#142).
         Cmd::Backup {
             check_password: true,
             file: None,
             ..
-        } => Some("backup --check-password"),
+        } if !remote => Some("backup --check-password"),
         Cmd::Bridge => Some("bridge"),
         _ => None,
     }
@@ -1855,7 +1903,7 @@ fn main() -> std::process::ExitCode {
                 )
             }));
         }
-        if local(&cli.cmd)? {
+        if local(&cli.cmd, remote)? {
             return Ok(());
         }
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1964,10 +2012,11 @@ mod tests {
         // Linux too.
         let restore = cmd(&["restore", "-f", "b.tar.gz"]);
         assert_eq!(node_only(&restore, true, true), Some("restore"));
-        assert_eq!(
-            node_only(&check, true, true),
-            Some("backup --check-password")
-        );
+        // Except the password check, which the node answers (#142), from
+        // any workstation.
+        assert_eq!(node_only(&check, true, true), None);
+        assert_eq!(node_only(&check, false, true), None);
+        assert!(!super::local(&check, true).unwrap());
         assert_eq!(node_only(&copied, true, true), None);
         assert_eq!(node_only(&cmd(&["status"]), true, true), None);
         assert!(Cli::try_parse_from(["sparewall", "backup", "-f", "b.tar.gz"]).is_err());

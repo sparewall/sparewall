@@ -5,10 +5,11 @@ use std::sync::{Arc, Mutex};
 use futures_util::Stream;
 use serde_json::{Value, json};
 use sparewall_api::{
-    ApplyReply, BackupReply, BindReply, ConfigReply, Empty, EventReply, ExportReply, FailoverReply,
-    FirewallError, GenerationReply, HealthCheck, HealthReply, HistoryReply, LoginReply, SecretInfo,
-    SecretListReply, SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply,
-    UpgradeCheckReply, UpgradeStartReply, UserInfo, UserListReply, ValidateReply, VpnConfigReply,
+    ApplyReply, BackupReply, BindReply, CheckBackupPasswordReply, ConfigReply, Empty, EventReply,
+    ExportReply, FailoverReply, FirewallError, GenerationReply, HealthCheck, HealthReply,
+    HistoryReply, LoginReply, SecretInfo, SecretListReply, SecretSetReply, StatusReply,
+    TokenCreateReply, TokenInfo, TokenListReply, UpgradeCheckReply, UpgradeStartReply, UserInfo,
+    UserListReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
@@ -997,6 +998,26 @@ where
         Ok(Empty {})
     }
 
+    /// Whether `password` is the stored backup password, and whether it
+    /// opens the newest bundle on the node (#142). Nothing derived from
+    /// the stored secret is returned; a wrong one is answered slowly.
+    #[zlink(interface = "org.sparewall.Secrets", rename = "CheckBackupPassword")]
+    async fn check_backup_password(
+        &mut self,
+        password: String,
+    ) -> Result<CheckBackupPasswordReply, FirewallError> {
+        let r = with_core(&self.core, &self.events, move |c| {
+            Ok(crate::backup::check_password(c, password.as_bytes()))
+        })
+        .await?;
+        // Not a fast guessing oracle: a password that is not the stored
+        // one costs a second.
+        if !r.matches_stored {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        Ok(r)
+    }
+
     /// Delete a secret on this node.
     #[zlink(interface = "org.sparewall.Secrets", rename = "Delete")]
     async fn secret_delete(&mut self, name: String) -> Result<Empty, FirewallError> {
@@ -1213,6 +1234,75 @@ mod tests {
         );
         c.boot(false).unwrap();
         (dir, c)
+    }
+
+    /// #142: the node compares a backup password with its own and tries
+    /// it on its newest bundle, and returns nothing derived from the
+    /// stored one.
+    #[test]
+    fn backup_password_checks() {
+        use sparewall_core::secrets::SecretClass;
+        let (dir, mut c) = node();
+        apply(&mut c, 1500, None);
+        let check = |c: &mut Coordinator<Box<dyn System>>, pw: &str| {
+            crate::backup::check_password(c, pw.as_bytes())
+        };
+        // Nothing stored, no bundle.
+        let r = check(&mut c, "right");
+        assert!(!r.matches_stored);
+        assert_eq!((r.bundle.as_deref(), r.opens_bundle), (None, None));
+        assert!(
+            r.notes
+                .iter()
+                .any(|n| n.starts_with("no backup-password is stored")),
+            "{:?}",
+            r.notes
+        );
+        assert!(
+            r.notes
+                .iter()
+                .any(|n| n.starts_with("no bundle on the node")),
+            "{:?}",
+            r.notes
+        );
+        let src = sparewall_core::backup::Sources {
+            leases: None,
+            out_dir: dir.path().join("backups"),
+            image_digest: None,
+        };
+        // A bundle written without a password has nothing to open.
+        c.backup(&src, 5).unwrap();
+        let r = check(&mut c, "right");
+        assert_eq!(r.opens_bundle, None);
+        assert!(
+            r.notes
+                .iter()
+                .any(|n| n.starts_with("the newest bundle holds no secrets")),
+            "{:?}",
+            r.notes
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        c.secret_set("backup-password", b"right", SecretClass::Cluster)
+            .unwrap();
+        c.backup(&src, 5).unwrap();
+        let r = check(&mut c, "right");
+        assert!(r.matches_stored);
+        assert_eq!(r.opens_bundle, Some(true));
+        assert!(
+            r.secrets.contains(&"backup-password".to_string()),
+            "{:?}",
+            r.secrets
+        );
+        let r = check(&mut c, "wrong");
+        assert!(!r.matches_stored);
+        assert_eq!(r.opens_bundle, Some(false));
+        assert!(r.secrets.is_empty());
+        // The newest bundle predates a change of the password.
+        c.secret_set("backup-password", b"new", SecretClass::Cluster)
+            .unwrap();
+        let r = check(&mut c, "new");
+        assert!(r.matches_stored);
+        assert_eq!(r.opens_bundle, Some(false));
     }
 
     fn doc(mtu: u32) -> Value {

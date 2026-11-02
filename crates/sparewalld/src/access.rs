@@ -119,6 +119,7 @@ pub fn needed(method: &str) -> Option<Need> {
         | "org.sparewall.Secrets.Set"
         | "org.sparewall.Secrets.List"
         | "org.sparewall.Secrets.Delete"
+        | "org.sparewall.Secrets.CheckBackupPassword"
         | "org.sparewall.Auth.CreateToken"
         | "org.sparewall.Auth.ListTokens"
         | "org.sparewall.Auth.RevokeToken"
