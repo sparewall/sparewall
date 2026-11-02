@@ -609,7 +609,7 @@ where
     /// Write a backup bundle now, and send it to `backup.repository` if one
     /// is set.
     async fn backup(&mut self) -> Result<BackupReply, FirewallError> {
-        crate::backup::run(&self.core, &self.events).await
+        crate::backup::run(&self.core, &self.events, &self.pair).await
     }
 
     /// Events as they happen: applied and rolled-back generations, peer

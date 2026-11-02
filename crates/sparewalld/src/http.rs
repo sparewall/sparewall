@@ -333,6 +333,7 @@ async fn handle(
             if allowed {
                 c.metrics().map(|mut m| {
                     m.push_str(&crate::schedule::metrics(c.store().root()));
+                    m.push_str(&crate::backup::metrics(c.store().root()));
                     Some(m)
                 })
             } else {

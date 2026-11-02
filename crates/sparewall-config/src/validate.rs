@@ -1356,6 +1356,24 @@ impl Validator<'_> {
                 );
             }
         }
+        if let Some(b) = &doc.backup
+            && let Some(r) = &b.retention
+        {
+            if b.repository.is_none() {
+                self.warn(
+                    "backup.retention",
+                    "retention applies to backup.repository, which is not set",
+                );
+            }
+            // Rules that keep nothing would forget every snapshot.
+            if r.enabled && r.keep_flags().is_empty() {
+                self.err(
+                    "backup.retention",
+                    "keeps nothing: set a keep rule (last, hourly, daily, weekly, monthly, yearly) above 0, \
+                     or enabled: false to keep every snapshot",
+                );
+            }
+        }
         if let Some(u) = &doc.updates {
             let windowed = u.mode == Some(UpdateMode::Windowed);
             match u.window.as_deref() {
