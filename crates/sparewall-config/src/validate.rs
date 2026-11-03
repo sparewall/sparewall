@@ -873,13 +873,18 @@ impl Validator<'_> {
                             format!("{p}.mode"),
                             "no WAN has ipv6 mode dhcpv6 to delegate a prefix",
                         ),
-                        [(_, Some(len))] if u32::from(id) >> (64 - len) != 0 => self.err(
-                            format!("{p}.subnet_id"),
-                            match 1u32 << (64 - len) {
-                                1 => "a /64 is one subnet, 0".to_string(),
-                                n => format!("a /{len} has {n} subnets (0 to {})", n - 1),
-                            },
-                        ),
+                        // An invalid length is reported at the WAN.
+                        [(_, Some(len))]
+                            if (48..=64).contains(len) && u32::from(id) >> (64 - len) != 0 =>
+                        {
+                            self.err(
+                                format!("{p}.subnet_id"),
+                                match 1u32 << (64 - len) {
+                                    1 => "a /64 is one subnet, 0".to_string(),
+                                    n => format!("a /{len} has {n} subnets (0 to {})", n - 1),
+                                },
+                            )
+                        }
                         _ => {}
                     }
                 }

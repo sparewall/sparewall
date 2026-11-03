@@ -1489,6 +1489,15 @@ fn ipv6_networks_take_the_modes_their_role_allows() {
         &d,
         "networks.wan.ipv6.prefix_length: 48 to 64"
     ));
+    // A length out of range is an error, never a panic, with a delegated
+    // network counting subnets in it.
+    for len in [0, 47, 65, 128, 255] {
+        let d = v6(json!({"networks": {"wan": {"ipv6": {"prefix_length": len}}}}));
+        assert!(
+            history_error(&d, "networks.wan.ipv6.prefix_length: 48 to 64"),
+            "{len}"
+        );
+    }
     // Fields for another mode.
     let d = v6(json!({"networks": {"lan": {"ipv6": {"prefix_length": 60}}}}));
     assert!(history_error(
