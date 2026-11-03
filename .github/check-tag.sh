@@ -4,13 +4,18 @@
 #   - it is the commit this workflow builds ($GITHUB_SHA), and that commit
 #     is on main, so the workflow and this script were reviewed there;
 #   - a release (no hyphen) is an annotated tag signed with a GPG key on
-#     the GitHub account of one of RELEASE_SIGNERS (user names: the
-#     workflow passes whoever pushed the tag), fetched now, so a tag
-#     cannot bring its own key and a key revoked on GitHub stops counting.
+#     the GitHub account of a maintainer of the repository, whoever has
+#     the maintain or admin role, directly or through a team. The account
+#     is the tagger's: the one GitHub matches to the tagger's email, which
+#     only an account that has verified that email gets. Its role and
+#     keys are asked of GitHub now, so the roles are the one list of who
+#     may release, a tag cannot bring its own key, and a key revoked on
+#     GitHub stops counting. (The workflow's token cannot list the
+#     repository's collaborators, only ask about one.)
 # A prerelease (a hyphen: v0.2.0-rc1) need not be signed, so a maintainer
 # can sign the release tag on the commit of the last prerelease.
 #
-#   GITHUB_SHA=COMMIT RELEASE_SIGNERS="user ..." .github/check-tag.sh TAG
+#   GITHUB_SHA=COMMIT GITHUB_REPOSITORY=OWNER/REPO GH_TOKEN=… .github/check-tag.sh TAG
 set -euo pipefail
 tag=${1:?usage: check-tag.sh TAG}
 sha=${GITHUB_SHA:?GITHUB_SHA must name the commit being built}
@@ -34,15 +39,29 @@ case $tag in *-*)
 esac
 [ "$(git cat-file -t "refs/tags/$tag")" = tag ] \
     || die "not an annotated tag; a release tag must be signed (git tag -s)"
-[ -n "${RELEASE_SIGNERS:-}" ] || die "no RELEASE_SIGNERS"
+repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository}
+# The tagger's account, for the tag object fetched above.
+# shellcheck disable=SC2016 # the query's $variables are GraphQL's
+who=$(gh api graphql -f owner="${repo%/*}" -f name="${repo#*/}" -f ref="refs/tags/$tag" -f query='
+    query($owner: String!, $name: String!, $ref: String!) {
+      repository(owner: $owner, name: $name) {
+        ref(qualifiedName: $ref) { target { oid ... on Tag { tagger { user { login } } } } }
+      }
+    }' --jq '.data.repository.ref.target | "\(.oid) \(.tagger.user.login // "")"') \
+    || die "cannot ask GitHub who tagged it"
+read -r oid signer <<<"$who"
+[ "$oid" = "$(git rev-parse "refs/tags/$tag")" ] || die "GitHub has another tag object ($oid)"
+tagger=$(git for-each-ref --format='%(taggeremail)' "refs/tags/$tag")
+[ -n "$signer" ] || die "its tagger $tagger is not a verified email of any GitHub account"
+maintain=$(gh api "repos/$repo/collaborators/$signer/permission" --jq .user.permissions.maintain) \
+    || die "cannot ask GitHub for $signer's role"
+[ "$maintain" = true ] || die "tagged by $signer, who is not a maintainer (the maintain or admin role)"
 GNUPGHOME=$(mktemp -d)
 export GNUPGHOME
 trap 'rm -rf "$GNUPGHOME"' EXIT
-for u in $RELEASE_SIGNERS; do
-    keys=$(curl -fsSL "${KEYS_URL:-https://github.com}/$u.gpg") || die "cannot fetch $u's GPG keys"
-    # An account without keys gets an armored note, which gpg "imports".
-    gpg --batch --with-colons --show-keys <<<"$keys" 2>/dev/null | grep -q '^pub:' \
-        || die "$u has no GPG keys on GitHub"
-    gpg -q --batch --import <<<"$keys"
-done
-git verify-tag "$tag" || die "not signed by a GPG key of $RELEASE_SIGNERS"
+keys=$(curl -fsSL "${KEYS_URL:-https://github.com}/$signer.gpg") || die "cannot fetch $signer's GPG keys"
+# An account without keys gets an armored note, which gpg "imports".
+gpg --batch --with-colons --show-keys <<<"$keys" 2>/dev/null | grep -q '^pub:' \
+    || die "$signer has no GPG keys on GitHub"
+gpg -q --batch --import <<<"$keys"
+git verify-tag "$tag" || die "not signed by a GPG key of $signer, its tagger"

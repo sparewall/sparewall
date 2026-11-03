@@ -71,26 +71,16 @@ jobs:
           fetch-depth: 0 # for .github/version.sh
 
       # Before anything is built or pushed from a tag: the tag is this
-      # commit, on main, and a release tag is signed by whoever pushed it
-      # (who has push access, or could not have), with a key on their
-      # GitHub account (docs/releasing.md). github.actor stays the pusher
-      # when someone else re-runs the workflow.
+      # commit, on main, and a release tag is signed with a key on the
+      # GitHub account of one of the repository's maintainers (the
+      # maintain or admin role; docs/releasing.md). The same rule holds
+      # for a rebuild, which a bot dispatches: who runs the workflow
+      # proves nothing about the tag.
       - name: Check the tag
         if: startsWith(github.ref, 'refs/tags/v')
         env:
-          ACTOR: ${{ github.actor }}
-          SIGNERS: ${{ vars.RELEASE_SIGNERS }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # A rebuild is dispatched by whoever (or whatever bot) runs it,
-          # which proves nothing about the tag: it must carry the signature
-          # of one of the maintainers the repository names, and there must
-          # be some. A release is signed by whoever pushed its tag.
-          if [ -n "$REBUILD" ]; then
-            [ -n "$SIGNERS" ] || { echo "::error::a rebuild needs the repository variable RELEASE_SIGNERS"; exit 1; }
-            export RELEASE_SIGNERS=$SIGNERS
-          else
-            export RELEASE_SIGNERS=$ACTOR
-          fi
           .github/check-tag.sh "$GITHUB_REF_NAME"
 
       - name: A rebuild is of a release tag

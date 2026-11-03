@@ -7,9 +7,10 @@ name: Rebuild
 #
 # Rebuild for any security advisory pending in the stable image, and at
 # least every 30 days. Scheduled runs act only while the repository
-# variable REBUILDS is "on"; image.yml checks the release tag's signature
-# against the repository variable RELEASE_SIGNERS (GitHub user names),
-# since the bot that dispatches it signs nothing.
+# variable REBUILDS is "on". The release tag's signature is checked as
+# for a release, against the keys of the repository's maintainers, since
+# the bot that dispatches it signs nothing: here, with this branch's
+# check-tag.sh, and again by image.yml as it was at the tag.
 
 on:
   schedule:
@@ -55,7 +56,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT: ${{ github.event_name }}
           ENABLED: ${{ vars.REBUILDS }}
-          SIGNERS: ${{ vars.RELEASE_SIGNERS }}
           FORCE: ${{ inputs.force || false }}
           DRY_RUN: ${{ inputs.dry_run || false }}
         run: |
@@ -64,12 +64,17 @@ jobs:
             say "Scheduled rebuilds are off: set the repository variable REBUILDS to \`on\`."
             exit 0
           fi
-          [ -n "$SIGNERS" ] || { echo "::error::set the repository variable RELEASE_SIGNERS (who signs release tags)"; exit 1; }
           tag=$(gh release view --json tagName --jq .tagName)
           release=${tag#v}
           # The rebuild runs image.yml as it was at the tag.
           if ! git show "$tag:.github/workflows/image.yml" | grep -q '^      rebuild:$'; then
             say "$tag predates rebuilds (its image.yml takes no \`rebuild\`): release a new version instead."
+            exit 0
+          fi
+          # Before #226, a rebuild's tag check read a list of signers from
+          # a repository variable, which is gone: the roles are the list.
+          if git show "$tag:.github/check-tag.sh" | grep -q RELEASE_SIGNERS; then
+            say "$tag's own tag check predates checking the repository's roles (#226): release a new version instead."
             exit 0
           fi
           labels=$(skopeo inspect --no-tags "docker://$IMAGE:stable" | jq .Labels)
@@ -98,6 +103,13 @@ jobs:
             exit 0
           fi
           say "Rebuild $tag as $release+r$n: $why."
+          # Who may release is whoever has the role now (docs/releasing.md),
+          # so check the tag with this branch's checker, whatever the
+          # tag's own copy says.
+          if ! GITHUB_SHA=$(git rev-parse "$tag^{commit}") .github/check-tag.sh "$tag"; then
+            echo "::error::$tag is not signed by one of the repository's maintainers"
+            exit 1
+          fi
           if [ "$DRY_RUN" = true ]; then
             say "(a dry run: nothing dispatched)"
             exit 0

@@ -37,10 +37,14 @@ elsewhere=$(git rev-parse HEAD)
 git switch -q main
 git push -q origin main
 
-sign() { GNUPGHOME=$t/$1 git -c "user.signingkey=$1@example.com" tag -s "$2" -m "$2" "${3:-HEAD}"; }
+sign() { # signer tag [commit [tagger]]: tagged as the signer, or as someone else
+    GNUPGHOME=$t/$1 git -c "user.signingkey=$1@example.com" -c "user.email=${4:-$1}@example.com" \
+        tag -s "$2" -m "$2" "${3:-HEAD}"
+}
 sign maintainer v1.0.0
 sign stranger v1.0.1
-git tag -a v1.0.2 -m unsigned
+git -c user.email=maintainer@example.com tag -a v1.0.2 -m unsigned
+sign stranger v1.0.4 HEAD maintainer
 git tag v1.0.3
 git tag v1.1.0-rc1
 sign stranger v1.1.0-rc2
@@ -49,20 +53,50 @@ sign maintainer v2.0.0 "$elsewhere"
 git tag v2.0.1-rc1 "$elsewhere"
 git push -q origin --tags
 
+# GitHub, in place of its API: a fake gh. The GraphQL query answers with
+# the tag object and the account of its tagger's email, when that account
+# is listed in $t/verified (it has verified the email); the role query
+# answers whether the account is listed in $t/roles. $t/offline makes
+# every call fail, $t/stale makes GitHub's tag another object, and with no
+# $t/roles the role query fails.
+mkdir "$t/bin"
+cat > "$t/bin/gh" <<EOF
+#!/bin/bash
+[ ! -e "$t/offline" ] || exit 1
+case "\$1 \$2" in
+"api graphql")
+    for a; do case \$a in ref=*) ref=\${a#ref=};; esac; done
+    read -r oid email < <(git -C "$t/origin.git" for-each-ref --format='%(objectname) %(taggeremail)' "\$ref")
+    [ ! -e "$t/stale" ] || oid=0000000000000000000000000000000000000000
+    login=\${email#<}; login=\${login%@example.com>}
+    grep -qxF "\$login" "$t/verified" || login=
+    echo "\$oid \$login";;
+"api repos/sparewall/test/collaborators/"*)
+    [ -f "$t/roles" ] || exit 1
+    u=\${2#repos/sparewall/test/collaborators/}; u=\${u%/permission}
+    if tr ' ' '\\n' < "$t/roles" | grep -qxF "\$u"; then echo true; else echo false; fi;;
+*) echo "unexpected: gh \$*" >&2; exit 2;;
+esac
+EOF
+chmod +x "$t/bin/gh"
+printf '%s\n' maintainer stranger nobody > "$t/verified"
+signers() { echo "$*" > "$t/roles"; }
+
 # A clone shallow at the tag, as actions/checkout leaves it.
-signers=maintainer
+signers maintainer
 expect() { # exit-status tag message [commit being built]
     local got=0 sha=${4:-$main}
     rm -rf "$t/ci"
     git clone -q --depth 1 --branch "$2" "file://$t/origin.git" "$t/ci" 2>/dev/null
-    (cd "$t/ci" && env -u GNUPGHOME GITHUB_SHA="$sha" RELEASE_SIGNERS="$signers" \
-        KEYS_URL="file://$t/github" "$check" "$2") >"$t/out" 2>&1 || got=$?
+    (cd "$t/ci" && env -u GNUPGHOME GITHUB_SHA="$sha" GITHUB_REPOSITORY=sparewall/test \
+        PATH="$t/bin:$PATH" KEYS_URL="file://$t/github" "$check" "$2") >"$t/out" 2>&1 || got=$?
     [ "$got" = "$1" ] || fail "check-tag.sh $2: exit $got, want $1: $(cat "$t/out")"
     grep -q -- "$3" "$t/out" || fail "check-tag.sh $2: no '$3' in: $(cat "$t/out")"
 }
-expect 0 v1.0.0 'Good signature'                       # signed by a signer
-expect 1 v1.0.1 'not signed by a GPG key'              # signed by someone else
-expect 1 v1.0.2 'not signed by a GPG key'              # annotated, unsigned
+expect 0 v1.0.0 'Good signature'                       # signed by a maintainer
+expect 1 v1.0.1 'stranger, who is not a maintainer'    # by someone without the role
+expect 1 v1.0.2 'not signed by a GPG key of maintainer' # annotated, unsigned
+expect 1 v1.0.4 'not signed by a GPG key of maintainer' # another's email, the signer's own key
 expect 1 v1.0.3 'not an annotated tag'                 # lightweight
 expect 0 v1.1.0-rc1 'no signature required'            # a prerelease need not be signed
 expect 0 v1.1.0-rc2 'no signature required'
@@ -71,13 +105,27 @@ expect 1 v2.0.0 'is not on main' "$elsewhere"          # signed, but not on main
 expect 1 v2.0.1-rc1 'is not on main' "$elsewhere"
 expect 1 v1.0.0 'not the commit being built' "$elsewhere"
 
-signers="nobody maintainer"                           # an account that cannot be fetched
-expect 1 v1.0.0 "cannot fetch nobody's GPG keys"
-signers="maintainer stranger"                         # more than one signer
+signers maintainer stranger                           # the role given
 expect 0 v1.0.1 'Good signature'
-signers=
-expect 1 v1.0.0 'no RELEASE_SIGNERS'
-signers=maintainer
+signers stranger                                      # and taken away
+expect 1 v1.0.0 'maintainer, who is not a maintainer'
+signers maintainer
+grep -vx maintainer "$t/verified" > "$t/v" && mv "$t/v" "$t/verified"
+expect 1 v1.0.0 'is not a verified email of any GitHub account'
+echo maintainer >> "$t/verified"
+touch "$t/stale"                                      # GitHub has another tag
+expect 1 v1.0.0 'GitHub has another tag object'
+rm "$t/stale"
+touch "$t/offline"                                    # GitHub out of reach
+expect 1 v1.0.0 'cannot ask GitHub who tagged it'
+expect 0 v1.1.0-rc1 'no signature required'           # a prerelease asks nothing
+rm "$t/offline"
+rm "$t/roles"                                         # the role cannot be read
+expect 1 v1.0.0 "cannot ask GitHub for maintainer's role"
+signers maintainer
+mv "$t/github/maintainer.gpg" "$t/github/maintainer.gone"  # the keys cannot be fetched
+expect 1 v1.0.0 "cannot fetch maintainer's GPG keys"
+mv "$t/github/maintainer.gone" "$t/github/maintainer.gpg"
 key rotated > "$t/github/maintainer.gpg"              # the old key revoked on GitHub
 expect 1 v1.0.0 'not signed by a GPG key'
 printf '%s\n' '-----BEGIN PGP PUBLIC KEY BLOCK-----' \
@@ -90,7 +138,7 @@ key maintainer > "$t/github/maintainer.gpg"
 rm -rf "$t/ci"
 git clone -q "file://$t/origin.git" "$t/ci" 2>/dev/null
 (cd "$t/ci" && git tag -f v1.0.0 >/dev/null && env -u GNUPGHOME GITHUB_SHA="$main" \
-    RELEASE_SIGNERS=maintainer KEYS_URL="file://$t/github" "$check" v1.0.0 >/dev/null 2>&1) \
+    GITHUB_REPOSITORY=sparewall/test PATH="$t/bin:$PATH" KEYS_URL="file://$t/github" "$check" v1.0.0 >/dev/null 2>&1) \
     || fail "check-tag.sh v1.0.0: a lightweight local copy was not replaced"
 
 [ "$(GITHUB_REF=refs/tags/v1.2.3-rc1 GITHUB_REF_NAME=v1.2.3-rc1 "$repo/.github/version.sh")" = 1.2.3-rc1 ] \
