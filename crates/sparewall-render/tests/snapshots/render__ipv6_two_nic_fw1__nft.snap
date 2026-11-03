@@ -38,12 +38,12 @@ table inet sparewall {
 		icmpv6 type nd-neighbor-solicit icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != ff00::/8 accept comment "ipv6-nd"
 		icmpv6 type nd-neighbor-advert icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != { ::, ff00::/8 } accept comment "ipv6-nd"
 		icmpv6 type { mld-listener-query, mld2-listener-report } ip6 saddr fe80::/10 accept comment "ipv6-mld"
+		iifname { "lab0", "lan0" } icmpv6 type nd-router-solicit icmpv6 code 0 ip6 hoplimit 255 accept comment "ipv6-router-solicit"
+		iifname "wan0" icmpv6 type nd-router-advert icmpv6 code 0 ip6 saddr fe80::/10 ip6 hoplimit 255 accept comment "ipv6-router-advert"
 		meta nfproto ipv6 iifname != { "lo", "lab0", "lan0", "wan0" } drop comment "ipv6-off"
 		ct state vmap { established : accept, related : accept, invalid : drop }
 		iifname "lo" accept
 		iifname "lan0" meta nfproto ipv4 ip saddr 192.168.1.10 tcp dport { 22, 443 } accept comment "anti-lockout"
-		iifname { "lab0", "lan0" } icmpv6 type nd-router-solicit icmpv6 code 0 ip6 hoplimit 255 accept comment "ipv6-router-solicit"
-		iifname "wan0" icmpv6 type nd-router-advert icmpv6 code 0 ip6 saddr fe80::/10 ip6 hoplimit 255 accept comment "ipv6-router-advert"
 		icmp type echo-request limit rate over 50/second burst 100 packets drop comment "icmp-flood"
 		icmpv6 type echo-request limit rate over 50/second burst 100 packets drop comment "icmpv6-flood"
 		iifname "wan0" udp sport 67 udp dport 68 accept comment "infra:dhcp-client"

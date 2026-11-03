@@ -79,9 +79,15 @@ trap cleanup EXIT
 
 # The ISP's IPv6 (#213): radvd and Kea's DHCPv6 server in sw-tisp.
 v6_dump() {
-    echo "--- radvd"; tail -5 radvd.log
-    echo "--- kea"; tail -20 kea6/kea6.log kea6/stdout.log; sudo cat kea6/leases6.csv
-    at fw1 'ip -6 addr show dev wan0; ip -6 route; networkctl status wan0 --no-pager' || true
+    set +e
+    echo "--- radvd"; tail -n 5 radvd.log
+    echo "--- tisp"; ns tisp ip -6 addr show dev eth0
+    for f in kea6/stdout.log kea6/kea6.log kea6/leases6.csv; do echo "--- $f"; sudo tail -n 30 "$f"; done
+    echo "--- fw1"
+    at fw1 'ip -6 addr; ip -6 route; networkctl status wan0 lan0 --no-pager -n 0
+        sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "dhcp6|ndisc|ipv6|pd|prefix" | tail -40
+        sudo nft list chain inet sparewall input'
+    set -e
 } 2>&1
 stop_v6_isp() {
     for p in radvd.pid kea6/kea-dhcp6.kea-dhcp6.pid; do

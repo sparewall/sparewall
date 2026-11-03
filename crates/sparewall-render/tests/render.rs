@@ -1189,9 +1189,14 @@ fn ipv6_firewall() {
             off < state,
             "{chain}: ipv6-off after the state rule\n{body}"
         );
-        // And neighbour discovery before both, in input.
+        // And neighbour discovery and router solicitations and
+        // advertisements before both, in input: conntrack makes no
+        // connection for them, so the state rule would drop them as
+        // invalid (#213).
         if chain == "chain input {" {
-            assert!(body.find("ipv6-nd").unwrap() < off, "{body}");
+            for nd in ["ipv6-nd", "ipv6-router-solicit", "ipv6-router-advert"] {
+                assert!(body.find(nd).unwrap() < off, "{nd}\n{body}");
+            }
         }
     }
     // The ipv6 dynamic object a lease fills is kept across activations.

@@ -662,9 +662,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         )
         .unwrap();
     }
-    if v6 {
-        input.push_str(&ipv6_input(doc));
-    } else {
+    if !v6 {
         input.push_str(IPV6_LINK_LOCAL);
         input.push_str("meta nfproto ipv6 drop\n");
     }
@@ -1110,8 +1108,14 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
 }
 
 /// IPv6 to the node, before the state rule, when a network routes it
-/// (#212): neighbour discovery on every link, and MLD, then nothing more
-/// on a link without IPv6 (but loopback).
+/// (#212): neighbour discovery on every link, and MLD; router
+/// solicitations from the inside networks with IPv6, and router
+/// advertisements only from a WAN that learns from them; then nothing
+/// more on a link without IPv6 (but loopback). Echo is the policies'.
+///
+/// Before the state rule because conntrack tracks none of these: it
+/// makes no connection for neighbour discovery's types, so they are
+/// `invalid` to it, and the state rule would drop them (#213).
 ///
 /// Neighbour discovery must come from the link (hop limit 255) with code
 /// 0, and never from a multicast address; an advertisement never from the
@@ -1125,15 +1129,6 @@ fn ipv6_input_early(doc: &Document) -> String {
          icmpv6 type nd-neighbor-advert icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != { ::, ff00::/8 } accept comment \"ipv6-nd\"\n\
          icmpv6 type { mld-listener-query, mld2-listener-report } ip6 saddr fe80::/10 accept comment \"ipv6-mld\"\n",
     );
-    s.push_str(&ipv6_off(doc, "iifname", &["lo"]));
-    s
-}
-
-/// IPv6 to the node after the state rule (#212): router solicitations
-/// from the inside networks with IPv6, router advertisements only from a
-/// WAN that learns from them. Echo is the policies'.
-fn ipv6_input(doc: &Document) -> String {
-    let mut s = String::new();
     let inside = doc.ipv6_ifaces_where(|n, _| n.role != NetworkRole::Wan);
     if !inside.is_empty() {
         writeln!(
@@ -1154,6 +1149,7 @@ fn ipv6_input(doc: &Document) -> String {
         )
         .unwrap();
     }
+    s.push_str(&ipv6_off(doc, "iifname", &["lo"]));
     s
 }
 
