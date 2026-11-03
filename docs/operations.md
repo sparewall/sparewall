@@ -300,7 +300,10 @@ sparewall set networks.wan.ipv6.mode=dhcpv6     # or ra, or static
   and `ra` modes) and DHCPv6 replies, to the node only; everything else
   from the WAN zone is its policies', for IPv6 as for IPv4. A dynamic
   `ipv6` object on the WAN holds the node's IPv6 address (`source:
-  address`) or the link's prefix (`source: prefix`).
+  address`) or the link's prefix from the router advertisements
+  (`source: prefix`; empty when they carry none), as an IPv4 WAN's holds
+  its subnet. The delegated prefix is not the WAN's: it is the inside
+  networks', whose own prefix objects hold their /64s.
 - **Forwarding** stays off until an inside network has IPv6: a WAN alone
   gives the node itself IPv6, and routes nothing.
 - **What it has:** `networkctl status wan0` shows the addresses, the

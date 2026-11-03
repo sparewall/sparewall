@@ -370,7 +370,11 @@ fn wan_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkIpv6
                     )
                     .set("UseDNS", "yes")
                     .set("SendHostname", "no");
-                // The node's own address may come from IA_NA instead.
+                // The node's own address may come from IA_NA instead. A
+                // WAN's prefix object is the link's, from the RAs, as an
+                // IPv4 WAN's is its subnet: the delegated prefix is the
+                // inside networks', whose prefix objects hold their /64s
+                // (#214).
                 let own: Vec<&String> = sets.iter().filter(|s| s.starts_with("address:")).collect();
                 if !own.is_empty() {
                     ini.set(
