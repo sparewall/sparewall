@@ -79,6 +79,10 @@ jobs:
         run: tests/vm/vpn-check-test.sh
       - name: Release tag checks
         run: tests/ci/release-tags.sh
+      - name: TEMPORARY - can GITHUB_TOKEN read the roles?
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --paginate "repos/$GITHUB_REPOSITORY/collaborators" --jq '.[] | select(.permissions.maintain) | .login'
       - name: Homebrew formula
         run: tests/ci/homebrew-formula.sh
 
