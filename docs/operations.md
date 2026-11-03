@@ -328,12 +328,15 @@ networks:
 - **A new delegated prefix** renumbers the network by itself: the node
   takes `::1` in the new /64 and advertises it, and the old one as
   deprecated, so hosts move to the new one.
-- **DNS:** where the node serves DNS (`dns`), its advertisements name it
-  as the resolver, with DHCP's search domain: on a static network by its
+- **DNS:** where DHCPv4 hands out the node as the resolver (`dns` serves
+  the network, and `dhcp.<network>.options.dns` names no other servers),
+  its advertisements name it too, with DHCP's search domain: on a static network by its
   address there, on a delegated one by its link-local address, which a
   new prefix does not change. Unbound then also answers over IPv6, on
   every address of the node; the firewall's `service:dns` rule admits
-  only the served networks.
+  only the served networks. Where DHCPv4 names other servers (a
+  directory's, say), the advertisements name none, and dual-stack
+  clients keep asking those over IPv4, AAAA records included.
 - **Forwarding** is on once an inside network has IPv6. What crosses
   between zones is the policies', for IPv6 as for IPv4, without NAT.
 - **Objects:** a dynamic `ipv6` object on an inside network holds its

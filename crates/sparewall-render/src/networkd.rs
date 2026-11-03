@@ -365,11 +365,7 @@ pub fn node_in_prefix(p: ipnet::Ipv6Net) -> std::net::Ipv6Addr {
 /// address, on a delegated one by its link-local address, which a new
 /// prefix does not change. The search domain is DHCP's.
 fn inside_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkIpv6) {
-    let serves_dns = crate::unbound::served_networks(doc)
-        .iter()
-        .any(|n| n == name)
-        && sparewall_config::providers::chosen(doc, sparewall_config::providers::Role::Dns)
-            == Some("unbound");
+    let serves_dns = crate::kea::node_is_resolver(doc, name);
     let domain = doc
         .dhcp
         .as_ref()

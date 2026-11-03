@@ -1431,3 +1431,40 @@ fn ipv6_unbound_static_only() {
     );
     assert!(!unbound.contains("::0/0 allow"), "{unbound}");
 }
+
+/// The router advertisements name the node as the resolver only where
+/// DHCPv4 does (#214): not without `dns`, and not where the network's DHCP
+/// options name other servers (a directory's, say), so IPv6 never sends
+/// clients past them.
+#[test]
+fn ipv6_ras_name_the_node_only_where_dhcp_does() {
+    let lan = |patch: serde_json::Value| {
+        let text = std::fs::read_to_string(format!(
+            "{}/../../examples/two-nic.yaml",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+        sparewall_config::merge_patch(
+            &mut v,
+            &serde_json::json!({"networks": {
+                "wan": {"ipv6": {"mode": "dhcpv6"}},
+                "lan": {"ipv6": {"mode": "delegated", "subnet_id": 1}},
+            }}),
+        );
+        sparewall_config::merge_patch(&mut v, &patch);
+        let doc = sparewall_config::from_value(v).unwrap();
+        let r = render(&doc, "fw1").unwrap();
+        network_file(&r, "lan0").to_string()
+    };
+    assert!(lan(serde_json::json!({})).contains("EmitDNS=yes\nDNS=_link_local\n"));
+    // No resolver on the node.
+    let f = lan(serde_json::json!({"dns": null}));
+    assert!(f.contains("[IPv6SendRA]\nEmitDNS=no\n"), "{f}");
+    // The node resolves, but DHCP hands the LAN other servers.
+    let f = lan(
+        serde_json::json!({"dhcp": {"lan": {"options": {"dns": ["192.168.1.5", "192.168.1.6"]}}}}),
+    );
+    assert!(f.contains("[IPv6SendRA]\nEmitDNS=no\n"), "{f}");
+    assert!(!f.contains("DNS=_link_local"), "{f}");
+}
