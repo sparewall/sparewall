@@ -320,6 +320,18 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                     })
                     .collect(),
             ),
+            // Nothing renders IPv6 yet (#212): validation refuses an
+            // ipv6 object at activation, so only its static elements.
+            (ObjectKind::Ipv6, _) => (
+                "ipv6_addr",
+                o.elements
+                    .iter()
+                    .map(|e| match e {
+                        MatchItem::Text(s) => s.clone(),
+                        MatchItem::Number(n) => n.to_string(),
+                    })
+                    .collect(),
+            ),
             (ObjectKind::Port, _) => (
                 "inet_service",
                 o.elements

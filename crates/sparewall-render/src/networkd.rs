@@ -310,7 +310,8 @@ fn dhcp_client(ini: &mut Ini, doc: &Document, name: &str, net: &Network) {
         .iter()
         .filter_map(|(oname, o)| {
             let d = o.dynamic.as_ref()?;
-            (d.network == name).then(|| {
+            // An ipv6 object's lease half is #213's.
+            (d.network == name && o.kind == ObjectKind::Ipv4).then(|| {
                 let src = match d.source {
                     DynamicKind::Address => "address",
                     DynamicKind::Prefix => "prefix",

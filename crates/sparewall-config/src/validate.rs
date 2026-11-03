@@ -1,9 +1,9 @@
 //! Semantic checks beyond what the schema can express.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-use ipnet::Ipv4Net;
+use ipnet::{Ipv4Net, Ipv6Net};
 
 use crate::model::*;
 use crate::providers::{self, Role};
@@ -52,6 +52,7 @@ fn run(doc: &Document, activation: bool) -> Vec<Issue> {
     v.cluster();
     v.ports();
     v.networks();
+    v.networks_ipv6();
     v.management();
     v.zones();
     v.objects();
@@ -164,6 +165,67 @@ pub fn ipv4_element_ok(s: &str) -> bool {
     s.parse::<Ipv4Addr>().is_ok() || s.parse::<Ipv4Net>().is_ok() || parse_range(s).is_some()
 }
 
+/// Parse `2001:db8::1-2001:db8::ff`.
+pub fn parse_range6(s: &str) -> Option<(Ipv6Addr, Ipv6Addr)> {
+    let (a, b) = s.split_once('-')?;
+    let (a, b): (Ipv6Addr, Ipv6Addr) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
+    (u128::from(a) <= u128::from(b)).then_some((a, b))
+}
+
+/// An IPv6 match element: address, prefix or range.
+pub fn ipv6_element_ok(s: &str) -> bool {
+    s.parse::<Ipv6Addr>().is_ok() || s.parse::<Ipv6Net>().is_ok() || parse_range6(s).is_some()
+}
+
+/// A host's suffix in a network's /64 (`::20`): an IPv6 address whose
+/// first 64 bits are zero, and which is not zero itself.
+pub fn suffix_ok(s: &str) -> bool {
+    s.parse::<Ipv6Addr>()
+        .is_ok_and(|a| u128::from(a) >> 64 == 0 && u128::from(a) != 0)
+}
+
+/// An address an IPv6 prefix or host may use: not unspecified, loopback,
+/// link-local or multicast.
+fn ipv6_routable(a: Ipv6Addr) -> bool {
+    !(a.is_unspecified() || a.is_loopback() || a.is_multicast() || a.is_unicast_link_local())
+}
+
+/// The address families a rule's match allows: each is IPv4, IPv6, or
+/// both (no address match at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Families {
+    v4: bool,
+    v6: bool,
+}
+
+impl Families {
+    const BOTH: Families = Families { v4: true, v6: true };
+    const NONE: Families = Families {
+        v4: false,
+        v6: false,
+    };
+    fn and(self, o: Families) -> Families {
+        Families {
+            v4: self.v4 && o.v4,
+            v6: self.v6 && o.v6,
+        }
+    }
+    fn or(self, o: Families) -> Families {
+        Families {
+            v4: self.v4 || o.v4,
+            v6: self.v6 || o.v6,
+        }
+    }
+    fn name(self) -> &'static str {
+        match (self.v4, self.v6) {
+            (true, true) => "IPv4 and IPv6",
+            (true, false) => "IPv4",
+            (false, true) => "IPv6",
+            (false, false) => "no family",
+        }
+    }
+}
+
 /// A port match element: number or `low-high`.
 pub fn port_element_ok(item: &MatchItem) -> bool {
     match item {
@@ -196,7 +258,7 @@ pub fn limit_ok(s: &str) -> bool {
 }
 
 const KNOWN_PROTOS: &[&str] = &[
-    "tcp", "udp", "icmp", "sctp", "gre", "esp", "ah", "vrrp", "igmp",
+    "tcp", "udp", "icmp", "icmpv6", "sctp", "gre", "esp", "ah", "vrrp", "igmp",
 ];
 
 impl Validator<'_> {
@@ -716,6 +778,258 @@ impl Validator<'_> {
     }
 
     /// Every node has an address on a statically addressed network.
+    /// `networks.<name>.ipv6` (#211): the mode the role allows, the fields
+    /// the mode takes, prefixes that do not overlap, and a delegated
+    /// prefix to take subnets from.
+    fn networks_ipv6(&mut self) {
+        let doc = self.doc;
+        let mut subnet_ids: BTreeMap<u16, &str> = BTreeMap::new();
+        let mut prefixes: Vec<(Ipv6Net, &str)> = Vec::new();
+        let delegating: Vec<(&str, Option<u8>)> = doc
+            .networks
+            .iter()
+            .filter_map(|(n, net)| {
+                let v6 = net.ipv6.as_ref()?;
+                (net.role == NetworkRole::Wan && v6.mode == Ipv6Mode::Dhcpv6)
+                    .then_some((n.as_str(), v6.prefix_length))
+            })
+            .collect();
+        for (name, net) in &doc.networks {
+            let Some(v6) = &net.ipv6 else { continue };
+            let p = format!("networks.{name}.ipv6");
+            let wan = net.role == NetworkRole::Wan;
+            let mode = format!("{:?}", v6.mode).to_lowercase();
+            match (net.role, v6.mode) {
+                (NetworkRole::Sync, _) => {
+                    self.err(&p, "the sync network is IPv4 only");
+                    continue;
+                }
+                (NetworkRole::Wan, Ipv6Mode::Delegated) => {
+                    self.err(format!("{p}.mode"), "a WAN takes dhcpv6, ra or static");
+                }
+                (_, Ipv6Mode::Dhcpv6 | Ipv6Mode::Ra) if !wan => {
+                    self.err(
+                        format!("{p}.mode"),
+                        "an inside network takes delegated or static",
+                    );
+                }
+                _ => {}
+            }
+            let only = |v: &mut Self, field: &str, set: bool, modes: &[Ipv6Mode], what: &str| {
+                if set && !modes.contains(&v6.mode) {
+                    v.err(format!("{p}.{field}"), format!("{what}, not {mode}"));
+                }
+            };
+            only(
+                self,
+                "prefix_length",
+                v6.prefix_length.is_some(),
+                &[Ipv6Mode::Dhcpv6],
+                "for mode dhcpv6",
+            );
+            only(
+                self,
+                "subnet_id",
+                v6.subnet_id.is_some(),
+                &[Ipv6Mode::Delegated],
+                "for mode delegated",
+            );
+            only(
+                self,
+                "prefix",
+                v6.prefix.is_some(),
+                &[Ipv6Mode::Static],
+                "for mode static",
+            );
+            let static_wan = wan && v6.mode == Ipv6Mode::Static;
+            if !v6.addresses.is_empty() && !static_wan {
+                self.err(
+                    format!("{p}.addresses"),
+                    "for a static WAN; on an inside network the node's address comes from the prefix",
+                );
+            }
+            if v6.gateway.is_some() && !static_wan {
+                self.err(format!("{p}.gateway"), "for a static WAN");
+            }
+            if let Some(l) = v6.prefix_length
+                && !(48..=64).contains(&l)
+            {
+                self.err(format!("{p}.prefix_length"), "48 to 64");
+            }
+            match v6.mode {
+                Ipv6Mode::Delegated => {
+                    let Some(id) = v6.subnet_id else {
+                        self.err(format!("{p}.subnet_id"), "a delegated network needs one");
+                        continue;
+                    };
+                    if let Some(prev) = subnet_ids.insert(id, name) {
+                        self.err(
+                            format!("{p}.subnet_id"),
+                            format!("subnet {id} is also network {prev:?}'s"),
+                        );
+                    }
+                    match delegating.as_slice() {
+                        [] => self.err(
+                            format!("{p}.mode"),
+                            "no WAN has ipv6 mode dhcpv6 to delegate a prefix",
+                        ),
+                        // An invalid length is reported at the WAN.
+                        [(_, Some(len))]
+                            if (48..=64).contains(len) && u32::from(id) >> (64 - len) != 0 =>
+                        {
+                            self.err(
+                                format!("{p}.subnet_id"),
+                                match 1u32 << (64 - len) {
+                                    1 => "a /64 is one subnet, 0".to_string(),
+                                    n => format!("a /{len} has {n} subnets (0 to {})", n - 1),
+                                },
+                            )
+                        }
+                        _ => {}
+                    }
+                }
+                Ipv6Mode::Static => {
+                    let Some(Prefix6(px)) = v6.prefix else {
+                        self.err(format!("{p}.prefix"), "a static network needs one");
+                        continue;
+                    };
+                    if px.addr() != px.network() {
+                        self.err(
+                            format!("{p}.prefix"),
+                            format!("has host bits set; the prefix is {}", px.trunc()),
+                        );
+                    }
+                    if !ipv6_routable(px.network()) {
+                        self.err(
+                            format!("{p}.prefix"),
+                            "not a routable prefix (link-local, multicast or loopback)",
+                        );
+                    }
+                    if !wan && px.prefix_len() != 64 {
+                        self.err(
+                            format!("{p}.prefix"),
+                            "an inside network's prefix is a /64, for SLAAC",
+                        );
+                    }
+                    if wan && px.prefix_len() > 127 {
+                        self.err(format!("{p}.prefix"), "a WAN link needs at least a /127");
+                    }
+                    for (q, other) in &prefixes {
+                        if q.contains(&px) || px.contains(q) {
+                            self.err(
+                                format!("{p}.prefix"),
+                                format!("overlaps network {other:?}'s {q}"),
+                            );
+                        }
+                    }
+                    prefixes.push((px.trunc(), name));
+                    if wan {
+                        let mut seen: BTreeMap<Ipv6Addr, &str> = BTreeMap::new();
+                        for node in &doc.cluster.nodes {
+                            match v6.addresses.get(node) {
+                                None => self.err(
+                                    format!("{p}.addresses"),
+                                    format!("no address for node {node:?}"),
+                                ),
+                                Some(a) => {
+                                    if !px.contains(a) || *a == px.network() {
+                                        self.err(
+                                            format!("{p}.addresses.{node}"),
+                                            format!("not a host in {}", px.trunc()),
+                                        );
+                                    }
+                                    if let Some(prev) = seen.insert(*a, node.as_str()) {
+                                        let prev = prev.to_string();
+                                        self.err(
+                                            format!("{p}.addresses.{node}"),
+                                            format!("also node {prev:?}'s"),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        for node in v6.addresses.keys() {
+                            if !self.is_node(node) {
+                                self.err(
+                                    format!("{p}.addresses.{node}"),
+                                    format!("no node named {node:?}"),
+                                );
+                            }
+                        }
+                        match v6.gateway {
+                            None => self.err(
+                                format!("{p}.gateway"),
+                                "a static WAN needs the upstream router",
+                            ),
+                            Some(g) if !(px.contains(&g) || g.is_unicast_link_local()) => self.err(
+                                format!("{p}.gateway"),
+                                format!("neither in {} nor link-local", px.trunc()),
+                            ),
+                            _ => {}
+                        }
+                    }
+                }
+                Ipv6Mode::Dhcpv6 | Ipv6Mode::Ra => {}
+            }
+        }
+    }
+
+    /// IPv6 is in the schema (#211) before anything renders it: the
+    /// firewall (#212), the WAN (#213) and inside networks (#214). Until
+    /// then a document that uses it is refused, rather than run as if it
+    /// did not.
+    fn unbuilt_ipv6(&mut self) {
+        let doc = self.doc;
+        for (name, net) in &doc.networks {
+            if net.ipv6.is_some() {
+                self.err(
+                    format!("networks.{name}.ipv6"),
+                    "IPv6 on networks is not built yet (#213, #214)",
+                );
+            }
+        }
+        for (name, o) in &doc.objects {
+            if o.kind == ObjectKind::Ipv6 {
+                self.err(
+                    format!("objects.{name}.type"),
+                    "ipv6 objects are not built yet (#212)",
+                );
+            }
+        }
+        let mut matches: Vec<(String, &Match)> = Vec::new();
+        if let Some(m) = &doc.management.sources {
+            matches.push(("management.sources".into(), m));
+        }
+        for (key, pol) in &doc.policy {
+            for (rname, r) in &pol.rules {
+                let rp = format!("policy.'{key}'.rules.{rname}");
+                if r.proto.as_deref() == Some("icmpv6") {
+                    self.err(
+                        format!("{rp}.proto"),
+                        "IPv6 in policies is not built yet (#212)",
+                    );
+                }
+                for (field, m) in [("src", &r.src), ("dst", &r.dst)] {
+                    if let Some(m) = m {
+                        matches.push((format!("{rp}.{field}"), m));
+                    }
+                }
+            }
+        }
+        for (path, m) in matches {
+            let literal = match m {
+                Match::Text(t) => ipv6_element_ok(t),
+                Match::List(l) => l
+                    .iter()
+                    .any(|i| matches!(i, MatchItem::Text(t) if ipv6_element_ok(t))),
+                Match::Number(_) => false,
+            };
+            if literal {
+                self.err(path, "IPv6 in policies is not built yet (#212)");
+            }
+        }
+    }
+
     fn node_addresses(&mut self, p: &str, net: &Network) {
         for n in self.nodes().to_vec() {
             if !net.addresses.contains_key(&n) {
@@ -757,7 +1071,7 @@ impl Validator<'_> {
             );
         }
         if let Some(src) = &m.sources {
-            self.check_addr_match("management.sources", src);
+            self.check_addr_match_any("management.sources", src);
         } else if self
             .doc
             .zones
@@ -841,25 +1155,59 @@ impl Validator<'_> {
                     "object names: lowercase letters, digits and '_', at most 31 characters",
                 );
             }
-            match (&o.dynamic, o.elements.is_empty()) {
-                (Some(_), false) => self.err(&p, "a dynamic object has no static elements"),
-                (None, true) => self.warn(&p, "object is empty"),
+            let fixed = !o.elements.is_empty() || !o.suffixes.is_empty();
+            match (&o.dynamic, fixed) {
+                (Some(_), true) => self.err(&p, "a dynamic object has no static elements"),
+                (None, false) => self.warn(&p, "object is empty"),
                 _ => {}
             }
             if let Some(d) = &o.dynamic {
-                if o.kind != ObjectKind::Ipv4 {
-                    self.err(format!("{p}.dynamic"), "only ipv4 objects can be dynamic");
-                }
-                if !doc.networks.contains_key(&d.network) {
-                    self.err(
+                match (o.kind, doc.networks.get(&d.network)) {
+                    (ObjectKind::Port, _) => {
+                        self.err(format!("{p}.dynamic"), "a port object cannot be dynamic")
+                    }
+                    (_, None) => self.err(
                         format!("{p}.dynamic.network"),
                         format!("no network named {:?}", d.network),
-                    );
+                    ),
+                    (ObjectKind::Ipv6, Some(n)) if n.ipv6.is_none() => self.err(
+                        format!("{p}.dynamic.network"),
+                        format!("network {:?} has no IPv6 (networks.{0}.ipv6)", d.network),
+                    ),
+                    _ => {}
+                }
+            }
+            if !o.suffixes.is_empty() && o.kind != ObjectKind::Ipv6 {
+                self.err(format!("{p}.suffixes"), "only ipv6 objects have suffixes");
+            }
+            for (net, sfx) in &o.suffixes {
+                let sp = format!("{p}.suffixes.{net}");
+                match doc.networks.get(net).and_then(|n| n.ipv6.as_ref()) {
+                    None if !doc.networks.contains_key(net) => {
+                        self.err(&sp, format!("no network named {net:?}"))
+                    }
+                    Some(v6) if v6.mode == Ipv6Mode::Delegated || v6.mode == Ipv6Mode::Static => {}
+                    _ => self.err(
+                        &sp,
+                        "the network needs an IPv6 prefix of its own (ipv6.mode delegated or static)",
+                    ),
+                }
+                if sfx.is_empty() {
+                    self.err(&sp, "empty list");
+                }
+                for (i, x) in sfx.iter().enumerate() {
+                    if !suffix_ok(x) {
+                        self.err(
+                            format!("{sp}[{i}]"),
+                            format!("{x:?} is not a suffix: an address in the last 64 bits, such as ::20"),
+                        );
+                    }
                 }
             }
             for (i, e) in o.elements.iter().enumerate() {
                 let ok = match o.kind {
                     ObjectKind::Ipv4 => matches!(e, MatchItem::Text(s) if ipv4_element_ok(s)),
+                    ObjectKind::Ipv6 => matches!(e, MatchItem::Text(s) if ipv6_element_ok(s)),
                     ObjectKind::Port => port_element_ok(e),
                 };
                 if !ok {
@@ -872,7 +1220,16 @@ impl Validator<'_> {
         }
     }
 
+    /// An IPv4-only address match: a forward's.
     fn check_addr_match(&mut self, p: &str, m: &Match) {
+        let f = self.check_addr_match_any(p, m);
+        if f.v6 {
+            self.err(p, "IPv4 only: forwards and NAT are IPv4's");
+        }
+    }
+
+    /// An address match of either family, and the families it holds.
+    fn check_addr_match_any(&mut self, p: &str, m: &Match) -> Families {
         let items: Vec<MatchItem> = match m {
             Match::Number(n) => vec![MatchItem::Number(*n)],
             Match::Text(s) => vec![MatchItem::Text(s.clone())],
@@ -881,15 +1238,68 @@ impl Validator<'_> {
         if items.is_empty() {
             self.err(p, "empty list");
         }
+        let mut fam = Families::NONE;
         for it in items {
             match it {
                 MatchItem::Text(s) if s.starts_with('@') => {
-                    self.check_ref(p, &s[1..], ObjectKind::Ipv4)
+                    let name = &s[1..];
+                    match self.doc.objects.get(name).map(|o| o.kind) {
+                        None => self.err(p, format!("no object named {name:?}")),
+                        Some(ObjectKind::Ipv4) => fam.v4 = true,
+                        Some(ObjectKind::Ipv6) => fam.v6 = true,
+                        Some(ObjectKind::Port) => {
+                            self.err(p, format!("object {name:?} is not of type ipv4 or ipv6"))
+                        }
+                    }
                 }
-                MatchItem::Text(s) if ipv4_element_ok(&s) => {}
-                _ => self.err(p, "expected an IPv4 address, prefix, range or @object"),
+                MatchItem::Text(s) if ipv4_element_ok(&s) => fam.v4 = true,
+                MatchItem::Text(s) if ipv6_element_ok(&s) => fam.v6 = true,
+                _ => self.err(
+                    p,
+                    "expected an IPv4 or IPv6 address, prefix, range or @object",
+                ),
             }
         }
+        fam
+    }
+
+    /// The families of an address match, without reporting anything (its
+    /// problems are reported where it is checked).
+    fn families_quiet(&self, m: &Match) -> Families {
+        let items: Vec<MatchItem> = match m {
+            Match::Number(n) => vec![MatchItem::Number(*n)],
+            Match::Text(s) => vec![MatchItem::Text(s.clone())],
+            Match::List(l) => l.clone(),
+        };
+        let mut fam = Families::NONE;
+        for it in items {
+            if let MatchItem::Text(s) = it {
+                let f = match s.strip_prefix('@') {
+                    Some(n) => match self.doc.objects.get(n).map(|o| o.kind) {
+                        Some(ObjectKind::Ipv4) => Families {
+                            v4: true,
+                            v6: false,
+                        },
+                        Some(ObjectKind::Ipv6) => Families {
+                            v4: false,
+                            v6: true,
+                        },
+                        _ => Families::NONE,
+                    },
+                    None if ipv4_element_ok(&s) => Families {
+                        v4: true,
+                        v6: false,
+                    },
+                    None if ipv6_element_ok(&s) => Families {
+                        v4: false,
+                        v6: true,
+                    },
+                    None => Families::NONE,
+                };
+                fam = fam.or(f);
+            }
+        }
+        fam
     }
 
     fn check_port_match(&mut self, p: &str, m: &Match) {
@@ -993,13 +1403,53 @@ impl Validator<'_> {
                 self.check_port_match(&format!("{rp}.{field}"), m);
             }
         }
+        // The families the rule applies to: those its addresses and its
+        // protocol all allow (#211). A rule with none of them is both.
+        let mut fam = Families::BOTH;
         for (field, m) in [("src", &r.src), ("dst", &r.dst)] {
             if let Some(m) = m {
-                self.check_addr_match(&format!("{rp}.{field}"), m);
+                fam = fam.and(self.check_addr_match_any(&format!("{rp}.{field}"), m));
             }
         }
-        if !r.icmp_type.is_empty() && proto != Some("icmp") {
-            self.err(format!("{rp}.icmp_type"), "needs proto icmp");
+        let by_proto = match proto {
+            Some("icmp") => Families {
+                v4: true,
+                v6: false,
+            },
+            Some("icmpv6") => Families {
+                v4: false,
+                v6: true,
+            },
+            _ => Families::BOTH,
+        };
+        if fam != Families::NONE && fam.and(by_proto) == Families::NONE {
+            self.err(
+                rp,
+                format!(
+                    "its addresses are {} and proto {} is the other family's",
+                    fam.name(),
+                    proto.unwrap_or_default()
+                ),
+            );
+        } else if fam == Families::NONE && r.src.is_some() && r.dst.is_some() {
+            // Each side has a family, but not the same one.
+            let side = |m: &Option<Match>, v: &mut Self| {
+                m.as_ref().map_or(Families::BOTH, |m| v.families_quiet(m))
+            };
+            let (a, b) = (side(&r.src, self), side(&r.dst, self));
+            if a != Families::NONE && b != Families::NONE {
+                self.err(
+                    rp,
+                    format!(
+                        "src is {} and dst {}: no packet is both",
+                        a.name(),
+                        b.name()
+                    ),
+                );
+            }
+        }
+        if !r.icmp_type.is_empty() && !matches!(proto, Some("icmp" | "icmpv6")) {
+            self.err(format!("{rp}.icmp_type"), "needs proto icmp or icmpv6");
         }
         for t in &r.icmp_type {
             if !t.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
@@ -1431,6 +1881,7 @@ impl Validator<'_> {
                 "provider passthrough options are not supported yet",
             );
         }
+        self.unbuilt_ipv6();
         if let Some(m) = &doc.metrics {
             let local = m.mode == MetricsMode::Local;
             if let Some(r) = &m.retention {

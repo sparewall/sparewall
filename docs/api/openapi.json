@@ -839,6 +839,15 @@
         ],
         "type": "object"
       },
+      "Document.Ipv6Mode": {
+        "enum": [
+          "dhcpv6",
+          "ra",
+          "static",
+          "delegated"
+        ],
+        "type": "string"
+      },
       "Document.LacpRate": {
         "enum": [
           "slow",
@@ -941,7 +950,8 @@
             "type": "array"
           }
         ],
-        "description": "A match value: a scalar, a list, or an `@object` reference."
+        "description": "A match value: a scalar, a list, or an `@object` reference. An IPv6\naddress in one needs schema revision 5 (`x-since-ipv6`): earlier\nreleases read only IPv4 there.",
+        "x-since-ipv6": 5
       },
       "Document.MatchItem": {
         "anyOf": [
@@ -953,7 +963,8 @@
           {
             "type": "string"
           }
-        ]
+        ],
+        "x-since-ipv6": 5
       },
       "Document.Metrics": {
         "additionalProperties": false,
@@ -1071,6 +1082,18 @@
               "null"
             ]
           },
+          "ipv6": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.NetworkIpv6"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "IPv6 on this network (#211). Unset, the network has link-local\nIPv6 addresses only, and routes none.",
+            "x-since": 5
+          },
           "lldp": {
             "description": "Emit and receive LLDP on this network. Default true on untagged ports.",
             "type": [
@@ -1137,6 +1160,67 @@
         ],
         "type": "object"
       },
+      "Document.NetworkIpv6": {
+        "additionalProperties": false,
+        "description": "How a network gets its IPv6 addresses. Which fields apply depends on\n`mode` and on the network's role.",
+        "properties": {
+          "addresses": {
+            "additionalProperties": {
+              "format": "ipv6",
+              "type": "string"
+            },
+            "description": "`static` on a WAN: each node's own address, in `prefix`.",
+            "type": "object"
+          },
+          "gateway": {
+            "description": "`static` on a WAN: the upstream router, in `prefix` or link-local\n(`fe80::1`).",
+            "format": "ipv6",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/Document.Ipv6Mode",
+            "description": "On a WAN: `dhcpv6` (an address by DHCPv6 or SLAAC, as the\nupstream's router advertisements say, and a delegated prefix for\nthe inside networks), `ra` (an address by SLAAC only, no delegated\nprefix) or `static`. On another network: `delegated` (a /64 of the\nWAN's delegated prefix) or `static`."
+          },
+          "prefix": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Document.Prefix6"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`static`: the network's prefix. A /64 on an inside network; on a\nWAN, the upstream link's prefix."
+          },
+          "prefix_length": {
+            "description": "`dhcpv6`: the length of the prefix to ask the ISP to delegate, 48\nto 64. Unset, no length is asked for and the ISP chooses (often\n/56).",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "subnet_id": {
+            "description": "`delegated`: which /64 of the delegated prefix this network takes,\ncounting from 0 (a /56 has 256). Unique among the networks.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
       "Document.NetworkRole": {
         "enum": [
           "service",
@@ -1179,18 +1263,32 @@
                 "type": "null"
               }
             ],
-            "description": "Fill from a network's addresses instead (`ipv4` only)."
+            "description": "Fill from a network's addresses instead (`ipv4` and `ipv6`): the\nnode's own, or the network's prefix."
           },
           "elements": {
-            "description": "Static elements: addresses or prefixes for `ipv4`, ports or ranges for\n`port`.",
+            "description": "Static elements: addresses, prefixes or ranges for `ipv4` and\n`ipv6`, ports or ranges for `port`.",
             "items": {
               "$ref": "#/components/schemas/Document.MatchItem"
             },
             "type": "array"
           },
+          "suffixes": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "`ipv6`: hosts in a network's IPv6 prefix, by the network and their\nsuffix, the address's last 64 bits (`users: [\"::20\"]`). They follow\nthe prefix, so a rule for a host survives the ISP renumbering a\ndelegated one.",
+            "type": "object",
+            "x-since": 5
+          },
           "type": {
             "$ref": "#/components/schemas/Document.ObjectKind",
-            "description": "Element type."
+            "description": "Element type.",
+            "x-since-values": {
+              "ipv6": 5
+            }
           }
         },
         "required": [
@@ -1201,6 +1299,7 @@
       "Document.ObjectKind": {
         "enum": [
           "ipv4",
+          "ipv6",
           "port"
         ],
         "type": "string"
@@ -1321,6 +1420,11 @@
           }
         },
         "type": "object"
+      },
+      "Document.Prefix6": {
+        "description": "IPv6 prefix, e.g. 2001:db8:0:1::/64",
+        "pattern": "^[0-9A-Fa-f:.]+/\\d{1,3}$",
+        "type": "string"
       },
       "Document.RawAt": {
         "anyOf": [
@@ -1583,10 +1687,10 @@
                 "type": "null"
               }
             ],
-            "description": "Destination: an address, a prefix, a list of them, or `@object`."
+            "description": "Destination, as for `src`."
           },
           "icmp_type": {
-            "description": "ICMP type names, e.g. `echo-request` (proto `icmp`).",
+            "description": "ICMP type names, e.g. `echo-request` (proto `icmp` or `icmpv6`).",
             "items": {
               "type": "string"
             },
@@ -1610,7 +1714,7 @@
             "type": "integer"
           },
           "proto": {
-            "description": "`tcp`, `udp`, `icmp` or another protocol name nft knows.",
+            "description": "`tcp`, `udp`, `icmp`, `icmpv6` or another protocol name nft knows.\n`icmp` is IPv4's and `icmpv6` IPv6's, so either limits the rule to\nits family.",
             "type": [
               "string",
               "null"
@@ -1636,7 +1740,7 @@
                 "type": "null"
               }
             ],
-            "description": "Source: an address, a prefix, a list of them, or `@object`."
+            "description": "Source: an address, a prefix, a range, a list of them, or\n`@object`, of either family. The rule applies to the families its\naddresses (and `proto`) allow: with only IPv4 ones, to IPv4 only."
           }
         },
         "required": [

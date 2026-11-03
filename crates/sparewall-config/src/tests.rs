@@ -73,7 +73,7 @@ fn management_and_sync_on_the_lan() {
             TWO_NIC,
             json!({"management": {"sources": ["not-an-address"]}})
         ),
-        "management.sources: expected an IPv4 address"
+        "management.sources: expected an IPv4 or IPv6 address"
     ));
     assert!(has_error(
         &edit(TWO_NIC, json!({"management": {"sources": ["@nowhere"]}})),
@@ -1407,4 +1407,398 @@ fn syslog_forwarding() {
         &ju(json!({"certificate": "secret:log-client"})),
         "logging.remote.certificate: only the syslog provider takes a client certificate"
     ));
+}
+
+/// IPv6 in the document (#211), checked as a document kept in history is:
+/// everything but the refusal of what is not built yet.
+fn history_errors(doc: &Document) -> Vec<String> {
+    validate::validate_history(doc)
+        .into_iter()
+        .filter(|i| i.severity == Severity::Error)
+        .map(|i| format!("{}: {}", i.path, i.message))
+        .collect()
+}
+
+fn history_error(doc: &Document, needle: &str) -> bool {
+    let e = history_errors(doc);
+    e.iter().any(|e| e.contains(needle)) || {
+        eprintln!("no {needle:?} in {e:#?}");
+        false
+    }
+}
+
+/// A two-NIC box whose WAN asks for a delegated prefix, and whose LAN
+/// takes subnet 1 of it.
+fn v6(patch: serde_json::Value) -> Document {
+    let mut v = to_value(&edit(
+        TWO_NIC,
+        json!({"networks": {
+            "wan": {"ipv6": {"mode": "dhcpv6", "prefix_length": 56}},
+            "lan": {"ipv6": {"mode": "delegated", "subnet_id": 1}},
+        }}),
+    ));
+    merge_patch(&mut v, &patch);
+    from_value(v).unwrap_or_else(|e| panic!("{e}"))
+}
+
+#[test]
+fn ipv6_networks_take_the_modes_their_role_allows() {
+    assert_eq!(history_errors(&v6(json!({}))), Vec::<String>::new());
+    // Nothing renders IPv6 yet: activating it is refused, at each path.
+    assert!(has_error(
+        &v6(json!({})),
+        "networks.wan.ipv6: IPv6 on networks is not built yet"
+    ));
+    assert!(has_error(
+        &v6(json!({})),
+        "networks.lan.ipv6: IPv6 on networks is not built yet"
+    ));
+
+    let d = v6(
+        json!({"networks": {"wan": {"ipv6": {"mode": "delegated", "prefix_length": null, "subnet_id": 0}}}}),
+    );
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6.mode: a WAN takes dhcpv6, ra or static"
+    ));
+    let d = v6(json!({"networks": {"lan": {"ipv6": {"mode": "ra", "subnet_id": null}}}}));
+    assert!(history_error(
+        &d,
+        "networks.lan.ipv6.mode: an inside network takes delegated or static"
+    ));
+    // A delegated network needs a WAN that asks for a prefix.
+    let d = v6(json!({"networks": {"wan": {"ipv6": {"mode": "ra", "prefix_length": null}}}}));
+    assert!(history_error(
+        &d,
+        "networks.lan.ipv6.mode: no WAN has ipv6 mode dhcpv6"
+    ));
+    let d = v6(json!({"networks": {"lan": {"ipv6": {"subnet_id": null}}}}));
+    assert!(history_error(
+        &d,
+        "networks.lan.ipv6.subnet_id: a delegated network needs one"
+    ));
+    // A /56 has 256 subnets.
+    let d = v6(json!({"networks": {"lan": {"ipv6": {"subnet_id": 256}}}}));
+    assert!(history_error(&d, "a /56 has 256 subnets (0 to 255)"));
+    let d = v6(
+        json!({"networks": {"wan": {"ipv6": {"prefix_length": 64}}, "lan": {"ipv6": {"subnet_id": 1}}}}),
+    );
+    assert!(history_error(&d, "a /64 is one subnet, 0"));
+    let d = v6(json!({"networks": {"wan": {"ipv6": {"prefix_length": 40}}}}));
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6.prefix_length: 48 to 64"
+    ));
+    // A length out of range is an error, never a panic, with a delegated
+    // network counting subnets in it.
+    for len in [0, 47, 65, 128, 255] {
+        let d = v6(json!({"networks": {"wan": {"ipv6": {"prefix_length": len}}}}));
+        assert!(
+            history_error(&d, "networks.wan.ipv6.prefix_length: 48 to 64"),
+            "{len}"
+        );
+    }
+    // Fields for another mode.
+    let d = v6(json!({"networks": {"lan": {"ipv6": {"prefix_length": 60}}}}));
+    assert!(history_error(
+        &d,
+        "networks.lan.ipv6.prefix_length: for mode dhcpv6, not delegated"
+    ));
+    let d = v6(json!({"networks": {"lan": {"ipv6": {"prefix": "2001:db8:1::/64"}}}}));
+    assert!(history_error(
+        &d,
+        "networks.lan.ipv6.prefix: for mode static, not delegated"
+    ));
+}
+
+#[test]
+fn two_networks_cannot_share_a_subnet_or_a_prefix() {
+    let mut v = to_value(&load(PAIR));
+    merge_patch(
+        &mut v,
+        &json!({"networks": {
+            "wan": {"ipv6": {"mode": "dhcpv6"}},
+            "users": {"ipv6": {"mode": "delegated", "subnet_id": 3}},
+            "mgmt": {"ipv6": {"mode": "delegated", "subnet_id": 3}},
+        }}),
+    );
+    let d = from_value(v.clone()).unwrap();
+    assert!(history_error(&d, "subnet 3 is also network"));
+    merge_patch(
+        &mut v,
+        &json!({"networks": {
+            "users": {"ipv6": {"mode": "static", "subnet_id": null, "prefix": "2001:db8:0:1::/64"}},
+            "mgmt": {"ipv6": {"mode": "static", "subnet_id": null, "prefix": "2001:db8:0:1::/64"}},
+        }}),
+    );
+    let d = from_value(v.clone()).unwrap();
+    assert!(history_error(&d, "overlaps network"));
+    merge_patch(
+        &mut v,
+        &json!({"networks": {"users": {"ipv6": {"prefix": "2001:db8:0:2::/64"}}}}),
+    );
+    let d = from_value(v).unwrap();
+    assert_eq!(history_errors(&d), Vec::<String>::new());
+}
+
+#[test]
+fn a_static_ipv6_network_states_its_prefix() {
+    let st = |lan: serde_json::Value| v6(json!({"networks": {"lan": {"ipv6": lan}}}));
+    let base = json!({"mode": "static", "subnet_id": null, "prefix": "2001:db8:0:1::/64"});
+    assert_eq!(history_errors(&st(base.clone())), Vec::<String>::new());
+    let mut b = base.clone();
+    b["prefix"] = "2001:db8:0:1::/60".into();
+    assert!(history_error(&st(b), "an inside network's prefix is a /64"));
+    let mut b = base.clone();
+    b["prefix"] = "2001:db8:0:1::5/64".into();
+    assert!(history_error(
+        &st(b),
+        "has host bits set; the prefix is 2001:db8:0:1::/64"
+    ));
+    let mut b = base.clone();
+    b["prefix"] = "fe80::/64".into();
+    assert!(history_error(&st(b), "not a routable prefix"));
+    let mut b = base.clone();
+    b["gateway"] = "fe80::1".into();
+    assert!(history_error(
+        &st(b),
+        "networks.lan.ipv6.gateway: for a static WAN"
+    ));
+    let mut b = base;
+    b["addresses"] = json!({"fw1": "2001:db8:0:1::1"});
+    assert!(history_error(
+        &st(b),
+        "networks.lan.ipv6.addresses: for a static WAN"
+    ));
+    // A static WAN: each node's address in the prefix, and a gateway.
+    let wan = |w: serde_json::Value| {
+        let mut v = to_value(&edit(TWO_NIC, json!({"networks": {"wan": {"ipv6": w}}})));
+        merge_patch(&mut v, &json!({}));
+        from_value(v).unwrap()
+    };
+    let ok = json!({"mode": "static", "prefix": "2001:db8:ffff::/64",
+        "addresses": {"fw1": "2001:db8:ffff::2"}, "gateway": "fe80::1"});
+    assert_eq!(history_errors(&wan(ok.clone())), Vec::<String>::new());
+    let mut w = ok.clone();
+    w["gateway"] = "2001:db8:ffff::1".into();
+    assert_eq!(history_errors(&wan(w)), Vec::<String>::new());
+    let mut w = ok.clone();
+    w["gateway"] = "2001:db8:eeee::1".into();
+    assert!(history_error(
+        &wan(w),
+        "networks.wan.ipv6.gateway: neither in 2001:db8:ffff::/64 nor link-local"
+    ));
+    let mut w = ok.clone();
+    w["gateway"] = serde_json::Value::Null;
+    assert!(history_error(
+        &wan(w),
+        "a static WAN needs the upstream router"
+    ));
+    let mut w = ok.clone();
+    w["addresses"] = json!({"fw1": "2001:db8:eeee::2"});
+    assert!(history_error(
+        &wan(w),
+        "networks.wan.ipv6.addresses.fw1: not a host in 2001:db8:ffff::/64"
+    ));
+    let mut w = ok;
+    w["addresses"] = json!({"fw9": "2001:db8:ffff::2"});
+    let d = wan(w);
+    assert!(history_error(&d, "no address for node \"fw1\""));
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6.addresses.fw9: no node named \"fw9\""
+    ));
+}
+
+#[test]
+fn the_sync_network_stays_ipv4() {
+    let d = load(PAIR);
+    let sync = d.cluster.sync_network.clone().unwrap();
+    let mut v = to_value(&d);
+    merge_patch(
+        &mut v,
+        &json!({"networks": {sync.clone(): {"ipv6": {"mode": "static", "prefix": "2001:db8:9::/64"}}}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    assert!(history_error(
+        &d,
+        &format!("networks.{sync}.ipv6: the sync network is IPv4 only")
+    ));
+}
+
+#[test]
+fn ipv6_objects_and_suffixes() {
+    let obj = |o: serde_json::Value| v6(json!({"objects": {"o": o}}));
+    let ok = |o: serde_json::Value| {
+        assert_eq!(history_errors(&obj(o.clone())), Vec::<String>::new(), "{o}")
+    };
+    ok(
+        json!({"type": "ipv6", "elements": ["2001:db8::1", "2001:db8:1::/48", "2001:db8::10-2001:db8::20"]}),
+    );
+    ok(json!({"type": "ipv6", "suffixes": {"lan": ["::20", "::a00:27ff:fe4e:66a1"]}}));
+    ok(json!({"type": "ipv6", "elements": ["2001:db8::1"], "suffixes": {"lan": ["::20"]}}));
+    ok(json!({"type": "ipv6", "dynamic": {"network": "wan"}}));
+    ok(json!({"type": "ipv6", "dynamic": {"network": "lan", "source": "prefix"}}));
+    assert!(history_error(
+        &obj(json!({"type": "ipv6", "elements": ["10.0.0.1"]})),
+        "objects.o.elements[0]: not a valid ipv6 element"
+    ));
+    assert!(history_error(
+        &obj(json!({"type": "ipv4", "elements": ["2001:db8::1"]})),
+        "objects.o.elements[0]: not a valid ipv4 element"
+    ));
+    assert!(history_error(
+        &obj(json!({"type": "ipv4", "suffixes": {"lan": ["::20"]}})),
+        "only ipv6 objects have suffixes"
+    ));
+    assert!(history_error(
+        &obj(json!({"type": "ipv6", "suffixes": {"lan": ["2001:db8::20"]}})),
+        "objects.o.suffixes.lan[0]: \"2001:db8::20\" is not a suffix"
+    ));
+    assert!(history_error(
+        &obj(json!({"type": "ipv6", "suffixes": {"lan": ["::"]}})),
+        "is not a suffix"
+    ));
+    assert!(history_error(
+        &obj(json!({"type": "ipv6", "suffixes": {"lan": []}})),
+        "objects.o.suffixes.lan: empty list"
+    ));
+    assert!(history_error(
+        &obj(json!({"type": "ipv6", "suffixes": {"nope": ["::1"]}})),
+        "no network named \"nope\""
+    ));
+    // A WAN's address is not the site's own prefix: no suffixes in it.
+    assert!(history_error(
+        &obj(json!({"type": "ipv6", "suffixes": {"wan": ["::1"]}})),
+        "needs an IPv6 prefix of its own"
+    ));
+    assert!(history_error(
+        &obj(json!({"type": "ipv6", "dynamic": {"network": "lan"}, "suffixes": {"lan": ["::1"]}})),
+        "a dynamic object has no static elements"
+    ));
+    assert!(history_error(
+        &obj(json!({"type": "port", "dynamic": {"network": "lan"}})),
+        "a port object cannot be dynamic"
+    ));
+    // Without IPv6 on the network, an ipv6 object cannot follow it.
+    let d = edit(
+        TWO_NIC,
+        json!({"objects": {"o": {"type": "ipv6", "dynamic": {"network": "lan"}}}}),
+    );
+    assert!(history_error(&d, "network \"lan\" has no IPv6"));
+    // And activating one is refused for now.
+    assert!(has_error(
+        &obj(json!({"type": "ipv6", "elements": ["2001:db8::1"]})),
+        "objects.o.type: ipv6 objects are not built yet"
+    ));
+}
+
+/// A rule applies to the families its addresses and protocol allow (#211).
+#[test]
+fn a_rule_takes_the_families_of_its_addresses() {
+    let rule = |r: serde_json::Value| {
+        let mut r = r;
+        r["order"] = 900.into();
+        r["action"] = "accept".into();
+        v6(json!({
+            "objects": {
+                "h4": {"type": "ipv4", "elements": ["192.168.1.20"]},
+                "h6": {"type": "ipv6", "suffixes": {"lan": ["::20"]}},
+                "p": {"type": "port", "elements": [22]},
+            },
+            "policy": {"wan->lan": {"action": "drop", "rules": {"r": r}}},
+        }))
+    };
+    let ok = |r: serde_json::Value| {
+        assert_eq!(
+            history_errors(&rule(r.clone())),
+            Vec::<String>::new(),
+            "{r}"
+        )
+    };
+    ok(json!({"proto": "tcp", "dport": 22}));
+    ok(json!({"dst": "2001:db8::/32"}));
+    ok(json!({"dst": ["@h4", "@h6"], "proto": "tcp", "dport": "@p"}));
+    ok(json!({"src": "2001:db8::1", "dst": "@h6"}));
+    ok(json!({"dst": ["192.168.1.20", "2001:db8::20"], "src": "10.0.0.0/8"}));
+    ok(json!({"proto": "icmpv6", "icmp_type": ["echo-request"], "dst": "@h6"}));
+    ok(json!({"proto": "icmpv6"}));
+    ok(json!({"proto": "icmp", "dst": ["@h4", "@h6"]}));
+    let bad = |r: serde_json::Value, needle: &str| {
+        assert!(history_error(&rule(r.clone()), needle), "{r}");
+    };
+    bad(
+        json!({"src": "10.0.0.1", "dst": "@h6"}),
+        "policy.'wan->lan'.rules.r: src is IPv4 and dst IPv6: no packet is both",
+    );
+    bad(
+        json!({"proto": "icmp", "dst": "@h6"}),
+        "its addresses are IPv6 and proto icmp is the other family's",
+    );
+    bad(
+        json!({"proto": "icmpv6", "src": "10.0.0.1"}),
+        "its addresses are IPv4 and proto icmpv6 is the other family's",
+    );
+    bad(
+        json!({"proto": "tcp", "icmp_type": ["echo-request"]}),
+        "needs proto icmp or icmpv6",
+    );
+    bad(
+        json!({"dst": "@p"}),
+        "object \"p\" is not of type ipv4 or ipv6",
+    );
+    bad(
+        json!({"dst": "2001:db8::zz"}),
+        "expected an IPv4 or IPv6 address",
+    );
+    // Not built yet: an IPv6 address or icmpv6 in a policy.
+    assert!(has_error(
+        &rule(json!({"dst": "2001:db8::/32"})),
+        "policy.'wan->lan'.rules.r.dst: IPv6 in policies is not built yet"
+    ));
+    assert!(has_error(
+        &rule(json!({"proto": "icmpv6"})),
+        "policy.'wan->lan'.rules.r.proto: IPv6 in policies is not built yet"
+    ));
+}
+
+/// Forwards and NAT stay IPv4: opening a port to an inside IPv6 host is a
+/// policy, with no NAT (#211).
+#[test]
+fn forwards_stay_ipv4() {
+    let d = v6(
+        json!({"forwards": {"web": {"proto": "tcp", "dport": 443, "to": "192.168.1.20",
+        "src": "2001:db8::/32"}}}),
+    );
+    assert!(history_error(&d, "forwards.web.src: IPv4 only"));
+    let d = v6(json!({
+        "objects": {"h6": {"type": "ipv6", "elements": ["2001:db8::1"]}},
+        "forwards": {"web": {"proto": "tcp", "dport": 443, "to": "192.168.1.20", "src": "@h6"}}}));
+    assert!(history_error(&d, "forwards.web.src: IPv4 only"));
+}
+
+/// The fields survive `get` and `set`, as text the CLI takes.
+#[test]
+fn ipv6_settings_by_path() {
+    let mut v = to_value(&load(TWO_NIC));
+    for a in [
+        "networks.lan.ipv6.mode=delegated",
+        "networks.lan.ipv6.subnet_id=2",
+        "objects.nas.type=ipv6",
+        r#"objects.nas.suffixes.lan=["::20"]"#,
+    ] {
+        let (path, value) = parse_assignment(a).unwrap_or_else(|e| panic!("{a}: {e}"));
+        merge_patch(&mut v, &set_patch(&path, value).unwrap());
+    }
+    let d = from_value(v.clone()).unwrap();
+    let lan = d.networks["lan"].ipv6.as_ref().unwrap();
+    assert_eq!(
+        (lan.mode, lan.subnet_id),
+        (model::Ipv6Mode::Delegated, Some(2))
+    );
+    assert_eq!(
+        get(&v, &["networks", "lan", "ipv6", "subnet_id"]),
+        Some(&json!(2))
+    );
+    assert_eq!(d.objects["nas"].suffixes["lan"], vec!["::20".to_string()]);
 }

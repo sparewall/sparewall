@@ -66,6 +66,8 @@ describe('config sections', () => {
   it('writes acronyms in capitals', () => {
     expect(fieldLabel('tcp_established_timeout')).toBe('TCP established timeout');
     expect(fieldLabel('ha')).toBe('HA');
+    expect(fieldLabel('ipv6')).toBe('IPv6');
+    expect(fieldLabel('subnet_id')).toBe('Subnet ID');
     expect(fieldLabel('sync_network')).toBe('Sync network');
   });
 });

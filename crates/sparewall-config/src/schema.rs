@@ -93,6 +93,33 @@ fn since_value(node: &Value, v: &Value) -> u32 {
         .map_or(1, |r| r as u32)
 }
 
+/// The revision a node carries in one of its extensions (`key`), looking
+/// through references and alternatives (an optional field's `anyOf`).
+fn extension(root: &Value, node: &Value, key: &str) -> Option<u32> {
+    let n = resolve(root, node);
+    if let Some(r) = n.get(key).and_then(Value::as_u64) {
+        return Some(r as u32);
+    }
+    ["anyOf", "oneOf"]
+        .iter()
+        .filter_map(|k| n.get(*k).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|a| extension(root, a, key))
+        .max()
+}
+
+/// The schema revision that first reads an IPv6 address where a match
+/// takes one (`x-since-ipv6`, on `Match` and `MatchItem`): the field is
+/// older, but earlier releases read only IPv4 in it (#211). Or 1.
+fn since_address(root: &Value, node: &Value, v: &Value) -> u32 {
+    match v.as_str() {
+        Some(s) if crate::validate::ipv6_element_ok(s) => {
+            extension(root, node, "x-since-ipv6").unwrap_or(1)
+        }
+        _ => 1,
+    }
+}
+
 /// The oldest schema revision that reads a document: the newest revision
 /// among the fields it uses (#168). Fields the schema does not describe
 /// are left to validation.
@@ -106,6 +133,7 @@ pub fn revision(doc: &Value) -> u32 {
                         rev = rev
                             .max(since(c))
                             .max(since_value(c, v))
+                            .max(since_address(root, c, v))
                             .max(walk(root, c, v));
                     }
                 }
@@ -113,7 +141,7 @@ pub fn revision(doc: &Value) -> u32 {
             Value::Array(a) => {
                 for (i, v) in a.iter().enumerate() {
                     if let Some(c) = child(root, node, &i.to_string()) {
-                        rev = rev.max(walk(root, c, v));
+                        rev = rev.max(since_address(root, c, v)).max(walk(root, c, v));
                     }
                 }
             }
@@ -388,5 +416,47 @@ mod tests {
         assert_eq!(revision(&doc), 3);
         doc["logging"]["remote"]["provider"] = "syslog".into();
         assert_eq!(revision(&doc), 4);
+    }
+
+    /// An IPv6 address where a match takes one needs revision 5, though
+    /// the field is older: earlier releases read only IPv4 there (#211).
+    #[test]
+    fn an_ipv6_address_in_a_match_needs_revision_5() {
+        let rule = |src: Value| {
+            serde_json::json!({
+                "schema": 1,
+                "cluster": {"nodes": ["fw1"]},
+                "management": {"network": "mgmt"},
+                "policy": {"lan->wan": {"action": "accept", "rules": {
+                    "a": {"order": 100, "action": "drop", "src": src}}}},
+            })
+        };
+        assert_eq!(revision(&rule("10.0.0.0/8".into())), 1);
+        assert_eq!(revision(&rule("@hosts".into())), 1);
+        assert_eq!(revision(&rule("2001:db8::/32".into())), 5);
+        assert_eq!(
+            revision(&rule(serde_json::json!(["10.0.0.1", "2001:db8::1"]))),
+            5
+        );
+        assert_eq!(
+            revision(&rule(serde_json::json!(["2001:db8::1-2001:db8::9"]))),
+            5
+        );
+        let mut doc = rule("10.0.0.0/8".into());
+        doc["management"]["sources"] = "fd00::/8".into();
+        assert_eq!(revision(&doc), 5, "management.sources");
+        // A raw nft statement could always name IPv6 addresses.
+        let mut doc = rule("10.0.0.0/8".into());
+        doc["raw"] = serde_json::json!({"x": {"at": {"hook": "input"}, "order": 1,
+            "nft": "ip6 saddr 2001:db8::/32 drop"}});
+        assert_eq!(revision(&doc), 1);
+        // An ipv6 object, a network's ipv6 and a host suffix are new.
+        let mut doc = rule("10.0.0.0/8".into());
+        doc["objects"] = serde_json::json!({"v6": {"type": "ipv6", "elements": ["2001:db8::1"]}});
+        assert_eq!(revision(&doc), 5, "type: ipv6");
+        let mut doc = rule("10.0.0.0/8".into());
+        doc["networks"] = serde_json::json!({"lan": {"port": "lan",
+            "ipv6": {"mode": "delegated", "subnet_id": 1}}});
+        assert_eq!(revision(&doc), 5, "networks.lan.ipv6");
     }
 }
