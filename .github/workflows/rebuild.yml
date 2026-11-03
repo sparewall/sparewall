@@ -7,9 +7,10 @@ name: Rebuild
 #
 # Rebuild for any security advisory pending in the stable image, and at
 # least every 30 days. Scheduled runs act only while the repository
-# variable REBUILDS is "on". image.yml checks the release tag's signature
-# as for a release, against the keys of the repository's maintainers,
-# since the bot that dispatches it signs nothing.
+# variable REBUILDS is "on". The release tag's signature is checked as
+# for a release, against the keys of the repository's maintainers, since
+# the bot that dispatches it signs nothing: here, with this branch's
+# check-tag.sh, and again by image.yml as it was at the tag.
 
 on:
   schedule:
@@ -55,6 +56,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT: ${{ github.event_name }}
           ENABLED: ${{ vars.REBUILDS }}
+          LEGACY_SIGNERS: ${{ vars.RELEASE_SIGNERS }}
           FORCE: ${{ inputs.force || false }}
           DRY_RUN: ${{ inputs.dry_run || false }}
         run: |
@@ -96,6 +98,19 @@ jobs:
             exit 0
           fi
           say "Rebuild $tag as $release+r$n: $why."
+          # Who may release is whoever has the role now (docs/releasing.md),
+          # so check the tag with this branch's checker, whatever the
+          # tag's own copy says.
+          if ! GITHUB_SHA=$(git rev-parse "$tag^{commit}") .github/check-tag.sh "$tag"; then
+            echo "::error::$tag is not signed by one of the repository's maintainers"
+            exit 1
+          fi
+          # A release tagged before #226 runs its own check too, against
+          # the repository variable RELEASE_SIGNERS, and fails without it.
+          if git show "$tag:.github/check-tag.sh" | grep -q RELEASE_SIGNERS && [ -z "$LEGACY_SIGNERS" ]; then
+            echo "::error::$tag's own tag check (from before #226) needs the repository variable RELEASE_SIGNERS: set it to the maintainers until a newer release replaces $tag"
+            exit 1
+          fi
           if [ "$DRY_RUN" = true ]; then
             say "(a dry run: nothing dispatched)"
             exit 0

@@ -79,13 +79,6 @@ jobs:
         run: tests/vm/vpn-check-test.sh
       - name: Release tag checks
         run: tests/ci/release-tags.sh
-      - name: TEMPORARY - can GITHUB_TOKEN map a tagger and read a role?
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api graphql -f query='query($o:String!,$n:String!,$r:String!){repository(owner:$o,name:$n){ref(qualifiedName:$r){target{oid ... on Tag{tagger{email user{login}}}}}}}' -f o=sparewall -f n=sparewall -f r=refs/tags/v0.5.0 || true
-          echo ---; gh api repos/$GITHUB_REPOSITORY/collaborators/silug/permission --jq '{permission,role_name,p:.user.permissions}' || true
-          echo ---; gh api repos/$GITHUB_REPOSITORY/collaborators/octocat/permission --jq '{permission,role_name,p:.user.permissions}' || true
       - name: Homebrew formula
         run: tests/ci/homebrew-formula.sh
 
