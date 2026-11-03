@@ -534,6 +534,12 @@ raw:
 - An **anti-lockout rule** for SSH and HTTPS from the management network to `self` is always rendered first, unless an `admin` explicitly disables it.
 - Protocols that need conntrack helpers (FTP, SIP) get explicit `ct helper` objects; nftables does not assign helpers automatically.
 - Rule logging uses `log group N`, collected by ulogd2 (see Observability).
+- **IPv6** (#212). Without a network that has `ipv6`, IPv6 is dropped but link-local neighbour discovery and MLD, as before. With one:
+  - Neighbour discovery (hop limit 255) and MLD are accepted on every link; router solicitations from the inside networks with IPv6; router advertisements only on a WAN in `dhcpv6` or `ra` mode, from a link-local address; DHCPv6 replies (547 to 546) only on a `dhcpv6` WAN, to the node.
+  - Then IPv6 to, from or through any interface without IPv6 is dropped (`ipv6-off`).
+  - ICMPv6 errors (Packet Too Big, which path MTU discovery needs, and the others RFC 4890 asks for) pass as conntrack's `related`; echo is the policies', with a flood limit to the node as for IPv4.
+  - A rule with addresses renders one line per family it applies to, with that family's addresses (`ip saddr`, `ip6 saddr`); one without addresses is one line, for both. `ipv6` objects are `ipv6_addr` sets; their hosts by suffix in a static prefix are elements, and in a delegated one wait for the prefix (#214).
+  - The anti-lockout rule, NAT and the extra-port redirects say `meta nfproto ipv4`: management over IPv6 is a later choice, and `masquerade` alone would translate IPv6 too.
 
 ### Sharing nftables with other software
 

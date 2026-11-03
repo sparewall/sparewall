@@ -974,10 +974,11 @@ impl Validator<'_> {
         }
     }
 
-    /// IPv6 is in the schema (#211) before anything renders it: the
-    /// firewall (#212), the WAN (#213) and inside networks (#214). Until
-    /// then a document that uses it is refused, rather than run as if it
-    /// did not.
+    /// IPv6 is in the schema (#211) before all of it is rendered. The
+    /// firewall renders it (#212); the networks (#213, #214) do not yet,
+    /// and management over IPv6 is a choice for later: until then a
+    /// document that uses them is refused, rather than run as if it did
+    /// not.
     fn unbuilt_ipv6(&mut self) {
         let doc = self.doc;
         for (name, net) in &doc.networks {
@@ -988,45 +989,13 @@ impl Validator<'_> {
                 );
             }
         }
-        for (name, o) in &doc.objects {
-            if o.kind == ObjectKind::Ipv6 {
-                self.err(
-                    format!("objects.{name}.type"),
-                    "ipv6 objects are not built yet (#212)",
-                );
-            }
-        }
-        let mut matches: Vec<(String, &Match)> = Vec::new();
-        if let Some(m) = &doc.management.sources {
-            matches.push(("management.sources".into(), m));
-        }
-        for (key, pol) in &doc.policy {
-            for (rname, r) in &pol.rules {
-                let rp = format!("policy.'{key}'.rules.{rname}");
-                if r.proto.as_deref() == Some("icmpv6") {
-                    self.err(
-                        format!("{rp}.proto"),
-                        "IPv6 in policies is not built yet (#212)",
-                    );
-                }
-                for (field, m) in [("src", &r.src), ("dst", &r.dst)] {
-                    if let Some(m) = m {
-                        matches.push((format!("{rp}.{field}"), m));
-                    }
-                }
-            }
-        }
-        for (path, m) in matches {
-            let literal = match m {
-                Match::Text(t) => ipv6_element_ok(t),
-                Match::List(l) => l
-                    .iter()
-                    .any(|i| matches!(i, MatchItem::Text(t) if ipv6_element_ok(t))),
-                Match::Number(_) => false,
-            };
-            if literal {
-                self.err(path, "IPv6 in policies is not built yet (#212)");
-            }
+        if let Some(m) = &doc.management.sources
+            && !doc.split_families(m).1.is_empty()
+        {
+            self.err(
+                "management.sources",
+                "management over IPv6 is not built yet: the anti-lockout rule is IPv4's",
+            );
         }
     }
 

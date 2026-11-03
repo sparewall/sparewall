@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use ipnet::Ipv4Net;
 
-use crate::model::{Document, Network, NetworkRole};
+use crate::model::{Document, Ipv6Mode, Match, MatchItem, Network, NetworkRole, ObjectKind};
 
 /// Name of the WireGuard interface for the pair's sync tunnel.
 pub const SYNC_TUNNEL_IFACE: &str = "swsync";
@@ -228,6 +228,64 @@ impl Document {
         let (a, b) = key.split_once("->")?;
         let (a, b) = (a.trim(), b.trim());
         (!a.is_empty() && !b.is_empty()).then_some((a, b))
+    }
+
+    /// Whether any network routes IPv6 (#212): without one, the ruleset
+    /// drops IPv6 but link-local neighbour discovery, as before.
+    pub fn routes_ipv6(&self) -> bool {
+        self.networks.values().any(|n| n.ipv6.is_some())
+    }
+
+    /// The interfaces of the networks with IPv6 (a WAN's own link and its
+    /// lease link), sorted.
+    pub fn ipv6_ifaces(&self) -> Vec<String> {
+        self.ipv6_ifaces_where(|_, _| true)
+    }
+
+    /// The IPv6 networks' interfaces for which `pick(network, its mode)`.
+    pub fn ipv6_ifaces_where(&self, pick: impl Fn(&Network, Ipv6Mode) -> bool) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for (name, n) in &self.networks {
+            let Some(v6) = &n.ipv6 else { continue };
+            if !pick(n, v6.mode) {
+                continue;
+            }
+            v.extend(self.network_iface(name).map(str::to_string));
+            if n.role == NetworkRole::Wan {
+                v.extend(self.public_iface(name).map(str::to_string));
+            }
+        }
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// An address match's items by family: IPv4 ones, then IPv6 ones.
+    /// An `@object` goes by its type; anything else by how it parses.
+    pub fn split_families(&self, m: &Match) -> (Vec<String>, Vec<String>) {
+        let items: Vec<String> = match m {
+            Match::Number(n) => vec![n.to_string()],
+            Match::Text(s) => vec![s.clone()],
+            Match::List(l) => l
+                .iter()
+                .map(|i| match i {
+                    MatchItem::Number(n) => n.to_string(),
+                    MatchItem::Text(s) => s.clone(),
+                })
+                .collect(),
+        };
+        let (mut v4, mut v6) = (Vec::new(), Vec::new());
+        for i in items {
+            let six = match i.strip_prefix('@') {
+                Some(o) => self
+                    .objects
+                    .get(o)
+                    .is_some_and(|o| o.kind == ObjectKind::Ipv6),
+                None => crate::validate::ipv6_element_ok(&i),
+            };
+            if six { v6.push(i) } else { v4.push(i) }
+        }
+        (v4, v6)
     }
 
     /// Port roles used on a node, by role name.
