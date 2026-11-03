@@ -1150,9 +1150,11 @@ fn ipv6_firewall() {
         "elements = { 2001:db8:0:2::/64 }",
         // Neighbour discovery everywhere, router solicitations from the
         // inside, advertisements from the WAN that learns from them.
-        "icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept comment \"ipv6-nd\"",
-        "iifname { \"lab0\", \"lan0\" } icmpv6 type nd-router-solicit ip6 hoplimit 255 accept",
-        "iifname \"wan0\" icmpv6 type nd-router-advert ip6 saddr fe80::/10 ip6 hoplimit 255 accept",
+        "icmpv6 type nd-neighbor-solicit icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != ff00::/8 accept comment \"ipv6-nd\"",
+        "icmpv6 type nd-neighbor-advert icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != { ::, ff00::/8 } accept comment \"ipv6-nd\"",
+        "iifname { \"lab0\", \"lan0\" } icmpv6 type nd-router-solicit icmpv6 code 0 ip6 hoplimit 255 accept",
+        "iifname \"wan0\" icmpv6 type nd-router-advert icmpv6 code 0 ip6 saddr fe80::/10 ip6 hoplimit 255 accept",
+        "meta nfproto ipv6 iifname != { \"lo\", \"lab0\", \"lan0\", \"wan0\" } drop comment \"ipv6-off\"",
         "meta nfproto ipv6 iifname != { \"lab0\", \"lan0\", \"wan0\" } drop comment \"ipv6-off\"",
         "meta nfproto ipv6 oifname != { \"lab0\", \"lan0\", \"wan0\" } drop comment \"ipv6-off\"",
         "iifname \"wan0\" udp sport 547 udp dport 546 accept comment \"infra:dhcpv6-client\"",
@@ -1174,6 +1176,24 @@ fn ipv6_firewall() {
     // of its own; nor does the old blanket drop remain.
     assert!(!nft.contains("198.51.100.0/24"), "{nft}");
     assert!(!nft.contains("meta nfproto ipv6 drop\n"), "{nft}");
+    // IPv6 on a link without it is dropped before the state rule, in
+    // input and forward, so not even a flow conntrack knows carries on.
+    for chain in ["chain input {", "chain forward {"] {
+        let body = &nft[nft.find(chain).unwrap()..];
+        let body = &body[..body.find("\n\t}").unwrap()];
+        let off = body
+            .find("ipv6-off")
+            .unwrap_or_else(|| panic!("{chain}: no ipv6-off"));
+        let state = body.find("ct state vmap").unwrap();
+        assert!(
+            off < state,
+            "{chain}: ipv6-off after the state rule\n{body}"
+        );
+        // And neighbour discovery before both, in input.
+        if chain == "chain input {" {
+            assert!(body.find("ipv6-nd").unwrap() < off, "{body}");
+        }
+    }
     // The ipv6 dynamic object a lease fills is kept across activations.
     assert!(
         r.meta.preserved_sets.contains(&"wan6".to_string()),

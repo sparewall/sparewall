@@ -629,6 +629,12 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         )
         .unwrap();
     }
+    // IPv6 on a link without it is dropped before the state rule, so a
+    // flow conntrack knows (begun before a network lost its IPv6, say)
+    // cannot carry on there either (#212).
+    if v6 {
+        input.push_str(&ipv6_input_early(doc));
+    }
     input.push_str(CT_STATE);
     input.push_str("iifname \"lo\" accept\n");
     let mgmt_if = doc
@@ -829,14 +835,16 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         )
         .unwrap();
     }
-    fwd.push_str(CT_STATE);
     if v6 {
-        // ICMPv6 errors for forwarded flows (Packet Too Big, which path
-        // MTU discovery needs, and the rest RFC 4890 asks for) are
-        // conntrack's `related`, above.
-        fwd.push_str(&ipv6_off(doc, "oifname"));
-        fwd.push_str(&ipv6_off(doc, "iifname"));
-    } else {
+        // Before the state rule, as on input. ICMPv6 errors for forwarded
+        // flows (Packet Too Big, which path MTU discovery needs, and the
+        // rest RFC 4890 asks for) are then conntrack's `related`, on the
+        // links with IPv6 only.
+        fwd.push_str(&ipv6_off(doc, "iifname", &[]));
+        fwd.push_str(&ipv6_off(doc, "oifname", &[]));
+    }
+    fwd.push_str(CT_STATE);
+    if !v6 {
         fwd.push_str("meta nfproto ipv6 drop\n");
     }
     // On a WAN with private node addresses the backup's own traffic
@@ -1101,21 +1109,36 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     Ok(())
 }
 
-/// IPv6 to the node, when a network routes it (#212). Neighbour discovery
-/// on every link (from the link, hop limit 255), and MLD; router
-/// solicitations from the inside networks with IPv6, router
-/// advertisements only from a WAN that learns its address from them;
-/// then nothing more on a link without IPv6. Echo is the policies'.
-fn ipv6_input(doc: &Document) -> String {
+/// IPv6 to the node, before the state rule, when a network routes it
+/// (#212): neighbour discovery on every link, and MLD, then nothing more
+/// on a link without IPv6 (but loopback).
+///
+/// Neighbour discovery must come from the link (hop limit 255) with code
+/// 0, and never from a multicast address; an advertisement never from the
+/// unspecified one, which only duplicate address detection's solicitations
+/// use (RFC 4861, 7.1). The kernel checks the rest of each message (its
+/// options, a solicitation from `::` being to a solicited-node address)
+/// before acting on it.
+fn ipv6_input_early(doc: &Document) -> String {
     let mut s = String::from(
-        "icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept comment \"ipv6-nd\"\n\
+        "icmpv6 type nd-neighbor-solicit icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != ff00::/8 accept comment \"ipv6-nd\"\n\
+         icmpv6 type nd-neighbor-advert icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != { ::, ff00::/8 } accept comment \"ipv6-nd\"\n\
          icmpv6 type { mld-listener-query, mld2-listener-report } ip6 saddr fe80::/10 accept comment \"ipv6-mld\"\n",
     );
+    s.push_str(&ipv6_off(doc, "iifname", &["lo"]));
+    s
+}
+
+/// IPv6 to the node after the state rule (#212): router solicitations
+/// from the inside networks with IPv6, router advertisements only from a
+/// WAN that learns from them. Echo is the policies'.
+fn ipv6_input(doc: &Document) -> String {
+    let mut s = String::new();
     let inside = doc.ipv6_ifaces_where(|n, _| n.role != NetworkRole::Wan);
     if !inside.is_empty() {
         writeln!(
             s,
-            "iifname {} icmpv6 type nd-router-solicit ip6 hoplimit 255 accept comment \"ipv6-router-solicit\"",
+            "iifname {} icmpv6 type nd-router-solicit icmpv6 code 0 ip6 hoplimit 255 accept comment \"ipv6-router-solicit\"",
             ifset(&inside)
         )
         .unwrap();
@@ -1126,21 +1149,22 @@ fn ipv6_input(doc: &Document) -> String {
     if !ra.is_empty() {
         writeln!(
             s,
-            "iifname {} icmpv6 type nd-router-advert ip6 saddr fe80::/10 ip6 hoplimit 255 accept comment \"ipv6-router-advert\"",
+            "iifname {} icmpv6 type nd-router-advert icmpv6 code 0 ip6 saddr fe80::/10 ip6 hoplimit 255 accept comment \"ipv6-router-advert\"",
             ifset(&ra)
         )
         .unwrap();
     }
-    s.push_str(&ipv6_off(doc, "iifname"));
     s
 }
 
 /// Drop IPv6 to or from (`dir`: `iifname`, `oifname`) any interface
-/// without it.
-fn ipv6_off(doc: &Document, dir: &str) -> String {
+/// without it, but `also`.
+fn ipv6_off(doc: &Document, dir: &str, also: &[&str]) -> String {
+    let mut ifs: Vec<String> = also.iter().map(|i| i.to_string()).collect();
+    ifs.extend(doc.ipv6_ifaces());
     format!(
         "meta nfproto ipv6 {dir} != {} drop comment \"ipv6-off\"\n",
-        set_lit(doc.ipv6_ifaces().iter().map(|i| q(i)))
+        set_lit(ifs.iter().map(|i| q(i)))
     )
 }
 
