@@ -1686,11 +1686,13 @@ fn ipv6_objects_and_suffixes() {
         json!({"objects": {"o": {"type": "ipv6", "dynamic": {"network": "lan"}}}}),
     );
     assert!(history_error(&d, "network \"lan\" has no IPv6"));
-    // And activating one is refused for now.
-    assert!(has_error(
-        &obj(json!({"type": "ipv6", "elements": ["2001:db8::1"]})),
-        "objects.o.type: ipv6 objects are not built yet"
-    ));
+    // The firewall renders them (#212): only the networks' IPv6 is
+    // refused at activation.
+    let d = edit(
+        TWO_NIC,
+        json!({"objects": {"o": {"type": "ipv6", "elements": ["2001:db8::1"]}}}),
+    );
+    assert_valid(&d);
 }
 
 /// A rule applies to the families its addresses and protocol allow (#211).
@@ -1751,14 +1753,23 @@ fn a_rule_takes_the_families_of_its_addresses() {
         json!({"dst": "2001:db8::zz"}),
         "expected an IPv4 or IPv6 address",
     );
-    // Not built yet: an IPv6 address or icmpv6 in a policy.
+    // The firewall renders them (#212): a policy with IPv6 activates.
+    let d = edit(
+        TWO_NIC,
+        json!({"policy": {"wan->lan": {"action": "drop", "rules": {
+            "a": {"order": 100, "dst": "2001:db8::/32", "action": "accept"},
+            "b": {"order": 200, "proto": "icmpv6", "icmp_type": ["echo-request"], "action": "accept"},
+        }}}}),
+    );
+    assert_valid(&d);
+    // Management stays IPv4's for now.
+    let d = edit(
+        TWO_NIC,
+        json!({"management": {"sources": ["192.168.1.10", "2001:db8::10"]}}),
+    );
     assert!(has_error(
-        &rule(json!({"dst": "2001:db8::/32"})),
-        "policy.'wan->lan'.rules.r.dst: IPv6 in policies is not built yet"
-    ));
-    assert!(has_error(
-        &rule(json!({"proto": "icmpv6"})),
-        "policy.'wan->lan'.rules.r.proto: IPv6 in policies is not built yet"
+        &d,
+        "management.sources: management over IPv6 is not built yet"
     ));
 }
 

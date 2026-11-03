@@ -967,10 +967,12 @@ what the test suites see, and a denial on a real node is a missing rule.
 ## Settings not built yet
 
 `provider_options` and `dhcp.provider: networkd` are rejected with an
-error at their path, and so, until the rest of 0.6.0 renders it, is IPv6
-(#211): `networks.<name>.ipv6`, `ipv6` objects, and IPv6 addresses or
-`proto: icmpv6` in policies. The document takes them, and validation
-checks them in full; activating one is refused. (`updates.mode: windowed` and `updates.window` were
+error at their path, and so, until the rest of 0.6.0 renders it, is
+IPv6 on networks (`networks.<name>.ipv6`, #213 and #214), and IPv6 in
+`management.sources` (management stays IPv4 for now). The document takes
+them, and validation checks them in full; activating one is refused.
+`ipv6` objects and IPv6 in policies are rendered (#212), though without
+a network with IPv6 no IPv6 reaches them. (`updates.mode: windowed` and `updates.window` were
 too, before 0.4.0 built them, and `logging.remote.provider: syslog`,
 `metrics.mode: local` and `metrics.retention` before 0.5.0.) Builds
 before 0.1.0 accepted them, though nothing acted on them. After

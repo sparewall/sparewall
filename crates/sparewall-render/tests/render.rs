@@ -1086,3 +1086,119 @@ fn vpn_client() {
     let network = &r.files[&format!("{}/50-sparewall-egress.network", Subsystem::Networkd.dir())];
     assert!(!network.contains("ActivationPolicy"), "{network}");
 }
+
+/// A two-NIC box whose WAN asks for a prefix by DHCPv6, with a static /64
+/// on a second inside network (#212): a document validation keeps in
+/// history (activating IPv6 on networks waits for #213 and #214).
+fn ipv6_two_nic() -> sparewall_config::Document {
+    let text = std::fs::read_to_string(format!(
+        "{}/../../examples/two-nic.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({
+            "ports": {"fw1": {"lab0": {"nic": "52:54:00:aa:00:03"}}},
+            "networks": {
+                "wan": {"ipv6": {"mode": "dhcpv6", "prefix_length": 56}},
+                "lan": {"ipv6": {"mode": "delegated", "subnet_id": 1}},
+                "lab": {"port": "lab0", "addresses": {"fw1": "192.168.2.1/24"},
+                    "ipv6": {"mode": "static", "prefix": "2001:db8:0:2::/64"}},
+            },
+            "zones": {"lab": {"networks": ["lab"]}},
+            "objects": {
+                "nas": {"type": "ipv6", "elements": ["2001:db8:ffff::5"],
+                    "suffixes": {"lab": ["::20"], "lan": ["::30"]}},
+                "nas4": {"type": "ipv4", "elements": ["192.168.2.20"]},
+                "wan6": {"type": "ipv6", "dynamic": {"network": "wan"}},
+                "lab6": {"type": "ipv6", "dynamic": {"network": "lab", "source": "prefix"}},
+            },
+            "policy": {
+                "lab->wan": {"action": "accept", "nat": "masquerade"},
+                "wan->lab": {"action": "drop", "rules": {
+                    "nas-https": {"order": 100, "proto": "tcp", "dport": 443,
+                        "dst": ["@nas4", "@nas"], "action": "accept"},
+                    "ping6": {"order": 200, "proto": "icmpv6",
+                        "icmp_type": ["echo-request"], "action": "accept"},
+                    "ping4": {"order": 300, "proto": "icmp",
+                        "icmp_type": ["echo-request"], "action": "accept"},
+                    "ssh": {"order": 400, "proto": "tcp", "dport": 22, "action": "drop"},
+                    "doc6": {"order": 500, "src": ["198.51.100.0/24", "2001:db8:beef::/48"],
+                        "dst": "2001:db8:0:2::/64", "action": "reject"},
+                }},
+            },
+        }),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&sparewall_config::validate::validate_history(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    doc
+}
+
+#[test]
+fn ipv6_firewall() {
+    let doc = ipv6_two_nic();
+    let r = render(&doc, "fw1").unwrap();
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    insta::assert_snapshot!("ipv6_two_nic_fw1__nft", nft);
+    for want in [
+        // Objects: static elements, a static prefix's hosts by suffix (a
+        // delegated one's waits for the prefix, #214), and dynamic ones.
+        "elements = { 2001:db8:ffff::5, 2001:db8:0:2::20 }",
+        "elements = { 2001:db8:0:2::/64 }",
+        // Neighbour discovery everywhere, router solicitations from the
+        // inside, advertisements from the WAN that learns from them.
+        "icmpv6 type nd-neighbor-solicit icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != ff00::/8 accept comment \"ipv6-nd\"",
+        "icmpv6 type nd-neighbor-advert icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != { ::, ff00::/8 } accept comment \"ipv6-nd\"",
+        "iifname { \"lab0\", \"lan0\" } icmpv6 type nd-router-solicit icmpv6 code 0 ip6 hoplimit 255 accept",
+        "iifname \"wan0\" icmpv6 type nd-router-advert icmpv6 code 0 ip6 saddr fe80::/10 ip6 hoplimit 255 accept",
+        "meta nfproto ipv6 iifname != { \"lo\", \"lab0\", \"lan0\", \"wan0\" } drop comment \"ipv6-off\"",
+        "meta nfproto ipv6 iifname != { \"lab0\", \"lan0\", \"wan0\" } drop comment \"ipv6-off\"",
+        "meta nfproto ipv6 oifname != { \"lab0\", \"lan0\", \"wan0\" } drop comment \"ipv6-off\"",
+        "iifname \"wan0\" udp sport 547 udp dport 546 accept comment \"infra:dhcpv6-client\"",
+        "icmpv6 type echo-request limit rate over 50/second burst 100 packets drop comment \"icmpv6-flood\"",
+        // Management and NAT stay IPv4.
+        "iifname \"lan0\" meta nfproto ipv4 ip saddr 192.168.1.10 tcp dport { 22, 443 } accept comment \"anti-lockout\"",
+        "iifname \"lab0\" oifname \"wan0\" meta nfproto ipv4 counter masquerade comment \"nat:lab->wan\"",
+        // A rule per family its addresses allow.
+        "ip daddr @nas4 tcp dport 443 counter accept comment \"rule:wan->lab:nas-https\"",
+        "ip6 daddr @nas tcp dport 443 counter accept comment \"rule:wan->lab:nas-https\"",
+        "icmpv6 type echo-request counter accept comment \"rule:wan->lab:ping6\"",
+        "icmp type echo-request counter accept comment \"rule:wan->lab:ping4\"",
+        "tcp dport 22 counter drop comment \"rule:wan->lab:ssh\"",
+        "ip6 saddr 2001:db8:beef::/48 ip6 daddr 2001:db8:0:2::/64 counter reject comment \"rule:wan->lab:doc6\"",
+    ] {
+        assert!(nft.contains(want), "{want}\n{nft}");
+    }
+    // The IPv4 source of a rule whose destination is IPv6 only is no line
+    // of its own; nor does the old blanket drop remain.
+    assert!(!nft.contains("198.51.100.0/24"), "{nft}");
+    assert!(!nft.contains("meta nfproto ipv6 drop\n"), "{nft}");
+    // IPv6 on a link without it is dropped before the state rule, in
+    // input and forward, so not even a flow conntrack knows carries on.
+    for chain in ["chain input {", "chain forward {"] {
+        let body = &nft[nft.find(chain).unwrap()..];
+        let body = &body[..body.find("\n\t}").unwrap()];
+        let off = body
+            .find("ipv6-off")
+            .unwrap_or_else(|| panic!("{chain}: no ipv6-off"));
+        let state = body.find("ct state vmap").unwrap();
+        assert!(
+            off < state,
+            "{chain}: ipv6-off after the state rule\n{body}"
+        );
+        // And neighbour discovery before both, in input.
+        if chain == "chain input {" {
+            assert!(body.find("ipv6-nd").unwrap() < off, "{body}");
+        }
+    }
+    // The ipv6 dynamic object a lease fills is kept across activations.
+    assert!(
+        r.meta.preserved_sets.contains(&"wan6".to_string()),
+        "{:?}",
+        r.meta
+    );
+    assert_nft_ok(&r);
+}

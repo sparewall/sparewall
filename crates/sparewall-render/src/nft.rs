@@ -110,8 +110,58 @@ impl Script {
     }
 }
 
-/// One rendered rule line.
-fn rule_line(doc: &Document, pair: &str, name: &str, r: &Rule) -> String {
+/// A rule's lines: one without addresses, or one per family its
+/// addresses and protocol allow (#211, #212), each with that family's
+/// addresses (`ip saddr`, `ip6 saddr`). Splitting changes nothing: every
+/// line has the rule's verdict, and a packet is of one family.
+fn rule_lines(doc: &Document, pair: &str, name: &str, r: &Rule) -> Vec<String> {
+    if r.src.is_none() && r.dst.is_none() {
+        return vec![rule_line(doc, pair, name, r, None, None)];
+    }
+    let split = |m: &Option<Match>| m.as_ref().map(|m| doc.split_families(m));
+    let (src, dst) = (split(&r.src), split(&r.dst));
+    let proto = r.proto.as_deref();
+    let mut lines = Vec::new();
+    for (six, fam, other) in [(false, "ip", "icmpv6"), (true, "ip6", "icmp")] {
+        let pick = |m: &Option<(Vec<String>, Vec<String>)>| -> Option<Option<Vec<String>>> {
+            match m {
+                None => Some(None),
+                Some((v4, v6)) => {
+                    let items = if six { v6 } else { v4 };
+                    (!items.is_empty()).then(|| Some(items.clone()))
+                }
+            }
+        };
+        let (Some(s), Some(d)) = (pick(&src), pick(&dst)) else {
+            continue;
+        };
+        if proto == Some(other) {
+            continue;
+        }
+        let addr = |dir: &str, items: Option<Vec<String>>| {
+            items.map(|i| format!("{fam} {dir} {}", set_lit(i)))
+        };
+        lines.push(rule_line(
+            doc,
+            pair,
+            name,
+            r,
+            addr("saddr", s),
+            addr("daddr", d),
+        ));
+    }
+    lines
+}
+
+/// One rendered rule line, with its source and destination matches.
+fn rule_line(
+    doc: &Document,
+    pair: &str,
+    name: &str,
+    r: &Rule,
+    src: Option<String>,
+    dst: Option<String>,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     let proto = r.proto.as_deref();
     let has_ports = r.sport.is_some() || r.dport.is_some();
@@ -125,23 +175,22 @@ fn rule_line(doc: &Document, pair: &str, name: &str, r: &Rule) -> String {
                 parts.push(format!("{p} dport {}", match_expr(d)));
             }
         }
-        Some("icmp") if !r.icmp_type.is_empty() => {}
+        Some("icmp" | "icmpv6") if !r.icmp_type.is_empty() => {}
         Some(p) => parts.push(format!("meta l4proto {p}")),
         None => {}
     }
     // Addresses go first for readability.
-    let mut addr = Vec::new();
-    if let Some(s) = &r.src {
-        addr.push(format!("ip saddr {}", match_expr(s)));
-    }
-    if let Some(d) = &r.dst {
-        addr.push(format!("ip daddr {}", match_expr(d)));
-    }
+    let mut addr: Vec<String> = src.into_iter().chain(dst).collect();
     addr.append(&mut parts);
     let mut parts = addr;
     if !r.icmp_type.is_empty() {
         parts.push(format!(
-            "icmp type {}",
+            "{} type {}",
+            if proto == Some("icmpv6") {
+                "icmpv6"
+            } else {
+                "icmp"
+            },
             set_lit(r.icmp_type.iter().cloned())
         ));
     }
@@ -214,6 +263,41 @@ fn static_dynamic_elements(doc: &Document, node: &str, d: &DynamicSource) -> Vec
         }
     }
     out.into_iter().collect()
+}
+
+/// A network's prefix, when the document states it (`ipv6.mode: static`).
+fn static_ipv6_prefix(doc: &Document, network: &str) -> Option<ipnet::Ipv6Net> {
+    let v6 = doc.networks.get(network)?.ipv6.as_ref()?;
+    match (v6.mode, v6.prefix) {
+        (Ipv6Mode::Static, Some(p)) => Some(p.0.trunc()),
+        _ => None,
+    }
+}
+
+/// The host with suffix `x` in prefix `p`.
+fn in_prefix(p: ipnet::Ipv6Net, x: std::net::Ipv6Addr) -> std::net::Ipv6Addr {
+    std::net::Ipv6Addr::from(u128::from(p.network()) | u128::from(x))
+}
+
+/// An ipv6 dynamic object's elements when the document states them: a
+/// static network's prefix, or a static WAN's own address. `None` when
+/// they are learned at run time.
+fn ipv6_dynamic_elements(doc: &Document, node: &str, d: &DynamicSource) -> Option<Vec<String>> {
+    let net = doc.networks.get(&d.network)?;
+    let v6 = net.ipv6.as_ref()?;
+    let prefix = static_ipv6_prefix(doc, &d.network)?;
+    match d.source {
+        DynamicKind::Prefix => Some(vec![prefix.to_string()]),
+        DynamicKind::Address if net.role == NetworkRole::Wan => Some(
+            v6.addresses
+                .get(node)
+                .map(|a| a.to_string())
+                .into_iter()
+                .collect(),
+        ),
+        // An inside network's own address comes with #214.
+        DynamicKind::Address => None,
+    }
 }
 
 /// A pair's WAN with private node addresses (#54), static or leased,
@@ -290,6 +374,11 @@ fn same_network_hairpins<'a>(
 
 pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(), Error> {
     let pair = doc.is_pair();
+    // With a network that routes IPv6 (#212), the rules that are IPv4's
+    // say so; without one, the ruleset is as before IPv6 (and IPv6 is
+    // dropped but link-local neighbour discovery).
+    let v6 = doc.routes_ipv6();
+    let v4_only = if v6 { "meta nfproto ipv4 " } else { "" };
     let mut sc = Script {
         sets: String::new(),
         chains: Vec::new(),
@@ -320,18 +409,40 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                     })
                     .collect(),
             ),
-            // Nothing renders IPv6 yet (#212): validation refuses an
-            // ipv6 object at activation, so only its static elements.
-            (ObjectKind::Ipv6, _) => (
-                "ipv6_addr",
-                o.elements
+            (ObjectKind::Ipv6, Some(d)) => match ipv6_dynamic_elements(doc, node, d) {
+                Some(e) => ("ipv6_addr", e),
+                // Learned at run time (DHCPv6, SLAAC, a delegated prefix):
+                // networkd fills it, as a lease does an ipv4 one (#213,
+                // #214).
+                None => {
+                    out.meta.preserved_sets.push(name.clone());
+                    if let Some(i) = doc.public_iface(&d.network) {
+                        out.meta.set_links.insert(name.clone(), i.to_string());
+                    }
+                    ("ipv6_addr", vec![])
+                }
+            },
+            (ObjectKind::Ipv6, None) => {
+                let mut e: Vec<String> = o
+                    .elements
                     .iter()
                     .map(|e| match e {
                         MatchItem::Text(s) => s.clone(),
                         MatchItem::Number(n) => n.to_string(),
                     })
-                    .collect(),
-            ),
+                    .collect();
+                // Hosts by suffix, in a static prefix. A delegated one is
+                // known only at run time (#214).
+                for (net, sfx) in &o.suffixes {
+                    if let Some(p) = static_ipv6_prefix(doc, net) {
+                        e.extend(sfx.iter().filter_map(|x| {
+                            let x: std::net::Ipv6Addr = x.parse().ok()?;
+                            Some(in_prefix(p, x).to_string())
+                        }));
+                    }
+                }
+                ("ipv6_addr", e)
+            }
             (ObjectKind::Port, _) => (
                 "inet_service",
                 o.elements
@@ -485,7 +596,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 ),
                 (true, None) => continue,
                 (false, _) => format!(
-                    "fib daddr type local udp dport {ports} counter redirect to :{}",
+                    "{v4_only}fib daddr type local udp dport {ports} counter redirect to :{}",
                     vpn.listen_port
                 ),
             };
@@ -518,6 +629,12 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         )
         .unwrap();
     }
+    // IPv6 on a link without it is dropped before the state rule, so a
+    // flow conntrack knows (begun before a network lost its IPv6, say)
+    // cannot carry on there either (#212).
+    if v6 {
+        input.push_str(&ipv6_input_early(doc));
+    }
     input.push_str(CT_STATE);
     input.push_str("iifname \"lo\" accept\n");
     let mgmt_if = doc
@@ -534,17 +651,27 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             .as_ref()
             .map(|s| format!(" ip saddr {}", match_expr(s)))
             .unwrap_or_default();
+        // IPv4 only, for now (#212): management over IPv6 is a choice for
+        // later.
         writeln!(
             input,
-            "iifname {}{from} tcp dport {} accept comment \"anti-lockout\"",
+            "iifname {}{}{from} tcp dport {} accept comment \"anti-lockout\"",
             q(m),
+            if v6 { " meta nfproto ipv4" } else { "" },
             set_lit(ANTI_LOCKOUT_PORTS.iter().map(u16::to_string))
         )
         .unwrap();
     }
-    input.push_str(IPV6_LINK_LOCAL);
-    input.push_str("meta nfproto ipv6 drop\n");
+    if v6 {
+        input.push_str(&ipv6_input(doc));
+    } else {
+        input.push_str(IPV6_LINK_LOCAL);
+        input.push_str("meta nfproto ipv6 drop\n");
+    }
     input.push_str("icmp type echo-request limit rate over 50/second burst 100 packets drop comment \"icmp-flood\"\n");
+    if v6 {
+        input.push_str("icmpv6 type echo-request limit rate over 50/second burst 100 packets drop comment \"icmpv6-flood\"\n");
+    }
     // Infrastructure the firewall itself needs.
     if pair {
         let vrrp_ifs: Vec<String> = out.meta.vip_links.clone();
@@ -602,6 +729,18 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             )
             .unwrap();
         }
+    }
+    // DHCPv6 replies to the WAN's client: to the node only, and only on a
+    // WAN that asks (#212). A reply answers a multicast solicit, which
+    // conntrack cannot pair it with.
+    let dhcpv6 = doc.ipv6_ifaces_where(|n, m| n.role == NetworkRole::Wan && m == Ipv6Mode::Dhcpv6);
+    if !dhcpv6.is_empty() {
+        writeln!(
+            input,
+            "iifname {} udp sport 547 udp dport 546 accept comment \"infra:dhcpv6-client\"",
+            ifset(&dhcpv6)
+        )
+        .unwrap();
     }
     // A forward's outside address and ports belong to the server behind
     // it. Its own zones are DNATed before input; from any other zone the
@@ -696,8 +835,18 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         )
         .unwrap();
     }
+    if v6 {
+        // Before the state rule, as on input. ICMPv6 errors for forwarded
+        // flows (Packet Too Big, which path MTU discovery needs, and the
+        // rest RFC 4890 asks for) are then conntrack's `related`, on the
+        // links with IPv6 only.
+        fwd.push_str(&ipv6_off(doc, "iifname", &[]));
+        fwd.push_str(&ipv6_off(doc, "oifname", &[]));
+    }
     fwd.push_str(CT_STATE);
-    fwd.push_str("meta nfproto ipv6 drop\n");
+    if !v6 {
+        fwd.push_str("meta nfproto ipv6 drop\n");
+    }
     // On a WAN with private node addresses the backup's own traffic
     // leaves through the master (#54).
     // It arrives on the WAN's own link and leaves by the macvlan with the
@@ -883,9 +1032,10 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 }
             }
         };
+        // No NAT for IPv6 (#211): `masquerade` alone would take both.
         writeln!(
             post,
-            "iifname {} oifname {} counter {target} comment {}",
+            "iifname {} oifname {} {v4_only}counter {target} comment {}",
             ifset(fi),
             ifset(ti),
             q(&format!("nat:{key}"))
@@ -901,8 +1051,10 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         let mut rules: Vec<(&String, &Rule)> = pol.rules.iter().collect();
         rules.sort_by_key(|(n, r)| (r.order, n.as_str()));
         for (name, r) in rules {
-            body.push_str(&rule_line(doc, key, name, r));
-            body.push('\n');
+            for line in rule_lines(doc, key, name, r) {
+                body.push_str(&line);
+                body.push('\n');
+            }
         }
         // Accept DNATed connections that forwards send into this pair.
         if *to != SELF_ZONE && *from != SELF_ZONE {
@@ -955,6 +1107,65 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     out.add(Subsystem::Nft, SCRIPT, sc.build());
     out.meta.preserved_sets.sort();
     Ok(())
+}
+
+/// IPv6 to the node, before the state rule, when a network routes it
+/// (#212): neighbour discovery on every link, and MLD, then nothing more
+/// on a link without IPv6 (but loopback).
+///
+/// Neighbour discovery must come from the link (hop limit 255) with code
+/// 0, and never from a multicast address; an advertisement never from the
+/// unspecified one, which only duplicate address detection's solicitations
+/// use (RFC 4861, 7.1). The kernel checks the rest of each message (its
+/// options, a solicitation from `::` being to a solicited-node address)
+/// before acting on it.
+fn ipv6_input_early(doc: &Document) -> String {
+    let mut s = String::from(
+        "icmpv6 type nd-neighbor-solicit icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != ff00::/8 accept comment \"ipv6-nd\"\n\
+         icmpv6 type nd-neighbor-advert icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != { ::, ff00::/8 } accept comment \"ipv6-nd\"\n\
+         icmpv6 type { mld-listener-query, mld2-listener-report } ip6 saddr fe80::/10 accept comment \"ipv6-mld\"\n",
+    );
+    s.push_str(&ipv6_off(doc, "iifname", &["lo"]));
+    s
+}
+
+/// IPv6 to the node after the state rule (#212): router solicitations
+/// from the inside networks with IPv6, router advertisements only from a
+/// WAN that learns from them. Echo is the policies'.
+fn ipv6_input(doc: &Document) -> String {
+    let mut s = String::new();
+    let inside = doc.ipv6_ifaces_where(|n, _| n.role != NetworkRole::Wan);
+    if !inside.is_empty() {
+        writeln!(
+            s,
+            "iifname {} icmpv6 type nd-router-solicit icmpv6 code 0 ip6 hoplimit 255 accept comment \"ipv6-router-solicit\"",
+            ifset(&inside)
+        )
+        .unwrap();
+    }
+    let ra = doc.ipv6_ifaces_where(|n, m| {
+        n.role == NetworkRole::Wan && matches!(m, Ipv6Mode::Dhcpv6 | Ipv6Mode::Ra)
+    });
+    if !ra.is_empty() {
+        writeln!(
+            s,
+            "iifname {} icmpv6 type nd-router-advert icmpv6 code 0 ip6 saddr fe80::/10 ip6 hoplimit 255 accept comment \"ipv6-router-advert\"",
+            ifset(&ra)
+        )
+        .unwrap();
+    }
+    s
+}
+
+/// Drop IPv6 to or from (`dir`: `iifname`, `oifname`) any interface
+/// without it, but `also`.
+fn ipv6_off(doc: &Document, dir: &str, also: &[&str]) -> String {
+    let mut ifs: Vec<String> = also.iter().map(|i| i.to_string()).collect();
+    ifs.extend(doc.ipv6_ifaces());
+    format!(
+        "meta nfproto ipv6 {dir} != {} drop comment \"ipv6-off\"\n",
+        set_lit(ifs.iter().map(|i| q(i)))
+    )
 }
 
 /// Input rules for services the document turns on.
