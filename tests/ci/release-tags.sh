@@ -49,18 +49,31 @@ sign maintainer v2.0.0 "$elsewhere"
 git tag v2.0.1-rc1 "$elsewhere"
 git push -q origin --tags
 
+# GitHub's roles, in place of the API: a fake gh that answers the
+# collaborator query with the maintainers listed in $t/roles, and fails
+# when there is no such file (the API out of reach).
+mkdir "$t/bin"
+cat > "$t/bin/gh" <<EOF
+#!/bin/bash
+[ "\$*" = "api --paginate repos/sparewall/test/collaborators --jq .[] | select(.permissions.maintain) | .login" ] \\
+    || { echo "unexpected: gh \$*" >&2; exit 2; }
+[ -f "$t/roles" ] && tr ' ' '\\n' < "$t/roles"
+EOF
+chmod +x "$t/bin/gh"
+signers() { echo "$*" > "$t/roles"; }
+
 # A clone shallow at the tag, as actions/checkout leaves it.
-signers=maintainer
+signers maintainer
 expect() { # exit-status tag message [commit being built]
     local got=0 sha=${4:-$main}
     rm -rf "$t/ci"
     git clone -q --depth 1 --branch "$2" "file://$t/origin.git" "$t/ci" 2>/dev/null
-    (cd "$t/ci" && env -u GNUPGHOME GITHUB_SHA="$sha" RELEASE_SIGNERS="$signers" \
-        KEYS_URL="file://$t/github" "$check" "$2") >"$t/out" 2>&1 || got=$?
+    (cd "$t/ci" && env -u GNUPGHOME GITHUB_SHA="$sha" GITHUB_REPOSITORY=sparewall/test \
+        PATH="$t/bin:$PATH" KEYS_URL="file://$t/github" "$check" "$2") >"$t/out" 2>&1 || got=$?
     [ "$got" = "$1" ] || fail "check-tag.sh $2: exit $got, want $1: $(cat "$t/out")"
     grep -q -- "$3" "$t/out" || fail "check-tag.sh $2: no '$3' in: $(cat "$t/out")"
 }
-expect 0 v1.0.0 'Good signature'                       # signed by a signer
+expect 0 v1.0.0 'Good signature'                       # signed by a maintainer
 expect 1 v1.0.1 'not signed by a GPG key'              # signed by someone else
 expect 1 v1.0.2 'not signed by a GPG key'              # annotated, unsigned
 expect 1 v1.0.3 'not an annotated tag'                 # lightweight
@@ -71,13 +84,16 @@ expect 1 v2.0.0 'is not on main' "$elsewhere"          # signed, but not on main
 expect 1 v2.0.1-rc1 'is not on main' "$elsewhere"
 expect 1 v1.0.0 'not the commit being built' "$elsewhere"
 
-signers="nobody maintainer"                           # an account that cannot be fetched
+signers nobody maintainer                             # an account that cannot be fetched
 expect 1 v1.0.0 "cannot fetch nobody's GPG keys"
-signers="maintainer stranger"                         # more than one signer
+signers maintainer stranger                           # more than one maintainer
 expect 0 v1.0.1 'Good signature'
-signers=
-expect 1 v1.0.0 'no RELEASE_SIGNERS'
-signers=maintainer
+signers                                               # no one has the role
+expect 1 v1.0.0 'has no maintainers'
+rm "$t/roles"                                         # the roles cannot be read
+expect 1 v1.0.0 "cannot list sparewall/test's maintainers"
+expect 0 v1.1.0-rc1 'no signature required'           # a prerelease asks no one
+signers maintainer
 key rotated > "$t/github/maintainer.gpg"              # the old key revoked on GitHub
 expect 1 v1.0.0 'not signed by a GPG key'
 printf '%s\n' '-----BEGIN PGP PUBLIC KEY BLOCK-----' \
@@ -90,7 +106,7 @@ key maintainer > "$t/github/maintainer.gpg"
 rm -rf "$t/ci"
 git clone -q "file://$t/origin.git" "$t/ci" 2>/dev/null
 (cd "$t/ci" && git tag -f v1.0.0 >/dev/null && env -u GNUPGHOME GITHUB_SHA="$main" \
-    RELEASE_SIGNERS=maintainer KEYS_URL="file://$t/github" "$check" v1.0.0 >/dev/null 2>&1) \
+    GITHUB_REPOSITORY=sparewall/test PATH="$t/bin:$PATH" KEYS_URL="file://$t/github" "$check" v1.0.0 >/dev/null 2>&1) \
     || fail "check-tag.sh v1.0.0: a lightweight local copy was not replaced"
 
 [ "$(GITHUB_REF=refs/tags/v1.2.3-rc1 GITHUB_REF_NAME=v1.2.3-rc1 "$repo/.github/version.sh")" = 1.2.3-rc1 ] \

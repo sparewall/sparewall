@@ -12,8 +12,10 @@ For maintainers. A release is a tested commit on `main`, tagged.
    A tag with a hyphen (`v0.2.0-rc1`) is a prerelease. Before it builds
    anything, the image workflow checks that the tag is on a commit on
    `main`, and that a release tag (no hyphen) is signed with a GPG key on
-   the GitHub account of whoever pushed it, who has push access or could
-   not have pushed. The keys are fetched from GitHub
+   the GitHub account of one of the repository's maintainers: whoever has
+   the maintain or admin role, directly or through a team. The roles are
+   the only list of who may release: give someone the role, and their key
+   counts; take it away, and it stops. The keys are fetched from GitHub
    (`https://github.com/USER.gpg`) at that moment: add your signing key to your account, and a key you remove
    stops counting. A prerelease need not be signed, so the usual path is
    an unsigned `-rcN` that anyone with push access can tag, then the
@@ -27,10 +29,9 @@ For maintainers. A release is a tested commit on `main`, tagged.
    the workflow of the commit being tagged, so a tag on an unreviewed
    commit could carry a workflow that skips it (and push access can
    already reach the repository's secrets). While only the maintainer can
-   push, that is enough. Push access also makes someone a release signer,
-   so before giving it to anyone else, add a tag
-   ruleset limiting who may create `v*` tags, and move the signing key
-   into a `release` environment that needs a maintainer's approval.
+   push, that is enough. Before giving push access to anyone else, add a
+   tag ruleset limiting who may create `v*` tags, and move the signing
+   key into a `release` environment that needs a maintainer's approval.
 3. The image workflow runs again for the tag: it rebuilds the image, runs
    every VM suite, including upgrades to it from earlier releases
    (`tests/vm/upgrade-test.sh`, from the releases
@@ -135,9 +136,9 @@ which, and why. Scheduled runs act only while the repository variable
 **Building.** It dispatches `image.yml` on the release's tag with
 `rebuild=N`, which:
 
-- checks the tag as for a release, against the GitHub users in the
-  repository variable `RELEASE_SIGNERS`, since the bot that dispatches it
-  signs nothing;
+- checks the tag as for a release, against the maintainers' keys: the
+  bot that dispatches it signs nothing, and the tag's signature is what
+  counts;
 - builds `X.Y.Z+rN` (`sparewall --version` and `org.sparewall.version`):
   semver build metadata, so a node compares it as the same version and
   offers it as a rebuild when its digest differs;

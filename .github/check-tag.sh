@@ -4,13 +4,16 @@
 #   - it is the commit this workflow builds ($GITHUB_SHA), and that commit
 #     is on main, so the workflow and this script were reviewed there;
 #   - a release (no hyphen) is an annotated tag signed with a GPG key on
-#     the GitHub account of one of RELEASE_SIGNERS (user names: the
-#     workflow passes whoever pushed the tag), fetched now, so a tag
-#     cannot bring its own key and a key revoked on GitHub stops counting.
+#     the GitHub account of one of the repository's maintainers: whoever
+#     has the maintain or admin role, directly or through a team, as
+#     GitHub says now. The roles are the one list of who may release, so
+#     there is nothing else to keep in step, and the keys are fetched now
+#     too, so a tag cannot bring its own key and a key revoked on GitHub
+#     stops counting.
 # A prerelease (a hyphen: v0.2.0-rc1) need not be signed, so a maintainer
 # can sign the release tag on the commit of the last prerelease.
 #
-#   GITHUB_SHA=COMMIT RELEASE_SIGNERS="user ..." .github/check-tag.sh TAG
+#   GITHUB_SHA=COMMIT GITHUB_REPOSITORY=OWNER/REPO GH_TOKEN=… .github/check-tag.sh TAG
 set -euo pipefail
 tag=${1:?usage: check-tag.sh TAG}
 sha=${GITHUB_SHA:?GITHUB_SHA must name the commit being built}
@@ -34,15 +37,20 @@ case $tag in *-*)
 esac
 [ "$(git cat-file -t "refs/tags/$tag")" = tag ] \
     || die "not an annotated tag; a release tag must be signed (git tag -s)"
-[ -n "${RELEASE_SIGNERS:-}" ] || die "no RELEASE_SIGNERS"
+repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository}
+signers=$(gh api --paginate "repos/$repo/collaborators" \
+    --jq '.[] | select(.permissions.maintain) | .login') \
+    || die "cannot list $repo's maintainers"
+signers=$(paste -sd" " <<<"$signers")
+[ -n "$signers" ] || die "$repo has no maintainers (the maintain or admin role)"
 GNUPGHOME=$(mktemp -d)
 export GNUPGHOME
 trap 'rm -rf "$GNUPGHOME"' EXIT
-for u in $RELEASE_SIGNERS; do
+for u in $signers; do
     keys=$(curl -fsSL "${KEYS_URL:-https://github.com}/$u.gpg") || die "cannot fetch $u's GPG keys"
     # An account without keys gets an armored note, which gpg "imports".
     gpg --batch --with-colons --show-keys <<<"$keys" 2>/dev/null | grep -q '^pub:' \
         || die "$u has no GPG keys on GitHub"
     gpg -q --batch --import <<<"$keys"
 done
-git verify-tag "$tag" || die "not signed by a GPG key of $RELEASE_SIGNERS"
+git verify-tag "$tag" || die "not signed by a GPG key of a maintainer ($signers)"
