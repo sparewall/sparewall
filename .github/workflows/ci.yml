@@ -82,7 +82,10 @@ jobs:
       - name: TEMPORARY - can GITHUB_TOKEN read the roles?
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api --paginate "repos/$GITHUB_REPOSITORY/collaborators" --jq '.[] | select(.permissions.maintain) | .login'
+        run: |
+          gh api -i "repos/$GITHUB_REPOSITORY/collaborators" | head -c 3000 || true
+          echo; echo ---; gh api -i "repos/$GITHUB_REPOSITORY/collaborators/silug/permission" | head -c 2000 || true
+          echo; echo ---; gh api "repos/$GITHUB_REPOSITORY/collaborators?affiliation=all" --jq '.[]|{login,role_name,permissions}' || true
       - name: Homebrew formula
         run: tests/ci/homebrew-formula.sh
 
