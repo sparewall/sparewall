@@ -1202,3 +1202,96 @@ fn ipv6_firewall() {
     );
     assert_nft_ok(&r);
 }
+
+/// A standalone node's WAN with IPv6 (#213), from the two-NIC example.
+fn ipv6_wan(ipv6: serde_json::Value) -> Rendered {
+    let text = std::fs::read_to_string(format!(
+        "{}/../../examples/two-nic.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({
+            "networks": {"wan": {"ipv6": ipv6}},
+            "objects": {
+                "wan6": {"type": "ipv6", "dynamic": {"network": "wan"}},
+                "wan6net": {"type": "ipv6", "dynamic": {"network": "wan", "source": "prefix"}},
+            },
+        }),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    assert_nft_ok(&r);
+    r
+}
+
+fn wan_network(r: &Rendered) -> &str {
+    let (_, f) = r
+        .files
+        .iter()
+        .find(|(p, _)| p.starts_with("network/") && p.ends_with("-wan0.network"))
+        .unwrap_or_else(|| panic!("no WAN .network in {:?}", r.files.keys()));
+    f
+}
+
+#[test]
+fn ipv6_wan_dhcpv6() {
+    let r = ipv6_wan(serde_json::json!({"mode": "dhcpv6"}));
+    let wan = wan_network(&r);
+    insta::assert_snapshot!("ipv6_wan_dhcpv6__wan", wan);
+    for want in [
+        "IPv6AcceptRA=yes",
+        "[IPv6AcceptRA]\nDHCPv6Client=always\nUseDNS=yes\nRouteMetric=100\nNFTSet=address:inet:sparewall:wan6 prefix:inet:sparewall:wan6net\n",
+        "[DHCPv6]\nDUIDType=link-layer\nUseDelegatedPrefix=yes\nPrefixDelegationHint=::/56\nUseDNS=yes\nSendHostname=no\nNFTSet=address:inet:sparewall:wan6\n",
+    ] {
+        assert!(wan.contains(want), "{want:?}\n{wan}");
+    }
+    assert!(!wan.contains("IPv6AcceptRA=no"), "{wan}");
+    // A WAN alone routes nothing: forwarding stays off until an inside
+    // network has IPv6 (#214).
+    let sysctl = &r.files[&format!("{}/90-sparewall.conf", Subsystem::Sysctl.dir())];
+    assert!(
+        sysctl.contains("net.ipv6.conf.all.forwarding = 0"),
+        "{sysctl}"
+    );
+    // The sets the DHCPv6 client and the RAs fill are kept.
+    for s in ["wan6", "wan6net"] {
+        assert!(
+            r.meta.preserved_sets.contains(&s.to_string()),
+            "{:?}",
+            r.meta
+        );
+    }
+    // A /60, asked for.
+    let r = ipv6_wan(serde_json::json!({"mode": "dhcpv6", "prefix_length": 60}));
+    assert!(wan_network(&r).contains("PrefixDelegationHint=::/60"));
+}
+
+#[test]
+fn ipv6_wan_ra_and_static() {
+    let r = ipv6_wan(serde_json::json!({"mode": "ra"}));
+    let wan = wan_network(&r);
+    assert!(wan.contains("IPv6AcceptRA=yes"), "{wan}");
+    assert!(wan.contains("[IPv6AcceptRA]\nDHCPv6Client=no\n"), "{wan}");
+    assert!(!wan.contains("[DHCPv6]"), "{wan}");
+
+    let r = ipv6_wan(
+        serde_json::json!({"mode": "static", "prefix": "2001:db8:ffff::/64",
+        "addresses": {"fw1": "2001:db8:ffff::2"}, "gateway": "fe80::1"}),
+    );
+    let wan = wan_network(&r);
+    assert!(wan.contains("Address=2001:db8:ffff::2/64"), "{wan}");
+    assert!(wan.contains("IPv6AcceptRA=no"), "{wan}");
+    assert!(
+        wan.contains("[Route]\nGateway=fe80::1\nMetric=100\n"),
+        "{wan}"
+    );
+    // The document states the address and prefix: elements, not a fill.
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    assert!(nft.contains("elements = { 2001:db8:ffff::2 }"), "{nft}");
+    assert!(nft.contains("elements = { 2001:db8:ffff::/64 }"), "{nft}");
+}

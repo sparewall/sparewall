@@ -975,19 +975,25 @@ impl Validator<'_> {
     }
 
     /// IPv6 is in the schema (#211) before all of it is rendered. The
-    /// firewall renders it (#212); the networks (#213, #214) do not yet,
+    /// firewall (#212) and a standalone node's WAN (#213) render it;
+    /// inside networks (#214) and pairs (#215) do not yet,
     /// and management over IPv6 is a choice for later: until then a
     /// document that uses them is refused, rather than run as if it did
     /// not.
     fn unbuilt_ipv6(&mut self) {
         let doc = self.doc;
         for (name, net) in &doc.networks {
-            if net.ipv6.is_some() {
-                self.err(
-                    format!("networks.{name}.ipv6"),
-                    "IPv6 on networks is not built yet (#213, #214)",
-                );
+            if net.ipv6.is_none() {
+                continue;
             }
+            let why = if net.role != NetworkRole::Wan {
+                "IPv6 on inside networks is not built yet (#214)"
+            } else if doc.is_pair() {
+                "IPv6 in a pair is not built yet (#215)"
+            } else {
+                continue;
+            };
+            self.err(format!("networks.{name}.ipv6"), why);
         }
         if let Some(m) = &doc.management.sources
             && !doc.split_families(m).1.is_empty()

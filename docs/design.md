@@ -472,7 +472,7 @@ policy:
 ```
 
 - **On a WAN**, `mode` is `dhcpv6`, `ra` or `static`:
-  - **`dhcpv6`:** the node's address from DHCPv6 (IA_NA) or SLAAC, as the upstream's router advertisements say, and a delegated prefix (IA_PD) for the inside networks; `prefix_length` asks for a size (48 to 64), or leaves it to the ISP. The default route comes from the router advertisements. An upstream that advertises the M flag and no prefix gives the address by DHCPv6 only.
+  - **`dhcpv6`:** the node's address from DHCPv6 (IA_NA) or SLAAC, as the upstream's router advertisements say, and a delegated prefix (IA_PD) for the inside networks; `prefix_length` asks for a size (48 to 64, default 56), which the ISP may not grant. The DHCPv6 client's DUID is the WAN's MAC (DUID-LL), so a reboot keeps the address and the prefix. The default route comes from the router advertisements. An upstream that advertises the M flag and no prefix gives the address by DHCPv6 only.
   - **`ra`:** an address by SLAAC only, and no delegated prefix.
   - **`static`:** the link's `prefix`, each node's address in it, and the upstream router (`gateway`, in the prefix or link-local).
 - **On an inside network**, `mode` is `delegated` (the `subnet_id`th /64 of the WAN's delegated prefix, by networkd's `DHCPPrefixDelegation=` and `SubnetId=`) or `static` (a /64 of its own). The node's address on it comes from the prefix; hosts take theirs by SLAAC from the node's router advertisements (`IPv6SendRA=`). DHCPv6 on inside networks follows 1.0 (#217).

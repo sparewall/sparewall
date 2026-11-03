@@ -13,9 +13,17 @@ pub const FILE: &str = "90-sparewall.conf";
 /// kernel default of 5 days lets dead entries fill the table).
 pub const DEFAULT_TCP_ESTABLISHED_TIMEOUT: u32 = 86_400;
 
-fn common(s: &mut String) {
+fn common(s: &mut String, ipv6_forwarding: bool) {
     s.push_str("net.ipv4.conf.all.forwarding = 1\n");
-    s.push_str("net.ipv6.conf.all.forwarding = 0\n");
+    // IPv6 is routed once an inside network has it (#213, #214); the WAN
+    // keeps learning from router advertisements, which networkd handles
+    // itself whether or not the node forwards.
+    writeln!(
+        s,
+        "net.ipv6.conf.all.forwarding = {}",
+        u8::from(ipv6_forwarding)
+    )
+    .unwrap();
     // A new master must pick up mid-stream connections.
     s.push_str("net.netfilter.nf_conntrack_tcp_loose = 1\n");
     s.push_str("net.ipv4.conf.all.send_redirects = 0\n");
@@ -26,7 +34,11 @@ fn common(s: &mut String) {
 
 pub(crate) fn render(doc: &Document, _node: &str, out: &mut Rendered) {
     let mut s = String::from(crate::HEADER);
-    common(&mut s);
+    let inside_v6 = doc
+        .networks
+        .values()
+        .any(|n| n.ipv6.is_some() && n.role != sparewall_config::model::NetworkRole::Wan);
+    common(&mut s, inside_v6);
     let ct = doc.cluster.conntrack.as_ref();
     if let Some(max) = ct.and_then(|c| c.max) {
         writeln!(s, "net.netfilter.nf_conntrack_max = {max}").unwrap();
