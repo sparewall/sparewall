@@ -141,10 +141,7 @@ which, and why. Scheduled runs act only while the repository variable
 - checks the tag as for a release, against the maintainers' keys: the
   bot that dispatches it signs nothing, and the tag's signature is what
   counts. `rebuild.yml` checks it first with the current `check-tag.sh`,
-  since `image.yml` runs as it was at the tag. Releases tagged before
-  #226 (0.4.0 and 0.5.0) also check it against the repository variable
-  `RELEASE_SIGNERS`, and cannot be rebuilt without it; once a newer
-  release is the one rebuilt, delete the variable;
+  since `image.yml` runs as it was at the tag;
 - builds `X.Y.Z+rN` (`sparewall --version` and `org.sparewall.version`):
   semver build metadata, so a node compares it as the same version and
   offers it as a rebuild when its digest differs;
@@ -159,5 +156,7 @@ which, and why. Scheduled runs act only while the repository variable
 
 The release's media (ISO, disk images, CLI) are not rebuilt: a fresh
 install from them is offered the rebuild by `sparewall upgrade`. A rebuild
-runs `image.yml` as it was at the tag, so only releases from 0.4.0 on can
-be rebuilt; for an earlier one, the decision says so.
+runs `image.yml` as it was at the tag, so only releases tagged after
+#226 can be rebuilt (0.4.0 and 0.5.0 checked their tags against a list of
+signers, since replaced by the roles); for an earlier one, the decision
+says so.

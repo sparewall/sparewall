@@ -56,7 +56,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT: ${{ github.event_name }}
           ENABLED: ${{ vars.REBUILDS }}
-          LEGACY_SIGNERS: ${{ vars.RELEASE_SIGNERS }}
           FORCE: ${{ inputs.force || false }}
           DRY_RUN: ${{ inputs.dry_run || false }}
         run: |
@@ -70,6 +69,12 @@ jobs:
           # The rebuild runs image.yml as it was at the tag.
           if ! git show "$tag:.github/workflows/image.yml" | grep -q '^      rebuild:$'; then
             say "$tag predates rebuilds (its image.yml takes no \`rebuild\`): release a new version instead."
+            exit 0
+          fi
+          # Before #226, a rebuild's tag check read a list of signers from
+          # a repository variable, which is gone: the roles are the list.
+          if git show "$tag:.github/check-tag.sh" | grep -q RELEASE_SIGNERS; then
+            say "$tag's own tag check predates checking the repository's roles (#226): release a new version instead."
             exit 0
           fi
           labels=$(skopeo inspect --no-tags "docker://$IMAGE:stable" | jq .Labels)
@@ -103,12 +108,6 @@ jobs:
           # tag's own copy says.
           if ! GITHUB_SHA=$(git rev-parse "$tag^{commit}") .github/check-tag.sh "$tag"; then
             echo "::error::$tag is not signed by one of the repository's maintainers"
-            exit 1
-          fi
-          # A release tagged before #226 runs its own check too, against
-          # the repository variable RELEASE_SIGNERS, and fails without it.
-          if git show "$tag:.github/check-tag.sh" | grep -q RELEASE_SIGNERS && [ -z "$LEGACY_SIGNERS" ]; then
-            echo "::error::$tag's own tag check (from before #226) needs the repository variable RELEASE_SIGNERS: set it to the maintainers until a newer release replaces $tag"
             exit 1
           fi
           if [ "$DRY_RUN" = true ]; then
