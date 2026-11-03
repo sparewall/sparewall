@@ -232,6 +232,7 @@ export interface Schemas {
     /** Internal port; default unchanged. */
     "to_port"?: number | null;
   };
+  "Document.Ipv6Mode": "dhcpv6" | "ra" | "static" | "delegated";
   "Document.LacpRate": "slow" | "fast";
   "Document.Logging": {
     /** Record connection start/end with NAT mappings. */
@@ -264,7 +265,9 @@ export interface Schemas {
      * break-glass path. */
     "password"?: boolean;
   };
-  /** A match value: a scalar, a list, or an `@object` reference. */
+  /** A match value: a scalar, a list, or an `@object` reference. An IPv6
+   * address in one needs schema revision 5 (`x-since-ipv6`): earlier
+   * releases read only IPv4 there. */
   "Document.Match": number | string | Array<Schemas["Document.MatchItem"]>;
   "Document.MatchItem": number | string;
   "Document.Metrics": {
@@ -304,6 +307,9 @@ export interface Schemas {
     /** Upstream gateway (default route) for a static WAN or a management
      * network with its own upstream. */
     "gateway"?: string | null;
+    /** IPv6 on this network (#211). Unset, the network has link-local
+     * IPv6 addresses only, and routes none. */
+    "ipv6"?: Schemas["Document.NetworkIpv6"] | null;
     /** Emit and receive LLDP on this network. Default true on untagged ports. */
     "lldp"?: boolean | null;
     /** MTU of this network's interface. */
@@ -328,6 +334,31 @@ export interface Schemas {
     /** VRRP virtual router ID (1-255), unique across the deployment. */
     "vrid"?: number | null;
   };
+  /** How a network gets its IPv6 addresses. Which fields apply depends on
+   * `mode` and on the network's role. */
+  "Document.NetworkIpv6": {
+    /** `static` on a WAN: each node's own address, in `prefix`. */
+    "addresses"?: Record<string, string>;
+    /** `static` on a WAN: the upstream router, in `prefix` or link-local
+     * (`fe80::1`). */
+    "gateway"?: string | null;
+    /** On a WAN: `dhcpv6` (an address by DHCPv6 or SLAAC, as the
+     * upstream's router advertisements say, and a delegated prefix for
+     * the inside networks), `ra` (an address by SLAAC only, no delegated
+     * prefix) or `static`. On another network: `delegated` (a /64 of the
+     * WAN's delegated prefix) or `static`. */
+    "mode": Schemas["Document.Ipv6Mode"];
+    /** `static`: the network's prefix. A /64 on an inside network; on a
+     * WAN, the upstream link's prefix. */
+    "prefix"?: Schemas["Document.Prefix6"] | null;
+    /** `dhcpv6`: the length of the prefix to ask the ISP to delegate, 48
+     * to 64. Unset, no length is asked for and the ISP chooses (often
+     * /56). */
+    "prefix_length"?: number | null;
+    /** `delegated`: which /64 of the delegated prefix this network takes,
+     * counting from 0 (a /56 has 256). Unique among the networks. */
+    "subnet_id"?: number | null;
+  };
   "Document.NetworkRole": "service" | "wan" | "management" | "sync";
   "Document.Ntp": {
     /** Networks to serve time on. */
@@ -337,15 +368,21 @@ export interface Schemas {
   };
   /** A named set: static elements, or a dynamic set filled by networkd. */
   "Document.Object": {
-    /** Fill from a network's addresses instead (`ipv4` only). */
+    /** Fill from a network's addresses instead (`ipv4` and `ipv6`): the
+     * node's own, or the network's prefix. */
     "dynamic"?: Schemas["Document.DynamicSource"] | null;
-    /** Static elements: addresses or prefixes for `ipv4`, ports or ranges for
-     * `port`. */
+    /** Static elements: addresses, prefixes or ranges for `ipv4` and
+     * `ipv6`, ports or ranges for `port`. */
     "elements"?: Array<Schemas["Document.MatchItem"]>;
+    /** `ipv6`: hosts in a network's IPv6 prefix, by the network and their
+     * suffix, the address's last 64 bits (`users: ["::20"]`). They follow
+     * the prefix, so a rule for a host survives the ISP renumbering a
+     * delegated one. */
+    "suffixes"?: Record<string, Array<string>>;
     /** Element type. */
     "type": Schemas["Document.ObjectKind"];
   };
-  "Document.ObjectKind": "ipv4" | "port";
+  "Document.ObjectKind": "ipv4" | "ipv6" | "port";
   "Document.Offload": {
     "gro"?: boolean | null;
     "gso"?: boolean | null;
@@ -376,6 +413,8 @@ export interface Schemas {
     /** NIC offload overrides for misbehaving drivers. */
     "offload"?: Schemas["Document.Offload"] | null;
   };
+  /** IPv6 prefix, e.g. 2001:db8:0:1::/64 */
+  "Document.Prefix6": string;
   "Document.RawAt": {
     /** Zone pair, `"from->to"`. */
     "pair": string;
@@ -449,9 +488,9 @@ export interface Schemas {
     "comment"?: string | null;
     /** Destination port(s): a number, `low-high`, a list, or `@object`. */
     "dport"?: Schemas["Document.Match"] | null;
-    /** Destination: an address, a prefix, a list of them, or `@object`. */
+    /** Destination, as for `src`. */
     "dst"?: Schemas["Document.Match"] | null;
-    /** ICMP type names, e.g. `echo-request` (proto `icmp`). */
+    /** ICMP type names, e.g. `echo-request` (proto `icmp` or `icmpv6`). */
     "icmp_type"?: Array<string>;
     /** Rate limit, e.g. `10/second` or `100/minute burst 20`. */
     "limit"?: string | null;
@@ -459,11 +498,15 @@ export interface Schemas {
     "log"?: boolean;
     /** Position within the zone pair; leave gaps (100, 200, ...). */
     "order": number;
-    /** `tcp`, `udp`, `icmp` or another protocol name nft knows. */
+    /** `tcp`, `udp`, `icmp`, `icmpv6` or another protocol name nft knows.
+     * `icmp` is IPv4's and `icmpv6` IPv6's, so either limits the rule to
+     * its family. */
     "proto"?: string | null;
     /** Source port(s): a number, `low-high`, a list, or `@object`. */
     "sport"?: Schemas["Document.Match"] | null;
-    /** Source: an address, a prefix, a list of them, or `@object`. */
+    /** Source: an address, a prefix, a range, a list of them, or
+     * `@object`, of either family. The rule applies to the families its
+     * addresses (and `proto`) allow: with only IPv4 ones, to IPv4 only. */
     "src"?: Schemas["Document.Match"] | null;
   };
   "Document.Tls": {

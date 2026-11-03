@@ -73,6 +73,7 @@ back to one of them keeps its configuration.
 | 2 | `management.web` | 0.3.2 (0.3.0 and 0.3.1 read the field but only `schema: 1`) |
 | 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac`, `backup.retention`, `management.sources`; the value `updates.mode: windowed` | 0.4.0 |
 | 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`, `vpn_clients`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
+| 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -966,7 +967,10 @@ what the test suites see, and a denial on a real node is a missing rule.
 ## Settings not built yet
 
 `provider_options` and `dhcp.provider: networkd` are rejected with an
-error at their path. (`updates.mode: windowed` and `updates.window` were
+error at their path, and so, until the rest of 0.6.0 renders it, is IPv6
+(#211): `networks.<name>.ipv6`, `ipv6` objects, and IPv6 addresses or
+`proto: icmpv6` in policies. The document takes them, and validation
+checks them in full; activating one is refused. (`updates.mode: windowed` and `updates.window` were
 too, before 0.4.0 built them, and `logging.remote.provider: syslog`,
 `metrics.mode: local` and `metrics.retention` before 0.5.0.) Builds
 before 0.1.0 accepted them, though nothing acted on them. After

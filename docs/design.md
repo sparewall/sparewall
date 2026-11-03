@@ -25,7 +25,7 @@ Sparewall turns a Linux box or VM into a firewall appliance that is upgraded and
 | Standalone node or HA pair (active/standby) | More than two nodes, active-active |
 | VLANs, LACP and active-backup bonds, VM or physical ports |  |
 | One WAN | Multiple WANs, WAN failover, load balancing |
-| IPv4 routing, NAT and DHCP; IPv6 link-local only | IPv6 routing: SLAAC and RA, prefix delegation, DHCPv6 |
+| IPv4 routing, NAT and DHCP; IPv6 routing (0.6.0): DHCPv6, SLAAC or static on the WAN, delegated or static /64s with router advertisements inside | DHCPv6 on inside networks (#217), tunnels for sites without native IPv6 (#218); NAT66 and IPv6 forwards are not planned |
 | Zone-based firewall with raw nftables rules | IPsec, captive portal, multi-tenancy |
 | WireGuard remote-access VPN; site-to-site tunnels with static WireGuard peers; WireGuard clients for chosen networks' egress | Site-to-site beyond static WireGuard peers (dynamic routing, many sites) |
 | Optional recursive DNS (Unbound), NTP, logging, metrics, health endpoints | DHCP-to-DNS updates (DDNS), IDS/IPS (Suricata), dynamic routing (BGP, OSPF) |
@@ -446,9 +446,43 @@ networkd treats addresses it did not configure as foreign and drops foreign conf
 - Changes are applied with a per-link reconfigure over Varlink, never by restarting networkd.
 - keepalived 2.x re-adds addresses it sees removed, so a mistake costs a blip rather than an outage.
 
-### IPv6 (later)
+### IPv6
 
-The first releases assume no IPv6 from the ISP and route IPv4 only. When IPv6 arrives it will use networkd's `IPv6SendRA=`, `DHCPPrefixDelegation=` and `[IPv6Prefix]`. A pair needs a decision then: either both nodes advertise, or only the active node advertises from a virtual link-local address; dynamic prefix delegation should run only on the active node.
+IPv6 is in the schema from revision 5 (#211), and rendered by 0.6.0 (#212 to #216). A network without `ipv6` has link-local IPv6 addresses only, as before.
+
+```yaml
+networks:
+  wan:
+    role: wan
+    dhcp_client: true
+    ipv6: { mode: dhcpv6, prefix_length: 56 }   # an address, and a /56 for the inside
+  users:
+    ipv6: { mode: delegated, subnet_id: 1 }     # the /56's second /64
+  servers:
+    ipv6: { mode: static, prefix: "2001:db8:0:10::/64" }
+objects:
+  nas:
+    type: ipv6
+    suffixes: { users: ["::20"] }               # 2001:db8:…:1::20, whatever the /56 is
+policy:
+  wan->users:
+    action: drop
+    rules:
+      nas-https: { order: 100, proto: tcp, dport: 443, dst: "@nas", action: accept }
+```
+
+- **On a WAN**, `mode` is `dhcpv6`, `ra` or `static`:
+  - **`dhcpv6`:** the node's address from DHCPv6 (IA_NA) or SLAAC, as the upstream's router advertisements say, and a delegated prefix (IA_PD) for the inside networks; `prefix_length` asks for a size (48 to 64), or leaves it to the ISP. The default route comes from the router advertisements. An upstream that advertises the M flag and no prefix gives the address by DHCPv6 only.
+  - **`ra`:** an address by SLAAC only, and no delegated prefix.
+  - **`static`:** the link's `prefix`, each node's address in it, and the upstream router (`gateway`, in the prefix or link-local).
+- **On an inside network**, `mode` is `delegated` (the `subnet_id`th /64 of the WAN's delegated prefix, by networkd's `DHCPPrefixDelegation=` and `SubnetId=`) or `static` (a /64 of its own). The node's address on it comes from the prefix; hosts take theirs by SLAAC from the node's router advertisements (`IPv6SendRA=`). DHCPv6 on inside networks follows 1.0 (#217).
+- **The sync network stays IPv4.**
+- **Policies cover both families.** A policy's default action applies to IPv4 and IPv6. A rule applies to the families that its `src`, its `dst` and its `proto` all allow: one whose addresses are all IPv4 (literals, or `ipv4` objects) is IPv4 only, `proto: icmp` is IPv4's and `icmpv6` IPv6's, and a rule with neither addresses nor such a protocol is both. A rule whose parts allow no family in common (an IPv4 source and an IPv6 destination) is refused. The family is implicit rather than written out (a `family:` on the rule) because the addresses already say it, as nft's `ip saddr` matches only IPv4: a second statement of it could only disagree with them. The consequence to keep in mind is a drop rule listing one family's addresses of a host that has both; its other addresses reach the policy's default.
+- **Objects:** `ipv6` objects hold IPv6 addresses, prefixes and ranges; a dynamic one is filled with the node's own IPv6 addresses on a network, or the network's prefix. `suffixes` names hosts in a network's prefix by the address's last 64 bits, and follows the prefix when a delegated one changes.
+- **Forwards and `nat` stay IPv4.** Opening a port to an inside IPv6 host is a policy from the WAN's zone to that host, with no NAT; NAT66 is not planned.
+- **Validation** refuses a delegated network with no WAN on `dhcpv6`, two networks with one subnet ID or overlapping static prefixes, a subnet ID beyond what `prefix_length` holds, an inside static prefix that is not a /64, and fields for another mode.
+- **A pair** advertises only from the master, and runs the DHCPv6 client only there, on the WAN's lease link (`swwan`) like the DHCPv4 client (#54), so the lease and the delegated prefix move with the gateway; the backup learns the prefix through the sync tunnel, so a failover does not renumber (#215).
+- **Older releases:** an IPv6 address in a rule's `src` or `dst`, or in `management.sources`, needs revision 5 as the new fields do (`x-since-ipv6` on the match types), so 0.5.x refuses such a document as too new, not as invalid.
 
 ## Firewall: zones plus raw rules
 
@@ -458,7 +492,8 @@ The coordinator renders the nftables ruleset from the document: a zone-based pol
 
 - **Zones** are named groups of networks, plus a built-in `self` zone for traffic to and from the firewall.
 - **Policies** are per zone pair (`users->wan`): a default action (accept, drop, reject) and named, ordered rules (protocol, ports, source and destination objects, log, rate limit).
-- **Objects** are named address and port sets rendered as nft named sets. Sets that networkd fills via `NFTSet=` (the WAN address, for example) appear as dynamic objects, so rules never hold literal addresses that DHCP can change.
+- **Objects** are named address and port sets rendered as nft named sets, of type `ipv4`, `ipv6` or `port`. Sets that networkd fills via `NFTSet=` (the WAN address, for example) appear as dynamic objects, so rules never hold literal addresses that DHCP can change. An `ipv6` object can also name hosts by their suffix in a network's prefix (`suffixes`), so a rule follows a delegated prefix the ISP renumbers.
+- **Both families:** a policy applies to IPv4 and IPv6 alike. A rule applies to the families its addresses and protocol allow (see [IPv6](#ipv6)).
 - **NAT** attaches to zone pairs (masquerade or SNAT outbound); **forwards** define inbound DNAT. A forward's `hairpin` zones may also use it by its outside address (NAT reflection); clients on the server's own network are then source-NATed to the firewall's address there, so replies return through it.
 
 ### Raw rules

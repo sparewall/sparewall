@@ -5,9 +5,9 @@
 //! sorted and merge one entry at a time.
 
 use std::collections::BTreeMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-use ipnet::Ipv4Net;
+use ipnet::{Ipv4Net, Ipv6Net};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,7 +20,7 @@ use serde_json::Value;
 /// an invalid document, and reads every document that needs nothing newer
 /// (#168). A value that earlier releases reject as not built yet says so
 /// too, with `x-since-values` (`{"syslog": 4}`) on its field.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// A whole deployment: one node or an HA pair.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -333,6 +333,77 @@ pub struct Network {
     /// Emit and receive LLDP on this network. Default true on untagged ports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lldp: Option<bool>,
+    /// IPv6 on this network (#211). Unset, the network has link-local
+    /// IPv6 addresses only, and routes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 5))]
+    pub ipv6: Option<NetworkIpv6>,
+}
+
+/// How a network gets its IPv6 addresses. Which fields apply depends on
+/// `mode` and on the network's role.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkIpv6 {
+    /// On a WAN: `dhcpv6` (an address by DHCPv6 or SLAAC, as the
+    /// upstream's router advertisements say, and a delegated prefix for
+    /// the inside networks), `ra` (an address by SLAAC only, no delegated
+    /// prefix) or `static`. On another network: `delegated` (a /64 of the
+    /// WAN's delegated prefix) or `static`.
+    pub mode: Ipv6Mode,
+    /// `dhcpv6`: the length of the prefix to ask the ISP to delegate, 48
+    /// to 64. Unset, no length is asked for and the ISP chooses (often
+    /// /56).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_length: Option<u8>,
+    /// `delegated`: which /64 of the delegated prefix this network takes,
+    /// counting from 0 (a /56 has 256). Unique among the networks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet_id: Option<u16>,
+    /// `static`: the network's prefix. A /64 on an inside network; on a
+    /// WAN, the upstream link's prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<Prefix6>,
+    /// `static` on a WAN: each node's own address, in `prefix`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub addresses: BTreeMap<String, Ipv6Addr>,
+    /// `static` on a WAN: the upstream router, in `prefix` or link-local
+    /// (`fe80::1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<Ipv6Addr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Ipv6Mode {
+    Dhcpv6,
+    Ra,
+    Static,
+    Delegated,
+}
+
+/// An IPv6 prefix, e.g. `2001:db8:0:1::/64`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Prefix6(pub Ipv6Net);
+
+impl JsonSchema for Prefix6 {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Prefix6".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "IPv6 prefix, e.g. 2001:db8:0:1::/64",
+            "pattern": r"^[0-9A-Fa-f:.]+/\d{1,3}$"
+        })
+    }
+}
+
+impl std::fmt::Display for Prefix6 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 #[derive(
@@ -395,20 +466,30 @@ pub struct Zone {
 pub struct Object {
     /// Element type.
     #[serde(rename = "type")]
+    #[schemars(extend("x-since-values" = {"ipv6": 5}))]
     pub kind: ObjectKind,
-    /// Static elements: addresses or prefixes for `ipv4`, ports or ranges for
-    /// `port`.
+    /// Static elements: addresses, prefixes or ranges for `ipv4` and
+    /// `ipv6`, ports or ranges for `port`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub elements: Vec<MatchItem>,
-    /// Fill from a network's addresses instead (`ipv4` only).
+    /// Fill from a network's addresses instead (`ipv4` and `ipv6`): the
+    /// node's own, or the network's prefix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic: Option<DynamicSource>,
+    /// `ipv6`: hosts in a network's IPv6 prefix, by the network and their
+    /// suffix, the address's last 64 bits (`users: ["::20"]`). They follow
+    /// the prefix, so a rule for a host survives the ISP renumbering a
+    /// delegated one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-since" = 5))]
+    pub suffixes: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ObjectKind {
     Ipv4,
+    Ipv6,
     Port,
 }
 
@@ -475,13 +556,17 @@ pub enum NatMode {
 pub struct Rule {
     /// Position within the zone pair; leave gaps (100, 200, ...).
     pub order: u32,
-    /// `tcp`, `udp`, `icmp` or another protocol name nft knows.
+    /// `tcp`, `udp`, `icmp`, `icmpv6` or another protocol name nft knows.
+    /// `icmp` is IPv4's and `icmpv6` IPv6's, so either limits the rule to
+    /// its family.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proto: Option<String>,
-    /// Source: an address, a prefix, a list of them, or `@object`.
+    /// Source: an address, a prefix, a range, a list of them, or
+    /// `@object`, of either family. The rule applies to the families its
+    /// addresses (and `proto`) allow: with only IPv4 ones, to IPv4 only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub src: Option<Match>,
-    /// Destination: an address, a prefix, a list of them, or `@object`.
+    /// Destination, as for `src`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dst: Option<Match>,
     /// Source port(s): a number, `low-high`, a list, or `@object`.
@@ -490,7 +575,7 @@ pub struct Rule {
     /// Destination port(s): a number, `low-high`, a list, or `@object`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dport: Option<Match>,
-    /// ICMP type names, e.g. `echo-request` (proto `icmp`).
+    /// ICMP type names, e.g. `echo-request` (proto `icmp` or `icmpv6`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub icmp_type: Vec<String>,
     /// Rate limit, e.g. `10/second` or `100/minute burst 20`.
@@ -506,9 +591,12 @@ pub struct Rule {
     pub comment: Option<String>,
 }
 
-/// A match value: a scalar, a list, or an `@object` reference.
+/// A match value: a scalar, a list, or an `@object` reference. An IPv6
+/// address in one needs schema revision 5 (`x-since-ipv6`): earlier
+/// releases read only IPv4 there.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
+#[schemars(extend("x-since-ipv6" = 5))]
 pub enum Match {
     Number(u32),
     Text(String),
@@ -517,6 +605,7 @@ pub enum Match {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
+#[schemars(extend("x-since-ipv6" = 5))]
 pub enum MatchItem {
     Number(u32),
     Text(String),

@@ -33,13 +33,15 @@ const ACRONYMS = new Set([
   'vrrp',
   'wan',
 ]);
+/** Words spelled their own way. */
+const SPELLED: Record<string, string> = { id: 'ID', ipv4: 'IPv4', ipv6: 'IPv6', dhcpv6: 'DHCPv6' };
 
 /** How a field reads: `tcp_established_timeout` as "TCP established timeout". */
 export function fieldLabel(key: string): string {
   const words = key
     .split('_')
     .filter(Boolean)
-    .map((w) => (ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w));
+    .map((w) => SPELLED[w.toLowerCase()] ?? (ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w));
   const s = words.join(' ');
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
