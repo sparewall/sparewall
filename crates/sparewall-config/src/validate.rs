@@ -975,8 +975,9 @@ impl Validator<'_> {
     }
 
     /// IPv6 is in the schema (#211) before all of it is rendered. The
-    /// firewall (#212) and a standalone node's WAN (#213) render it;
-    /// inside networks (#214) and pairs (#215) do not yet,
+    /// firewall (#212), a standalone node's WAN (#213) and inside networks
+    /// (#214) render it; pairs (#215), and hosts by suffix in a delegated
+    /// prefix, do not yet,
     /// and management over IPv6 is a choice for later: until then a
     /// document that uses them is refused, rather than run as if it did
     /// not.
@@ -986,14 +987,29 @@ impl Validator<'_> {
             if net.ipv6.is_none() {
                 continue;
             }
-            let why = if net.role != NetworkRole::Wan {
-                "IPv6 on inside networks is not built yet (#214)"
-            } else if doc.is_pair() {
-                "IPv6 in a pair is not built yet (#215)"
-            } else {
-                continue;
-            };
-            self.err(format!("networks.{name}.ipv6"), why);
+            if doc.is_pair() {
+                self.err(
+                    format!("networks.{name}.ipv6"),
+                    "IPv6 in a pair is not built yet (#215)",
+                );
+            }
+        }
+        // Hosts by suffix in a delegated prefix need the node to follow
+        // the prefix as it runs, which is not built yet.
+        for (oname, o) in &doc.objects {
+            for net in o.suffixes.keys() {
+                if doc
+                    .networks
+                    .get(net)
+                    .and_then(|n| n.ipv6.as_ref())
+                    .is_some_and(|v| v.mode == Ipv6Mode::Delegated)
+                {
+                    self.err(
+                        format!("objects.{oname}.suffixes.{net}"),
+                        "hosts by suffix in a delegated prefix are not built yet; use a static prefix, or their addresses",
+                    );
+                }
+            }
         }
         if let Some(m) = &doc.management.sources
             && !doc.split_families(m).1.is_empty()

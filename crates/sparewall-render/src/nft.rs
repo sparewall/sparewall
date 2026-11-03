@@ -295,8 +295,8 @@ fn ipv6_dynamic_elements(doc: &Document, node: &str, d: &DynamicSource) -> Optio
                 .into_iter()
                 .collect(),
         ),
-        // An inside network's own address comes with #214.
-        DynamicKind::Address => None,
+        // An inside network's: the node is ::1 in its /64 (#214).
+        DynamicKind::Address => Some(vec![crate::networkd::node_in_prefix(prefix).to_string()]),
     }
 }
 

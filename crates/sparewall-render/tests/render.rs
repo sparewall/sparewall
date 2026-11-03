@@ -1300,3 +1300,134 @@ fn ipv6_wan_ra_and_static() {
     assert!(nft.contains("elements = { 2001:db8:ffff::2 }"), "{nft}");
     assert!(nft.contains("elements = { 2001:db8:ffff::/64 }"), "{nft}");
 }
+
+/// Inside networks with IPv6 (#214): the two-NIC example's LAN takes
+/// subnet 1 of the WAN's delegated prefix, and a lab a static /64.
+fn ipv6_inside() -> Rendered {
+    let text = std::fs::read_to_string(format!(
+        "{}/../../examples/two-nic.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({
+            "ports": {"fw1": {"lab0": {"nic": "52:54:00:aa:00:03"}}},
+            "networks": {
+                "wan": {"ipv6": {"mode": "dhcpv6"}},
+                "lan": {"ipv6": {"mode": "delegated", "subnet_id": 1}},
+                "lab": {"port": "lab0", "addresses": {"fw1": "192.168.2.1/24"},
+                    "ipv6": {"mode": "static", "prefix": "2001:db8:0:2::/64"}},
+            },
+            "zones": {"lab": {"networks": ["lab"]}},
+            "dhcp": {"lab": {"pool": "192.168.2.100-192.168.2.199"}},
+            "objects": {
+                "lan6": {"type": "ipv6", "dynamic": {"network": "lan", "source": "prefix"}},
+                "fw6": {"type": "ipv6", "dynamic": {"network": "lab"}},
+                "nas": {"type": "ipv6", "suffixes": {"lab": ["::20"]}},
+            },
+        }),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    assert_nft_ok(&r);
+    r
+}
+
+fn network_file<'a>(r: &'a Rendered, link: &str) -> &'a str {
+    r.files
+        .iter()
+        .find(|(p, _)| p.starts_with("network/") && p.ends_with(&format!("-{link}.network")))
+        .map(|(_, f)| f.as_str())
+        .unwrap_or_else(|| panic!("no {link}.network in {:?}", r.files.keys()))
+}
+
+#[test]
+fn ipv6_inside_networks() {
+    let r = ipv6_inside();
+    let lan = network_file(&r, "lan0");
+    insta::assert_snapshot!("ipv6_inside__lan", lan);
+    for want in [
+        "DHCPPrefixDelegation=yes\nIPv6SendRA=yes\n",
+        "IPv6AcceptRA=no",
+        // The node serves DNS on the LAN: named by its link-local address,
+        // which a new prefix does not change; the search domain is DHCP's.
+        "[IPv6SendRA]\nEmitDNS=yes\nDNS=_link_local\nEmitDomains=yes\nDomains=home.arpa\n",
+        "[DHCPPrefixDelegation]\nUplinkInterface=wan0\nSubnetId=0x1\nAnnounce=yes\nAssign=yes\nToken=static:::1\nNFTSet=prefix:inet:sparewall:lan6\n",
+    ] {
+        assert!(lan.contains(want), "{want:?}\n{lan}");
+    }
+    let lab = network_file(&r, "lab0");
+    for want in [
+        "Address=2001:db8:0:2::1/64",
+        "IPv6SendRA=yes",
+        "[IPv6SendRA]\nEmitDNS=yes\nDNS=2001:db8:0:2::1\n",
+        "[IPv6Prefix]\nPrefix=2001:db8:0:2::/64\n",
+    ] {
+        assert!(lab.contains(want), "{want:?}\n{lab}");
+    }
+    assert!(!lab.contains("DHCPPrefixDelegation"), "{lab}");
+    // The node routes IPv6 now.
+    let sysctl = &r.files[&format!("{}/90-sparewall.conf", Subsystem::Sysctl.dir())];
+    assert!(
+        sysctl.contains("net.ipv6.conf.all.forwarding = 1"),
+        "{sysctl}"
+    );
+    // Unbound answers over IPv6 on every address (a delegated network's
+    // change), to whoever the firewall lets through.
+    let unbound = r
+        .files
+        .iter()
+        .find(|(p, _)| p.ends_with("unbound.conf"))
+        .map(|(_, f)| f.as_str())
+        .unwrap();
+    for want in [
+        "interface: ::0\n",
+        "do-ip6: yes\n",
+        "access-control: ::0/0 allow\n",
+    ] {
+        assert!(unbound.contains(want), "{want:?}\n{unbound}");
+    }
+    // Objects: the lab's own address and a host by suffix are elements;
+    // the LAN's prefix is networkd's to fill.
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    assert!(nft.contains("elements = { 2001:db8:0:2::1 }"), "{nft}");
+    assert!(nft.contains("elements = { 2001:db8:0:2::20 }"), "{nft}");
+    assert!(
+        r.meta.preserved_sets.contains(&"lan6".to_string()),
+        "{:?}",
+        r.meta
+    );
+}
+
+/// With only static prefixes, Unbound allows just them, link-local and
+/// loopback.
+#[test]
+fn ipv6_unbound_static_only() {
+    let text = std::fs::read_to_string(format!(
+        "{}/../../examples/two-nic.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"networks": {"lan": {"ipv6": {"mode": "static", "prefix": "2001:db8:0:1::/64"}}}}),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let r = render(&doc, "fw1").unwrap();
+    let unbound = r
+        .files
+        .iter()
+        .find(|(p, _)| p.ends_with("unbound.conf"))
+        .map(|(_, f)| f.as_str())
+        .unwrap();
+    assert!(
+        unbound.contains("    access-control: ::0/0 refuse\n    access-control: ::1 allow\n    access-control: fe80::/10 allow\n    access-control: 2001:db8:0:1::/64 allow\n"),
+        "{unbound}"
+    );
+    assert!(!unbound.contains("::0/0 allow"), "{unbound}");
+}

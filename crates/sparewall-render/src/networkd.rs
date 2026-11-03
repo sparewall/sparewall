@@ -252,6 +252,22 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
     {
         ini.set("Address", format!("{a}/{}", p.0.prefix_len()));
     }
+    // A standalone node's inside network with IPv6 (#214): its address
+    // is ::1 in the network's /64, and it advertises the prefix.
+    let inside = inside_ipv6(net, pair);
+    match inside {
+        Some(v6) if v6.mode == Ipv6Mode::Static => {
+            if let Some(p) = v6.prefix {
+                ini.set("Address", format!("{}/64", node_in_prefix(p.0)));
+            }
+            ini.set("IPv6SendRA", "yes");
+        }
+        Some(_) => {
+            ini.set("DHCPPrefixDelegation", "yes");
+            ini.set("IPv6SendRA", "yes");
+        }
+        None => {}
+    }
     ini.set("LinkLocalAddressing", "ipv6");
     ini.set(
         "IPv6AcceptRA",
@@ -301,6 +317,9 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
     if let Some(v6) = v6 {
         wan_ipv6_sections(ini, doc, name, v6);
     }
+    if let Some(v6) = inside {
+        inside_ipv6_sections(ini, doc, name, v6);
+    }
     if let Some(cake) = &net.cake {
         ini.section("CAKE")
             .set("Parent", "root")
@@ -317,6 +336,94 @@ fn wan_ipv6(net: &Network, pair: bool) -> Option<&NetworkIpv6> {
     (net.role == NetworkRole::Wan && !pair)
         .then_some(net.ipv6.as_ref())
         .flatten()
+}
+
+/// A standalone node's inside network's IPv6 settings, if any (a pair's
+/// are #215's).
+fn inside_ipv6(net: &Network, pair: bool) -> Option<&NetworkIpv6> {
+    (net.role != NetworkRole::Wan && net.role != NetworkRole::Sync && !pair)
+        .then_some(net.ipv6.as_ref())
+        .flatten()
+}
+
+/// The node's own address in an inside network's /64: `::1`, as a
+/// delegated network's `Token=static:::1` makes it there.
+pub fn node_in_prefix(p: ipnet::Ipv6Net) -> std::net::Ipv6Addr {
+    std::net::Ipv6Addr::from(u128::from(p.trunc().network()) | 1)
+}
+
+/// An inside network's prefix and router advertisements (#214):
+///
+/// - **`delegated`:** the `subnet_id`th /64 of the prefix the dhcpv6 WAN
+///   was delegated, with the node at `::1`; a new prefix from the ISP
+///   renumbers the network by itself, the old one advertised as
+///   deprecated.
+/// - **`static`:** the /64 the document states.
+///
+/// Hosts take addresses by SLAAC. Where the node serves DNS, the
+/// advertisements name it as the resolver: on a static network by its
+/// address, on a delegated one by its link-local address, which a new
+/// prefix does not change. The search domain is DHCP's.
+fn inside_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkIpv6) {
+    let serves_dns = crate::unbound::served_networks(doc)
+        .iter()
+        .any(|n| n == name)
+        && sparewall_config::providers::chosen(doc, sparewall_config::providers::Role::Dns)
+            == Some("unbound");
+    let domain = doc
+        .dhcp
+        .as_ref()
+        .and_then(|d| d.networks.get(name))
+        .and_then(|d| d.options.as_ref())
+        .and_then(|o| o.domain.clone())
+        .or_else(|| doc.dns.as_ref().and_then(|d| d.domain.clone()));
+    ini.section("IPv6SendRA");
+    if serves_dns {
+        let dns = match (v6.mode, v6.prefix) {
+            (Ipv6Mode::Static, Some(p)) => node_in_prefix(p.0).to_string(),
+            _ => "_link_local".to_string(),
+        };
+        ini.set("EmitDNS", "yes").set("DNS", dns);
+    } else {
+        ini.set("EmitDNS", "no");
+    }
+    match domain {
+        Some(d) => ini
+            .set("EmitDomains", "yes")
+            .set("Domains", d.trim_end_matches('.')),
+        None => ini.set("EmitDomains", "no"),
+    };
+    match v6.mode {
+        Ipv6Mode::Static => {
+            if let Some(p) = v6.prefix {
+                ini.section("IPv6Prefix").set("Prefix", p.0.trunc());
+            }
+        }
+        Ipv6Mode::Delegated => {
+            let uplink = doc
+                .networks
+                .iter()
+                .find(|(_, n)| {
+                    n.role == NetworkRole::Wan
+                        && n.ipv6.as_ref().is_some_and(|v| v.mode == Ipv6Mode::Dhcpv6)
+                })
+                .and_then(|(n, _)| doc.network_iface(n));
+            ini.section("DHCPPrefixDelegation");
+            if let Some(u) = uplink {
+                ini.set("UplinkInterface", u);
+            }
+            ini.opt("SubnetId", v6.subnet_id.map(|i| format!("0x{i:x}")));
+            ini.set("Announce", "yes")
+                .set("Assign", "yes")
+                .set("Token", "static:::1");
+            // The /64 and the node's address in it, as they change.
+            let sets = ipv6_nft_sets(doc, name);
+            if !sets.is_empty() {
+                ini.set("NFTSet", sets.join(" "));
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The ipv6 dynamic objects filled from this network, as `NFTSet=`
