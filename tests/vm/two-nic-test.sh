@@ -77,12 +77,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The ISP's IPv6 (#213): radvd and Kea's DHCPv6 server in sw-tisp.
+# The ISP's IPv6 (#213): radvd and Kea's DHCPv6 server in sw-tisp. Kea's
+# files are where Ubuntu's AppArmor profile for it allows.
+KEA6_CONF=/etc/kea/sparewall-test-dhcp6.conf
+KEA6_LEASES=/var/lib/kea/sparewall-test-leases6.csv
+KEA6_LOG=/var/log/kea/sparewall-test-dhcp6.log
 v6_dump() {
     set +e
     echo "--- radvd"; tail -n 5 radvd.log
     echo "--- tisp"; ns tisp ip -6 addr show dev eth0
-    for f in kea6/stdout.log kea6/kea6.log kea6/leases6.csv; do echo "--- $f"; sudo tail -n 30 "$f"; done
+    for f in kea6.out "$KEA6_LOG" "$KEA6_LEASES"; do echo "--- $f"; sudo tail -n 30 "$f"; done
     echo "--- fw1"
     at fw1 'ip -6 addr; ip -6 route; networkctl status wan0 lan0 --no-pager -n 0
         sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "dhcp6|ndisc|ipv6|pd|prefix" | tail -40
@@ -90,10 +94,8 @@ v6_dump() {
     set -e
 } 2>&1
 stop_v6_isp() {
-    for p in radvd.pid kea6/kea-dhcp6.kea-dhcp6.pid; do
-        [ -f "$WORK/$p" ] && sudo kill "$(sudo cat "$WORK/$p")" 2>/dev/null || true
-    done
-    sudo pkill -f "kea-dhcp6 -c $WORK/" 2>/dev/null || true
+    [ -f "$WORK/radvd.pid" ] && sudo kill "$(sudo cat "$WORK/radvd.pid")" 2>/dev/null || true
+    sudo pkill -f "kea-dhcp6 -c $KEA6_CONF" 2>/dev/null || true
 }
 
 stop_vm() { # node
@@ -347,21 +349,21 @@ interface eth0 {
 };
 EOF
 ns tisp radvd -n -u root -C "$PWD/radvd.conf" -p "$PWD/radvd.pid" -m stderr > radvd.log 2>&1 &
-mkdir -p kea6
-cat > kea6/kea-dhcp6.conf <<EOF
+sudo tee "$KEA6_CONF" > /dev/null <<EOF
 {"Dhcp6": {
   "interfaces-config": {"interfaces": ["eth0"]},
-  "lease-database": {"type": "memfile", "persist": true, "name": "$PWD/kea6/leases6.csv"},
+  "lease-database": {"type": "memfile", "persist": true, "name": "$KEA6_LEASES"},
   "subnet6": [{"id": 1, "subnet": "2001:db8:ffff::/64", "interface": "eth0",
     "pools": [{"pool": "2001:db8:ffff::100-2001:db8:ffff::1ff"}],
     "pd-pools": [{"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 56}]}],
   "option-data": [{"name": "dns-servers", "data": "2001:db8:ffff::1"}],
   "loggers": [{"name": "kea-dhcp6", "severity": "INFO",
-    "output-options": [{"output": "$PWD/kea6/kea6.log"}]}]
+    "output-options": [{"output": "$KEA6_LOG"}]}]
 }}
 EOF
-ns tisp env KEA_PIDFILE_DIR="$PWD/kea6" KEA_LOCKFILE_DIR="$PWD/kea6" \
-    kea-dhcp6 -c "$PWD/kea6/kea-dhcp6.conf" > kea6/stdout.log 2>&1 &
+sudo rm -f "$KEA6_LEASES"*
+ns tisp env KEA_PIDFILE_DIR=/run/kea KEA_LOCKFILE_DIR=/run/kea \
+    kea-dhcp6 -c "$KEA6_CONF" > kea6.out 2>&1 &
 jq -n '{networks: {wan: {ipv6: {mode: "dhcpv6"}}},
         objects: {wan6: {type: "ipv6", dynamic: {network: "wan"}}}}' | at fw1 'cat > /tmp/v6.json'
 at fw1 'sudo sparewall merge -f /tmp/v6.json --confirm 0' >/dev/null
@@ -375,9 +377,9 @@ at fw1 'ip -6 route show default dev wan0' | grep -q 'via fe80::' \
 # reboot asks for the same lease and prefix. Kea's lease file:
 # address,duid,valid_lifetime,expire,subnet_id,pref_lifetime,lease_type,iaid,prefix_len,...
 duid="00:03:00:01:${FW1[1]}"
-pd() { sudo awk -F, -v d="$duid" '$7 == 2 && $9 == 56 && $2 == d' kea6/leases6.csv | grep -q .; }
+pd() { sudo awk -F, -v d="$duid" '$7 == 2 && $9 == 56 && $2 == d' "$KEA6_LEASES" | grep -q .; }
 wait_for 60 "a /56 delegated to fw1's DUID $duid" pd
-sudo awk -F, -v d="$duid" '$7 == 0 && $2 == d {print $1}' kea6/leases6.csv | grep -qx "$a" \
+sudo awk -F, -v d="$duid" '$7 == 0 && $2 == d {print $1}' "$KEA6_LEASES" | grep -qx "$a" \
     || fail "fw1's address $a is not its DHCPv6 lease"
 at fw1 'ping -6 -c 2 -W 2 2001:db8:ffff::1' >/dev/null || fail "fw1 cannot reach the ISP over IPv6"
 at fw1 'sudo nft list set inet sparewall wan6' | grep -q "$a" \
