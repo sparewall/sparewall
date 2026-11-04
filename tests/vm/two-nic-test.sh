@@ -89,6 +89,8 @@ v6_dump() {
     echo "--- radvd"; tail -n 5 radvd.log
     echo "--- tisp"; ns tisp ip -6 addr show dev eth0
     for f in kea6.out "$KEA6_LOG" "$KEA6_LEASES"; do echo "--- $f"; sudo tail -n 30 "$f"; done
+    echo "--- tclient"; ns tclient ip -6 addr show dev eth0; ns tclient ip -6 route
+    ns tclient timeout 10 rdisc6 -1 eth0
     echo "--- fw1"
     at fw1 'ip -6 addr; ip -6 route; networkctl status wan0 lan0 --no-pager -n 0
         sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "dhcp6|ndisc|ipv6|pd|prefix" | tail -40
@@ -415,8 +417,10 @@ lan_prefix() { # fw1's current /64 on the LAN, as 2001:db8:...:1:: (it is ::1 th
 wait_for 90 "a /64 of the delegated prefix on fw1's LAN" lan_prefix
 p1=$(lan_prefix)
 case $p1 in 2001:db8:100:1::) ;; *) fail "the LAN's prefix is $p1, not subnet 1 of 2001:db8:100::/56" ;; esac
-client6() { # the client's SLAAC address in prefix $1
-    ns tclient ip -6 -br addr show dev eth0 scope global | grep -o "${1}[0-9a-f:]*" | head -1 | grep .
+client6() { # the client's SLAAC address in prefix $1 (2001:db8:...:1::)
+    # A SLAAC address fills all 64 bits after the prefix, so it has no
+    # "::": match on the prefix's four groups.
+    ns tclient ip -6 -br addr show dev eth0 scope global | grep -o "${1%::}:[0-9a-f:]*" | head -1 | grep .
 }
 wait_for 60 "the client's SLAAC address in $p1/64" client6 "$p1"
 c6=$(client6 "$p1")
@@ -444,7 +448,7 @@ p2=$(lan_prefix)
 case $p2 in 2001:db8:200:1::) ;; *) fail "the LAN's new prefix is $p2, not subnet 1 of 2001:db8:200::/56" ;; esac
 wait_for 60 "the client's address in $p2/64" client6 "$p2"
 # The old prefix is withdrawn: gone, or deprecated so nothing new uses it.
-old=$(ns tclient ip -6 addr show dev eth0 scope global | grep "inet6 $p1" || true)
+old=$(ns tclient ip -6 addr show dev eth0 scope global | grep "inet6 ${p1%::}:" || true)
 [ -z "$old" ] || grep -q deprecated <<<"$old" || fail "the client still prefers the old prefix: $old"
 ns tclient ping -6 -c 2 -W 2 2001:db8:ffff::1 >/dev/null || fail "the client cannot reach the ISP from the new prefix"
 wait_for 60 "fw1 healthy with IPv6 inside" healthy fw1
