@@ -370,6 +370,12 @@ pub struct NetworkIpv6 {
     /// (`fe80::1`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<Ipv6Addr>,
+    /// On an inside network: the resolvers its router advertisements
+    /// name (RDNSS), in place of the node, whatever DHCPv4 hands out; an
+    /// empty list names none. Unset, they name the node where DHCPv4
+    /// does, and none otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<Vec<Ipv6Addr>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -851,6 +851,26 @@ impl Validator<'_> {
             if v6.gateway.is_some() && !static_wan {
                 self.err(format!("{p}.gateway"), "for a static WAN");
             }
+            if let Some(dns) = &v6.dns {
+                if wan {
+                    self.err(
+                        format!("{p}.dns"),
+                        "for an inside network's router advertisements",
+                    );
+                }
+                let mut seen = BTreeSet::new();
+                for (i, a) in dns.iter().enumerate() {
+                    if !ipv6_routable(*a) {
+                        self.err(
+                            format!("{p}.dns[{i}]"),
+                            "not a routable address (link-local, multicast, loopback or ::)",
+                        );
+                    }
+                    if !seen.insert(a) {
+                        self.err(format!("{p}.dns[{i}]"), format!("{a} is listed twice"));
+                    }
+                }
+            }
             if let Some(l) = v6.prefix_length
                 && !(48..=64).contains(&l)
             {

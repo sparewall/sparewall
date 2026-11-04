@@ -339,6 +339,11 @@ export interface Schemas {
   "Document.NetworkIpv6": {
     /** `static` on a WAN: each node's own address, in `prefix`. */
     "addresses"?: Record<string, string>;
+    /** On an inside network: the resolvers its router advertisements
+     * name (RDNSS), in place of the node, whatever DHCPv4 hands out; an
+     * empty list names none. Unset, they name the node where DHCPv4
+     * does, and none otherwise. */
+    "dns"?: Array<string> | null;
     /** `static` on a WAN: the upstream router, in `prefix` or link-local
      * (`fe80::1`). */
     "gateway"?: string | null;
