@@ -138,7 +138,7 @@ cat > "$WORK/udhcpc.sh" <<'SH'
 #!/bin/sh
 case "$1" in
 bound|renew)
-    ip addr flush dev "$interface"
+    ip -4 addr flush dev "$interface"   # only IPv4: IPv6 SLAAC needs the link-local address
     ip addr add "$ip/${mask:-24}" dev "$interface"
     [ -n "$router" ] && ip route replace default via "${router%% *}"
     ;;
