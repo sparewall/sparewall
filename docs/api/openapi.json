@@ -1162,7 +1162,7 @@
       },
       "Document.NetworkIpv6": {
         "additionalProperties": false,
-        "description": "How a network gets its IPv6 addresses. Which fields apply depends on\n`mode` and on the network's role; each field's `x-modes` lists the\nmodes it applies to, for editors (the web UI shows it only in those).",
+        "description": "How a network gets its IPv6 addresses. Which fields apply depends on\n`mode` and on the network's role: each field's `x-modes` lists the\nmodes it applies to, and `x-role` (`wan` or `inside`) the networks, for\neditors (the web UI shows a field only where it applies).",
         "properties": {
           "addresses": {
             "additionalProperties": {
@@ -1173,7 +1173,8 @@
             "type": "object",
             "x-modes": [
               "static"
-            ]
+            ],
+            "x-role": "wan"
           },
           "dns": {
             "description": "On an inside network: the resolvers its router advertisements\nname (RDNSS), in place of the node, whatever DHCPv4 hands out; an\nempty list names none. Unset, they name the node where DHCPv4\ndoes, and none otherwise.",
@@ -1188,7 +1189,8 @@
             "x-modes": [
               "delegated",
               "static"
-            ]
+            ],
+            "x-role": "inside"
           },
           "gateway": {
             "description": "`static` on a WAN: the upstream router, in `prefix` or link-local\n(`fe80::1`).",
@@ -1199,7 +1201,8 @@
             ],
             "x-modes": [
               "static"
-            ]
+            ],
+            "x-role": "wan"
           },
           "mode": {
             "$ref": "#/components/schemas/Document.Ipv6Mode",

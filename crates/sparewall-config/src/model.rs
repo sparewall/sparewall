@@ -341,8 +341,9 @@ pub struct Network {
 }
 
 /// How a network gets its IPv6 addresses. Which fields apply depends on
-/// `mode` and on the network's role; each field's `x-modes` lists the
-/// modes it applies to, for editors (the web UI shows it only in those).
+/// `mode` and on the network's role: each field's `x-modes` lists the
+/// modes it applies to, and `x-role` (`wan` or `inside`) the networks, for
+/// editors (the web UI shows a field only where it applies).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkIpv6 {
@@ -368,19 +369,19 @@ pub struct NetworkIpv6 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<Prefix6>,
     /// `static` on a WAN: each node's own address, in `prefix`.
-    #[schemars(extend("x-modes" = ["static"]))]
+    #[schemars(extend("x-modes" = ["static"], "x-role" = "wan"))]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub addresses: BTreeMap<String, Ipv6Addr>,
     /// `static` on a WAN: the upstream router, in `prefix` or link-local
     /// (`fe80::1`).
-    #[schemars(extend("x-modes" = ["static"]))]
+    #[schemars(extend("x-modes" = ["static"], "x-role" = "wan"))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<Ipv6Addr>,
     /// On an inside network: the resolvers its router advertisements
     /// name (RDNSS), in place of the node, whatever DHCPv4 hands out; an
     /// empty list names none. Unset, they name the node where DHCPv4
     /// does, and none otherwise.
-    #[schemars(extend("x-modes" = ["delegated", "static"]))]
+    #[schemars(extend("x-modes" = ["delegated", "static"], "x-role" = "inside"))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dns: Option<Vec<Ipv6Addr>>,
 }

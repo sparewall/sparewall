@@ -1,7 +1,7 @@
 import { Component, input, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { JsonFormsModule } from '@jsonforms/angular';
-import { JsonSchema7, UISchemaElement } from '@jsonforms/core';
+import { JsonSchema7, UISchemaElement, ValidateFunctionCondition } from '@jsonforms/core';
 
 import openapi from '../../../../../docs/api/openapi.json';
 import { documentSchema } from './form-schema';
@@ -113,32 +113,62 @@ describe('the form with unions', () => {
 describe("a network's IPv6, by mode", () => {
   const ipv6 = entry('networks').properties!['ipv6'] as JsonSchema7;
 
-  it('gives each mode-bound field a rule from the schema', () => {
-    const rules = Object.fromEntries(
+  it('shows each field in the modes and on the networks the schema says', () => {
+    // Where each field shows, evaluating its rule for every mode, on a
+    // WAN (`wan`) and an inside network (`lan`).
+    const doc = {
+      networks: { wan: { role: 'wan', ipv6: {} }, lan: { ipv6: {} } },
+    };
+    const where = Object.fromEntries(
       objectLayout(ipv6).elements.map((e) => {
-        const c = e as {
-          scope: string;
-          rule?: { condition: { conditions: { expectedValue: string }[] } };
+        // A mode-bound control is wrapped in a layout that holds its rule.
+        const w = e as {
+          elements?: { scope: string }[];
+          scope?: string;
+          rule?: { condition: ValidateFunctionCondition };
         };
-        return [c.scope.split('/').pop(), c.rule?.condition.conditions.map((l) => l.expectedValue)];
+        const c = { scope: w.scope ?? w.elements![0].scope, rule: w.rule };
+        const cases = ['wan', 'lan'].flatMap((net) =>
+          ['dhcpv6', 'ra', 'static', 'delegated']
+            .filter((mode) =>
+              c.rule
+                ? c.rule.condition.validate({
+                    data: mode,
+                    fullData: doc,
+                    path: `networks.${net}.ipv6`,
+                    uischemaElement: e,
+                    config: {},
+                  })
+                : true,
+            )
+            .map((mode) => `${net}:${mode}`),
+        );
+        return [c.scope.split('/').pop(), cases.join(' ')];
       }),
     );
-    expect(rules).toEqual({
-      mode: undefined,
-      prefix_length: ['dhcpv6'],
-      subnet_id: ['delegated'],
-      prefix: ['static'],
-      gateway: ['static'],
-      dns: ['delegated', 'static'],
-      addresses: ['static'],
+    expect(where).toEqual({
+      mode: 'wan:dhcpv6 wan:ra wan:static wan:delegated lan:dhcpv6 lan:ra lan:static lan:delegated',
+      prefix_length: 'wan:dhcpv6 lan:dhcpv6',
+      subnet_id: 'wan:delegated lan:delegated',
+      prefix: 'wan:static lan:static',
+      gateway: 'wan:static',
+      dns: 'lan:static lan:delegated',
+      addresses: 'wan:static',
     });
   });
 
   it("shows only the chosen mode's fields", async () => {
-    // A control is hidden by a `display: none` on itself or a parent.
+    // A control, found by its label (a field's, a group's, a list's header),
+    // is hidden by a `display: none` on itself or a parent, or by not
+    // being drawn at all. Within the IPv6 group where there is one: a
+    // network has a `gateway` of its own.
     const shown = (el: HTMLElement, label: string) => {
-      const f = [...el.querySelectorAll('mat-form-field')].find(
-        (f) => f.querySelector('mat-label')?.textContent?.trim().replace(/\*$/, '') === label,
+      const group = [...el.querySelectorAll('fieldset')].find(
+        (f) => f.querySelector(':scope > legend')?.textContent?.trim() === 'IPv6',
+      );
+      const scope = (group as HTMLElement | undefined) ?? el;
+      const f = [...scope.querySelectorAll('mat-label, legend, h3, label, th')].find(
+        (l) => l.textContent?.trim().replace(/\*$/, '') === label,
       );
       for (let n = f as HTMLElement | null; n && n !== el; n = n.parentElement) {
         if (n.style?.display === 'none') return false;
@@ -162,5 +192,23 @@ describe("a network's IPv6, by mode", () => {
     });
     expect(shown(network.el, 'Prefix length')).toBe(true);
     expect(shown(network.el, 'Subnet ID')).toBe(false);
+    // A static WAN takes a gateway, not resolvers; a static inside
+    // network the opposite.
+    TestBed.resetTestingModule();
+    const staticWan = await render(entry('networks'), {
+      port: 'eth1',
+      role: 'wan',
+      ipv6: { mode: 'static', prefix: '2001:db8:ffff::/64' },
+    });
+    expect(shown(staticWan.el, 'Gateway')).toBe(true);
+    expect(shown(staticWan.el, 'DNS')).toBe(false);
+    TestBed.resetTestingModule();
+    const staticLan = await render(entry('networks'), {
+      port: 'eth2',
+      ipv6: { mode: 'static', prefix: '2001:db8:0:1::/64' },
+    });
+    expect(shown(staticLan.el, 'Gateway')).toBe(false);
+    expect(shown(staticLan.el, 'DNS')).toBe(true);
+    expect(shown(staticLan.el, 'Prefix')).toBe(true);
   });
 });

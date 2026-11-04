@@ -335,8 +335,9 @@ export interface Schemas {
     "vrid"?: number | null;
   };
   /** How a network gets its IPv6 addresses. Which fields apply depends on
-   * `mode` and on the network's role; each field's `x-modes` lists the
-   * modes it applies to, for editors (the web UI shows it only in those). */
+   * `mode` and on the network's role: each field's `x-modes` lists the
+   * modes it applies to, and `x-role` (`wan` or `inside`) the networks, for
+   * editors (the web UI shows a field only where it applies). */
   "Document.NetworkIpv6": {
     /** `static` on a WAN: each node's own address, in `prefix`. */
     "addresses"?: Record<string, string>;

@@ -1,9 +1,9 @@
 import {
   ControlElement,
   JsonSchema7,
-  LeafCondition,
-  OrCondition,
   RuleEffect,
+  UISchemaElement,
+  ValidateFunctionCondition,
   VerticalLayout,
 } from '@jsonforms/core';
 
@@ -67,6 +67,41 @@ function weight(s: JsonSchema7, required: boolean): number {
 export const MODES = 'x-modes';
 
 /**
+ * On such a field: the networks it applies to, `wan` or `inside` (any
+ * other role), by the role of the network holding the object.
+ */
+export const ROLE = 'x-role';
+
+/** The value at a dotted data path (`networks.wan`); the root for `''`. */
+function at(data: unknown, path: string): unknown {
+  return path
+    .split('.')
+    .filter(Boolean)
+    .reduce<unknown>((d, k) => (d as Record<string, unknown> | undefined)?.[k], data);
+}
+
+/**
+ * A rule's condition: the object's `mode` is one of `modes`, and, for a
+ * field bound to a role, the network holding the object (one level up)
+ * has it. A function, not a schema condition: those need a validator, and
+ * the form's passes everything (no-eval-ajv.ts). Where the object has no
+ * network above it, the role is not known and does not hide the field.
+ */
+function modeCondition(modes: unknown[], role?: string): ValidateFunctionCondition {
+  return {
+    scope: '#/properties/mode',
+    validate: ({ data, fullData, path }) => {
+      if (!modes.includes(data)) return false;
+      if (!role || !path) return true;
+      const parent = path.split('.').slice(0, -1).join('.');
+      const network = at(fullData, parent) as { role?: string } | undefined;
+      const wan = (network?.role ?? 'service') === 'wan';
+      return role === 'wan' ? wan : !wan;
+    },
+  };
+}
+
+/**
  * One control per property: required ones first, then plain values, then
  * lists, then nested groups and maps, keeping the schema's order within
  * each. JSON Forms' own generator keeps only the schema's (alphabetical)
@@ -81,27 +116,26 @@ export function objectLayout(schema: JsonSchema7): VerticalLayout {
   const hasMode = !!schema.properties?.['mode'];
   return {
     type: 'VerticalLayout',
-    elements: ordered.map(({ key }): ControlElement => {
+    elements: ordered.map(({ key }): UISchemaElement => {
       const control: ControlElement = {
         type: 'Control',
         scope: `#/properties/${key}`,
         label: fieldLabel(key),
       };
-      const modes = (schema.properties?.[key] as Record<string, unknown> | undefined)?.[MODES];
-      if (hasMode && Array.isArray(modes)) {
-        // Value conditions, not a schema one: those need a validator, and
-        // the form's passes everything (no-eval-ajv.ts).
-        const leaf = (m: unknown): LeafCondition => ({
-          type: 'LEAF',
-          scope: '#/properties/mode',
-          expectedValue: m,
-        });
-        control.rule = {
+      const meta = schema.properties?.[key] as Record<string, unknown> | undefined;
+      const modes = meta?.[MODES];
+      if (!hasMode || !Array.isArray(modes)) return control;
+      // The rule goes on a layout around the control: layouts honour it
+      // whatever draws the field, and JSON Forms' list table does not.
+      const role = meta?.[ROLE];
+      return {
+        type: 'VerticalLayout',
+        elements: [control],
+        rule: {
           effect: RuleEffect.SHOW,
-          condition: { type: 'OR', conditions: modes.map(leaf) } as OrCondition,
-        };
-      }
-      return control;
+          condition: modeCondition(modes, typeof role === 'string' ? role : undefined),
+        },
+      } as VerticalLayout;
     }),
   };
 }

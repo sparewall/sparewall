@@ -376,7 +376,8 @@ ipv6:
 
 The status API's `ipv6` holds the same, with lifetimes in seconds left,
 and the web UI's status page shows it in an IPv6 card. The web UI's
-editor shows a network's `ipv6` fields only for the mode they apply to.
+editor shows a network's `ipv6` fields only for the mode, and the kind
+of network (WAN or inside), they apply to.
 Health's `ipv6` check is degraded while a WAN with IPv6 has no IPv6
 default route, or a `dhcpv6` WAN has no delegated prefix for the
 `delegated` networks. On `/metrics`, `sparewall_ipv6_default_route` is 1
