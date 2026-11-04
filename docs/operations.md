@@ -268,6 +268,47 @@ left, with Confirm and Revert now. Each page offers only what the
 user's role allows, and the node checks every call regardless. The UI
 loads nothing from outside the node.
 
+## IPv6 on the WAN
+
+A standalone node's WAN takes IPv6 from the upstream (#213; inside
+networks follow in #214, pairs in #215):
+
+```shell
+sparewall set networks.wan.ipv6.mode=dhcpv6     # or ra, or static
+```
+
+- **`dhcpv6`:** the upstream's router advertisements give the default
+  route, and an address by SLAAC when they carry a prefix. The DHCPv6
+  client starts on the first advertisement, whatever its M flag says, and
+  asks for an address and a delegated prefix of `prefix_length` (default
+  56; the ISP may grant another). Its DUID is the WAN's MAC address
+  (DUID-LL), so the node keeps its lease and prefix across a reboot or a
+  reinstall on the same NIC.
+- **`ra`:** an address by SLAAC only, and no delegated prefix.
+- **`static`:** the link's `prefix`, the node's address in it, and the
+  upstream router:
+
+  ```yaml
+  ipv6:
+    mode: static
+    prefix: "2001:db8:ffff::/64"
+    addresses: { fw1: "2001:db8:ffff::2" }
+    gateway: fe80::1
+  ```
+
+- **The firewall:** the WAN accepts router advertisements (in `dhcpv6`
+  and `ra` modes) and DHCPv6 replies, to the node only; everything else
+  from the WAN zone is its policies', for IPv6 as for IPv4. A dynamic
+  `ipv6` object on the WAN holds the node's IPv6 address (`source:
+  address`) or the link's prefix from the router advertisements
+  (`source: prefix`; empty when they carry none), as an IPv4 WAN's holds
+  its subnet. The delegated prefix is not the WAN's: it is the inside
+  networks', whose own prefix objects hold their /64s.
+- **Forwarding** stays off until an inside network has IPv6: a WAN alone
+  gives the node itself IPv6, and routes nothing.
+- **What it has:** `networkctl status wan0` shows the addresses, the
+  DHCPv6 lease and the delegated prefix.
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:
@@ -968,11 +1009,11 @@ what the test suites see, and a denial on a real node is a missing rule.
 
 `provider_options` and `dhcp.provider: networkd` are rejected with an
 error at their path, and so, until the rest of 0.6.0 renders it, is
-IPv6 on networks (`networks.<name>.ipv6`, #213 and #214), and IPv6 in
+IPv6 on inside networks (#214) and in a pair (#215), and IPv6 in
 `management.sources` (management stays IPv4 for now). The document takes
 them, and validation checks them in full; activating one is refused.
-`ipv6` objects and IPv6 in policies are rendered (#212), though without
-a network with IPv6 no IPv6 reaches them. (`updates.mode: windowed` and `updates.window` were
+`ipv6` objects, IPv6 in policies (#212) and a standalone node's WAN
+(#213, [IPv6 on the WAN](#ipv6-on-the-wan)) are built. (`updates.mode: windowed` and `updates.window` were
 too, before 0.4.0 built them, and `logging.remote.provider: syslog`,
 `metrics.mode: local` and `metrics.retention` before 0.5.0.) Builds
 before 0.1.0 accepted them, though nothing acted on them. After

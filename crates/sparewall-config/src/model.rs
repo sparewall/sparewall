@@ -352,8 +352,7 @@ pub struct NetworkIpv6 {
     /// WAN's delegated prefix) or `static`.
     pub mode: Ipv6Mode,
     /// `dhcpv6`: the length of the prefix to ask the ISP to delegate, 48
-    /// to 64. Unset, no length is asked for and the ISP chooses (often
-    /// /56).
+    /// to 64. Default 56. The ISP may delegate another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix_length: Option<u8>,
     /// `delegated`: which /64 of the delegated prefix this network takes,

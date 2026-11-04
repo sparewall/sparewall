@@ -1196,7 +1196,7 @@
             "description": "`static`: the network's prefix. A /64 on an inside network; on a\nWAN, the upstream link's prefix."
           },
           "prefix_length": {
-            "description": "`dhcpv6`: the length of the prefix to ask the ISP to delegate, 48\nto 64. Unset, no length is asked for and the ISP chooses (often\n/56).",
+            "description": "`dhcpv6`: the length of the prefix to ask the ISP to delegate, 48\nto 64. Default 56. The ISP may delegate another.",
             "format": "uint8",
             "maximum": 255,
             "minimum": 0,

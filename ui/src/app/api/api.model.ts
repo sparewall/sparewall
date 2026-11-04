@@ -352,8 +352,7 @@ export interface Schemas {
      * WAN, the upstream link's prefix. */
     "prefix"?: Schemas["Document.Prefix6"] | null;
     /** `dhcpv6`: the length of the prefix to ask the ISP to delegate, 48
-     * to 64. Unset, no length is asked for and the ISP chooses (often
-     * /56). */
+     * to 64. Default 56. The ISP may delegate another. */
     "prefix_length"?: number | null;
     /** `delegated`: which /64 of the delegated prefix this network takes,
      * counting from 0 (a /56 has 256). Unique among the networks. */

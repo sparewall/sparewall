@@ -244,8 +244,22 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
     for d in &net.dns {
         ini.set("DNS", d);
     }
+    // A standalone node's WAN with IPv6 (#213; a pair's is #215).
+    let v6 = wan_ipv6(net, pair);
+    if let Some(v6) = v6
+        && v6.mode == Ipv6Mode::Static
+        && let (Some(p), Some(a)) = (v6.prefix, v6.addresses.get(node))
+    {
+        ini.set("Address", format!("{a}/{}", p.0.prefix_len()));
+    }
     ini.set("LinkLocalAddressing", "ipv6");
-    ini.set("IPv6AcceptRA", "no");
+    ini.set(
+        "IPv6AcceptRA",
+        match v6.map(|v| v.mode) {
+            Some(Ipv6Mode::Dhcpv6 | Ipv6Mode::Ra) => "yes",
+            _ => "no",
+        },
+    );
     if matches!(
         net.role,
         NetworkRole::Service | NetworkRole::Management | NetworkRole::Sync
@@ -284,10 +298,100 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
     if net.dhcp_client && !leased {
         dhcp_client(ini, doc, name, net);
     }
+    if let Some(v6) = v6 {
+        wan_ipv6_sections(ini, doc, name, v6);
+    }
     if let Some(cake) = &net.cake {
         ini.section("CAKE")
             .set("Parent", "root")
             .set("Bandwidth", &cake.bandwidth);
+    }
+}
+
+/// The prefix length a `dhcpv6` WAN asks the ISP to delegate when the
+/// document names none (#213).
+pub const DEFAULT_PREFIX_LENGTH: u8 = 56;
+
+/// A standalone node's WAN IPv6 settings, if any (a pair's are #215's).
+fn wan_ipv6(net: &Network, pair: bool) -> Option<&NetworkIpv6> {
+    (net.role == NetworkRole::Wan && !pair)
+        .then_some(net.ipv6.as_ref())
+        .flatten()
+}
+
+/// The ipv6 dynamic objects filled from this network, as `NFTSet=`
+/// values: `address` for the node's own, `prefix` for the network's.
+fn ipv6_nft_sets(doc: &Document, name: &str) -> Vec<String> {
+    doc.objects
+        .iter()
+        .filter_map(|(oname, o)| {
+            let d = o.dynamic.as_ref()?;
+            (d.network == name && o.kind == ObjectKind::Ipv6).then(|| {
+                let src = match d.source {
+                    DynamicKind::Address => "address",
+                    DynamicKind::Prefix => "prefix",
+                };
+                format!("{src}:inet:sparewall:{oname}")
+            })
+        })
+        .collect()
+}
+
+/// A WAN's IPv6 (#213):
+///
+/// - **`dhcpv6`:** router advertisements give the default route, and an
+///   address by SLAAC when they carry a prefix; the DHCPv6 client starts
+///   in managed mode on the first one, whatever its M flag says
+///   (`DHCPv6Client=always`), and asks for an address (IA_NA) and a
+///   delegated prefix (IA_PD) of the length the document names. Its DUID
+///   is the WAN's MAC (DUID-LL), so a reboot keeps the lease and prefix.
+/// - **`ra`:** router advertisements only, without DHCPv6.
+/// - **`static`:** the address (in `[Network]`) and a route to the
+///   gateway.
+fn wan_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkIpv6) {
+    let sets = ipv6_nft_sets(doc, name);
+    match v6.mode {
+        Ipv6Mode::Dhcpv6 | Ipv6Mode::Ra => {
+            let dhcpv6 = v6.mode == Ipv6Mode::Dhcpv6;
+            ini.section("IPv6AcceptRA")
+                .set("DHCPv6Client", if dhcpv6 { "always" } else { "no" })
+                .set("UseDNS", "yes")
+                .set("RouteMetric", WAN_METRIC);
+            if !sets.is_empty() {
+                ini.set("NFTSet", sets.join(" "));
+            }
+            if dhcpv6 {
+                ini.section("DHCPv6")
+                    .set("DUIDType", "link-layer")
+                    .set("UseDelegatedPrefix", "yes")
+                    .set(
+                        "PrefixDelegationHint",
+                        format!("::/{}", v6.prefix_length.unwrap_or(DEFAULT_PREFIX_LENGTH)),
+                    )
+                    .set("UseDNS", "yes")
+                    .set("SendHostname", "no");
+                // The node's own address may come from IA_NA instead. A
+                // WAN's prefix object is the link's, from the RAs, as an
+                // IPv4 WAN's is its subnet: the delegated prefix is the
+                // inside networks', whose prefix objects hold their /64s
+                // (#214).
+                let own: Vec<&String> = sets.iter().filter(|s| s.starts_with("address:")).collect();
+                if !own.is_empty() {
+                    ini.set(
+                        "NFTSet",
+                        own.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" "),
+                    );
+                }
+            }
+        }
+        Ipv6Mode::Static => {
+            if let Some(gw) = v6.gateway {
+                ini.section("Route")
+                    .set("Gateway", gw)
+                    .set("Metric", WAN_METRIC);
+            }
+        }
+        Ipv6Mode::Delegated => {}
     }
 }
 
@@ -310,7 +414,7 @@ fn dhcp_client(ini: &mut Ini, doc: &Document, name: &str, net: &Network) {
         .iter()
         .filter_map(|(oname, o)| {
             let d = o.dynamic.as_ref()?;
-            // An ipv6 object's lease half is #213's.
+            // An ipv6 object's is the DHCPv6 client's and the RAs'.
             (d.network == name && o.kind == ObjectKind::Ipv4).then(|| {
                 let src = match d.source {
                     DynamicKind::Address => "address",

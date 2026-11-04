@@ -1444,14 +1444,30 @@ fn v6(patch: serde_json::Value) -> Document {
 #[test]
 fn ipv6_networks_take_the_modes_their_role_allows() {
     assert_eq!(history_errors(&v6(json!({}))), Vec::<String>::new());
-    // Nothing renders IPv6 yet: activating it is refused, at each path.
+    // A standalone node's WAN activates IPv6 (#213); an inside network
+    // waits for #214, and a pair for #215.
+    let errs = error_paths(&v6(json!({})));
+    assert!(
+        !errs.iter().any(|e| e.starts_with("networks.wan.ipv6")),
+        "{errs:#?}"
+    );
     assert!(has_error(
         &v6(json!({})),
-        "networks.wan.ipv6: IPv6 on networks is not built yet"
+        "networks.lan.ipv6: IPv6 on inside networks is not built yet (#214)"
     ));
+    let wan_only = edit(
+        TWO_NIC,
+        json!({"networks": {"wan": {"ipv6": {"mode": "dhcpv6"}}}}),
+    );
+    assert_valid(&wan_only);
+    let mut v = to_value(&load(PAIR));
+    merge_patch(
+        &mut v,
+        &json!({"networks": {"wan": {"ipv6": {"mode": "ra"}}}}),
+    );
     assert!(has_error(
-        &v6(json!({})),
-        "networks.lan.ipv6: IPv6 on networks is not built yet"
+        &from_value(v).unwrap(),
+        "networks.wan.ipv6: IPv6 in a pair is not built yet (#215)"
     ));
 
     let d = v6(
