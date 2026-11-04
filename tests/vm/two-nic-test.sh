@@ -362,6 +362,12 @@ sudo tee "$KEA6_CONF" > /dev/null <<EOF
 }}
 EOF
 sudo rm -f "$KEA6_LEASES"*
+# Ubuntu's AppArmor profile for kea-dhcp6 withholds dac_override, so
+# root may not write into /run/kea (the _kea user's) and the like; this
+# runner's Kea is a test fixture, not a service.
+for f in /etc/apparmor.d/*kea-dhcp6*; do
+    [ -f "$f" ] && sudo apparmor_parser -R "$f" 2>/dev/null || true
+done
 ns tisp env KEA_PIDFILE_DIR=/run/kea KEA_LOCKFILE_DIR=/run/kea \
     kea-dhcp6 -c "$KEA6_CONF" > kea6.out 2>&1 &
 jq -n '{networks: {wan: {ipv6: {mode: "dhcpv6"}}},
