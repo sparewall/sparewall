@@ -427,8 +427,9 @@ p1=$(lan_prefix)
 case $p1 in 2001:db8:100:1::) ;; *) fail "the LAN's prefix is $p1, not subnet 1 of 2001:db8:100::/56" ;; esac
 client6() { # the client's SLAAC address in prefix $1 (2001:db8:...:1::)
     # A SLAAC address fills all 64 bits after the prefix, so it has no
-    # "::": match on the prefix's four groups.
-    ns tclient ip -6 -br addr show dev eth0 scope global | grep -o "${1%::}:[0-9a-f:]*" | head -1 | grep .
+    # "::": match on the prefix's four groups. A tentative address (DAD
+    # not done) cannot be a source yet.
+    ns tclient ip -6 -br addr show dev eth0 scope global -tentative | grep -o "${1%::}:[0-9a-f:]*" | head -1 | grep .
 }
 wait_for 60 "the client's SLAAC address in $p1/64" client6 "$p1"
 c6=$(client6 "$p1")
@@ -469,8 +470,8 @@ fi
 # The old address is still preferred, so the kernel may pick it as the
 # source (#232): ping from the new one.
 c6=$(client6 "$p2")
-ns tclient ping -6 -c 2 -W 2 -I "$c6" 2001:db8:ffff::1 >/dev/null \
-    || fail "the client cannot reach the ISP from the new prefix ($c6)"
+wait_for 30 "the client to reach the ISP from the new prefix ($c6)" \
+    ns tclient ping -6 -c 1 -W 2 -I "$c6" 2001:db8:ffff::1
 wait_for 60 "fw1 healthy with IPv6 inside" healthy fw1
 V6_DUMP=
 stop_v6_isp
