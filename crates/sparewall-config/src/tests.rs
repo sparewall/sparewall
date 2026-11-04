@@ -1631,6 +1631,42 @@ fn a_static_ipv6_network_states_its_prefix() {
 }
 
 #[test]
+fn ipv6_dns_names_routable_resolvers_on_inside_networks() {
+    let lan = |dns: serde_json::Value| v6(json!({"networks": {"lan": {"ipv6": {"dns": dns}}}}));
+    assert_eq!(
+        history_errors(&lan(json!(["2001:db8:0:5::53", "fd00::53"]))),
+        Vec::<String>::new()
+    );
+    assert_eq!(history_errors(&lan(json!([]))), Vec::<String>::new());
+    let d = lan(json!([
+        "fe80::53",
+        "ff02::1",
+        "::",
+        "2001:db8::53",
+        "2001:db8::53"
+    ]));
+    for (i, what) in [
+        (0, "not a routable address"),
+        (1, "not a routable"),
+        (2, "not a routable"),
+    ] {
+        assert!(history_error(
+            &d,
+            &format!("networks.lan.ipv6.dns[{i}]: {what}")
+        ));
+    }
+    assert!(history_error(
+        &d,
+        "networks.lan.ipv6.dns[4]: 2001:db8::53 is listed twice"
+    ));
+    let d = v6(json!({"networks": {"wan": {"ipv6": {"dns": ["2001:db8::53"]}}}}));
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6.dns: for an inside network's router advertisements"
+    ));
+}
+
+#[test]
 fn the_sync_network_stays_ipv4() {
     let d = load(PAIR);
     let sync = d.cluster.sync_network.clone().unwrap();

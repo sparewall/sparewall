@@ -341,6 +341,19 @@ networks:
   `self` accepts (`service:dns-served-only`). Where DHCPv4 names other servers (a
   directory's, say), the advertisements name none, and dual-stack
   clients keep asking those over IPv4, AAAA records included.
+  `ipv6.dns` names the resolvers outright, in place of all that, for
+  servers that have IPv6 addresses or for IPv6-only clients; an empty
+  list names none:
+
+  ```yaml
+  networks:
+    lan:
+      ipv6: { mode: delegated, subnet_id: 1, dns: ["2001:db8:0:5::53", "2001:db8:0:5::54"] }
+  ```
+
+  Each is a fixed, routable address (not link-local). Clients reach
+  those servers through the policies, as any other host; nothing on the
+  node opens for them.
 - **Forwarding** is on once an inside network has IPv6. A network routed
   through a [VPN client](#vpn-clients-leaving-through-a-provider) gets no
   IPv6 beyond the node while the client's kill switch is on: the tunnel

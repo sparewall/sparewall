@@ -1467,6 +1467,16 @@ fn ipv6_ras_name_the_node_only_where_dhcp_does() {
     );
     assert!(f.contains("[IPv6SendRA]\nEmitDNS=no\n"), "{f}");
     assert!(!f.contains("DNS=_link_local"), "{f}");
+    // ipv6.dns names other servers, whatever DHCP hands out (#230).
+    let f = lan(serde_json::json!({"networks": {"lan": {"ipv6": {
+        "dns": ["2001:db8:0:5::53", "2001:db8:0:5::54"]}}}}));
+    assert!(
+        f.contains("EmitDNS=yes\nDNS=2001:db8:0:5::53 2001:db8:0:5::54\n"),
+        "{f}"
+    );
+    // An empty list names none, even where DHCP names the node.
+    let f = lan(serde_json::json!({"networks": {"lan": {"ipv6": {"dns": []}}}}));
+    assert!(f.contains("[IPv6SendRA]\nEmitDNS=no\n"), "{f}");
 }
 
 /// Unbound allows any IPv6 source where a prefix is delegated, so the

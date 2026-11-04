@@ -1172,6 +1172,17 @@
             "description": "`static` on a WAN: each node's own address, in `prefix`.",
             "type": "object"
           },
+          "dns": {
+            "description": "On an inside network: the resolvers its router advertisements\nname (RDNSS), in place of the node, whatever DHCPv4 hands out; an\nempty list names none. Unset, they name the node where DHCPv4\ndoes, and none otherwise.",
+            "items": {
+              "format": "ipv6",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "gateway": {
             "description": "`static` on a WAN: the upstream router, in `prefix` or link-local\n(`fe80::1`).",
             "format": "ipv6",

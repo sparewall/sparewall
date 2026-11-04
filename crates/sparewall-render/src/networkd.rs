@@ -374,7 +374,14 @@ fn inside_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkI
         .and_then(|o| o.domain.clone())
         .or_else(|| doc.dns.as_ref().and_then(|d| d.domain.clone()));
     ini.section("IPv6SendRA");
-    if serves_dns {
+    if let Some(dns) = &v6.dns {
+        if dns.is_empty() {
+            ini.set("EmitDNS", "no");
+        } else {
+            let list: Vec<String> = dns.iter().map(|a| a.to_string()).collect();
+            ini.set("EmitDNS", "yes").set("DNS", list.join(" "));
+        }
+    } else if serves_dns {
         let dns = match (v6.mode, v6.prefix) {
             (Ipv6Mode::Static, Some(p)) => node_in_prefix(p.0).to_string(),
             _ => "_link_local".to_string(),
