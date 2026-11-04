@@ -1468,3 +1468,55 @@ fn ipv6_ras_name_the_node_only_where_dhcp_does() {
     assert!(f.contains("[IPv6SendRA]\nEmitDNS=no\n"), "{f}");
     assert!(!f.contains("DNS=_link_local"), "{f}");
 }
+
+/// Unbound allows any IPv6 source where a prefix is delegated, so the
+/// firewall keeps every interface but the served networks' from its port
+/// over IPv6, whatever a policy accepts (#214): here a lab with IPv6 that
+/// DNS does not serve, and `lab->self: accept`.
+#[test]
+fn ipv6_dns_only_from_served_networks() {
+    let text = std::fs::read_to_string(format!(
+        "{}/../../examples/two-nic.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({
+            "ports": {"fw1": {"lab0": {"nic": "52:54:00:aa:00:03"}}},
+            "networks": {
+                "wan": {"ipv6": {"mode": "dhcpv6"}},
+                "lan": {"ipv6": {"mode": "delegated", "subnet_id": 1}},
+                "lab": {"port": "lab0", "addresses": {"fw1": "192.168.2.1/24"},
+                    "ipv6": {"mode": "delegated", "subnet_id": 2}},
+            },
+            "zones": {"lab": {"networks": ["lab"]}},
+            "dns": {"networks": ["lan"]},
+            "policy": {"lab->self": {"action": "accept"}},
+        }),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    assert_nft_ok(&r);
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    let input = &nft[nft.find("chain input {").unwrap()..];
+    let input = &input[..input.find("\n\t}").unwrap()];
+    let gate = "meta nfproto ipv6 meta l4proto { tcp, udp } th dport 53 iifname != { \"lo\", \"lan0\" } drop comment \"service:dns-served-only\"";
+    let at = input
+        .find(gate)
+        .unwrap_or_else(|| panic!("{gate}\n{input}"));
+    // Before the zone policies, which accept everything from the lab.
+    assert!(at < input.find("iifname vmap").unwrap(), "{input}");
+    // Without IPv6 on a served network, no such rule.
+    let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"networks": {"wan": {"ipv6": {"mode": "dhcpv6"}}}}),
+    );
+    let r = render(&sparewall_config::from_value(v).unwrap(), "fw1").unwrap();
+    let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
+    assert!(!nft.contains("service:dns-served-only"), "{nft}");
+}

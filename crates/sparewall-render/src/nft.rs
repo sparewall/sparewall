@@ -1210,6 +1210,19 @@ fn service_rules(doc: &Document, input: &mut String) {
                 ifset(&v)
             )
             .unwrap();
+            // Over IPv6 Unbound allows any source where a prefix is
+            // delegated, so no policy may open its port from elsewhere
+            // (#214); its IPv4 access control already refuses them.
+            if crate::unbound::serves_ipv6(doc) {
+                let mut only: Vec<String> = vec!["lo".into()];
+                only.extend(v.iter().cloned());
+                writeln!(
+                    input,
+                    "meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 iifname != {} drop comment \"service:dns-served-only\"",
+                    ifset(&only)
+                )
+                .unwrap();
+            }
         }
     }
     if let Some(n) = &doc.ntp {

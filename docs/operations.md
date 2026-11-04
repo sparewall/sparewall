@@ -333,8 +333,9 @@ networks:
   its advertisements name it too, with DHCP's search domain: on a static network by its
   address there, on a delegated one by its link-local address, which a
   new prefix does not change. Unbound then also answers over IPv6, on
-  every address of the node; the firewall's `service:dns` rule admits
-  only the served networks. Where DHCPv4 names other servers (a
+  every address of the node, and the firewall drops IPv6 to its DNS port
+  from every interface but the served networks', whatever a policy to
+  `self` accepts (`service:dns-served-only`). Where DHCPv4 names other servers (a
   directory's, say), the advertisements name none, and dual-stack
   clients keep asking those over IPv4, AAAA records included.
 - **Forwarding** is on once an inside network has IPv6. What crosses

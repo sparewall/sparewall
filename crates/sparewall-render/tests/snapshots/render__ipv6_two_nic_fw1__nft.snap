@@ -50,6 +50,7 @@ table inet sparewall {
 		iifname "wan0" udp sport 547 udp dport 546 accept comment "infra:dhcpv6-client"
 		iifname "lan0" udp dport 67 accept comment "service:dhcp"
 		iifname "lan0" meta l4proto { tcp, udp } th dport 53 accept comment "service:dns"
+		meta nfproto ipv6 meta l4proto { tcp, udp } th dport 53 iifname != { "lo", "lan0" } drop comment "service:dns-served-only"
 		iifname vmap { "lan0" : jump in_lan, "wan0" : jump in_wan }
 		counter comment "default:input"
 	}
