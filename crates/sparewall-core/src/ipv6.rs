@@ -140,9 +140,13 @@ pub fn status(doc: &Document, links: &BTreeMap<String, LinkIpv6>) -> Option<Valu
         v["iface"] = json!(iface);
         v["mode"] = serde_json::to_value(v6.mode).unwrap_or_default();
         if net.role != NetworkRole::Wan {
+            // networkd drops the node's address in a withdrawn delegated
+            // prefix; one it keeps deprecated (preferred lifetime spent)
+            // is not advertised either.
             let prefixes: Vec<String> = st
                 .addresses
                 .iter()
+                .filter(|a| a.preferred_seconds != Some(0))
                 .filter_map(|a| prefix_of(&a.address))
                 .collect();
             v["prefixes"] = json!(prefixes);
@@ -340,6 +344,14 @@ mod tests {
         assert_eq!(s["wan"]["mode"], "dhcpv6");
         assert!(s["wan"].get("prefixes").is_none());
         assert_eq!(s["lan"]["prefixes"], json!(["2001:db8:100:1::/64"]));
+        // Renumbering: an old address left deprecated is not advertised.
+        links.get_mut("lan0").unwrap().addresses.push(Lifetimed {
+            address: "2001:db8:200:1::1/64".into(),
+            preferred_seconds: Some(0),
+            valid_seconds: Some(600),
+        });
+        let s2 = status(&d, &links).unwrap();
+        assert_eq!(s2["lan"]["prefixes"], json!(["2001:db8:100:1::/64"]));
         assert_eq!(s["lan"]["addresses"][0]["valid_seconds"], 3600);
         assert_eq!(status(&doc(json!({})), &links), None);
     }
