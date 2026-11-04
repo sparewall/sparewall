@@ -466,7 +466,11 @@ grep -q "Prefix *: *${p2}/64" ra.txt || fail "the RA does not announce $p2/64: $
 if grep -q "Prefix *: *${p1}/64" ra.txt; then
     fail "the RA still announces the old prefix $p1/64: $(cat ra.txt)"
 fi
-ns tclient ping -6 -c 2 -W 2 2001:db8:ffff::1 >/dev/null || fail "the client cannot reach the ISP from the new prefix"
+# The old address is still preferred, so the kernel may pick it as the
+# source (#232): ping from the new one.
+c6=$(client6 "$p2")
+ns tclient ping -6 -c 2 -W 2 -I "$c6" 2001:db8:ffff::1 >/dev/null \
+    || fail "the client cannot reach the ISP from the new prefix ($c6)"
 wait_for 60 "fw1 healthy with IPv6 inside" healthy fw1
 V6_DUMP=
 stop_v6_isp
