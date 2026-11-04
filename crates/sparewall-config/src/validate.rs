@@ -2134,9 +2134,21 @@ impl Validator<'_> {
                     Some(net) if matches!(net.role, NetworkRole::Wan | NetworkRole::Sync) => {
                         self.err(np, "only the networks behind the node are routed")
                     }
-                    Some(_) => {
+                    Some(net) => {
                         if let Some(prev) = routed.insert(n.as_str(), name.as_str()) {
-                            self.err(np, format!("{n:?} already leaves through {prev:?}"));
+                            self.err(np.clone(), format!("{n:?} already leaves through {prev:?}"));
+                        }
+                        // The tunnel is IPv4: the network's IPv6 cannot
+                        // take it.
+                        if net.ipv6.is_some() {
+                            self.warn(
+                                np,
+                                if c.route.kill_switch {
+                                    format!("{n:?} has IPv6, which the tunnel does not carry: the kill switch drops it, so its hosts have no IPv6 beyond the node")
+                                } else {
+                                    format!("{n:?} has IPv6, which the tunnel does not carry: it leaves through the WAN, around the tunnel")
+                                },
+                            );
                         }
                     }
                 }

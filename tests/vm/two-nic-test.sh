@@ -94,7 +94,8 @@ v6_dump() {
     echo "--- fw1"
     at fw1 'ip -6 addr; ip -6 route; networkctl status wan0 lan0 --no-pager -n 0
         sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "dhcp6|ndisc|ipv6|pd|prefix" | tail -40
-        sudo nft list chain inet sparewall input'
+        sudo nft list chain inet sparewall input; sudo nft list chain inet sparewall forward
+        sysctl net.ipv6.conf.all.forwarding net.ipv6.conf.lan0.forwarding net.ipv6.conf.wan0.forwarding'
     set -e
 } 2>&1
 stop_v6_isp() {
@@ -406,6 +407,12 @@ wait_for 60 "fw1 healthy with IPv6 on the WAN" healthy fw1
 log "IPv6 inside: the LAN takes a /64 of the delegated prefix; SLAAC and DNS from the RAs (#214)"
 # The ISP routes what it delegates to fw1.
 ns tisp ip -6 route add 2001:db8:100::/48 via "$a" dev eth0
+# Without the provider's tunnel from #149 now: it carries IPv4 only, and
+# its kill switch keeps the LAN's IPv6 from the WAN too, so none would
+# leave around it (validation warns of exactly that).
+jq -n '{vpn_clients: {egress: null}, zones: {egress: null}, policy: {"lan->egress": null}}' \
+    | at fw1 'cat > /tmp/noclient.json'
+at fw1 'sudo sparewall merge -f /tmp/noclient.json --confirm 0' >/dev/null
 jq -n '{networks: {lan: {ipv6: {mode: "delegated", subnet_id: 1}}},
         dns: {enabled: true, domain: "home.arpa", records: {nas: "192.168.1.50"}}}' \
     | at fw1 'cat > /tmp/v6in.json'

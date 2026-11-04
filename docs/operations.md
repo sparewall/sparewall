@@ -338,7 +338,10 @@ networks:
   `self` accepts (`service:dns-served-only`). Where DHCPv4 names other servers (a
   directory's, say), the advertisements name none, and dual-stack
   clients keep asking those over IPv4, AAAA records included.
-- **Forwarding** is on once an inside network has IPv6. What crosses
+- **Forwarding** is on once an inside network has IPv6. A network routed
+  through a [VPN client](#vpn-clients-leaving-through-a-provider) gets no
+  IPv6 beyond the node while the client's kill switch is on: the tunnel
+  is IPv4 only. What crosses
   between zones is the policies', for IPv6 as for IPv4, without NAT.
 - **Objects:** a dynamic `ipv6` object on an inside network holds its
   /64 (`source: prefix`) or the node's address (`source: address`).
@@ -522,6 +525,11 @@ sparewall secret set provider-key < provider.key
 - **Kill switch:** the routed networks' traffic to the WAN is dropped,
   so while the tunnel is down it goes nowhere. With `kill_switch: false`
   it may leave through the WAN instead (validation warns).
+- **IPv6:** the tunnel carries IPv4 only. A routed network with `ipv6`
+  keeps IPv6 to the node and the other inside networks, but with the
+  kill switch its IPv6 to the WAN is dropped, so nothing leaves around
+  the tunnel; without it, its IPv6 leaves by the WAN. Validation warns
+  of either.
 - **DNS:** DHCP hands the routed networks the client's `dns`, unless a
   network sets its own servers (`dhcp.<network>.options.dns`). The
   service's resolvers are reached through the tunnel; Unbound on the

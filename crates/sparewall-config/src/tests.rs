@@ -1833,3 +1833,25 @@ fn ipv6_settings_by_path() {
     );
     assert_eq!(d.objects["nas"].suffixes["lan"], vec!["::20".to_string()]);
 }
+
+/// A VPN client's tunnel is IPv4: an IPv6 network routed through it gets
+/// a warning either way (#214).
+#[test]
+fn ipv6_through_a_vpn_client_is_said() {
+    let client = |kill: bool| {
+        v6(json!({
+            "zones": {"egress": {}},
+            "vpn_clients": {"egress": {"private_key": "secret:k", "addresses": ["10.64.0.2/32"],
+                "zone": "egress", "peer": {"public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    "endpoint": "203.0.113.4:51820"},
+                "route": {"networks": ["lan"], "kill_switch": kill}}},
+        }))
+    };
+    let w = warnings(&client(true));
+    assert!(
+        w.iter().any(|w| w.contains("the kill switch drops it")),
+        "{w:#?}"
+    );
+    let w = warnings(&client(false));
+    assert!(w.iter().any(|w| w.contains("around the tunnel")), "{w:#?}");
+}
