@@ -364,6 +364,25 @@ networks:
   Hosts by suffix (`suffixes`) follow a static prefix; in a delegated
   one they are not built yet: name their addresses instead.
 
+### Checking IPv6
+
+`sparewall status` lists each network with IPv6, as networkd has it now:
+
+```text
+ipv6:
+  lan        lan0 delegated; advertises 2001:db8:100:1::/64
+  wan        wan0 dhcpv6; 2001:db8:ffff::100/128; delegated 2001:db8:100::/56 (preferred 30m, valid 1h); default via fe80::1
+```
+
+The status API's `ipv6` holds the same, with lifetimes in seconds left.
+Health's `ipv6` check is degraded while a WAN with IPv6 has no IPv6
+default route, or a `dhcpv6` WAN has no delegated prefix for the
+`delegated` networks. On `/metrics`, `sparewall_ipv6_default_route` is 1
+while a WAN has its default route, and
+`sparewall_ipv6_delegated_prefix_valid_seconds` and
+`…_preferred_seconds` count down the delegated prefix's lifetimes: alert
+when the valid lifetime runs low, as the ISP has stopped renewing it.
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:
@@ -642,6 +661,7 @@ running system, each repeated on every health request:
 | `services` | Every provider unit the generation needs (Kea, Unbound, keepalived, conntrackd, ulogd, journal-upload or rsyslog, Prometheus) is active in systemd. A management service down (the web UI, Prometheus) is degraded, not failed | That a daemon still runs the files installed for it; those passed the daemon's own config test before they were installed |
 | `pair`, `tls`, `backup` | Sync tunnel and peer state, certificate validity, the last backup | |
 | `tunnels` | On the node that holds them (standalone, or the master), every site-to-site peer with a `keepalive`, and every VPN client, has had a handshake in the last three minutes. Degraded, never failed | Peers without a keepalive, whose idle tunnels have no handshakes |
+| `ipv6` | Once a network has IPv6: each WAN with IPv6 has an IPv6 default route, and a `dhcpv6` WAN has a delegated prefix for the `delegated` networks. Degraded, never failed: IPv4 still flows | That hosts on the inside networks have taken addresses |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
 
 Any change to the firewall made outside Sparewall (`nft flush`, an extra

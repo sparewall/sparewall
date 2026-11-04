@@ -2162,6 +2162,10 @@ impl<S: System> Coordinator<S> {
             if let Some(m) = self.log_certificate_problem(&doc)? {
                 checks.push(Check::new("log-forwarding", Level::Degraded, m));
             }
+            if doc.networks.values().any(|n| n.ipv6.is_some()) {
+                let links = self.sys.ipv6_links();
+                checks.extend(crate::ipv6::health(&doc, &links));
+            }
         }
 
         checks.extend(self.extra_checks.values().flatten().cloned());

@@ -404,6 +404,17 @@ if ns tisp timeout 5 bash -c "exec 3<>/dev/tcp/$a/22" 2>/dev/null; then
     fail "the ISP reached fw1's SSH over IPv6"
 fi
 wait_for 60 "fw1 healthy with IPv6 on the WAN" healthy fw1
+# Status shows the WAN's IPv6 as networkd has it (#216), and health's
+# ipv6 check is satisfied.
+status fw1 > st.json
+jq -e --arg a "$a/128" '.ipv6.wan.addresses | map(.address) | index($a)' st.json >/dev/null \
+    || fail "status shows no WAN address $a: $(jq -c .ipv6 st.json)"
+jq -e '.ipv6.wan.delegated[0] | .address == "2001:db8:100::/56" and .valid_seconds > 0' st.json >/dev/null \
+    || fail "status shows no delegated prefix: $(jq -c .ipv6 st.json)"
+jq -e '.ipv6.wan.default_gateway | startswith("fe80::")' st.json >/dev/null \
+    || fail "status shows no IPv6 default route: $(jq -c .ipv6 st.json)"
+jq -e '.health.checks[] | select(.name == "ipv6") | .level == "ok"' st.json >/dev/null \
+    || fail "no ipv6 health check, or not ok: $(jq -c .health st.json)"
 
 log "IPv6 inside: the LAN takes a /64 of the delegated prefix; SLAAC and DNS from the RAs (#214)"
 # The ISP routes what it delegates to fw1.
@@ -440,6 +451,8 @@ grep -q "DNS search list *: *home.arpa" ra.txt || fail "the RA names no search d
 seen=$(ns tclient dig +short +time=3 +tries=2 "@$ll%eth0" nas.home.arpa A)
 [ "$seen" = 192.168.1.50 ] || fail "the node's resolver over IPv6 answered '$seen' for nas.home.arpa"
 ns tclient ping -6 -c 2 -W 2 2001:db8:ffff::1 >/dev/null || fail "the client cannot reach the ISP over IPv6"
+lan_status_prefix() { [ "$(status fw1 | jq -c .ipv6.lan.prefixes)" = "[\"$1/64\"]" ]; }
+lan_status_prefix "$p1" || fail "status does not show the LAN advertising $p1/64: $(status fw1 | jq -c .ipv6.lan)"
 # Nothing from the WAN reaches the client unasked (no wan->lan policy).
 if ns tisp ping -6 -c 2 -W 2 "$c6" >/dev/null 2>&1; then
     fail "the ISP reached the client $c6 unasked"
@@ -473,6 +486,7 @@ c6=$(client6 "$p2")
 wait_for 30 "the client to reach the ISP from the new prefix ($c6)" \
     ns tclient ping -6 -c 1 -W 2 -I "$c6" 2001:db8:ffff::1
 wait_for 60 "fw1 healthy with IPv6 inside" healthy fw1
+wait_for 30 "status to show the LAN advertising $p2/64" lan_status_prefix "$p2"
 V6_DUMP=
 stop_v6_isp
 stop_vm fw1

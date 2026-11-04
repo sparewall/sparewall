@@ -42,6 +42,12 @@ pub trait System: Send {
     /// (the bonding driver's MII status).
     fn bond_members(&mut self, bond: &str) -> Vec<(String, bool)>;
 
+    /// Each link's IPv6 state as networkd has it (#216): global addresses,
+    /// delegated prefixes and the IPv6 default route. Empty when unknown.
+    fn ipv6_links(&mut self) -> BTreeMap<String, crate::ipv6::LinkIpv6> {
+        BTreeMap::new()
+    }
+
     /// Install a provider subsystem's files (under `/run/sparewall/<dir>`).
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error>;
 
@@ -164,6 +170,8 @@ pub struct Fake {
     pub links: BTreeMap<String, String>,
     /// Members of each bond, with their MII status.
     pub bonds: BTreeMap<String, Vec<(String, bool)>>,
+    /// Each link's IPv6 state, for `ipv6_links`.
+    pub ipv6: BTreeMap<String, crate::ipv6::LinkIpv6>,
     /// Make `nft_check` fail with this message.
     pub fail_nft_check: Option<String>,
     /// Make `nft_load` fail with this message.
@@ -288,6 +296,10 @@ impl System for Fake {
 
     fn bond_members(&mut self, bond: &str) -> Vec<(String, bool)> {
         self.bonds.get(bond).cloned().unwrap_or_default()
+    }
+
+    fn ipv6_links(&mut self) -> BTreeMap<String, crate::ipv6::LinkIpv6> {
+        self.ipv6.clone()
     }
 
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
@@ -476,6 +488,9 @@ impl System for Box<dyn System> {
     }
     fn bond_members(&mut self, bond: &str) -> Vec<(String, bool)> {
         (**self).bond_members(bond)
+    }
+    fn ipv6_links(&mut self) -> BTreeMap<String, crate::ipv6::LinkIpv6> {
+        (**self).ipv6_links()
     }
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
         (**self).install_files(sub, files)

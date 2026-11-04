@@ -3800,3 +3800,66 @@ fn syslog_client_certificate() {
     t.c.apply(doc, &opts(1, None)).unwrap();
     assert!(t.c.system().secret_files.is_empty());
 }
+
+/// IPv6 in health, status and metrics (#216): degraded until the WAN has
+/// an IPv6 default route and the prefix the users network takes a /64 of.
+#[test]
+fn ipv6_health_and_metrics_follow_the_wan() {
+    let mut t = setup();
+    let mut v = example();
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"networks": {
+            "wan": {"ipv6": {"mode": "dhcpv6"}},
+            "users": {"ipv6": {"mode": "delegated", "subnet_id": 1}}}}),
+    );
+    t.c.apply(v, &opts(0, None)).unwrap();
+    let h = t.c.health().unwrap();
+    let c = h.check("ipv6").unwrap();
+    assert_eq!(c.level, Level::Degraded);
+    assert_eq!(
+        c.message,
+        "wan: no IPv6 default route; wan: no delegated prefix, so users has no IPv6"
+    );
+    let m = t.c.metrics().unwrap();
+    assert!(
+        m.contains("sparewall_ipv6_default_route{network=\"wan\"} 0\n"),
+        "{m}"
+    );
+    assert!(
+        !m.contains("sparewall_ipv6_delegated_prefix_valid_seconds"),
+        "{m}"
+    );
+
+    let lt = |a: &str| sparewall_core::ipv6::Lifetimed {
+        address: a.into(),
+        preferred_seconds: Some(1800),
+        valid_seconds: Some(3600),
+    };
+    t.c.system().ipv6.insert(
+        "wan".into(),
+        sparewall_core::ipv6::LinkIpv6 {
+            addresses: vec![lt("2001:db8:ffff::100/128")],
+            delegated: vec![lt("2001:db8:100::/56")],
+            default_gateway: Some("fe80::1".parse().unwrap()),
+        },
+    );
+    let h = t.c.health().unwrap();
+    assert_eq!(h.check("ipv6").unwrap().level, Level::Ok);
+    let m = t.c.metrics().unwrap();
+    for line in [
+        "sparewall_ipv6_default_route{network=\"wan\"} 1\n",
+        "sparewall_ipv6_delegated_prefix_valid_seconds{network=\"wan\",prefix=\"2001:db8:100::/56\"} 3600\n",
+        "sparewall_ipv6_delegated_prefix_preferred_seconds{network=\"wan\",prefix=\"2001:db8:100::/56\"} 1800\n",
+    ] {
+        assert!(m.contains(line), "{line} not in {m}");
+    }
+}
+
+#[test]
+fn no_ipv6_no_ipv6_check() {
+    let mut t = setup();
+    t.c.apply(example(), &opts(0, None)).unwrap();
+    assert!(t.c.health().unwrap().check("ipv6").is_none());
+    assert!(!t.c.metrics().unwrap().contains("sparewall_ipv6"));
+}
