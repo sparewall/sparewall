@@ -448,7 +448,10 @@ sudo pkill -f "kea-dhcp6 -c $KEA6_CONF" || true
 sleep 1
 kea6_start 2001:db8:200::
 ns tisp ip -6 route add 2001:db8:200::/48 via "$a" dev eth0
-at fw1 'sudo networkctl reconfigure wan0'
+# As an ISP renumbers: fw1 renews, and the server, which no longer holds
+# its binding, answers with another prefix. (A reconfigure would restart
+# the client instead, which no ISP does.)
+at fw1 'sudo networkctl renew wan0'
 new_prefix() { local p; p=$(lan_prefix); [ -n "$p" ] && [ "$p" != "$p1" ]; }
 wait_for 120 "a new prefix on fw1's LAN" new_prefix
 p2=$(lan_prefix)
