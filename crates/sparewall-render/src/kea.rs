@@ -50,6 +50,24 @@ pub fn gateway_addr(doc: &Document, network: &str, node: &str) -> Option<Ipv4Add
         .map(|c| c.0.addr())
 }
 
+/// Whether clients on `network` are handed the node as their resolver:
+/// it serves DNS there, and neither the network's DHCP options nor a VPN
+/// client routing it name other servers. DHCPv4's `domain-name-servers`
+/// and the router advertisements' RDNSS (#214) both follow this, so
+/// IPv6 never sends clients to a resolver DHCPv4 does not.
+pub fn node_is_resolver(doc: &Document, network: &str) -> bool {
+    let opts = doc
+        .dhcp
+        .as_ref()
+        .and_then(|d| d.networks.get(network))
+        .and_then(|d| d.options.as_ref());
+    let overridden = opts.is_some_and(|o| !o.dns.is_empty())
+        || doc
+            .vpn_client_of(network)
+            .is_some_and(|c| !doc.vpn_clients[c].dns.is_empty());
+    !overridden && dns_served(doc, network) && providers::chosen(doc, Role::Dns) == Some("unbound")
+}
+
 fn dns_served(doc: &Document, network: &str) -> bool {
     match &doc.dns {
         Some(d) if d.enabled => {

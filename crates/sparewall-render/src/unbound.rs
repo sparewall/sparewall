@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use sparewall_config::model::Document;
+use sparewall_config::model::{Document, Ipv6Mode};
 use sparewall_config::providers::{self, Role};
 
 use crate::kea::gateway_addr;
@@ -30,6 +30,19 @@ pub fn served_networks(doc: &Document) -> Vec<String> {
     } else {
         d.networks.clone()
     }
+}
+
+/// Whether Unbound answers over IPv6: a standalone node's served network
+/// has IPv6 (#214). It then listens on every address, and a delegated
+/// prefix cannot be named in its access control, so the firewall keeps
+/// every other interface from its port (nft `service:dns-served-only`).
+pub fn serves_ipv6(doc: &Document) -> bool {
+    !doc.is_pair()
+        && doc.dns.as_ref().is_some_and(|d| d.enabled)
+        && providers::chosen(doc, Role::Dns) == Some("unbound")
+        && served_networks(doc)
+            .iter()
+            .any(|n| doc.networks.get(n).is_some_and(|x| x.ipv6.is_some()))
 }
 
 pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(), Error> {
@@ -60,15 +73,52 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         }
     }
     listen.insert("127.0.0.1".into());
+    // IPv6 where a served network has it (#214): on every address, since
+    // a delegated network's change with the prefix, and the
+    // advertisements name the node by its link-local address there. The
+    // firewall drops IPv6 DNS from every other interface, whatever the
+    // policies say (`service:dns-served-only`).
+    let v6: Vec<&sparewall_config::model::NetworkIpv6> = if doc.is_pair() {
+        vec![]
+    } else {
+        served_networks(doc)
+            .iter()
+            .filter_map(|n| doc.networks.get(n)?.ipv6.as_ref())
+            .collect()
+    };
+    if !v6.is_empty() {
+        listen.insert("::0".into());
+    }
     for l in &listen {
         writeln!(s, "    interface: {l}").unwrap();
     }
-    s.push_str(
-        "    ip-freebind: yes\n    do-ip6: no\n    port: 53\n\
-         \x20   access-control: 0.0.0.0/0 refuse\n    access-control: 127.0.0.0/8 allow\n",
-    );
+    writeln!(
+        s,
+        "    ip-freebind: yes\n    do-ip6: {}\n    port: 53\n\
+         \x20   access-control: 0.0.0.0/0 refuse\n    access-control: 127.0.0.0/8 allow",
+        if v6.is_empty() { "no" } else { "yes" }
+    )
+    .unwrap();
     for a in &allow {
         writeln!(s, "    access-control: {a} allow").unwrap();
+    }
+    if !v6.is_empty() {
+        let statics: BTreeSet<String> = v6
+            .iter()
+            .filter_map(|n| match (n.mode, n.prefix) {
+                (Ipv6Mode::Static, Some(p)) => Some(p.0.trunc().to_string()),
+                _ => None,
+            })
+            .collect();
+        if statics.len() < v6.len() {
+            // A delegated prefix is whatever the ISP delegates.
+            s.push_str("    access-control: ::0/0 allow\n");
+        } else {
+            s.push_str("    access-control: ::0/0 refuse\n    access-control: ::1 allow\n    access-control: fe80::/10 allow\n");
+            for p in statics {
+                writeln!(s, "    access-control: {p} allow").unwrap();
+            }
+        }
     }
     s.push_str(
         "    username: \"unbound\"\n    directory: \"/etc/unbound\"\n    chroot: \"\"\n\

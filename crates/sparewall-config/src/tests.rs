@@ -1444,17 +1444,21 @@ fn v6(patch: serde_json::Value) -> Document {
 #[test]
 fn ipv6_networks_take_the_modes_their_role_allows() {
     assert_eq!(history_errors(&v6(json!({}))), Vec::<String>::new());
-    // A standalone node's WAN activates IPv6 (#213); an inside network
-    // waits for #214, and a pair for #215.
-    let errs = error_paths(&v6(json!({})));
-    assert!(
-        !errs.iter().any(|e| e.starts_with("networks.wan.ipv6")),
-        "{errs:#?}"
-    );
+    // A standalone node's WAN (#213) and inside networks (#214) activate
+    // IPv6; a pair waits for #215.
+    assert_valid(&v6(json!({})));
+    // Hosts by suffix in a delegated prefix are not built yet; in a
+    // static one they are.
+    let d = v6(json!({"objects": {"nas": {"type": "ipv6", "suffixes": {"lan": ["::20"]}}}}));
     assert!(has_error(
-        &v6(json!({})),
-        "networks.lan.ipv6: IPv6 on inside networks is not built yet (#214)"
+        &d,
+        "objects.nas.suffixes.lan: hosts by suffix in a delegated prefix are not built yet"
     ));
+    let d = v6(json!({
+        "networks": {"lan": {"ipv6": {"mode": "static", "subnet_id": null, "prefix": "2001:db8:0:1::/64"}}},
+        "objects": {"nas": {"type": "ipv6", "suffixes": {"lan": ["::20"]}}},
+    }));
+    assert_valid(&d);
     let wan_only = edit(
         TWO_NIC,
         json!({"networks": {"wan": {"ipv6": {"mode": "dhcpv6"}}}}),
@@ -1828,4 +1832,26 @@ fn ipv6_settings_by_path() {
         Some(&json!(2))
     );
     assert_eq!(d.objects["nas"].suffixes["lan"], vec!["::20".to_string()]);
+}
+
+/// A VPN client's tunnel is IPv4: an IPv6 network routed through it gets
+/// a warning either way (#214).
+#[test]
+fn ipv6_through_a_vpn_client_is_said() {
+    let client = |kill: bool| {
+        v6(json!({
+            "zones": {"egress": {}},
+            "vpn_clients": {"egress": {"private_key": "secret:k", "addresses": ["10.64.0.2/32"],
+                "zone": "egress", "peer": {"public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    "endpoint": "203.0.113.4:51820"},
+                "route": {"networks": ["lan"], "kill_switch": kill}}},
+        }))
+    };
+    let w = warnings(&client(true));
+    assert!(
+        w.iter().any(|w| w.contains("the kill switch drops it")),
+        "{w:#?}"
+    );
+    let w = warnings(&client(false));
+    assert!(w.iter().any(|w| w.contains("around the tunnel")), "{w:#?}");
 }

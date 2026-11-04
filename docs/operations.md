@@ -309,6 +309,48 @@ sparewall set networks.wan.ipv6.mode=dhcpv6     # or ra, or static
 - **What it has:** `networkctl status wan0` shows the addresses, the
   DHCPv6 lease and the delegated prefix.
 
+## IPv6 on inside networks
+
+Each inside network with `ipv6` gets a /64 and advertises it (#214); a
+standalone node for now (pairs: #215):
+
+```yaml
+networks:
+  lan:
+    ipv6: { mode: delegated, subnet_id: 1 }   # a /64 of the WAN's delegated prefix
+  lab:
+    ipv6: { mode: static, prefix: "2001:db8:0:2::/64" }
+```
+
+- **Addresses:** the node is `::1` in the /64; hosts configure
+  themselves by SLAAC from its router advertisements. DHCPv6 on inside
+  networks is a later feature (#217).
+- **A new delegated prefix** renumbers the network by itself: the node
+  takes `::1` in the new /64 and advertises it, and stops advertising the
+  old one. networkd does not announce the old prefix as deprecated
+  (systemd #29651), so hosts keep their old address, still preferred,
+  until its preferred lifetime runs out (up to 30 minutes), and may pick
+  it for new connections in that time. #232 tracks a workaround.
+- **DNS:** where DHCPv4 hands out the node as the resolver (`dns` serves
+  the network, and `dhcp.<network>.options.dns` names no other servers),
+  its advertisements name it too, with DHCP's search domain: on a static network by its
+  address there, on a delegated one by its link-local address, which a
+  new prefix does not change. Unbound then also answers over IPv6, on
+  every address of the node, and the firewall drops IPv6 to its DNS port
+  from every interface but the served networks', whatever a policy to
+  `self` accepts (`service:dns-served-only`). Where DHCPv4 names other servers (a
+  directory's, say), the advertisements name none, and dual-stack
+  clients keep asking those over IPv4, AAAA records included.
+- **Forwarding** is on once an inside network has IPv6. A network routed
+  through a [VPN client](#vpn-clients-leaving-through-a-provider) gets no
+  IPv6 beyond the node while the client's kill switch is on: the tunnel
+  is IPv4 only. What crosses
+  between zones is the policies', for IPv6 as for IPv4, without NAT.
+- **Objects:** a dynamic `ipv6` object on an inside network holds its
+  /64 (`source: prefix`) or the node's address (`source: address`).
+  Hosts by suffix (`suffixes`) follow a static prefix; in a delegated
+  one they are not built yet: name their addresses instead.
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:
@@ -486,6 +528,11 @@ sparewall secret set provider-key < provider.key
 - **Kill switch:** the routed networks' traffic to the WAN is dropped,
   so while the tunnel is down it goes nowhere. With `kill_switch: false`
   it may leave through the WAN instead (validation warns).
+- **IPv6:** the tunnel carries IPv4 only. A routed network with `ipv6`
+  keeps IPv6 to the node and the other inside networks, but with the
+  kill switch its IPv6 to the WAN is dropped, so nothing leaves around
+  the tunnel; without it, its IPv6 leaves by the WAN. Validation warns
+  of either.
 - **DNS:** DHCP hands the routed networks the client's `dns`, unless a
   network sets its own servers (`dhcp.<network>.options.dns`). The
   service's resolvers are reached through the tunnel; Unbound on the
@@ -1009,11 +1056,12 @@ what the test suites see, and a denial on a real node is a missing rule.
 
 `provider_options` and `dhcp.provider: networkd` are rejected with an
 error at their path, and so, until the rest of 0.6.0 renders it, is
-IPv6 on inside networks (#214) and in a pair (#215), and IPv6 in
-`management.sources` (management stays IPv4 for now). The document takes
+IPv6 in a pair (#215), hosts by suffix in a delegated prefix, and IPv6
+in `management.sources` (management stays IPv4 for now). The document takes
 them, and validation checks them in full; activating one is refused.
-`ipv6` objects, IPv6 in policies (#212) and a standalone node's WAN
-(#213, [IPv6 on the WAN](#ipv6-on-the-wan)) are built. (`updates.mode: windowed` and `updates.window` were
+`ipv6` objects, IPv6 in policies (#212), a standalone node's WAN (#213,
+[IPv6 on the WAN](#ipv6-on-the-wan)) and inside networks (#214, [IPv6 on
+inside networks](#ipv6-on-inside-networks)) are built. (`updates.mode: windowed` and `updates.window` were
 too, before 0.4.0 built them, and `logging.remote.provider: syslog`,
 `metrics.mode: local` and `metrics.retention` before 0.5.0.) Builds
 before 0.1.0 accepted them, though nothing acted on them. After

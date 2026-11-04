@@ -9,7 +9,9 @@
 #      management.sources admits the admin's SSH and refuses another LAN
 #      host's, which may still ping the node; a site-to-site tunnel to a
 #      branch on the WAN (#148); IPv6 on the WAN by DHCPv6, with a
-#      delegated prefix (#213).
+#      delegated prefix (#213), a /64 of which the LAN takes, with SLAAC
+#      and DNS from the node's RAs, until the ISP delegates another
+#      (#214).
 #   2. A pair: pairing with the sync tunnel over the LAN, Kea's lease and
 #      conntrack replication over it, and a failover that a connection
 #      through the pair survives, after which the client renews its lease
@@ -87,10 +89,13 @@ v6_dump() {
     echo "--- radvd"; tail -n 5 radvd.log
     echo "--- tisp"; ns tisp ip -6 addr show dev eth0
     for f in kea6.out "$KEA6_LOG" "$KEA6_LEASES"; do echo "--- $f"; sudo tail -n 30 "$f"; done
+    echo "--- tclient"; ns tclient ip -6 addr show dev eth0; ns tclient ip -6 route
+    ns tclient timeout 10 rdisc6 -1 eth0
     echo "--- fw1"
     at fw1 'ip -6 addr; ip -6 route; networkctl status wan0 lan0 --no-pager -n 0
         sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "dhcp6|ndisc|ipv6|pd|prefix" | tail -40
-        sudo nft list chain inet sparewall input'
+        sudo nft list chain inet sparewall input; sudo nft list chain inet sparewall forward
+        sysctl net.ipv6.conf.all.forwarding net.ipv6.conf.lan0.forwarding net.ipv6.conf.wan0.forwarding'
     set -e
 } 2>&1
 stop_v6_isp() {
@@ -136,7 +141,7 @@ cat > "$WORK/udhcpc.sh" <<'SH'
 #!/bin/sh
 case "$1" in
 bound|renew)
-    ip addr flush dev "$interface"
+    ip -4 addr flush dev "$interface"   # only IPv4: IPv6 SLAAC needs the link-local address
     ip addr add "$ip/${mask:-24}" dev "$interface"
     [ -n "$router" ] && ip route replace default via "${router%% *}"
     ;;
@@ -349,27 +354,31 @@ interface eth0 {
 };
 EOF
 ns tisp radvd -n -u root -C "$PWD/radvd.conf" -p "$PWD/radvd.pid" -m stderr > radvd.log 2>&1 &
-sudo tee "$KEA6_CONF" > /dev/null <<EOF
-{"Dhcp6": {
-  "interfaces-config": {"interfaces": ["eth0"]},
-  "lease-database": {"type": "memfile", "persist": true, "name": "$KEA6_LEASES"},
-  "subnet6": [{"id": 1, "subnet": "2001:db8:ffff::/64", "interface": "eth0",
-    "pools": [{"pool": "2001:db8:ffff::100-2001:db8:ffff::1ff"}],
-    "pd-pools": [{"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 56}]}],
-  "option-data": [{"name": "dns-servers", "data": "2001:db8:ffff::1"}],
-  "loggers": [{"name": "kea-dhcp6", "severity": "INFO",
-    "output_options": [{"output": "$KEA6_LOG"}]}]
-}}
-EOF
-sudo rm -f "$KEA6_LEASES"*
 # Ubuntu's AppArmor profile for kea-dhcp6 withholds dac_override, so
 # root may not write into /run/kea (the _kea user's) and the like; this
 # runner's Kea is a test fixture, not a service.
 for f in /etc/apparmor.d/*kea-dhcp6*; do
     [ -f "$f" ] && sudo apparmor_parser -R "$f" 2>/dev/null || true
 done
-ns tisp env KEA_PIDFILE_DIR=/run/kea KEA_LOCKFILE_DIR=/run/kea \
-    kea-dhcp6 -c "$KEA6_CONF" > kea6.out 2>&1 &
+kea6_start() { # the /48 to delegate /56s from, as 2001:db8:N::
+    sudo tee "$KEA6_CONF" > /dev/null <<EOF
+{"Dhcp6": {
+  "interfaces-config": {"interfaces": ["eth0"]},
+  "lease-database": {"type": "memfile", "persist": true, "name": "$KEA6_LEASES"},
+  "renew-timer": 30, "rebind-timer": 45, "preferred-lifetime": 90, "valid-lifetime": 180,
+  "subnet6": [{"id": 1, "subnet": "2001:db8:ffff::/64", "interface": "eth0",
+    "pools": [{"pool": "2001:db8:ffff::100-2001:db8:ffff::1ff"}],
+    "pd-pools": [{"prefix": "$1", "prefix-len": 48, "delegated-len": 56}]}],
+  "option-data": [{"name": "dns-servers", "data": "2001:db8:ffff::1"}],
+  "loggers": [{"name": "kea-dhcp6", "severity": "INFO",
+    "output_options": [{"output": "$KEA6_LOG"}]}]
+}}
+EOF
+    sudo rm -f "$KEA6_LEASES"*
+    ns tisp env KEA_PIDFILE_DIR=/run/kea KEA_LOCKFILE_DIR=/run/kea \
+        kea-dhcp6 -c "$KEA6_CONF" > kea6.out 2>&1 &
+}
+kea6_start 2001:db8:100::
 jq -n '{networks: {wan: {ipv6: {mode: "dhcpv6"}}},
         objects: {wan6: {type: "ipv6", dynamic: {network: "wan"}}}}' | at fw1 'cat > /tmp/v6.json'
 at fw1 'sudo sparewall merge -f /tmp/v6.json --confirm 0' >/dev/null
@@ -395,6 +404,74 @@ if ns tisp timeout 5 bash -c "exec 3<>/dev/tcp/$a/22" 2>/dev/null; then
     fail "the ISP reached fw1's SSH over IPv6"
 fi
 wait_for 60 "fw1 healthy with IPv6 on the WAN" healthy fw1
+
+log "IPv6 inside: the LAN takes a /64 of the delegated prefix; SLAAC and DNS from the RAs (#214)"
+# The ISP routes what it delegates to fw1.
+ns tisp ip -6 route add 2001:db8:100::/48 via "$a" dev eth0
+# Without the provider's tunnel from #149 now: it carries IPv4 only, and
+# its kill switch keeps the LAN's IPv6 from the WAN too, so none would
+# leave around it (validation warns of exactly that).
+jq -n '{vpn_clients: {egress: null}, zones: {egress: null}, policy: {"lan->egress": null}}' \
+    | at fw1 'cat > /tmp/noclient.json'
+at fw1 'sudo sparewall merge -f /tmp/noclient.json --confirm 0' >/dev/null
+jq -n '{networks: {lan: {ipv6: {mode: "delegated", subnet_id: 1}}},
+        dns: {enabled: true, domain: "home.arpa", records: {nas: "192.168.1.50"}}}' \
+    | at fw1 'cat > /tmp/v6in.json'
+at fw1 'sudo sparewall merge -f /tmp/v6in.json --confirm 0' >/dev/null
+lan_prefix() { # fw1's current /64 on the LAN, as 2001:db8:...:1:: (it is ::1 there)
+    at fw1 'ip -6 addr show dev lan0 scope global -deprecated' \
+        | grep -o 'inet6 2001:db8:[0-9a-f:]*::1/64' | sed 's/^inet6 //; s|1/64$||' | head -1
+}
+wait_for 90 "a /64 of the delegated prefix on fw1's LAN" lan_prefix
+p1=$(lan_prefix)
+case $p1 in 2001:db8:100:1::) ;; *) fail "the LAN's prefix is $p1, not subnet 1 of 2001:db8:100::/56" ;; esac
+client6() { # the client's SLAAC address in prefix $1 (2001:db8:...:1::)
+    # A SLAAC address fills all 64 bits after the prefix, so it has no
+    # "::": match on the prefix's four groups.
+    ns tclient ip -6 -br addr show dev eth0 scope global | grep -o "${1%::}:[0-9a-f:]*" | head -1 | grep .
+}
+wait_for 60 "the client's SLAAC address in $p1/64" client6 "$p1"
+c6=$(client6 "$p1")
+ll=$(at fw1 'ip -6 -br addr show dev lan0 scope link' | grep -o 'fe80::[0-9a-f:]*')
+ns tclient rdisc6 -1 eth0 > ra.txt 2>&1 || true
+grep -q "Recursive DNS server *: *$ll" ra.txt || fail "the RA names no DNS server $ll: $(cat ra.txt)"
+grep -q "DNS search list *: *home.arpa" ra.txt || fail "the RA names no search domain: $(cat ra.txt)"
+seen=$(ns tclient dig +short +time=3 +tries=2 "@$ll%eth0" nas.home.arpa A)
+[ "$seen" = 192.168.1.50 ] || fail "the node's resolver over IPv6 answered '$seen' for nas.home.arpa"
+ns tclient ping -6 -c 2 -W 2 2001:db8:ffff::1 >/dev/null || fail "the client cannot reach the ISP over IPv6"
+# Nothing from the WAN reaches the client unasked (no wan->lan policy).
+if ns tisp ping -6 -c 2 -W 2 "$c6" >/dev/null 2>&1; then
+    fail "the ISP reached the client $c6 unasked"
+fi
+
+log "a new delegated prefix renumbers the LAN, and the client follows (#214)"
+sudo pkill -f "kea-dhcp6 -c $KEA6_CONF" || true
+sleep 1
+kea6_start 2001:db8:200::
+ns tisp ip -6 route add 2001:db8:200::/48 via "$a" dev eth0
+# As an ISP renumbers: at its next renewal (the leases above are short)
+# fw1 asks the server, which no longer holds its binding, and is given
+# another prefix. (networkctl renew is DHCPv4's only, and a reconfigure
+# restarts the client, which no ISP does.)
+new_prefix() { local p; p=$(lan_prefix); [ -n "$p" ] && [ "$p" != "$p1" ]; }
+wait_for 120 "a new prefix on fw1's LAN" new_prefix
+p2=$(lan_prefix)
+case $p2 in 2001:db8:200:1::) ;; *) fail "the LAN's new prefix is $p2, not subnet 1 of 2001:db8:200::/56" ;; esac
+wait_for 60 "the client's address in $p2/64" client6 "$p2"
+# fw1 stops announcing the old prefix. networkd does not announce it as
+# deprecated (systemd #29651), so the client's old address lives out its
+# preferred lifetime; that is a known limitation, not checked here.
+ns tclient rdisc6 -1 eth0 > ra.txt 2>&1 || true
+grep -q "Prefix *: *${p2}/64" ra.txt || fail "the RA does not announce $p2/64: $(cat ra.txt)"
+if grep -q "Prefix *: *${p1}/64" ra.txt; then
+    fail "the RA still announces the old prefix $p1/64: $(cat ra.txt)"
+fi
+# The old address is still preferred, so the kernel may pick it as the
+# source (#232): ping from the new one.
+c6=$(client6 "$p2")
+ns tclient ping -6 -c 2 -W 2 -I "$c6" 2001:db8:ffff::1 >/dev/null \
+    || fail "the client cannot reach the ISP from the new prefix ($c6)"
+wait_for 60 "fw1 healthy with IPv6 inside" healthy fw1
 V6_DUMP=
 stop_v6_isp
 stop_vm fw1
