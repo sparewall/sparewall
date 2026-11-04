@@ -67,10 +67,14 @@ function weight(s: JsonSchema7, required: boolean): number {
 export const MODES = 'x-modes';
 
 /**
- * On such a field: the networks it applies to, `wan` or `inside` (any
- * other role), by the role of the network holding the object.
+ * On such a field: the networks it applies to, `wan` or `inside` (neither
+ * a WAN nor the sync network), by the role of the network holding the
+ * object.
  */
 export const ROLE = 'x-role';
+
+/** On a field of an object with a `role` (a network): the roles it is hidden on. */
+export const EXCEPT_ROLES = 'x-except-roles';
 
 /** The value at a dotted data path (`networks.wan`); the root for `''`. */
 function at(data: unknown, path: string): unknown {
@@ -95,9 +99,22 @@ function modeCondition(modes: unknown[], role?: string): ValidateFunctionConditi
       if (!role || !path) return true;
       const parent = path.split('.').slice(0, -1).join('.');
       const network = at(fullData, parent) as { role?: string } | undefined;
-      const wan = (network?.role ?? 'service') === 'wan';
-      return role === 'wan' ? wan : !wan;
+      const r = network?.role ?? 'service';
+      return role === 'wan' ? r === 'wan' : r !== 'wan' && r !== 'sync';
     },
+  };
+}
+
+/**
+ * A control shown only while `condition` holds. The rule goes on a layout
+ * around it: layouts honour a rule whatever draws the field, and JSON
+ * Forms' list table does not.
+ */
+function shownWhen(control: ControlElement, condition: ValidateFunctionCondition): VerticalLayout {
+  return {
+    type: 'VerticalLayout',
+    elements: [control],
+    rule: { effect: RuleEffect.SHOW, condition },
   };
 }
 
@@ -114,6 +131,7 @@ export function objectLayout(schema: JsonSchema7): VerticalLayout {
     .map(([key, s], i) => ({ key, i, w: weight(s, required.has(key)) }))
     .sort((a, b) => a.w - b.w || a.i - b.i);
   const hasMode = !!schema.properties?.['mode'];
+  const hasRole = !!schema.properties?.['role'];
   return {
     type: 'VerticalLayout',
     elements: ordered.map(({ key }): UISchemaElement => {
@@ -123,19 +141,17 @@ export function objectLayout(schema: JsonSchema7): VerticalLayout {
         label: fieldLabel(key),
       };
       const meta = schema.properties?.[key] as Record<string, unknown> | undefined;
+      const except = meta?.[EXCEPT_ROLES];
+      if (hasRole && Array.isArray(except)) {
+        return shownWhen(control, {
+          scope: '#/properties/role',
+          validate: ({ data }) => !except.includes(data ?? 'service'),
+        } as ValidateFunctionCondition);
+      }
       const modes = meta?.[MODES];
       if (!hasMode || !Array.isArray(modes)) return control;
-      // The rule goes on a layout around the control: layouts honour it
-      // whatever draws the field, and JSON Forms' list table does not.
       const role = meta?.[ROLE];
-      return {
-        type: 'VerticalLayout',
-        elements: [control],
-        rule: {
-          effect: RuleEffect.SHOW,
-          condition: modeCondition(modes, typeof role === 'string' ? role : undefined),
-        },
-      } as VerticalLayout;
+      return shownWhen(control, modeCondition(modes, typeof role === 'string' ? role : undefined));
     }),
   };
 }

@@ -334,16 +334,18 @@ pub struct Network {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lldp: Option<bool>,
     /// IPv6 on this network (#211). Unset, the network has link-local
-    /// IPv6 addresses only, and routes none.
+    /// IPv6 addresses only, and routes none. Not on the sync network
+    /// (`x-except-roles`, for editors).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("x-since" = 5))]
+    #[schemars(extend("x-since" = 5, "x-except-roles" = ["sync"]))]
     pub ipv6: Option<NetworkIpv6>,
 }
 
 /// How a network gets its IPv6 addresses. Which fields apply depends on
 /// `mode` and on the network's role: each field's `x-modes` lists the
-/// modes it applies to, and `x-role` (`wan` or `inside`) the networks, for
-/// editors (the web UI shows a field only where it applies).
+/// modes it applies to, and `x-role` the networks: `wan`, or `inside`
+/// (neither a WAN nor the sync network), for editors (the web UI shows a
+/// field only where it applies).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkIpv6 {

@@ -117,7 +117,11 @@ describe("a network's IPv6, by mode", () => {
     // Where each field shows, evaluating its rule for every mode, on a
     // WAN (`wan`) and an inside network (`lan`).
     const doc = {
-      networks: { wan: { role: 'wan', ipv6: {} }, lan: { ipv6: {} } },
+      networks: {
+        wan: { role: 'wan', ipv6: {} },
+        lan: { ipv6: {} },
+        sync: { role: 'sync', ipv6: {} },
+      },
     };
     const where = Object.fromEntries(
       objectLayout(ipv6).elements.map((e) => {
@@ -128,7 +132,7 @@ describe("a network's IPv6, by mode", () => {
           rule?: { condition: ValidateFunctionCondition };
         };
         const c = { scope: w.scope ?? w.elements![0].scope, rule: w.rule };
-        const cases = ['wan', 'lan'].flatMap((net) =>
+        const cases = ['wan', 'lan', 'sync'].flatMap((net) =>
           ['dhcpv6', 'ra', 'static', 'delegated']
             .filter((mode) =>
               c.rule
@@ -146,11 +150,13 @@ describe("a network's IPv6, by mode", () => {
         return [c.scope.split('/').pop(), cases.join(' ')];
       }),
     );
+    // The sync network takes no IPv6 at all; that rule is the network's
+    // (below), so only role-bound fields leave it out here.
     expect(where).toEqual({
-      mode: 'wan:dhcpv6 wan:ra wan:static wan:delegated lan:dhcpv6 lan:ra lan:static lan:delegated',
-      prefix_length: 'wan:dhcpv6 lan:dhcpv6',
-      subnet_id: 'wan:delegated lan:delegated',
-      prefix: 'wan:static lan:static',
+      mode: 'wan:dhcpv6 wan:ra wan:static wan:delegated lan:dhcpv6 lan:ra lan:static lan:delegated sync:dhcpv6 sync:ra sync:static sync:delegated',
+      prefix_length: 'wan:dhcpv6 lan:dhcpv6 sync:dhcpv6',
+      subnet_id: 'wan:delegated lan:delegated sync:delegated',
+      prefix: 'wan:static lan:static sync:static',
       gateway: 'wan:static',
       dns: 'lan:static lan:delegated',
       addresses: 'wan:static',
@@ -210,5 +216,12 @@ describe("a network's IPv6, by mode", () => {
     expect(shown(staticLan.el, 'Gateway')).toBe(false);
     expect(shown(staticLan.el, 'DNS')).toBe(true);
     expect(shown(staticLan.el, 'Prefix')).toBe(true);
+    // The sync network: no IPv6 group at all.
+    TestBed.resetTestingModule();
+    const sync = await render(entry('networks'), { port: 'eth3', role: 'sync' });
+    expect(shown(sync.el, 'IPv6')).toBe(false);
+    TestBed.resetTestingModule();
+    const service = await render(entry('networks'), { port: 'eth3' });
+    expect(shown(service.el, 'IPv6')).toBe(true);
   });
 });
