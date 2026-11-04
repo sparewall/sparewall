@@ -626,6 +626,26 @@ impl System for Linux {
             .collect()
     }
 
+    fn ipv6_links(&mut self) -> BTreeMap<String, crate::ipv6::LinkIpv6> {
+        // networkd's lifetimes are CLOCK_BOOTTIME stamps.
+        #[cfg(target_os = "linux")]
+        let now_usec = {
+            let t = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+            u64::try_from(t.tv_sec)
+                .ok()
+                .map(|s| s * 1_000_000 + u64::try_from(t.tv_nsec).unwrap_or(0) / 1000)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let now_usec: Option<u64> = None;
+        let describe = run("networkctl", &["--json=short", "status"], None)
+            .ok()
+            .and_then(|o| serde_json::from_str::<serde_json::Value>(&o).ok());
+        match (describe, now_usec) {
+            (Some(d), Some(now)) => crate::ipv6::from_describe(&d, now),
+            _ => BTreeMap::new(),
+        }
+    }
+
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {
         let (dir, shared) = match install_dir(sub) {
             Some(d) => (PathBuf::from(d), true),

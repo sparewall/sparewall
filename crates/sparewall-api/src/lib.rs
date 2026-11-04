@@ -119,6 +119,13 @@ pub struct StatusReply {
     /// error. Absent from nodes older than 0.4.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update: Option<Value>,
+    /// Each network with IPv6 (#216), by name: `iface`, `mode`, the
+    /// interface's global `addresses`, the prefixes `delegated` to it by
+    /// DHCPv6 and its `default_gateway`; an inside network also its
+    /// advertised `prefixes`. Lifetimes are seconds left. Absent when no
+    /// network has IPv6, and from nodes older than 0.6.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv6: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

@@ -1151,6 +1151,12 @@ impl App {
                         if let Some(ct) = s.conntrack.get("count").filter(|c| !c.is_null()) {
                             println!("conntrack:   {ct} / {}", s.conntrack["max"]);
                         }
+                        if let Some(v6) = s.ipv6.as_ref().and_then(|v| v.as_object()) {
+                            println!("ipv6:");
+                            for (net, st) in v6 {
+                                println!("  {net:<10} {}", ipv6_line(st));
+                            }
+                        }
                     }
                 }
             }
@@ -1966,6 +1972,72 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// Seconds as `1h30m`, `45m` or `30s`.
+fn duration_short(s: u64) -> String {
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m", s / 60),
+        _ if s % 3600 / 60 == 0 => format!("{}h", s / 3600),
+        _ => format!("{}h{}m", s / 3600, s % 3600 / 60),
+    }
+}
+
+/// One network's line in `sparewall status`'s IPv6 section (#216).
+fn ipv6_line(st: &serde_json::Value) -> String {
+    let lifetimes = |a: &serde_json::Value| match (
+        a["preferred_seconds"].as_u64(),
+        a["valid_seconds"].as_u64(),
+    ) {
+        (Some(p), Some(v)) => format!(
+            " (preferred {}, valid {})",
+            duration_short(p),
+            duration_short(v)
+        ),
+        (None, Some(v)) => format!(" (valid {})", duration_short(v)),
+        _ => String::new(),
+    };
+    let mut parts = vec![format!(
+        "{} {}",
+        st["iface"].as_str().unwrap_or("?"),
+        st["mode"].as_str().unwrap_or("?")
+    )];
+    let strs = |k: &str| -> Vec<String> {
+        st[k]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str().map(String::from))
+            .collect()
+    };
+    match st.get("prefixes") {
+        Some(_) => {
+            let p = strs("prefixes");
+            parts.push(if p.is_empty() {
+                "advertises no prefix".to_string()
+            } else {
+                format!("advertises {}", p.join(", "))
+            });
+        }
+        None => {
+            for a in st["addresses"].as_array().into_iter().flatten() {
+                parts.push(a["address"].as_str().unwrap_or("?").to_string());
+            }
+            for d in st["delegated"].as_array().into_iter().flatten() {
+                parts.push(format!(
+                    "delegated {}{}",
+                    d["address"].as_str().unwrap_or("?"),
+                    lifetimes(d)
+                ));
+            }
+            parts.push(match st["default_gateway"].as_str() {
+                Some(g) => format!("default via {g}"),
+                None => "no default route".to_string(),
+            });
+        }
+    }
+    parts.join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Cli, fingerprint, hash_password, node_only, paste_slip};
@@ -2061,5 +2133,29 @@ mod tests {
                 .is_ok()
         );
         assert_ne!(h, hash_password("correct horse").unwrap(), "salted");
+    }
+
+    #[test]
+    fn ipv6_status_lines() {
+        let wan = serde_json::json!({"iface": "wan0", "mode": "dhcpv6",
+            "addresses": [{"address": "2001:db8:ffff::100/128"}],
+            "delegated": [{"address": "2001:db8:100::/56",
+                "preferred_seconds": 1800, "valid_seconds": 5430}],
+            "default_gateway": "fe80::1"});
+        assert_eq!(
+            super::ipv6_line(&wan),
+            "wan0 dhcpv6; 2001:db8:ffff::100/128; delegated 2001:db8:100::/56 \
+             (preferred 30m, valid 1h30m); default via fe80::1"
+        );
+        let lan = serde_json::json!({"iface": "lan0", "mode": "delegated",
+            "prefixes": ["2001:db8:100:1::/64"]});
+        assert_eq!(
+            super::ipv6_line(&lan),
+            "lan0 delegated; advertises 2001:db8:100:1::/64"
+        );
+        let bare = serde_json::json!({"iface": "wan0", "mode": "ra"});
+        assert_eq!(super::ipv6_line(&bare), "wan0 ra; no default route");
+        assert_eq!(super::duration_short(7200), "2h");
+        assert_eq!(super::duration_short(59), "59s");
     }
 }

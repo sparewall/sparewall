@@ -1217,6 +1217,13 @@ pub fn status(
         .map(|(id, s)| json!({"id": id, "reverts_in": s}));
     let health = c.health()?;
     let links = c.system().link_states();
+    let ipv6 = match c.active_document()? {
+        Some(doc) if doc.networks.values().any(|n| n.ipv6.is_some()) => {
+            let l = c.system().ipv6_links();
+            sparewall_core::ipv6::status(&doc, &l)
+        }
+        _ => None,
+    };
     let sync_key = c.system().sync_public_key().ok();
     let ct = |c: &mut Coordinator<Box<dyn System>>, k: &str| {
         c.system()
@@ -1260,6 +1267,7 @@ pub fn status(
         tls: json!({"fingerprint": crate::http::FINGERPRINT.get()}),
         health: serde_json::to_value(&health).unwrap_or_default(),
         update: Some(crate::update::status()),
+        ipv6,
     })
 }
 

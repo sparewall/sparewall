@@ -107,6 +107,7 @@ mod tests {
             tls: json!({}),
             health,
             update: None,
+            ipv6: None,
         }
     }
 

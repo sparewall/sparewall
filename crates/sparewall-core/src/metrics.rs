@@ -236,6 +236,67 @@ impl<S: System> Coordinator<S> {
                 u8::from(s == "up" || s == "unknown"),
             );
         }
+
+        // IPv6 on each WAN that has it (#216): its default route, and
+        // the time left on its delegated prefix.
+        if let Some(doc) = self
+            .active_document()?
+            .filter(|d| d.networks.values().any(|n| n.ipv6.is_some()))
+            && let Some(Value::Object(v6)) = crate::ipv6::status(&doc, &self.system().ipv6_links())
+        {
+            let wans: Vec<(&String, &Value)> = v6
+                .iter()
+                .filter(|(n, _)| {
+                    doc.networks
+                        .get(*n)
+                        .is_some_and(|n| n.role == sparewall_config::model::NetworkRole::Wan)
+                })
+                .collect();
+            if !wans.is_empty() {
+                o.help(
+                    "sparewall_ipv6_default_route",
+                    "gauge",
+                    "1 when the WAN network has an IPv6 default route.",
+                );
+                for (n, s) in &wans {
+                    o.sample(
+                        "sparewall_ipv6_default_route",
+                        &[("network", n)],
+                        u8::from(s.get("default_gateway").is_some()),
+                    );
+                }
+            }
+            for (metric, key, help) in [
+                (
+                    "sparewall_ipv6_delegated_prefix_valid_seconds",
+                    "valid_seconds",
+                    "Seconds left in the valid lifetime of the prefix DHCPv6 delegated to the WAN network.",
+                ),
+                (
+                    "sparewall_ipv6_delegated_prefix_preferred_seconds",
+                    "preferred_seconds",
+                    "Seconds left in the preferred lifetime of the prefix DHCPv6 delegated to the WAN network.",
+                ),
+            ] {
+                let samples: Vec<(&String, &str, u64)> = wans
+                    .iter()
+                    .flat_map(|(n, s)| {
+                        s["delegated"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|p| Some((*n, p["address"].as_str()?, p[key].as_u64()?)))
+                    })
+                    .collect();
+                if samples.is_empty() {
+                    continue;
+                }
+                o.help(metric, "gauge", help);
+                for (n, prefix, v) in samples {
+                    o.sample(metric, &[("network", n), ("prefix", prefix)], v);
+                }
+            }
+        }
         Ok(o.0)
     }
 }

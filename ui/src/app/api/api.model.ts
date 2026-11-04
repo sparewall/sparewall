@@ -1093,6 +1093,8 @@ export interface Calls {
     reply: {
       "conntrack": Record<string, unknown>;
       "health": Record<string, unknown>;
+      /** Each network with IPv6 (#216), by name: `iface`, `mode`, the interface's global `addresses`, the prefixes `delegated` to it by DHCPv6 and its `default_gateway`; an inside network also its advertised `prefixes`. Lifetimes are seconds left. Absent when no network has IPv6, and from nodes older than 0.6.0. */
+      "ipv6"?: Record<string, unknown> | null;
       "links": Record<string, unknown>;
       "node": string;
       "role": string;
