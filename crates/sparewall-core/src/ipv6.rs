@@ -68,6 +68,40 @@ fn lifetimed(addr: Ipv6Addr, len: u64, o: &Value, now_usec: u64) -> Lifetimed {
     }
 }
 
+/// A link's IPv6 default route's gateway. networkd's routes from router
+/// advertisements go through a nexthop object (`nhid`): the gateway is the
+/// nexthop's, and with no interface of its own the route may be listed
+/// only with the manager's routes, so look there too, by the nexthops this
+/// link holds.
+fn default_gateway(describe: &Value, link: &Value) -> Option<Ipv6Addr> {
+    let nexthops: BTreeMap<u64, Option<Ipv6Addr>> = link["NextHops"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| Some((n["ID"].as_u64()?, addr6(&n["Gateway"]))))
+        .collect();
+    let is_default = |r: &&Value| {
+        r["Family"].as_i64() == Some(AF_INET6)
+            && r["DestinationPrefixLength"].as_u64() == Some(0)
+            && r["Type"].as_u64().unwrap_or(RTN_UNICAST) == RTN_UNICAST
+            && r["Table"].as_u64().unwrap_or(RT_TABLE_MAIN) == RT_TABLE_MAIN
+    };
+    let via = |r: &Value| -> Option<Ipv6Addr> {
+        addr6(&r["Gateway"]).or_else(|| nexthops.get(&r["NextHopID"].as_u64()?).copied()?)
+    };
+    let own = link["Routes"].as_array().into_iter().flatten();
+    let shared = describe["Routes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| {
+            r["NextHopID"]
+                .as_u64()
+                .is_some_and(|id| nexthops.contains_key(&id))
+        });
+    own.chain(shared).filter(is_default).find_map(via)
+}
+
 /// Each link's IPv6 state, by name, from networkd's description, `now_usec`
 /// being `CLOCK_BOOTTIME` in µs. Links with no IPv6 state are left out.
 pub fn from_describe(describe: &Value, now_usec: u64) -> BTreeMap<String, LinkIpv6> {
@@ -98,17 +132,7 @@ pub fn from_describe(describe: &Value, now_usec: u64) -> BTreeMap<String, LinkIp
             };
             s.delegated.push(lifetimed(addr, len, p, now_usec));
         }
-        s.default_gateway = link["Routes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|r| {
-                r["Family"].as_i64() == Some(AF_INET6)
-                    && r["DestinationPrefixLength"].as_u64() == Some(0)
-                    && r["Type"].as_u64().unwrap_or(RTN_UNICAST) == RTN_UNICAST
-                    && r["Table"].as_u64().unwrap_or(RT_TABLE_MAIN) == RT_TABLE_MAIN
-            })
-            .find_map(|r| addr6(&r["Gateway"]));
+        s.default_gateway = default_gateway(describe, link);
         if s != LinkIpv6::default() {
             out.insert(name.to_string(), s);
         }
@@ -354,6 +378,29 @@ mod tests {
         assert_eq!(s2["lan"]["prefixes"], json!(["2001:db8:100:1::/64"]));
         assert_eq!(s["lan"]["addresses"][0]["valid_seconds"], 3600);
         assert_eq!(status(&doc(json!({})), &links), None);
+    }
+
+    /// A default route from RAs, through a nexthop object, as networkd
+    /// lists it: on the link, or with the manager's routes.
+    #[test]
+    fn a_default_route_through_a_nexthop() {
+        let nh = json!([{"ID": 7, "Family": 10, "Gateway": bytes("fe80::ff:fe00:2106")}]);
+        let route = json!({"Family": 10, "Destination": bytes("::"),
+            "DestinationPrefixLength": 0, "NextHopID": 7, "Type": 1, "Table": 254});
+        for d in [
+            json!({"Interfaces": [{"Name": "wan0", "NextHops": nh, "Routes": [route]}]}),
+            json!({"Interfaces": [{"Name": "wan0", "NextHops": nh},
+                                  {"Name": "lan0", "NextHops": [{"ID": 8, "Family": 10}]}],
+                   "Routes": [route]}),
+        ] {
+            let s = from_describe(&d, 0);
+            assert_eq!(
+                s["wan0"].default_gateway,
+                Some("fe80::ff:fe00:2106".parse().unwrap()),
+                "{d}"
+            );
+            assert!(!s.contains_key("lan0"), "{s:?}");
+        }
     }
 
     #[test]

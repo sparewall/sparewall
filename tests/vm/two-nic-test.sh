@@ -96,6 +96,15 @@ v6_dump() {
         sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "dhcp6|ndisc|ipv6|pd|prefix" | tail -40
         sudo nft list chain inet sparewall input; sudo nft list chain inet sparewall forward
         sysctl net.ipv6.conf.all.forwarding net.ipv6.conf.lan0.forwarding net.ipv6.conf.wan0.forwarding'
+    # What sparewalld reads for its ipv6 status (#216): networkd's IPv6
+    # routes and nexthops, on wan0 and the manager's own.
+    echo "--- networkd describe (IPv6 routes, nexthops)"
+    at fw1 'networkctl --json=short status' | jq -c '
+        {manager_routes: [.Routes[]? | select(.Family == 10 and .DestinationPrefixLength == 0)],
+         wan0: [.Interfaces[] | select(.Name == "wan0")
+                | {routes: [.Routes[]? | select(.Family == 10 and .DestinationPrefixLength == 0)],
+                   nexthops: .NextHops, dhcp6: .DHCPv6Client.Prefixes}]}'
+    echo "--- sparewall status ipv6"; status fw1 | jq -c .ipv6
     set -e
 } 2>&1
 stop_v6_isp() {
