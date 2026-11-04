@@ -634,6 +634,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // cannot carry on there either (#212).
     if v6 {
         input.push_str(&ipv6_input_early(doc));
+        input.push_str(&dns_served_only(doc));
     }
     input.push_str(CT_STATE);
     input.push_str("iifname \"lo\" accept\n");
@@ -1164,6 +1165,53 @@ fn ipv6_off(doc: &Document, dir: &str, also: &[&str]) -> String {
     )
 }
 
+/// The interfaces the node's resolver serves: the served networks', and
+/// the remote-access instances that name the node's tunnel address as
+/// their DNS server.
+fn dns_ifaces(doc: &Document) -> Vec<String> {
+    let Some(d) = doc.dns.as_ref().filter(|d| d.enabled) else {
+        return vec![];
+    };
+    let nets: Vec<&String> = if d.networks.is_empty() {
+        doc.dhcp.iter().flat_map(|x| x.networks.keys()).collect()
+    } else {
+        d.networks.iter().collect()
+    };
+    let mut v: Vec<String> = nets
+        .into_iter()
+        .filter_map(|n| doc.network_iface(n).map(str::to_string))
+        .collect();
+    v.sort();
+    v.dedup();
+    for (name, vpn) in &doc.vpn {
+        if vpn
+            .dns
+            .iter()
+            .any(|d| vpn.addresses.iter().any(|a| a.0.addr() == *d))
+        {
+            v.push(name.clone());
+        }
+    }
+    v
+}
+
+/// Over IPv6 Unbound allows any source where a prefix is delegated, so
+/// no policy may open its port from another interface (#214); its IPv4
+/// access control already refuses them. Before the state rule, so a flow
+/// conntrack knows from before cannot carry on either.
+fn dns_served_only(doc: &Document) -> String {
+    let v = dns_ifaces(doc);
+    if v.is_empty() || !crate::unbound::serves_ipv6(doc) {
+        return String::new();
+    }
+    let mut only: Vec<String> = vec!["lo".into()];
+    only.extend(v);
+    format!(
+        "meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 iifname != {} drop comment \"service:dns-served-only\"\n",
+        ifset(&only)
+    )
+}
+
 /// Input rules for services the document turns on.
 fn service_rules(doc: &Document, input: &mut String) {
     let ifs = |nets: &mut dyn Iterator<Item = &String>| -> Vec<String> {
@@ -1185,45 +1233,14 @@ fn service_rules(doc: &Document, input: &mut String) {
             .unwrap();
         }
     }
-    if let Some(d) = &doc.dns
-        && d.enabled
-    {
-        let v = if d.networks.is_empty() {
-            ifs(&mut doc.dhcp.iter().flat_map(|x| x.networks.keys()))
-        } else {
-            ifs(&mut d.networks.iter())
-        };
-        let mut v = v;
-        for (name, vpn) in &doc.vpn {
-            if vpn
-                .dns
-                .iter()
-                .any(|d| vpn.addresses.iter().any(|a| a.0.addr() == *d))
-            {
-                v.push(name.clone());
-            }
-        }
-        if !v.is_empty() {
-            writeln!(
-                input,
-                "iifname {} meta l4proto {{ tcp, udp }} th dport 53 accept comment \"service:dns\"",
-                ifset(&v)
-            )
-            .unwrap();
-            // Over IPv6 Unbound allows any source where a prefix is
-            // delegated, so no policy may open its port from elsewhere
-            // (#214); its IPv4 access control already refuses them.
-            if crate::unbound::serves_ipv6(doc) {
-                let mut only: Vec<String> = vec!["lo".into()];
-                only.extend(v.iter().cloned());
-                writeln!(
-                    input,
-                    "meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 iifname != {} drop comment \"service:dns-served-only\"",
-                    ifset(&only)
-                )
-                .unwrap();
-            }
-        }
+    let v = dns_ifaces(doc);
+    if !v.is_empty() {
+        writeln!(
+            input,
+            "iifname {} meta l4proto {{ tcp, udp }} th dport 53 accept comment \"service:dns\"",
+            ifset(&v)
+        )
+        .unwrap();
     }
     if let Some(n) = &doc.ntp {
         let v = ifs(&mut n.serve.iter());

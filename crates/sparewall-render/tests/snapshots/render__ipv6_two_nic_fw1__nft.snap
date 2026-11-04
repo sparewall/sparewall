@@ -41,6 +41,7 @@ table inet sparewall {
 		iifname { "lab0", "lan0" } icmpv6 type nd-router-solicit icmpv6 code 0 ip6 hoplimit 255 accept comment "ipv6-router-solicit"
 		iifname "wan0" icmpv6 type nd-router-advert icmpv6 code 0 ip6 saddr fe80::/10 ip6 hoplimit 255 accept comment "ipv6-router-advert"
 		meta nfproto ipv6 iifname != { "lo", "lab0", "lan0", "wan0" } drop comment "ipv6-off"
+		meta nfproto ipv6 meta l4proto { tcp, udp } th dport 53 iifname != { "lo", "lan0" } drop comment "service:dns-served-only"
 		ct state vmap { established : accept, related : accept, invalid : drop }
 		iifname "lo" accept
 		iifname "lan0" meta nfproto ipv4 ip saddr 192.168.1.10 tcp dport { 22, 443 } accept comment "anti-lockout"
@@ -50,7 +51,6 @@ table inet sparewall {
 		iifname "wan0" udp sport 547 udp dport 546 accept comment "infra:dhcpv6-client"
 		iifname "lan0" udp dport 67 accept comment "service:dhcp"
 		iifname "lan0" meta l4proto { tcp, udp } th dport 53 accept comment "service:dns"
-		meta nfproto ipv6 meta l4proto { tcp, udp } th dport 53 iifname != { "lo", "lan0" } drop comment "service:dns-served-only"
 		iifname vmap { "lan0" : jump in_lan, "wan0" : jump in_wan }
 		counter comment "default:input"
 	}

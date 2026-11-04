@@ -1508,8 +1508,11 @@ fn ipv6_dns_only_from_served_networks() {
     let at = input
         .find(gate)
         .unwrap_or_else(|| panic!("{gate}\n{input}"));
-    // Before the zone policies, which accept everything from the lab.
+    // Before the zone policies, which accept everything from the lab,
+    // and before the state rule, so not even a flow conntrack knows from
+    // before carries on.
     assert!(at < input.find("iifname vmap").unwrap(), "{input}");
+    assert!(at < input.find("ct state vmap").unwrap(), "{input}");
     // Without IPv6 on a served network, no such rule.
     let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
     sparewall_config::merge_patch(
