@@ -239,7 +239,9 @@ impl<S: System> Coordinator<S> {
 
         // IPv6 on each WAN that has it (#216): its default route, and
         // the time left on its delegated prefix.
-        if let Some(doc) = self.active_document()?
+        if let Some(doc) = self
+            .active_document()?
+            .filter(|d| d.networks.values().any(|n| n.ipv6.is_some()))
             && let Some(Value::Object(v6)) = crate::ipv6::status(&doc, &self.system().ipv6_links())
         {
             let wans: Vec<(&String, &Value)> = v6

@@ -627,11 +627,16 @@ impl System for Linux {
     }
 
     fn ipv6_links(&mut self) -> BTreeMap<String, crate::ipv6::LinkIpv6> {
-        // networkd's lifetimes are CLOCK_BOOTTIME stamps, as /proc/uptime.
-        let now_usec = fs::read_to_string("/proc/uptime")
-            .ok()
-            .and_then(|u| u.split_whitespace().next()?.parse::<f64>().ok())
-            .map(|s| (s * 1_000_000.0) as u64);
+        // networkd's lifetimes are CLOCK_BOOTTIME stamps.
+        #[cfg(target_os = "linux")]
+        let now_usec = {
+            let t = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+            u64::try_from(t.tv_sec)
+                .ok()
+                .map(|s| s * 1_000_000 + u64::try_from(t.tv_nsec).unwrap_or(0) / 1000)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let now_usec: Option<u64> = None;
         let describe = run("networkctl", &["--json=short", "status"], None)
             .ok()
             .and_then(|o| serde_json::from_str::<serde_json::Value>(&o).ok());
