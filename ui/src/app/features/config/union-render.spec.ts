@@ -109,3 +109,58 @@ describe('the form with unions', () => {
     expect(f.now()).toEqual(raw);
   });
 });
+
+describe("a network's IPv6, by mode", () => {
+  const ipv6 = entry('networks').properties!['ipv6'] as JsonSchema7;
+
+  it('gives each mode-bound field a rule from the schema', () => {
+    const rules = Object.fromEntries(
+      objectLayout(ipv6).elements.map((e) => {
+        const c = e as {
+          scope: string;
+          rule?: { condition: { conditions: { expectedValue: string }[] } };
+        };
+        return [c.scope.split('/').pop(), c.rule?.condition.conditions.map((l) => l.expectedValue)];
+      }),
+    );
+    expect(rules).toEqual({
+      mode: undefined,
+      prefix_length: ['dhcpv6'],
+      subnet_id: ['delegated'],
+      prefix: ['static'],
+      gateway: ['static'],
+      dns: ['delegated', 'static'],
+      addresses: ['static'],
+    });
+  });
+
+  it("shows only the chosen mode's fields", async () => {
+    // A control is hidden by a `display: none` on itself or a parent.
+    const shown = (el: HTMLElement, label: string) => {
+      const f = [...el.querySelectorAll('mat-form-field')].find(
+        (f) => f.querySelector('mat-label')?.textContent?.trim().replace(/\*$/, '') === label,
+      );
+      for (let n = f as HTMLElement | null; n && n !== el; n = n.parentElement) {
+        if (n.style?.display === 'none') return false;
+      }
+      return !!f;
+    };
+    const delegated = await render(ipv6, { mode: 'delegated', subnet_id: 1 });
+    expect(shown(delegated.el, 'Subnet ID')).toBe(true);
+    expect(shown(delegated.el, 'Prefix length')).toBe(false);
+    expect(shown(delegated.el, 'Gateway')).toBe(false);
+    TestBed.resetTestingModule();
+    const dhcpv6 = await render(ipv6, { mode: 'dhcpv6' });
+    expect(shown(dhcpv6.el, 'Prefix length')).toBe(true);
+    expect(shown(dhcpv6.el, 'Subnet ID')).toBe(false);
+    // Nested in a network, as the editor draws it.
+    TestBed.resetTestingModule();
+    const network = await render(entry('networks'), {
+      port: 'eth1',
+      role: 'wan',
+      ipv6: { mode: 'dhcpv6' },
+    });
+    expect(shown(network.el, 'Prefix length')).toBe(true);
+    expect(shown(network.el, 'Subnet ID')).toBe(false);
+  });
+});

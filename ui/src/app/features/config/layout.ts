@@ -1,4 +1,11 @@
-import { ControlElement, JsonSchema7, VerticalLayout } from '@jsonforms/core';
+import {
+  ControlElement,
+  JsonSchema7,
+  LeafCondition,
+  OrCondition,
+  RuleEffect,
+  VerticalLayout,
+} from '@jsonforms/core';
 
 import { isMap } from './form-schema';
 
@@ -54,6 +61,12 @@ function weight(s: JsonSchema7, required: boolean): number {
 }
 
 /**
+ * On a field of an object with a `mode` (a network's `ipv6`): the modes
+ * the field applies to. The field shows only in those.
+ */
+export const MODES = 'x-modes';
+
+/**
  * One control per property: required ones first, then plain values, then
  * lists, then nested groups and maps, keeping the schema's order within
  * each. JSON Forms' own generator keeps only the schema's (alphabetical)
@@ -65,12 +78,30 @@ export function objectLayout(schema: JsonSchema7): VerticalLayout {
   const ordered = props
     .map(([key, s], i) => ({ key, i, w: weight(s, required.has(key)) }))
     .sort((a, b) => a.w - b.w || a.i - b.i);
+  const hasMode = !!schema.properties?.['mode'];
   return {
     type: 'VerticalLayout',
-    elements: ordered.map(({ key }): ControlElement => ({
-      type: 'Control',
-      scope: `#/properties/${key}`,
-      label: fieldLabel(key),
-    })),
+    elements: ordered.map(({ key }): ControlElement => {
+      const control: ControlElement = {
+        type: 'Control',
+        scope: `#/properties/${key}`,
+        label: fieldLabel(key),
+      };
+      const modes = (schema.properties?.[key] as Record<string, unknown> | undefined)?.[MODES];
+      if (hasMode && Array.isArray(modes)) {
+        // Value conditions, not a schema one: those need a validator, and
+        // the form's passes everything (no-eval-ajv.ts).
+        const leaf = (m: unknown): LeafCondition => ({
+          type: 'LEAF',
+          scope: '#/properties/mode',
+          expectedValue: m,
+        });
+        control.rule = {
+          effect: RuleEffect.SHOW,
+          condition: { type: 'OR', conditions: modes.map(leaf) } as OrCondition,
+        };
+      }
+      return control;
+    }),
   };
 }

@@ -1162,7 +1162,7 @@
       },
       "Document.NetworkIpv6": {
         "additionalProperties": false,
-        "description": "How a network gets its IPv6 addresses. Which fields apply depends on\n`mode` and on the network's role.",
+        "description": "How a network gets its IPv6 addresses. Which fields apply depends on\n`mode` and on the network's role; each field's `x-modes` lists the\nmodes it applies to, for editors (the web UI shows it only in those).",
         "properties": {
           "addresses": {
             "additionalProperties": {
@@ -1170,7 +1170,10 @@
               "type": "string"
             },
             "description": "`static` on a WAN: each node's own address, in `prefix`.",
-            "type": "object"
+            "type": "object",
+            "x-modes": [
+              "static"
+            ]
           },
           "dns": {
             "description": "On an inside network: the resolvers its router advertisements\nname (RDNSS), in place of the node, whatever DHCPv4 hands out; an\nempty list names none. Unset, they name the node where DHCPv4\ndoes, and none otherwise.",
@@ -1181,6 +1184,10 @@
             "type": [
               "array",
               "null"
+            ],
+            "x-modes": [
+              "delegated",
+              "static"
             ]
           },
           "gateway": {
@@ -1189,6 +1196,9 @@
             "type": [
               "string",
               "null"
+            ],
+            "x-modes": [
+              "static"
             ]
           },
           "mode": {
@@ -1204,7 +1214,10 @@
                 "type": "null"
               }
             ],
-            "description": "`static`: the network's prefix. A /64 on an inside network; on a\nWAN, the upstream link's prefix."
+            "description": "`static`: the network's prefix. A /64 on an inside network; on a\nWAN, the upstream link's prefix.",
+            "x-modes": [
+              "static"
+            ]
           },
           "prefix_length": {
             "description": "`dhcpv6`: the length of the prefix to ask the ISP to delegate, 48\nto 64. Default 56. The ISP may delegate another.",
@@ -1214,6 +1227,9 @@
             "type": [
               "integer",
               "null"
+            ],
+            "x-modes": [
+              "dhcpv6"
             ]
           },
           "subnet_id": {
@@ -1224,6 +1240,9 @@
             "type": [
               "integer",
               "null"
+            ],
+            "x-modes": [
+              "delegated"
             ]
           }
         },

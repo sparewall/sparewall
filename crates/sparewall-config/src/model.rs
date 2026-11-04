@@ -341,7 +341,8 @@ pub struct Network {
 }
 
 /// How a network gets its IPv6 addresses. Which fields apply depends on
-/// `mode` and on the network's role.
+/// `mode` and on the network's role; each field's `x-modes` lists the
+/// modes it applies to, for editors (the web UI shows it only in those).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkIpv6 {
@@ -353,27 +354,33 @@ pub struct NetworkIpv6 {
     pub mode: Ipv6Mode,
     /// `dhcpv6`: the length of the prefix to ask the ISP to delegate, 48
     /// to 64. Default 56. The ISP may delegate another.
+    #[schemars(extend("x-modes" = ["dhcpv6"]))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix_length: Option<u8>,
     /// `delegated`: which /64 of the delegated prefix this network takes,
     /// counting from 0 (a /56 has 256). Unique among the networks.
+    #[schemars(extend("x-modes" = ["delegated"]))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subnet_id: Option<u16>,
     /// `static`: the network's prefix. A /64 on an inside network; on a
     /// WAN, the upstream link's prefix.
+    #[schemars(extend("x-modes" = ["static"]))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<Prefix6>,
     /// `static` on a WAN: each node's own address, in `prefix`.
+    #[schemars(extend("x-modes" = ["static"]))]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub addresses: BTreeMap<String, Ipv6Addr>,
     /// `static` on a WAN: the upstream router, in `prefix` or link-local
     /// (`fe80::1`).
+    #[schemars(extend("x-modes" = ["static"]))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<Ipv6Addr>,
     /// On an inside network: the resolvers its router advertisements
     /// name (RDNSS), in place of the node, whatever DHCPv4 hands out; an
     /// empty list names none. Unset, they name the node where DHCPv4
     /// does, and none otherwise.
+    #[schemars(extend("x-modes" = ["delegated", "static"]))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dns: Option<Vec<Ipv6Addr>>,
 }

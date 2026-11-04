@@ -10,7 +10,14 @@ import { callUrl } from '../../api/api-client';
 import { Reply } from '../../api/api.model';
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
-import { Conntrack, HealthState, SyncState, UpdateState } from '../../api/status.model';
+import {
+  Conntrack,
+  HealthState,
+  Ipv6Network,
+  Lifetimed,
+  SyncState,
+  UpdateState,
+} from '../../api/status.model';
 import { checkProblem, mixedImages, updateNotice } from '../../shared/update-notice';
 import { UpgradePanel } from './upgrade-panel';
 
@@ -64,10 +71,31 @@ export class Status {
     Object.entries((this.value()?.links ?? {}) as Record<string, string>),
   );
 
+  protected readonly ipv6 = computed(() =>
+    Object.entries((this.value()?.ipv6 ?? {}) as Record<string, Ipv6Network>),
+  );
+
   protected readonly levelIcon = (level: string) => LEVEL_ICON[level] ?? 'help';
 
   protected levelText(level: string): string {
     return LEVEL_TEXT[level] ?? level;
+  }
+
+  /** Seconds as `1h30m`, `45m` or `30s`. */
+  protected duration(s: number): string {
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m`;
+    const m = Math.floor((s % 3600) / 60);
+    return m ? `${Math.floor(s / 3600)}h${m}m` : `${Math.floor(s / 3600)}h`;
+  }
+
+  /** A delegated prefix's lifetimes left: `preferred 30m, valid 1h`. */
+  protected lifetimes(d: Lifetimed): string {
+    const parts: string[] = [];
+    if (d.preferred_seconds !== undefined)
+      parts.push(`preferred ${this.duration(d.preferred_seconds)}`);
+    if (d.valid_seconds !== undefined) parts.push(`valid ${this.duration(d.valid_seconds)}`);
+    return parts.join(', ');
   }
 
   /** What is wrong, by check, or that nothing is. */
