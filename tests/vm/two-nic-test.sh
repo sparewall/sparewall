@@ -358,7 +358,7 @@ sudo tee "$KEA6_CONF" > /dev/null <<EOF
     "pd-pools": [{"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 56}]}],
   "option-data": [{"name": "dns-servers", "data": "2001:db8:ffff::1"}],
   "loggers": [{"name": "kea-dhcp6", "severity": "INFO",
-    "output-options": [{"output": "$KEA6_LOG"}]}]
+    "output_options": [{"output": "$KEA6_LOG"}]}]
 }}
 EOF
 sudo rm -f "$KEA6_LEASES"*
