@@ -370,7 +370,7 @@ pub struct NetworkIpv6 {
     #[schemars(extend("x-modes" = ["static"]))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<Prefix6>,
-    /// `static` on a WAN: each node's own address, in `prefix`.
+    /// `static` on a standalone node's WAN: its own address, in `prefix`.
     #[schemars(extend("x-modes" = ["static"], "x-role" = "wan"))]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub addresses: BTreeMap<String, Ipv6Addr>,
@@ -379,6 +379,12 @@ pub struct NetworkIpv6 {
     #[schemars(extend("x-modes" = ["static"], "x-role" = "wan"))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<Ipv6Addr>,
+    /// `static` on a pair's WAN: the address the ISP routes the site to,
+    /// which moves with the gateway (the nodes have no IPv6 address of
+    /// their own there).
+    #[schemars(extend("x-modes" = ["static"], "x-role" = "wan"))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vip: Option<Ipv6Addr>,
     /// On an inside network: the resolvers its router advertisements
     /// name (RDNSS), in place of the node, whatever DHCPv4 hands out; an
     /// empty list names none. Unset, they name the node where DHCPv4

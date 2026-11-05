@@ -341,7 +341,7 @@ export interface Schemas {
    * (neither a WAN nor the sync network), for editors (the web UI shows a
    * field only where it applies). */
   "Document.NetworkIpv6": {
-    /** `static` on a WAN: each node's own address, in `prefix`. */
+    /** `static` on a standalone node's WAN: its own address, in `prefix`. */
     "addresses"?: Record<string, string>;
     /** On an inside network: the resolvers its router advertisements
      * name (RDNSS), in place of the node, whatever DHCPv4 hands out; an
@@ -366,6 +366,10 @@ export interface Schemas {
     /** `delegated`: which /64 of the delegated prefix this network takes,
      * counting from 0 (a /56 has 256). Unique among the networks. */
     "subnet_id"?: number | null;
+    /** `static` on a pair's WAN: the address the ISP routes the site to,
+     * which moves with the gateway (the nodes have no IPv6 address of
+     * their own there). */
+    "vip"?: string | null;
   };
   "Document.NetworkRole": "service" | "wan" | "management" | "sync";
   "Document.Ntp": {
