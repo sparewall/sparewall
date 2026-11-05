@@ -481,7 +481,10 @@ policy:
 - **Objects:** `ipv6` objects hold IPv6 addresses, prefixes and ranges; a dynamic one is filled with the node's own IPv6 addresses on a network, or the network's prefix. `suffixes` names hosts in a network's prefix by the address's last 64 bits, and follows the prefix when a delegated one changes.
 - **Forwards and `nat` stay IPv4.** Opening a port to an inside IPv6 host is a policy from the WAN's zone to that host, with no NAT; NAT66 is not planned.
 - **Validation** refuses a delegated network with no WAN on `dhcpv6`, two networks with one subnet ID or overlapping static prefixes, a subnet ID beyond what `prefix_length` holds, an inside static prefix that is not a /64, and fields for another mode.
-- **A pair** advertises only from the master, and runs the DHCPv6 client only there, on the WAN's lease link (`swwan`) like the DHCPv4 client (#54), so the lease and the delegated prefix move with the gateway; the backup learns the prefix through the sync tunnel, so a failover does not renumber (#215).
+- **A pair** (#215) keeps the gateway on the master, as for IPv4:
+  - **The WAN:** DHCPv6 and router advertisements need the pair's one DHCP lease. The DHCPv6 client runs on its lease link (`swwan`), which is up on the master only, with a DUID from the virtual MAC and a fixed IAID, so the lease and the delegated prefix move with the gateway. A static block's link is up on both nodes, so its IPv6 is static, with `ipv6.vip`: the address the ISP routes the site to, which moves with the gateway, while the nodes take no IPv6 address of their own there. A WAN on the nodes' own MACs (`vmac: false`) is IPv4 only.
+  - **Inside networks:** only the master advertises, from a shared gateway address (`fe80::1`) on a macvlan with the network's IPv6 VRRP virtual MAC (`00:00:5e:00:02:<vrid>`), which is up on the master only. Hosts keep the same router across a failover. The nodes take no global address there. Where the RAs name the node as the resolver (as on a standalone node), they name `fe80::1`; `ipv6.dns` replaces it as it does there.
+  - **Across the pair:** the backup learns the delegated prefix through the sync tunnel, and advertises it at a failover until its own DHCPv6 reply arrives, so a failover does not renumber.
 - **Older releases:** an IPv6 address in a rule's `src` or `dst`, or in `management.sources`, needs revision 5 as the new fields do (`x-since-ipv6` on the match types), so 0.5.x refuses such a document as too new, not as invalid.
 
 ## Firewall: zones plus raw rules
@@ -1085,7 +1088,7 @@ Build bottom-up: a bootable image, then a standalone firewall, then services, th
 | 6 | First production deployments | 0.x releases: hardening pass (SELinux module, sandboxing score), benchmarks on real hardware, documentation | Runs in production at two sites; restore drill passes on real hardware |
 | 7 | Web UI and HTTP API | Role checks on a restricted socket (#11); `sparewall-httpd`; the UI; opt-in through the document | The UI and the HTTP API drive every operation the CLI does, under each role's limits; 1.0 released, freezing the schema, the Varlink API and the HTTP API |
 
-Later features (multiple WANs and WAN failover, IPv6 routing, DDNS, IDS/IPS, dynamic routing) follow 1.0 and slot in as providers or schema additions.
+Later features (multiple WANs and WAN failover, DDNS, IDS/IPS, dynamic routing) follow 1.0 and slot in as providers or schema additions.
 
 ## To prove in the lab
 

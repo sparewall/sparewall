@@ -1533,7 +1533,7 @@ fn ipv6_networks_take_the_modes_their_role_allows() {
 
 #[test]
 fn two_networks_cannot_share_a_subnet_or_a_prefix() {
-    let mut v = to_value(&load(PAIR));
+    let mut v = to_value(&load(STANDALONE));
     merge_patch(
         &mut v,
         &json!({"networks": {
@@ -1890,4 +1890,80 @@ fn ipv6_through_a_vpn_client_is_said() {
     );
     let w = warnings(&client(false));
     assert!(w.iter().any(|w| w.contains("around the tunnel")), "{w:#?}");
+}
+
+/// IPv6 in a pair (#215): DHCPv6 only on the pair's one lease, a static
+/// WAN by its vip, none on the nodes' own MACs, and a vrid for each
+/// inside network's gateway.
+#[test]
+fn ipv6_in_a_pair() {
+    // The example's WAN is a static block on the virtual MAC.
+    let pair = |patch: serde_json::Value| edit(PAIR, patch);
+    let lan = json!({"mode": "delegated", "subnet_id": 1});
+    // A static block takes static IPv6 with a vip, not DHCPv6.
+    let d = pair(json!({"networks": {
+        "wan": {"ipv6": {"mode": "dhcpv6"}}, "users": {"ipv6": lan}}}));
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6.mode: in a pair, DHCPv6 and router advertisements need the WAN's one DHCP lease"
+    ));
+    let st = json!({"mode": "static", "prefix": "2001:db8:ffff::/64", "gateway": "fe80::1",
+        "vip": "2001:db8:ffff::2"});
+    let users = json!({"mode": "static", "prefix": "2001:db8:0:1::/64"});
+    let d = pair(json!({"networks": {"wan": {"ipv6": st}, "users": {"ipv6": users}}}));
+    assert_eq!(history_errors(&d), Vec::<String>::new());
+    let mut b = st.clone();
+    b["vip"] = serde_json::Value::Null;
+    b["addresses"] = json!({"fw1": "2001:db8:ffff::3", "fw2": "2001:db8:ffff::4"});
+    let d = pair(json!({"networks": {"wan": {"ipv6": b}}}));
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6.vip: a pair's static WAN needs one"
+    ));
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6.addresses: on a pair the WAN's IPv6 address is the vip"
+    ));
+    let mut b = st.clone();
+    b["vip"] = "2001:db8:eeee::2".into();
+    assert!(history_error(
+        &pair(json!({"networks": {"wan": {"ipv6": b}}})),
+        "networks.wan.ipv6.vip: not a host in 2001:db8:ffff::/64"
+    ));
+    // On the nodes' own MACs: IPv4 only.
+    let d = pair(json!({"networks": {"wan": {"vmac": false, "ipv6": st}}}));
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6: a pair's WAN on the nodes' own MACs (vmac: false) is IPv4 only"
+    ));
+    // An inside network without a vrid has no virtual MAC for its gateway.
+    let d = pair(json!({"networks": {"wan": {"ipv6": st},
+        "users": {"vrid": null, "vip": null, "ipv6": users}}}));
+    assert!(history_error(
+        &d,
+        "networks.users.ipv6: in a pair, an inside network's IPv6 gateway needs the network's vrid"
+    ));
+
+    // One DHCP lease for the pair: DHCPv6 and delegation are fine.
+    let mut leased = to_value(&load(PAIR));
+    let wan = leased["networks"]["wan"].as_object_mut().unwrap();
+    for k in ["vip", "gateway", "extra_vips"] {
+        wan.remove(k);
+    }
+    wan.insert("dhcp_client".into(), json!(true));
+    merge_patch(
+        &mut leased,
+        &json!({"networks": {"wan": {"ipv6": {"mode": "dhcpv6"}}, "users": {"ipv6": lan}}}),
+    );
+    let leased: Document = from_value(leased).unwrap();
+    assert_eq!(history_errors(&leased), Vec::<String>::new());
+
+    // A vip is a pair's.
+    let mut b = st;
+    b["addresses"] = json!({"fw1": "2001:db8:ffff::3"});
+    let d = edit(TWO_NIC, json!({"networks": {"wan": {"ipv6": b}}}));
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6.vip: for a pair's static WAN"
+    ));
 }

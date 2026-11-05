@@ -851,6 +851,12 @@ impl Validator<'_> {
             if v6.gateway.is_some() && !static_wan {
                 self.err(format!("{p}.gateway"), "for a static WAN");
             }
+            if v6.vip.is_some() && !(static_wan && doc.is_pair()) {
+                self.err(format!("{p}.vip"), "for a pair's static WAN");
+            }
+            if doc.is_pair() {
+                self.pair_ipv6(name, net, v6);
+            }
             if let Some(dns) = &v6.dns {
                 if wan {
                     self.err(
@@ -943,7 +949,32 @@ impl Validator<'_> {
                         }
                     }
                     prefixes.push((px.trunc(), name));
-                    if wan {
+                    if wan && doc.is_pair() {
+                        // The WAN's address is the vip, which moves with the
+                        // gateway; the nodes take none of their own.
+                        if !v6.addresses.is_empty() {
+                            self.err(
+                                format!("{p}.addresses"),
+                                "on a pair the WAN's IPv6 address is the vip; the nodes take none of their own",
+                            );
+                        }
+                        match v6.vip {
+                            None => self.err(
+                                format!("{p}.vip"),
+                                "a pair's static WAN needs one: the address that moves with the gateway",
+                            ),
+                            Some(a) if !px.contains(&a) || a == px.network() => self.err(
+                                format!("{p}.vip"),
+                                format!("not a host in {}", px.trunc()),
+                            ),
+                            Some(a) if Some(a) == v6.gateway => self.err(
+                                format!("{p}.vip"),
+                                "is the upstream router's address",
+                            ),
+                            _ => {}
+                        }
+                    }
+                    if wan && !doc.is_pair() {
                         let mut seen: BTreeMap<Ipv6Addr, &str> = BTreeMap::new();
                         for node in &doc.cluster.nodes {
                             match v6.addresses.get(node) {
@@ -976,6 +1007,8 @@ impl Validator<'_> {
                                 );
                             }
                         }
+                    }
+                    if wan {
                         match v6.gateway {
                             None => self.err(
                                 format!("{p}.gateway"),
@@ -991,6 +1024,43 @@ impl Validator<'_> {
                 }
                 Ipv6Mode::Dhcpv6 | Ipv6Mode::Ra => {}
             }
+        }
+    }
+
+    /// What IPv6 in a pair needs (#215), beyond what any node's does.
+    ///
+    /// - **The WAN:** DHCPv6 and router advertisements need the pair's
+    ///   one DHCP lease, whose link (the virtual MAC) is up on the master
+    ///   only, so one client asks, with one DUID. A static block's link is
+    ///   up on both nodes: IPv6 there is static, with a `vip`. A WAN on
+    ///   the nodes' own MACs (`vmac: false`) takes no IPv6.
+    /// - **An inside network:** its IPv6 gateway (`fe80::1`) has the
+    ///   network's VRRP virtual MAC for IPv6, so it needs a `vrid`.
+    fn pair_ipv6(&mut self, name: &str, net: &Network, v6: &NetworkIpv6) {
+        let doc = self.doc;
+        let p = format!("networks.{name}.ipv6");
+        if net.role == NetworkRole::Wan {
+            if doc.split_wan(name).is_some() && !net.vmac {
+                self.err(
+                    &p,
+                    "a pair's WAN on the nodes' own MACs (vmac: false) is IPv4 only",
+                );
+                return;
+            }
+            if matches!(v6.mode, Ipv6Mode::Dhcpv6 | Ipv6Mode::Ra) && doc.leased_wan(name).is_none()
+            {
+                self.err(
+                    format!("{p}.mode"),
+                    "in a pair, DHCPv6 and router advertisements need the WAN's one DHCP lease \
+                     (dhcp_client and a vrid), whose link follows the master; a static block takes \
+                     mode static, with a vip",
+                );
+            }
+        } else if net.vrid.is_none() {
+            self.err(
+                &p,
+                "in a pair, an inside network's IPv6 gateway needs the network's vrid, for its virtual MAC",
+            );
         }
     }
 

@@ -158,6 +158,7 @@ describe("a network's IPv6, by mode", () => {
       subnet_id: 'wan:delegated lan:delegated sync:delegated',
       prefix: 'wan:static lan:static sync:static',
       gateway: 'wan:static',
+      vip: 'wan:static',
       dns: 'lan:static lan:delegated',
       addresses: 'wan:static',
     });
