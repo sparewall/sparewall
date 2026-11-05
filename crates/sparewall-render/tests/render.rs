@@ -1730,6 +1730,46 @@ fn pair_ipv6_static_block_and_static_network() {
 }
 
 #[test]
+fn pair_ipv6_objects() {
+    // A delegated network's prefix: the coordinator fills it, since
+    // networkd fills from the node's address there, which a pair's nodes
+    // do not take.
+    let r = pair_v6(serde_json::json!({
+        "networks": {
+            "wan": {"dhcp_client": true, "vip": null, "extra_vips": [], "gateway": null,
+                "ipv6": {"mode": "dhcpv6"}},
+            "users": {"ipv6": {"mode": "delegated", "subnet_id": 1}},
+        },
+        "objects": {
+            "users6": {"type": "ipv6", "dynamic": {"network": "users", "source": "prefix"}},
+        },
+    }));
+    assert!(r.meta.preserved_sets.contains(&"users6".to_string()));
+    assert!(
+        !r.meta.set_links.contains_key("users6"),
+        "{:?}",
+        r.meta.set_links
+    );
+    let gw = file_in(&r, Subsystem::Networkd, "40-sparewall-swgw20.network");
+    assert!(!gw.contains("NFTSet"), "{gw}");
+    // A static WAN's address: the vip.
+    let r = pair_v6(serde_json::json!({
+        "networks": {
+            "wan": {"ipv6": {"mode": "static", "prefix": "2001:db8:10::/64",
+                "vip": "2001:db8:10::1", "gateway": "2001:db8:10::fffe"}},
+        },
+        "objects": {"wan6": {"type": "ipv6", "dynamic": {"network": "wan"}}},
+    }));
+    let nft = file_in(&r, Subsystem::Nft, nft::SCRIPT);
+    let wan6 = nft
+        .split("set wan6 {")
+        .nth(1)
+        .and_then(|s| s.split('}').next())
+        .unwrap_or_else(|| panic!("{nft}"));
+    assert!(wan6.contains("2001:db8:10::1"), "{wan6}");
+}
+
+#[test]
 fn pair_ipv6_static_address_on_a_leased_wan() {
     // The lease link is down on the backup, where keepalived could not
     // add a route: networkd holds the address on the master's.

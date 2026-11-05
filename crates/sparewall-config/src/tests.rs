@@ -2001,3 +2001,24 @@ fn ipv6_gateway_link_names_are_reserved() {
     assert!(d.ipv6_ifaces().contains(&"swgw20".to_string()));
     assert_eq!(load(STANDALONE).ipv6_gateway_iface("lan"), None);
 }
+
+#[test]
+fn a_pair_s_inside_ipv6_objects_take_the_prefix() {
+    // The nodes take no address on a pair's inside network (#215).
+    let users = json!({"mode": "static", "prefix": "2001:db8:0:1::/64"});
+    let d = edit(
+        PAIR,
+        json!({"networks": {"users": {"ipv6": users}},
+            "objects": {"fw6": {"type": "ipv6", "dynamic": {"network": "users"}}}}),
+    );
+    assert!(has_error(
+        &d,
+        "objects.fw6.dynamic.source: in a pair, the nodes take no IPv6 address"
+    ));
+    let d = edit(
+        PAIR,
+        json!({"networks": {"users": {"ipv6": users}},
+            "objects": {"net6": {"type": "ipv6", "dynamic": {"network": "users", "source": "prefix"}}}}),
+    );
+    assert!(!has_error(&d, "objects.net6"), "{:?}", error_paths(&d));
+}

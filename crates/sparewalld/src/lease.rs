@@ -25,14 +25,18 @@
 //!   addresses as they were. With the expected same prefix, networkd's own
 //!   routes take over, and these go.
 //! - **Health:** the master checks its IPv6; the backup has none by design.
+//! - **ipv6 objects** on a delegated network: networkd fills them from the
+//!   node's address there, which a pair's nodes do not take, so this loop
+//!   keeps them at the /64s of the prefixes in use: the node's own, and
+//!   the peer's last while valid (routed at a takeover).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sparewall_api::DelegatedPrefix;
 use sparewall_config::Document;
-use sparewall_config::model::Ipv6Mode;
+use sparewall_config::model::{DynamicKind, Ipv6Mode, ObjectKind};
 use sparewall_config::topology::LEASE_IFACE;
 use sparewall_core::ipv6::{self, Lifetimed};
 use tokio::sync::broadcast;
@@ -119,17 +123,12 @@ pub fn takeovers(
     let Some((heard, prefixes)) = peer else {
         return vec![];
     };
-    let elapsed = now.saturating_duration_since(*heard).as_secs();
     let mut out = Vec::new();
     for p in prefixes
         .iter()
         .filter(|p| !own.iter().any(|o| o.address == p.prefix))
     {
-        let valid = p
-            .valid_seconds
-            .map_or(TAKEOVER_MAX_S, |s| u64::try_from(s).unwrap_or(0))
-            .min(TAKEOVER_MAX_S);
-        let Some(left) = valid.checked_sub(elapsed).filter(|l| *l > 0) else {
+        let Some(left) = left(p, *heard, now) else {
             continue;
         };
         for (name, net) in &doc.networks {
@@ -151,6 +150,122 @@ pub fn takeovers(
     out.sort();
     out.dedup_by(|a, b| a.iface == b.iface && a.dst == b.dst);
     out
+}
+
+/// The seconds left of a heard prefix's valid lifetime, capped; `None`
+/// once lapsed.
+fn left(p: &DelegatedPrefix, heard: Instant, now: Instant) -> Option<u64> {
+    let elapsed = now.saturating_duration_since(heard).as_secs();
+    p.valid_seconds
+        .map_or(TAKEOVER_MAX_S, |s| u64::try_from(s).unwrap_or(0))
+        .min(TAKEOVER_MAX_S)
+        .checked_sub(elapsed)
+        .filter(|l| *l > 0)
+}
+
+/// A pair's ipv6 objects on delegated networks (#215), by set name, with
+/// the elements they should hold: the network's /64 of each prefix the
+/// node holds, and of each the peer last reported while it is valid.
+pub fn object_elements(
+    doc: &Document,
+    own: &[Lifetimed],
+    peer: Option<&(Instant, Vec<DelegatedPrefix>)>,
+    now: Instant,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut prefixes: Vec<&str> = own
+        .iter()
+        .filter(|p| p.valid_seconds != Some(0))
+        .map(|p| p.address.as_str())
+        .collect();
+    if let Some((heard, ps)) = peer {
+        prefixes.extend(
+            ps.iter()
+                .filter(|p| left(p, *heard, now).is_some())
+                .map(|p| p.prefix.as_str()),
+        );
+    }
+    let mut out = BTreeMap::new();
+    for (name, o) in &doc.objects {
+        let Some(d) = &o.dynamic else { continue };
+        if o.kind != ObjectKind::Ipv6 || d.source != DynamicKind::Prefix {
+            continue;
+        }
+        let Some(v6) = doc.networks.get(&d.network).and_then(|n| n.ipv6.as_ref()) else {
+            continue;
+        };
+        if doc.ipv6_gateway_iface(&d.network).is_none() || v6.mode != Ipv6Mode::Delegated {
+            continue;
+        }
+        let Some(id) = v6.subnet_id else { continue };
+        out.insert(
+            name.clone(),
+            prefixes
+                .iter()
+                .filter_map(|p| ipv6::subnet64(p, id))
+                .collect(),
+        );
+    }
+    out
+}
+
+/// A set's elements from `nft -j list set`: addresses, prefixes
+/// (`2001:db8::/64`) and ranges (`a-b`).
+pub fn set_elements(listing: &Value) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for item in listing["nftables"].as_array().into_iter().flatten() {
+        for e in item["set"]["elem"].as_array().into_iter().flatten() {
+            let e = e.get("elem").map_or(e, |x| &x["val"]);
+            if let Some(a) = e.as_str() {
+                out.insert(a.to_string());
+            } else if let (Some(a), Some(l)) =
+                (e["prefix"]["addr"].as_str(), e["prefix"]["len"].as_u64())
+            {
+                out.insert(format!("{a}/{l}"));
+            } else if let Some([a, b]) = e["range"].as_array().map(Vec::as_slice)
+                && let (Some(a), Some(b)) = (a.as_str(), b.as_str())
+            {
+                out.insert(format!("{a}-{b}"));
+            }
+        }
+    }
+    out
+}
+
+async fn nft(args: &[&str]) -> Option<Vec<u8>> {
+    let out = tokio::process::Command::new("nft")
+        .args(args)
+        .output()
+        .await
+        .ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+/// Bring a coordinator-filled set to `want`.
+async fn fill_set(name: &str, want: &BTreeSet<String>) {
+    let table = sparewall_render::nft::TABLE;
+    // Not there (an apply is on its way): next round.
+    let Some(listing) = nft(&["-j", "list", "set", "inet", table, name]).await else {
+        return;
+    };
+    let have = serde_json::from_slice(&listing)
+        .map(|v| set_elements(&v))
+        .unwrap_or_default();
+    let add: Vec<&str> = want.difference(&have).map(String::as_str).collect();
+    let del: Vec<&str> = have.difference(want).map(String::as_str).collect();
+    for (verb, els) in [("add", add), ("delete", del)] {
+        if els.is_empty() {
+            continue;
+        }
+        let list = format!("{{ {} }}", els.join(", "));
+        if nft(&[verb, "element", "inet", table, name, &list])
+            .await
+            .is_some()
+        {
+            tracing::info!(set = name, verb, elements = %list, "an ipv6 object follows the delegated prefix");
+        } else {
+            tracing::warn!(set = name, verb, elements = %list, "cannot update an ipv6 object");
+        }
+    }
 }
 
 /// A pair's `ipv6` check by role: the master's own; the backup's says
@@ -239,6 +354,11 @@ pub async fn lease_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair
                     tracing::warn!(link, verb, "cannot change a link that follows the master");
                 }
                 let _ = events.send(json!({"type": "lease", "link": link, "up": up, "ok": ok}));
+            }
+        }
+        if let Some(d) = &doc {
+            for (set, els) in object_elements(d, &own, peer.as_ref(), Instant::now()) {
+                fill_set(&set, &els).await;
             }
         }
         let want = match (&doc, master) {
@@ -344,6 +464,64 @@ mod tests {
             let c = ipv6_check(&d, &none, role).unwrap();
             assert_eq!(c.level, Level::Degraded, "{role:?}");
         }
+    }
+
+    #[test]
+    fn a_pair_s_ipv6_objects_follow_the_prefixes_in_use() {
+        let mut v = sparewall_config::to_value(&pair_v6());
+        sparewall_config::merge_patch(
+            &mut v,
+            &json!({"objects": {
+                "users6": {"type": "ipv6", "dynamic": {"network": "users", "source": "prefix"}}}}),
+        );
+        let d: Document = sparewall_config::from_value(v).unwrap();
+        let t0 = Instant::now();
+        let own = [Lifetimed {
+            address: "2001:db8:200::/56".into(),
+            preferred_seconds: Some(1800),
+            valid_seconds: Some(3600),
+        }];
+        let heard = (
+            t0,
+            vec![DelegatedPrefix {
+                prefix: "2001:db8:100::/56".into(),
+                preferred_seconds: Some(0),
+                valid_seconds: Some(600),
+            }],
+        );
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+        let e = object_elements(&d, &own, Some(&heard), t0);
+        assert_eq!(
+            e["users6"],
+            set(&["2001:db8:100:1::/64", "2001:db8:200:1::/64"])
+        );
+        // The peer's lapses; the node's own stays.
+        let e = object_elements(&d, &own, Some(&heard), t0 + Duration::from_secs(600));
+        assert_eq!(e["users6"], set(&["2001:db8:200:1::/64"]));
+        // Nothing known: empty, so a stale element goes.
+        assert_eq!(object_elements(&d, &[], None, t0)["users6"], set(&[]));
+        // Only a pair's delegated networks' prefix objects.
+        assert!(object_elements(&pair_v6(), &own, None, t0).is_empty());
+    }
+
+    #[test]
+    fn reads_a_set_s_elements() {
+        let l = json!({"nftables": [{"metainfo": {}}, {"set": {"name": "users6", "elem": [
+            {"prefix": {"addr": "2001:db8:100:1::", "len": 64}},
+            "2001:db8::1",
+            {"range": ["2001:db8::10", "2001:db8::20"]},
+            {"elem": {"val": {"prefix": {"addr": "2001:db8:200:1::", "len": 64}}, "timeout": 5}}]}}]});
+        let want: BTreeSet<String> = [
+            "2001:db8:100:1::/64",
+            "2001:db8::1",
+            "2001:db8::10-2001:db8::20",
+            "2001:db8:200:1::/64",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(set_elements(&l), want);
+        assert!(set_elements(&json!({})).is_empty());
     }
 
     #[test]
