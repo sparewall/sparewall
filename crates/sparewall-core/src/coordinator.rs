@@ -2162,7 +2162,8 @@ impl<S: System> Coordinator<S> {
             if let Some(m) = self.log_certificate_problem(&doc)? {
                 checks.push(Check::new("log-forwarding", Level::Degraded, m));
             }
-            if doc.networks.values().any(|n| n.ipv6.is_some()) {
+            // A pair's depends on its role, which the daemon knows (#215).
+            if doc.networks.values().any(|n| n.ipv6.is_some()) && !doc.is_pair() {
                 let links = self.sys.ipv6_links();
                 checks.extend(crate::ipv6::health(&doc, &links));
             }
