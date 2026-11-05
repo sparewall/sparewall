@@ -100,3 +100,26 @@
 .problem {
   color: var(--sw-failed);
 }
+
+// IPv6 lacking a route or a prefix degrades health; it never fails it.
+.missing {
+  color: var(--sw-degraded);
+}
+
+.ipv6 {
+  margin: 0;
+
+  dt {
+    font-weight: 500;
+    margin-top: 8px;
+  }
+
+  dd {
+    margin: 0 0 0 16px;
+  }
+
+  .detail {
+    color: var(--mat-sys-on-surface-variant);
+    font-weight: normal;
+  }
+}

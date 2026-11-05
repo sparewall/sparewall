@@ -41,3 +41,22 @@ export interface Conntrack {
   count: number | null;
   max: number | null;
 }
+
+/** An address or prefix, with the seconds left of its lifetimes (absent: forever). */
+export interface Lifetimed {
+  address: string;
+  preferred_seconds?: number;
+  valid_seconds?: number;
+}
+
+/** One network's IPv6 state (#216): an entry of the status reply's `ipv6`. */
+export interface Ipv6Network {
+  iface: string;
+  mode: 'dhcpv6' | 'ra' | 'static' | 'delegated';
+  addresses?: Lifetimed[];
+  /** Prefixes DHCPv6 delegated to the link (a WAN). */
+  delegated?: Lifetimed[];
+  default_gateway?: string;
+  /** An inside network's: the prefixes it advertises. */
+  prefixes?: string[];
+}

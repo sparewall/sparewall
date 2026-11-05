@@ -1,4 +1,11 @@
-import { ControlElement, JsonSchema7, VerticalLayout } from '@jsonforms/core';
+import {
+  ControlElement,
+  JsonSchema7,
+  RuleEffect,
+  UISchemaElement,
+  ValidateFunctionCondition,
+  VerticalLayout,
+} from '@jsonforms/core';
 
 import { isMap } from './form-schema';
 
@@ -54,6 +61,64 @@ function weight(s: JsonSchema7, required: boolean): number {
 }
 
 /**
+ * On a field of an object with a `mode` (a network's `ipv6`): the modes
+ * the field applies to. The field shows only in those.
+ */
+export const MODES = 'x-modes';
+
+/**
+ * On such a field: the networks it applies to, `wan` or `inside` (neither
+ * a WAN nor the sync network), by the role of the network holding the
+ * object.
+ */
+export const ROLE = 'x-role';
+
+/** On a field of an object with a `role` (a network): the roles it is hidden on. */
+export const EXCEPT_ROLES = 'x-except-roles';
+
+/** The value at a dotted data path (`networks.wan`); the root for `''`. */
+function at(data: unknown, path: string): unknown {
+  return path
+    .split('.')
+    .filter(Boolean)
+    .reduce<unknown>((d, k) => (d as Record<string, unknown> | undefined)?.[k], data);
+}
+
+/**
+ * A rule's condition: the object's `mode` is one of `modes`, and, for a
+ * field bound to a role, the network holding the object (one level up)
+ * has it. A function, not a schema condition: those need a validator, and
+ * the form's passes everything (no-eval-ajv.ts). Where the object has no
+ * network above it, the role is not known and does not hide the field.
+ */
+function modeCondition(modes: unknown[], role?: string): ValidateFunctionCondition {
+  return {
+    scope: '#/properties/mode',
+    validate: ({ data, fullData, path }) => {
+      if (!modes.includes(data)) return false;
+      if (!role || !path) return true;
+      const parent = path.split('.').slice(0, -1).join('.');
+      const network = at(fullData, parent) as { role?: string } | undefined;
+      const r = network?.role ?? 'service';
+      return role === 'wan' ? r === 'wan' : r !== 'wan' && r !== 'sync';
+    },
+  };
+}
+
+/**
+ * A control shown only while `condition` holds. The rule goes on a layout
+ * around it: layouts honour a rule whatever draws the field, and JSON
+ * Forms' list table does not.
+ */
+function shownWhen(control: ControlElement, condition: ValidateFunctionCondition): VerticalLayout {
+  return {
+    type: 'VerticalLayout',
+    elements: [control],
+    rule: { effect: RuleEffect.SHOW, condition },
+  };
+}
+
+/**
  * One control per property: required ones first, then plain values, then
  * lists, then nested groups and maps, keeping the schema's order within
  * each. JSON Forms' own generator keeps only the schema's (alphabetical)
@@ -65,12 +130,28 @@ export function objectLayout(schema: JsonSchema7): VerticalLayout {
   const ordered = props
     .map(([key, s], i) => ({ key, i, w: weight(s, required.has(key)) }))
     .sort((a, b) => a.w - b.w || a.i - b.i);
+  const hasMode = !!schema.properties?.['mode'];
+  const hasRole = !!schema.properties?.['role'];
   return {
     type: 'VerticalLayout',
-    elements: ordered.map(({ key }): ControlElement => ({
-      type: 'Control',
-      scope: `#/properties/${key}`,
-      label: fieldLabel(key),
-    })),
+    elements: ordered.map(({ key }): UISchemaElement => {
+      const control: ControlElement = {
+        type: 'Control',
+        scope: `#/properties/${key}`,
+        label: fieldLabel(key),
+      };
+      const meta = schema.properties?.[key] as Record<string, unknown> | undefined;
+      const except = meta?.[EXCEPT_ROLES];
+      if (hasRole && Array.isArray(except)) {
+        return shownWhen(control, {
+          scope: '#/properties/role',
+          validate: ({ data }) => !except.includes(data ?? 'service'),
+        } as ValidateFunctionCondition);
+      }
+      const modes = meta?.[MODES];
+      if (!hasMode || !Array.isArray(modes)) return control;
+      const role = meta?.[ROLE];
+      return shownWhen(control, modeCondition(modes, typeof role === 'string' ? role : undefined));
+    }),
   };
 }

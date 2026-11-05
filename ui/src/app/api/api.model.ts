@@ -308,7 +308,8 @@ export interface Schemas {
      * network with its own upstream. */
     "gateway"?: string | null;
     /** IPv6 on this network (#211). Unset, the network has link-local
-     * IPv6 addresses only, and routes none. */
+     * IPv6 addresses only, and routes none. Not on the sync network
+     * (`x-except-roles`, for editors). */
     "ipv6"?: Schemas["Document.NetworkIpv6"] | null;
     /** Emit and receive LLDP on this network. Default true on untagged ports. */
     "lldp"?: boolean | null;
@@ -335,7 +336,10 @@ export interface Schemas {
     "vrid"?: number | null;
   };
   /** How a network gets its IPv6 addresses. Which fields apply depends on
-   * `mode` and on the network's role. */
+   * `mode` and on the network's role: each field's `x-modes` lists the
+   * modes it applies to, and `x-role` the networks: `wan`, or `inside`
+   * (neither a WAN nor the sync network), for editors (the web UI shows a
+   * field only where it applies). */
   "Document.NetworkIpv6": {
     /** `static` on a WAN: each node's own address, in `prefix`. */
     "addresses"?: Record<string, string>;

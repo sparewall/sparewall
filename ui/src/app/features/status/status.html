@@ -127,6 +127,50 @@
       </mat-card>
     }
 
+    @if (ipv6().length) {
+      <mat-card appearance="outlined">
+        <mat-card-header>
+          <mat-icon matCardAvatar>public</mat-icon>
+          <mat-card-title>IPv6</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <dl class="ipv6">
+            @for (n of ipv6(); track n[0]) {
+              <dt>
+                {{ n[0] }} <span class="detail">{{ n[1].iface }}, {{ n[1].mode }}</span>
+              </dt>
+              <dd>
+                @if (n[1].prefixes; as prefixes) {
+                  @if (prefixes.length) {
+                    Advertises {{ prefixes.join(', ') }}
+                  } @else {
+                    <span class="missing">Advertises no prefix</span>
+                  }
+                } @else {
+                  @for (a of n[1].addresses ?? []; track a.address) {
+                    <div>{{ a.address }}</div>
+                  }
+                  @for (d of n[1].delegated ?? []; track d.address) {
+                    <div>
+                      Delegated {{ d.address }}
+                      @if (lifetimes(d); as l) {
+                        <span class="detail">({{ l }})</span>
+                      }
+                    </div>
+                  }
+                  @if (n[1].default_gateway) {
+                    <div>Default route via {{ n[1].default_gateway }}</div>
+                  } @else {
+                    <div class="missing">No default route</div>
+                  }
+                }
+              </dd>
+            }
+          </dl>
+        </mat-card-content>
+      </mat-card>
+    }
+
     @if (conntrack(); as ct) {
       @if (ct.count !== null && ct.max) {
         <mat-card appearance="outlined">

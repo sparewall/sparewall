@@ -116,3 +116,46 @@ describe('Status, updates', () => {
     expect(card?.textContent).toContain('This node and fw2 run different images.');
   });
 });
+
+describe('Status, IPv6', () => {
+  it('shows no IPv6 card without IPv6', async () => {
+    const { el } = await render(reply(undefined));
+    expect(el.querySelector('.ipv6')).toBeNull();
+  });
+
+  it('shows the WAN prefix with its lifetimes, the route, and what the LAN advertises', async () => {
+    const { el } = await render({
+      ...reply(undefined),
+      ipv6: {
+        lan: { iface: 'lan0', mode: 'delegated', prefixes: ['2001:db8:100:1::/64'] },
+        wan: {
+          iface: 'wan0',
+          mode: 'dhcpv6',
+          addresses: [{ address: '2001:db8:ffff::100/128' }],
+          delegated: [
+            { address: '2001:db8:100::/56', preferred_seconds: 1800, valid_seconds: 5430 },
+          ],
+          default_gateway: 'fe80::1',
+        },
+      },
+    });
+    const text = el.querySelector('.ipv6')!.textContent!.replace(/\s+/g, ' ');
+    expect(text).toContain('lan lan0, delegated');
+    expect(text).toContain('Advertises 2001:db8:100:1::/64');
+    expect(text).toContain('2001:db8:ffff::100/128');
+    expect(text).toContain('Delegated 2001:db8:100::/56 (preferred 30m, valid 1h30m)');
+    expect(text).toContain('Default route via fe80::1');
+  });
+
+  it('marks a missing route and an unadvertised network', async () => {
+    const { el } = await render({
+      ...reply(undefined),
+      ipv6: {
+        lan: { iface: 'lan0', mode: 'delegated', prefixes: [] },
+        wan: { iface: 'wan0', mode: 'ra' },
+      },
+    });
+    const missing = [...el.querySelectorAll('.ipv6 .missing')].map((e) => e.textContent!.trim());
+    expect(missing).toEqual(['Advertises no prefix', 'No default route']);
+  });
+});
