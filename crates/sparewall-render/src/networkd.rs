@@ -7,7 +7,7 @@
 use ipnet::Ipv4Net;
 use sparewall_config::identity::Identity;
 use sparewall_config::model::*;
-use sparewall_config::topology::{LEASE_IFACE, SYNC_TUNNEL_IFACE, SYNC_TUNNEL_PORT};
+use sparewall_config::topology::{IPV6_GATEWAY, LEASE_IFACE, SYNC_TUNNEL_IFACE, SYNC_TUNNEL_PORT};
 use sparewall_config::validate::mac_ok;
 
 use crate::ini::Ini;
@@ -190,6 +190,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         if doc.vmac_wan(name) {
             vmac_link(doc, name, net, out);
         }
+        ipv6_gateway_link(doc, name, net, out);
     }
     for (name, vpn) in &doc.vpn {
         remote_access(doc, name, vpn, out);
@@ -238,13 +239,19 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
         // pair's one lease, or the static block's gateway addresses.
         ini.set("MACVLAN", LEASE_IFACE);
     }
+    // A pair's inside network's IPv6 is on the macvlan with its gateway
+    // (#215).
+    if let Some(gw) = doc.ipv6_gateway_iface(name) {
+        ini.set("MACVLAN", gw);
+    }
     if net.dhcp_client && !leased {
         ini.set("DHCP", "ipv4");
     }
     for d in &net.dns {
         ini.set("DNS", d);
     }
-    // A standalone node's WAN with IPv6 (#213; a pair's is #215).
+    // A standalone node's WAN with IPv6 (#213). A pair's is on its
+    // macvlan with the virtual MAC (#215): see `vmac_link`, and keepalived.
     let v6 = wan_ipv6(net, pair);
     if let Some(v6) = v6
         && v6.mode == Ipv6Mode::Static
@@ -315,10 +322,10 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
         dhcp_client(ini, doc, name, net);
     }
     if let Some(v6) = v6 {
-        wan_ipv6_sections(ini, doc, name, v6);
+        wan_ipv6_sections(ini, doc, name, v6, None);
     }
     if let Some(v6) = inside {
-        inside_ipv6_sections(ini, doc, name, v6);
+        inside_ipv6_sections(ini, doc, name, v6, false);
     }
     if let Some(cake) = &net.cake {
         ini.section("CAKE")
@@ -331,7 +338,8 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
 /// document names none (#213).
 pub const DEFAULT_PREFIX_LENGTH: u8 = 56;
 
-/// A standalone node's WAN IPv6 settings, if any (a pair's are #215's).
+/// A standalone node's WAN IPv6 settings, if any (a pair's are on
+/// [`LEASE_IFACE`], #215).
 fn wan_ipv6(net: &Network, pair: bool) -> Option<&NetworkIpv6> {
     (net.role == NetworkRole::Wan && !pair)
         .then_some(net.ipv6.as_ref())
@@ -339,7 +347,7 @@ fn wan_ipv6(net: &Network, pair: bool) -> Option<&NetworkIpv6> {
 }
 
 /// A standalone node's inside network's IPv6 settings, if any (a pair's
-/// are #215's).
+/// are on its gateway link, [`ipv6_gateway_link`], #215).
 fn inside_ipv6(net: &Network, pair: bool) -> Option<&NetworkIpv6> {
     (net.role != NetworkRole::Wan && net.role != NetworkRole::Sync && !pair)
         .then_some(net.ipv6.as_ref())
@@ -364,7 +372,17 @@ pub fn node_in_prefix(p: ipnet::Ipv6Net) -> std::net::Ipv6Addr {
 /// advertisements name it as the resolver: on a static network by its
 /// address, on a delegated one by its link-local address, which a new
 /// prefix does not change. The search domain is DHCP's.
-fn inside_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkIpv6) {
+///
+/// On a pair's IPv6 gateway link (`gateway`, #215) the node takes no
+/// address in the /64, only the route to it, and the resolver it names
+/// is the gateway address.
+fn inside_ipv6_sections(
+    ini: &mut Ini,
+    doc: &Document,
+    name: &str,
+    v6: &NetworkIpv6,
+    gateway: bool,
+) {
     let serves_dns = crate::kea::node_is_resolver(doc, name);
     let domain = doc
         .dhcp
@@ -383,6 +401,7 @@ fn inside_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkI
         }
     } else if serves_dns {
         let dns = match (v6.mode, v6.prefix) {
+            _ if gateway => IPV6_GATEWAY.to_string(),
             (Ipv6Mode::Static, Some(p)) => node_in_prefix(p.0).to_string(),
             _ => "_link_local".to_string(),
         };
@@ -400,9 +419,13 @@ fn inside_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkI
         Ipv6Mode::Static => {
             if let Some(p) = v6.prefix {
                 ini.section("IPv6Prefix").set("Prefix", p.0.trunc());
+                if gateway {
+                    ini.section("Route").set("Destination", p.0.trunc());
+                }
             }
         }
         Ipv6Mode::Delegated => {
+            // The WAN's DHCPv6 client's link: in a pair, the lease's.
             let uplink = doc
                 .networks
                 .iter()
@@ -410,15 +433,20 @@ fn inside_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkI
                     n.role == NetworkRole::Wan
                         && n.ipv6.as_ref().is_some_and(|v| v.mode == Ipv6Mode::Dhcpv6)
                 })
-                .and_then(|(n, _)| doc.network_iface(n));
+                .and_then(|(n, _)| doc.public_iface(n));
             ini.section("DHCPPrefixDelegation");
             if let Some(u) = uplink {
                 ini.set("UplinkInterface", u);
             }
             ini.opt("SubnetId", v6.subnet_id.map(|i| format!("0x{i:x}")));
-            ini.set("Announce", "yes")
-                .set("Assign", "yes")
-                .set("Token", "static:::1");
+            ini.set("Announce", "yes");
+            if gateway {
+                // networkd routes the /64 here itself when it assigns no
+                // address. The coordinator fills a pair's ipv6 objects.
+                ini.set("Assign", "no");
+                return;
+            }
+            ini.set("Assign", "yes").set("Token", "static:::1");
             // The /64 and the node's address in it, as they change.
             let sets = ipv6_nft_sets(doc, name);
             if !sets.is_empty() {
@@ -458,7 +486,16 @@ fn ipv6_nft_sets(doc: &Document, name: &str) -> Vec<String> {
 /// - **`ra`:** router advertisements only, without DHCPv6.
 /// - **`static`:** the address (in `[Network]`) and a route to the
 ///   gateway.
-fn wan_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkIpv6) {
+///
+/// A pair's lease link (`lease`: the network's `vrid`, #215) presents
+/// one DHCPv6 client from either node: see [`vmac_link`].
+fn wan_ipv6_sections(
+    ini: &mut Ini,
+    doc: &Document,
+    name: &str,
+    v6: &NetworkIpv6,
+    lease: Option<u8>,
+) {
     let sets = ipv6_nft_sets(doc, name);
     match v6.mode {
         Ipv6Mode::Dhcpv6 | Ipv6Mode::Ra => {
@@ -480,6 +517,17 @@ fn wan_ipv6_sections(ini: &mut Ini, doc: &Document, name: &str, v6: &NetworkIpv6
                     )
                     .set("UseDNS", "yes")
                     .set("SendHostname", "no");
+                if let Some(vrid) = lease {
+                    // DUID-LL (RFC 8415, 11.4: hardware type 1, Ethernet)
+                    // from the virtual MAC, whichever link's networkd
+                    // would pick; a fixed IAID, since networkd derives one
+                    // from the node's interface by default; and no
+                    // Release when the old master stops, so the new one
+                    // is offered the same lease and prefix.
+                    ini.set("DUIDRawData", format!("00:01:{}", Document::vrrp_mac(vrid)))
+                        .set("IAID", vrid)
+                        .set("SendRelease", "no");
+                }
                 // The node's own address may come from IA_NA instead. A
                 // WAN's prefix object is the link's, from the RAs, as an
                 // IPv4 WAN's is its subnet: the delegated prefix is the
@@ -549,8 +597,9 @@ fn dhcp_client(ini: &mut Ini, doc: &Document, name: &str, net: &Network) {
 /// - **A static block:** keepalived puts the gateway addresses and the
 ///   public default route on it. It is up on both nodes, since the
 ///   kernel refuses a route on a link that is down and keepalived adds
-///   it the moment it becomes master. The backup's has no address and no
-///   IPv6, so it never sends a frame from the virtual MAC.
+///   it the moment it becomes master. The backup's has no address, and
+///   no IPv6 or none that sends (see the sysctl file), so it never sends a
+///   frame from the virtual MAC.
 fn vmac_link(doc: &Document, name: &str, net: &Network, out: &mut Rendered) {
     let Some(vrid) = net.vrid else { return };
     let leased = doc.leased_wan(name).is_some();
@@ -583,6 +632,12 @@ fn vmac_link(doc: &Document, name: &str, net: &Network, out: &mut Rendered) {
             .set("LinkLocalAddressing", "no")
             .set("IPv6AcceptRA", "no")
             .set("KeepConfiguration", "yes");
+        if net.ipv6.is_some() {
+            // Not a router on this link, before it is up: the backup's
+            // must join no multicast group, which the kernel would report
+            // from the virtual MAC (#215; see the sysctl file).
+            nn.set("IPv6Forwarding", "no");
+        }
         out.add(
             Subsystem::Networkd,
             format!("40-sparewall-{LEASE_IFACE}.network"),
@@ -593,17 +648,87 @@ fn vmac_link(doc: &Document, name: &str, net: &Network, out: &mut Rendered) {
     nn.section("Link")
         .set("ActivationPolicy", "manual")
         .set("RequiredForOnline", "no");
+    // IPv6 too (#215), since the link is the master's alone: DHCPv6 or
+    // the router advertisements, or a static address that moves with the
+    // gateway.
+    let v6 = net.ipv6.as_ref();
+    let mode = v6.map(|v| v.mode);
+    let accept_ra = matches!(mode, Some(Ipv6Mode::Dhcpv6 | Ipv6Mode::Ra));
     nn.section("Network")
         .set("DHCP", "ipv4")
-        .set("LinkLocalAddressing", "no")
-        .set("IPv6AcceptRA", "no");
+        .set("LinkLocalAddressing", if accept_ra { "ipv6" } else { "no" })
+        .set("IPv6AcceptRA", if accept_ra { "yes" } else { "no" });
+    let static_v6 = v6.filter(|v| v.mode == Ipv6Mode::Static);
+    let static_addr = static_v6.and_then(|v| Some((v.vip?, v.prefix?)));
+    if let Some((vip, p)) = static_addr {
+        // Not checked for duplicates: it moves between the nodes.
+        nn.section("Address")
+            .set("Address", format!("{vip}/{}", p.0.prefix_len()))
+            .set("DuplicateAddressDetection", "none");
+    }
     dhcp_client(&mut nn, doc, name, net);
     // The same client ID from either node, and the lease kept for the
     // next master when this one stops.
     nn.set("ClientIdentifier", "mac").set("SendRelease", "no");
+    if let Some(v6) = v6 {
+        wan_ipv6_sections(&mut nn, doc, name, v6, Some(vrid));
+    }
     out.add(
         Subsystem::Networkd,
         format!("40-sparewall-{LEASE_IFACE}.network"),
+        nn.build(),
+    );
+}
+
+/// A pair's inside network's IPv6 gateway (#215): a macvlan on the
+/// network's link with the network's IPv6 VRRP virtual MAC and
+/// [`IPV6_GATEWAY`], which networkd leaves down
+/// (`ActivationPolicy=manual`) and the coordinator brings up on the master
+/// only, as it does the lease link. Only the master advertises, so hosts
+/// keep one router, at one address and MAC, across a failover. It has no
+/// other address: the node routes the /64 there and needs none of its
+/// own.
+fn ipv6_gateway_link(doc: &Document, name: &str, net: &Network, out: &mut Rendered) {
+    let (Some(link), Some(v6), Some(vrid)) = (doc.ipv6_gateway_iface(name), &net.ipv6, net.vrid)
+    else {
+        return;
+    };
+    let mut nd = Ini::new();
+    nd.section("NetDev")
+        .set("Name", &link)
+        .set("Kind", "macvlan")
+        .set("MACAddress", Document::vrrp6_mac(vrid))
+        .set(
+            "Description",
+            format!("Sparewall pair IPv6 gateway for {name}"),
+        );
+    nd.section("MACVLAN").set("Mode", "bridge");
+    out.add(
+        Subsystem::Networkd,
+        format!("40-sparewall-{link}.netdev"),
+        nd.build(),
+    );
+    let mut nn = Ini::new();
+    nn.section("Match").set("Name", &link);
+    nn.section("Link")
+        .set("ActivationPolicy", "manual")
+        .set("RequiredForOnline", "no");
+    nn.section("Network")
+        .set("LinkLocalAddressing", "no")
+        .set("IPv6AcceptRA", "no")
+        .set("IPv6SendRA", "yes");
+    if v6.mode == Ipv6Mode::Delegated {
+        nn.set("DHCPPrefixDelegation", "yes");
+    }
+    // Not checked for duplicates: it moves between the nodes, and for a
+    // moment at a failover both may hold it.
+    nn.section("Address")
+        .set("Address", format!("{IPV6_GATEWAY}/64"))
+        .set("DuplicateAddressDetection", "none");
+    inside_ipv6_sections(&mut nn, doc, name, v6, true);
+    out.add(
+        Subsystem::Networkd,
+        format!("40-sparewall-{link}.network"),
         nn.build(),
     );
 }

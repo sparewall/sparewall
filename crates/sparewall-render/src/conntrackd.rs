@@ -39,6 +39,12 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
     }
     ignore.sort();
     ignore.dedup();
+    // The nodes' own IPv6 (#215): loopback, and the link-local addresses,
+    // the inside networks' gateway (`fe80::1`) among them. They take no
+    // global address of their own; the WAN's `vip`, like the IPv4 gateway
+    // addresses, is synced, so its flows survive a failover.
+    let v6 = doc.routes_ipv6();
+    let ignore6: &[&str] = if v6 { &["::1", "fe80::/10"] } else { &[] };
     let mut s = String::from(crate::HEADER);
     s.push_str("Sync {\n    Mode FTFW {\n        DisableExternalCache Off\n        CommitTimeout 1800\n        PurgeTimeout 5\n    }\n");
     writeln!(
@@ -58,14 +64,18 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
          LockFile /run/conntrackd.lock\n    UNIX {{\n        Path {SOCKET}\n    }}\n    \
          NetlinkBufferSize 2097152\n    NetlinkBufferSizeMaxGrowth 8388608\n    \
          NetlinkOverrunResync On\n    NetlinkEventsReliable On\n    \
-         Filter From Userspace {{\n        Protocol Accept {{\n            TCP\n            UDP\n            ICMP\n        }}\n        \
+         Filter From Userspace {{\n        Protocol Accept {{\n            TCP\n            UDP\n            ICMP\n{}        }}\n        \
          Address Ignore {{",
         (limit / 8).max(8192),
-        u64::from(limit) * 2
+        u64::from(limit) * 2,
+        if v6 { "            IPv6-ICMP\n" } else { "" }
     )
     .unwrap();
     for a in ignore {
         writeln!(s, "            IPv4_address {a}").unwrap();
+    }
+    for a in ignore6 {
+        writeln!(s, "            IPv6_address {a}").unwrap();
     }
     s.push_str("        }\n    }\n}\n");
     out.add(Subsystem::Conntrackd, CONF, s);

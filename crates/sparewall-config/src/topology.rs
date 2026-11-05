@@ -33,6 +33,22 @@ pub const VPN_CLIENT_TABLE: u32 = 5360;
 pub const VPN_CLIENT_RULE_PRIORITY: u32 = 2000;
 /// Interface names the coordinator reserves.
 pub const RESERVED_IFACES: &[&str] = &["lo", SYNC_TUNNEL_IFACE, LEASE_IFACE];
+/// The name prefix of the macvlans that carry a pair's inside networks'
+/// IPv6 gateway (#215), `swgw<vrid>`: see [`Document::ipv6_gateway_iface`].
+pub const IPV6_GATEWAY_IFACE_PREFIX: &str = "swgw";
+/// A pair's inside networks' IPv6 gateway address (#215): link-local, as
+/// RFC 5798 has a VRRP router's first IPv6 address, so a new prefix
+/// changes nothing for hosts' default router.
+pub const IPV6_GATEWAY: std::net::Ipv6Addr = std::net::Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+
+/// Whether the coordinator reserves an interface name: one of
+/// [`RESERVED_IFACES`], or `swgw` and a number.
+pub fn reserved_iface(name: &str) -> bool {
+    RESERVED_IFACES.contains(&name)
+        || name
+            .strip_prefix(IPV6_GATEWAY_IFACE_PREFIX)
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+}
 
 impl Document {
     /// True for an HA pair, false for a standalone node.
@@ -79,6 +95,7 @@ impl Document {
                 if self.vmac_wan(n) {
                     out.push(LEASE_IFACE.to_string());
                 }
+                out.extend(self.ipv6_gateway_iface(n));
             }
         }
         for (name, vpn) in &self.vpn {
@@ -207,6 +224,27 @@ impl Document {
         format!("00:00:5e:00:01:{vrid:02x}")
     }
 
+    /// The IPv6 VRRP virtual MAC of a VRRP ID (RFC 5798).
+    pub fn vrrp6_mac(vrid: u8) -> String {
+        format!("00:00:5e:00:02:{vrid:02x}")
+    }
+
+    /// For a pair's inside network with IPv6 (#215), the macvlan that
+    /// carries its IPv6 gateway: [`IPV6_GATEWAY`], with the network's IPv6
+    /// VRRP virtual MAC, up on the master only. The router advertisements
+    /// leave from it, and hosts' IPv6 arrives on it. Named
+    /// `swgw<vrid>`, since a network's name may already be 15 bytes.
+    pub fn ipv6_gateway_iface(&self, network: &str) -> Option<String> {
+        let net = self.networks.get(network)?;
+        if !self.is_pair()
+            || net.ipv6.is_none()
+            || matches!(net.role, NetworkRole::Wan | NetworkRole::Sync)
+        {
+            return None;
+        }
+        Some(format!("{IPV6_GATEWAY_IFACE_PREFIX}{}", net.vrid?))
+    }
+
     /// Networks with a given role.
     pub fn networks_with_role(
         &self,
@@ -237,7 +275,8 @@ impl Document {
     }
 
     /// The interfaces of the networks with IPv6 (a WAN's own link and its
-    /// lease link), sorted.
+    /// lease link; an inside network's own and, in a pair, its IPv6
+    /// gateway's), sorted.
     pub fn ipv6_ifaces(&self) -> Vec<String> {
         self.ipv6_ifaces_where(|_, _| true)
     }
@@ -254,6 +293,7 @@ impl Document {
             if n.role == NetworkRole::Wan {
                 v.extend(self.public_iface(name).map(str::to_string));
             }
+            v.extend(self.ipv6_gateway_iface(name));
         }
         v.sort();
         v.dedup();

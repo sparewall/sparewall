@@ -32,13 +32,13 @@ pub fn served_networks(doc: &Document) -> Vec<String> {
     }
 }
 
-/// Whether Unbound answers over IPv6: a standalone node's served network
-/// has IPv6 (#214). It then listens on every address, and a delegated
-/// prefix cannot be named in its access control, so the firewall keeps
-/// every other interface from its port (nft `service:dns-served-only`).
+/// Whether Unbound answers over IPv6: a served network has IPv6 (#214;
+/// in a pair, #215, at the gateway address `fe80::1`). It then listens
+/// on every address, and a delegated prefix cannot be named in its access
+/// control, so the firewall keeps every other interface from its port
+/// (nft `service:dns-served-only`).
 pub fn serves_ipv6(doc: &Document) -> bool {
-    !doc.is_pair()
-        && doc.dns.as_ref().is_some_and(|d| d.enabled)
+    doc.dns.as_ref().is_some_and(|d| d.enabled)
         && providers::chosen(doc, Role::Dns) == Some("unbound")
         && served_networks(doc)
             .iter()
@@ -78,14 +78,10 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // advertisements name the node by its link-local address there. The
     // firewall drops IPv6 DNS from every other interface, whatever the
     // policies say (`service:dns-served-only`).
-    let v6: Vec<&sparewall_config::model::NetworkIpv6> = if doc.is_pair() {
-        vec![]
-    } else {
-        served_networks(doc)
-            .iter()
-            .filter_map(|n| doc.networks.get(n)?.ipv6.as_ref())
-            .collect()
-    };
+    let v6: Vec<&sparewall_config::model::NetworkIpv6> = served_networks(doc)
+        .iter()
+        .filter_map(|n| doc.networks.get(n)?.ipv6.as_ref())
+        .collect();
     if !v6.is_empty() {
         listen.insert("::0".into());
     }

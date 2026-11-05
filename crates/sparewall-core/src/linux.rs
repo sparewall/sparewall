@@ -590,6 +590,13 @@ impl System for Linux {
                 continue;
             };
             let p: PathBuf = self.proc_sys.join(k.trim().replace('.', "/"));
+            // Only what changes: writing a key has effects of its own.
+            // The global IPv6 forwarding key resets every interface's, and
+            // with it the multicast groups a link joins, which a pair's
+            // backup must not report from the virtual MAC (#215).
+            if fs::read_to_string(&p).is_ok_and(|cur| cur.trim() == v.trim()) {
+                continue;
+            }
             match fs::write(&p, v.trim()) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1014,6 +1021,39 @@ impl Linux {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only keys whose value changes are written (#215): writing the
+    /// global IPv6 forwarding key resets every interface's.
+    #[test]
+    fn sysctl_writes_only_what_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let all = dir.path().join("net/ipv6/conf/all");
+        let swwan = dir.path().join("net/ipv6/conf/swwan");
+        fs::create_dir_all(&all).unwrap();
+        fs::create_dir_all(&swwan).unwrap();
+        fs::write(all.join("forwarding"), "1\n").unwrap();
+        fs::write(swwan.join("forwarding"), "1\n").unwrap();
+        // Read-only: a write would fail the call.
+        let ro = |p: &std::path::Path| {
+            let mut perm = fs::metadata(p).unwrap().permissions();
+            perm.set_readonly(true);
+            fs::set_permissions(p, perm).unwrap();
+        };
+        ro(&all.join("forwarding"));
+        let mut l = Linux {
+            proc_sys: dir.path().into(),
+            ..Default::default()
+        };
+        l.sysctl_apply(
+            "# header\nnet.ipv6.conf.all.forwarding = 1\nnet.ipv6.conf.swwan.forwarding = 0\n\
+             net.ipv6.conf.gone.forwarding = 0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(swwan.join("forwarding")).unwrap().trim(),
+            "0"
+        );
+    }
 
     /// The units sparewalld starts, as the image ships them (unit file,
     /// Quadlet file, drop-ins), never order after or depend on

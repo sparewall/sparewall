@@ -34,10 +34,16 @@ fn common(s: &mut String, ipv6_forwarding: bool) {
 
 pub(crate) fn render(doc: &Document, _node: &str, out: &mut Rendered) {
     let mut s = String::from(crate::HEADER);
-    let inside_v6 = doc
-        .networks
-        .values()
-        .any(|n| n.ipv6.is_some() && n.role != sparewall_config::model::NetworkRole::Wan);
+    // In a pair, a WAN's IPv6 alone turns forwarding on too, so the key
+    // changes in the same step that enables IPv6 on the static block's
+    // macvlan, while it is still off (see below).
+    let inside_v6 = if doc.is_pair() {
+        doc.routes_ipv6()
+    } else {
+        doc.networks
+            .values()
+            .any(|n| n.ipv6.is_some() && n.role != sparewall_config::model::NetworkRole::Wan)
+    };
     common(&mut s, inside_v6);
     let ct = doc.cluster.conntrack.as_ref();
     if let Some(max) = ct.and_then(|c| c.max) {
@@ -75,9 +81,35 @@ pub(crate) fn render(doc: &Document, _node: &str, out: &mut Rendered) {
         writeln!(s, "net.ipv4.conf.{i}.arp_announce = 2").unwrap();
     }
     // The virtual MAC is the master's alone: the backup's macvlan, up but
-    // with no address, must send nothing, IPv6 included.
-    if doc.networks.keys().any(|n| doc.vmac_wan(n)) {
-        writeln!(s, "net.ipv6.conf.{LEASE_IFACE}.disable_ipv6 = 1").unwrap();
+    // with no address, must send nothing, IPv6 included. With IPv6 on
+    // that WAN (#215), a leased one's link is down on the backup, and
+    // networkd runs IPv6 on the master's. A static block's is up on both
+    // nodes, so it joins no multicast group the kernel would report from
+    // the virtual MAC: no link-local address (so no solicited-node
+    // group), and not a router there (so not all-routers). These follow
+    // the global forwarding key above, which resets every interface's
+    // whenever it is written; the coordinator writes no key whose value is
+    // unchanged, and enables IPv6 here last. keepalived adds the master's
+    // `vip`.
+    if let Some((name, _)) = doc.networks.iter().find(|(n, _)| doc.vmac_wan(n)) {
+        let v6 = doc.networks[name].ipv6.is_some();
+        if v6 && doc.leased_wan(name).is_none() {
+            writeln!(s, "net.ipv6.conf.{LEASE_IFACE}.addr_gen_mode = 1").unwrap();
+            writeln!(s, "net.ipv6.conf.{LEASE_IFACE}.forwarding = 0").unwrap();
+        }
+        writeln!(
+            s,
+            "net.ipv6.conf.{LEASE_IFACE}.disable_ipv6 = {}",
+            u8::from(!v6)
+        )
+        .unwrap();
+    }
+    // A pair's IPv6 gateway links (#215) carry no IPv4 address, and must
+    // never answer ARP from the IPv6 virtual MAC for the node's others.
+    for n in doc.networks.keys() {
+        if let Some(gw) = doc.ipv6_gateway_iface(n) {
+            writeln!(s, "net.ipv4.conf.{gw}.arp_ignore = 8").unwrap();
+        }
     }
     out.add(Subsystem::Sysctl, FILE, s);
 }
