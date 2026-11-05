@@ -106,7 +106,10 @@ pub fn to_peer(own: &[Lifetimed]) -> Vec<DelegatedPrefix> {
 }
 
 /// What a master routes for its delegated networks from the peer's last
-/// prefixes, heard at `heard` (#215): nothing once it holds its own.
+/// prefixes, heard at `heard` (#215): those it does not hold itself (once
+/// it does, networkd routes it), while they are valid. A prefix the new
+/// lease does not repeat stays routed for hosts' addresses in it, which
+/// they keep, since nothing announces it withdrawn.
 pub fn takeovers(
     doc: &Document,
     own: &[Lifetimed],
@@ -116,12 +119,12 @@ pub fn takeovers(
     let Some((heard, prefixes)) = peer else {
         return vec![];
     };
-    if !own.is_empty() {
-        return vec![];
-    }
     let elapsed = now.saturating_duration_since(*heard).as_secs();
     let mut out = Vec::new();
-    for p in prefixes {
+    for p in prefixes
+        .iter()
+        .filter(|p| !own.iter().any(|o| o.address == p.prefix))
+    {
         let valid = p
             .valid_seconds
             .map_or(TAKEOVER_MAX_S, |s| u64::try_from(s).unwrap_or(0))
@@ -148,6 +151,30 @@ pub fn takeovers(
     out.sort();
     out.dedup_by(|a, b| a.iface == b.iface && a.dst == b.dst);
     out
+}
+
+/// A pair's `ipv6` check by role: the master's own; the backup's says
+/// IPv6 runs on the master; any other role (FAULT, or not known yet)
+/// holds no IPv6 for hosts, and says so.
+pub fn ipv6_check(
+    doc: &Document,
+    links: &std::collections::BTreeMap<String, ipv6::LinkIpv6>,
+    role: Option<&str>,
+) -> Option<sparewall_core::Check> {
+    match role {
+        Some("MASTER") => ipv6::health(doc, links),
+        Some("BACKUP") => ipv6::standby(doc),
+        other => doc.routes_ipv6().then(|| {
+            sparewall_core::Check::new(
+                "ipv6",
+                sparewall_core::Level::Degraded,
+                format!(
+                    "neither master nor backup ({}): IPv6 runs on the master",
+                    other.unwrap_or("role not known yet")
+                ),
+            )
+        }),
+    }
 }
 
 async fn ip(args: &[&str]) -> bool {
@@ -177,18 +204,14 @@ pub async fn lease_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair
             let p = pair.lock().unwrap_or_else(|p| p.into_inner());
             p.role.as_deref() == Some("MASTER")
         };
+        let role = pair.lock().unwrap_or_else(|p| p.into_inner()).role.clone();
         let (links, doc, own) = with_core_raw(&core, &events, move |c| {
             let doc = c.active_document()?;
             let v6 = doc.as_ref().filter(|d| d.is_pair() && d.routes_ipv6());
             let (own, check) = match v6 {
                 Some(d) => {
                     let l = c.system().ipv6_links();
-                    let check = if master {
-                        ipv6::health(d, &l)
-                    } else {
-                        ipv6::standby(d)
-                    };
-                    (ipv6::delegated(d, &l), check)
+                    (ipv6::delegated(d, &l), ipv6_check(d, &l, role.as_deref()))
                 }
                 None => (vec![], None),
             };
@@ -304,6 +327,26 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_health_by_role() {
+        use sparewall_core::Level;
+        let d = pair_v6();
+        let none = std::collections::BTreeMap::new();
+        // The master without its lease: degraded, as a standalone node's.
+        assert_eq!(
+            ipv6_check(&d, &none, Some("MASTER")).unwrap().level,
+            Level::Degraded
+        );
+        assert_eq!(
+            ipv6_check(&d, &none, Some("BACKUP")).unwrap().level,
+            Level::Ok
+        );
+        for role in [Some("FAULT"), None] {
+            let c = ipv6_check(&d, &none, role).unwrap();
+            assert_eq!(c.level, Level::Degraded, "{role:?}");
+        }
+    }
+
+    #[test]
     fn the_ipv6_gateways_follow_the_master() {
         assert_eq!(master_links(&pair_v6()), vec!["swwan", "swgw20"]);
     }
@@ -338,6 +381,15 @@ mod tests {
             valid_seconds: None,
         }];
         assert!(takeovers(&d, &own, Some(&heard), t0).is_empty());
+        // A different one: the old stays routed while it is valid, for
+        // hosts' addresses in it.
+        let other = [Lifetimed {
+            address: "2001:db8:200::/56".into(),
+            preferred_seconds: None,
+            valid_seconds: None,
+        }];
+        assert_eq!(takeovers(&d, &other, Some(&heard), t0), want);
+        assert!(takeovers(&d, &other, Some(&heard), t0 + Duration::from_secs(3600)).is_empty());
         // Never heard one.
         assert!(takeovers(&d, &[], None, t0).is_empty());
         // Forever is capped.
