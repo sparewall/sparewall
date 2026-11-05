@@ -12,7 +12,7 @@
 
 use std::fmt::Write;
 
-use sparewall_config::model::Document;
+use sparewall_config::model::{Document, Ipv6Mode};
 
 use crate::{CheckSpec, Rendered, Service, Subsystem};
 
@@ -195,6 +195,21 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
             writeln!(s, "        {a} dev {public}").unwrap();
         }
         s.push_str("    }\n");
+        // A static block's IPv6 address (#215) moves in the same step, on
+        // the same link. It is excluded from the adverts, which carry one
+        // family.
+        let block_v6 = net
+            .ipv6
+            .as_ref()
+            .filter(|v| v.mode == Ipv6Mode::Static && net.vmac && doc.split_wan(name).is_some());
+        if let Some((vip, p)) = block_v6.and_then(|v| Some((v.vip?, v.prefix?))) {
+            writeln!(
+                s,
+                "    virtual_ipaddress_excluded {{\n        {vip}/{} dev {public}\n    }}",
+                p.0.prefix_len()
+            )
+            .unwrap();
+        }
         // A WAN with private node addresses: the public default route
         // moves with the public addresses (#54). With site-to-site peers,
         // WireGuard's own packets route from the gateway address (#148).
@@ -204,6 +219,12 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         {
             routes.push(format!(
                 "0.0.0.0/0 via {gw} dev {public} metric {} onlink",
+                crate::networkd::WAN_METRIC
+            ));
+        }
+        if let Some(gw) = block_v6.and_then(|v| v.gateway) {
+            routes.push(format!(
+                "::/0 via {gw} dev {public} metric {}",
                 crate::networkd::WAN_METRIC
             ));
         }

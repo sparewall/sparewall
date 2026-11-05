@@ -1967,3 +1967,37 @@ fn ipv6_in_a_pair() {
         "networks.wan.ipv6.vip: for a pair's static WAN"
     ));
 }
+
+#[test]
+fn ipv6_gateway_link_names_are_reserved() {
+    // A pair's inside networks' IPv6 gateways are `swgw<vrid>` (#215).
+    use crate::topology::reserved_iface;
+    for name in ["lo", "swsync", "swwan", "swgw1", "swgw255"] {
+        assert!(reserved_iface(name), "{name}");
+    }
+    for name in ["swgw", "swgwa", "swgw1a", "lan", "gw1"] {
+        assert!(!reserved_iface(name), "{name}");
+    }
+    let mut doc = load(STANDALONE);
+    let (old, net) = doc.networks.pop_last().unwrap();
+    assert!(old != "swgw20");
+    doc.networks.insert("swgw20".into(), net);
+    assert!(has_error(
+        &doc,
+        "networks.swgw20: network names become interface names"
+    ));
+    // The link of a pair's inside network with IPv6.
+    let d = edit(
+        PAIR,
+        json!({"networks": {"users": {"ipv6": {"mode": "static", "prefix": "2001:db8:0:1::/64"}}}}),
+    );
+    assert_eq!(d.ipv6_gateway_iface("users").as_deref(), Some("swgw20"));
+    assert_eq!(d.ipv6_gateway_iface("wan"), None);
+    assert!(
+        d.zone_ifaces("users").contains(&"swgw20".to_string()),
+        "{:?}",
+        d.zone_ifaces("users")
+    );
+    assert!(d.ipv6_ifaces().contains(&"swgw20".to_string()));
+    assert_eq!(load(STANDALONE).ipv6_gateway_iface("lan"), None);
+}

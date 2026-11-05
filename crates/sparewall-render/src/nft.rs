@@ -1177,10 +1177,13 @@ fn dns_ifaces(doc: &Document) -> Vec<String> {
     } else {
         d.networks.iter().collect()
     };
-    let mut v: Vec<String> = nets
-        .into_iter()
-        .filter_map(|n| doc.network_iface(n).map(str::to_string))
-        .collect();
+    let mut v: Vec<String> = Vec::new();
+    for n in nets {
+        v.extend(doc.network_iface(n).map(str::to_string));
+        // A pair's hosts ask over IPv6 at the gateway address, on its
+        // link (#215).
+        v.extend(doc.ipv6_gateway_iface(n));
+    }
     v.sort();
     v.dedup();
     for (name, vpn) in &doc.vpn {

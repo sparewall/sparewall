@@ -7,7 +7,7 @@ use ipnet::{Ipv4Net, Ipv6Net};
 
 use crate::model::*;
 use crate::providers::{self, Role};
-use crate::topology::{RESERVED_IFACES, SELF_ZONE};
+use crate::topology::{SELF_ZONE, reserved_iface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -413,7 +413,7 @@ impl Validator<'_> {
             let mut hw: BTreeMap<&str, String> = BTreeMap::new();
             for (role, port) in ports {
                 let p = format!("ports.{node}.{role}");
-                if !iface_name_ok(role) || RESERVED_IFACES.contains(&role.as_str()) {
+                if !iface_name_ok(role) || reserved_iface(role) {
                     self.err(
                         &p,
                         "port role names become interface names: lowercase, start with a letter, at most 15 characters, not reserved",
@@ -522,7 +522,7 @@ impl Validator<'_> {
         let mut wans = 0;
         for (name, net) in &doc.networks {
             let p = format!("networks.{name}");
-            if !iface_name_ok(name) || RESERVED_IFACES.contains(&name.as_str()) {
+            if !iface_name_ok(name) || reserved_iface(name) {
                 self.err(&p, "network names become interface names: lowercase, start with a letter, at most 15 characters, not reserved");
             }
             if net.vlan.is_some() && roles.contains(name.as_str()) {
@@ -2060,7 +2060,7 @@ impl Validator<'_> {
         let mut ports = BTreeSet::new();
         for (name, v) in &doc.vpn {
             let p = format!("vpn.{name}");
-            if !iface_name_ok(name) || RESERVED_IFACES.contains(&name.as_str()) {
+            if !iface_name_ok(name) || reserved_iface(name) {
                 self.err(&p, "VPN names become interface names: lowercase, start with a letter, at most 15 characters");
             }
             if !ports.insert(v.listen_port) || doc.cluster.sync_port == Some(v.listen_port) {
@@ -2162,7 +2162,7 @@ impl Validator<'_> {
         let mut routed: BTreeMap<&str, &str> = BTreeMap::new();
         for (name, c) in &doc.vpn_clients {
             let p = format!("vpn_clients.{name}");
-            if !iface_name_ok(name) || RESERVED_IFACES.contains(&name.as_str()) {
+            if !iface_name_ok(name) || reserved_iface(name) {
                 self.err(&p, "VPN client names become interface names: lowercase, start with a letter, at most 15 characters");
             }
             if doc.vpn.contains_key(name) {

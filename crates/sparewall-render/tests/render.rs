@@ -1533,3 +1533,226 @@ fn ipv6_dns_only_from_served_networks() {
     let nft = &r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)];
     assert!(!nft.contains("service:dns-served-only"), "{nft}");
 }
+
+/// The pair example with a patch, for IPv6 in a pair (#215), which
+/// validation still refuses at activation until the coordinator and the
+/// VM suite are in: that error alone is allowed.
+fn pair_v6(patch: serde_json::Value) -> Rendered {
+    let text = std::fs::read_to_string(format!(
+        "{}/../../examples/pair.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+    sparewall_config::merge_patch(&mut v, &patch);
+    let mut doc = sparewall_config::from_value(v).unwrap();
+    doc.cluster.sync_keys = paired().cluster.sync_keys;
+    let errs: Vec<_> = validate::errors(&validate(&doc))
+        .into_iter()
+        .filter(|e| !e.contains("not built yet (#215)"))
+        .collect();
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    assert_nft_ok(&r);
+    r
+}
+
+fn file_in(r: &Rendered, sub: Subsystem, name: &str) -> String {
+    r.files
+        .get(&format!("{}/{name}", sub.dir()))
+        .unwrap_or_else(|| panic!("no {name} in {:?}", r.files.keys()))
+        .clone()
+}
+
+fn assert_has(text: &str, wants: &[&str]) {
+    for w in wants {
+        assert!(text.contains(w), "{w:?}\n{text}");
+    }
+}
+
+#[test]
+fn pair_ipv6_leased_wan_and_delegated_network() {
+    let r = pair_v6(serde_json::json!({
+        "networks": {
+            "wan": {"dhcp_client": true, "vip": null, "extra_vips": [], "gateway": null,
+                "ipv6": {"mode": "dhcpv6", "prefix_length": 56}},
+            "users": {"ipv6": {"mode": "delegated", "subnet_id": 1}},
+        },
+    }));
+    let net = |n: &str| file_in(&r, Subsystem::Networkd, n);
+    // The master's DHCPv6 client, on the lease link: one DUID and IAID
+    // whichever node asks, and the lease kept for the next master.
+    assert_has(
+        &net("40-sparewall-swwan.network"),
+        &[
+            "ActivationPolicy=manual\n",
+            "LinkLocalAddressing=ipv6\nIPv6AcceptRA=yes\n",
+            "[IPv6AcceptRA]\nDHCPv6Client=always\n",
+            "[DHCPv6]\nDUIDType=link-layer\nUseDelegatedPrefix=yes\nPrefixDelegationHint=::/56\n\
+             UseDNS=yes\nSendHostname=no\nDUIDRawData=00:01:00:00:5e:00:01:0a\nIAID=10\nSendRelease=no\n",
+        ],
+    );
+    // The network's own link: nothing of IPv6's but the gateway's macvlan.
+    let users = net("30-sparewall-users.network");
+    assert_has(&users, &["MACVLAN=swgw20\n", "IPv6AcceptRA=no\n"]);
+    for not in ["IPv6SendRA", "DHCPPrefixDelegation", "Token"] {
+        assert!(!users.contains(not), "{not}\n{users}");
+    }
+    // The gateway: the IPv6 virtual MAC and fe80::1, up on the master
+    // only, routing the /64 with no address of its own in it.
+    assert_has(
+        &net("40-sparewall-swgw20.netdev"),
+        &[
+            "Kind=macvlan\n",
+            "MACAddress=00:00:5e:00:02:14\n",
+            "[MACVLAN]\nMode=bridge\n",
+        ],
+    );
+    let gw = net("40-sparewall-swgw20.network");
+    assert_has(
+        &gw,
+        &[
+            "[Match]\nName=swgw20\n",
+            "[Link]\nActivationPolicy=manual\nRequiredForOnline=no\n",
+            "LinkLocalAddressing=no\nIPv6AcceptRA=no\nIPv6SendRA=yes\nDHCPPrefixDelegation=yes\n",
+            "[Address]\nAddress=fe80::1/64\nDuplicateAddressDetection=none\n",
+            "EmitDNS=yes\nDNS=fe80::1\n",
+            "[DHCPPrefixDelegation]\nUplinkInterface=swwan\nSubnetId=0x1\nAnnounce=yes\nAssign=no\n",
+        ],
+    );
+    assert!(!gw.contains("Token"), "{gw}");
+    let sysctl = file_in(&r, Subsystem::Sysctl, sparewall_render::sysctl::FILE);
+    assert_has(
+        &sysctl,
+        &[
+            "net.ipv6.conf.all.forwarding = 1\n",
+            "net.ipv6.conf.swwan.disable_ipv6 = 0\n",
+            "net.ipv4.conf.swgw20.arp_ignore = 8\n",
+        ],
+    );
+    // The lease link runs networkd's own IPv6; it is down on the backup.
+    assert!(!sysctl.contains("swwan.forwarding"), "{sysctl}");
+    let ct = file_in(
+        &r,
+        Subsystem::Conntrackd,
+        sparewall_render::conntrackd::CONF,
+    );
+    assert_has(
+        &ct,
+        &[
+            "            IPv6-ICMP\n",
+            "IPv6_address ::1\n",
+            "IPv6_address fe80::/10\n",
+        ],
+    );
+    let ub = file_in(&r, Subsystem::Dns, sparewall_render::unbound::CONF);
+    assert_has(&ub, &["interface: ::0\n", "do-ip6: yes\n"]);
+    let ka = file_in(
+        &r,
+        Subsystem::Keepalived,
+        sparewall_render::keepalived::CONF,
+    );
+    assert!(!ka.contains("swgw") && !ka.contains("swwan"), "{ka}");
+    let nft = file_in(&r, Subsystem::Nft, nft::SCRIPT);
+    assert_has(
+        &nft,
+        &[
+            "\"swgw20\"",
+            "udp sport 547 udp dport 546 accept comment \"infra:dhcpv6-client\"",
+        ],
+    );
+    let rs = nft
+        .lines()
+        .find(|l| l.contains("ipv6-router-solicit"))
+        .unwrap_or_else(|| panic!("{nft}"));
+    assert!(rs.contains("\"swgw20\""), "{rs}");
+    let dns = nft
+        .lines()
+        .find(|l| l.contains("service:dns-served-only"))
+        .unwrap_or_else(|| panic!("{nft}"));
+    assert!(dns.contains("\"swgw20\""), "{dns}");
+}
+
+#[test]
+fn pair_ipv6_static_block_and_static_network() {
+    let r = pair_v6(serde_json::json!({
+        "networks": {
+            "wan": {"ipv6": {"mode": "static", "prefix": "2001:db8:10::/64",
+                "vip": "2001:db8:10::1", "gateway": "2001:db8:10::fffe"}},
+            "users": {"ipv6": {"mode": "static", "prefix": "2001:db8:20::/64"}},
+        },
+    }));
+    // keepalived moves the address and route with the IPv4 ones.
+    let ka = file_in(
+        &r,
+        Subsystem::Keepalived,
+        sparewall_render::keepalived::CONF,
+    );
+    assert_has(
+        &ka,
+        &[
+            "    virtual_ipaddress_excluded {\n        2001:db8:10::1/64 dev swwan\n    }\n",
+            "        ::/0 via 2001:db8:10::fffe dev swwan metric 100\n",
+        ],
+    );
+    // The macvlan is up on both nodes: never a router there, so the
+    // backup's joins no group it would report from the virtual MAC.
+    let swwan = file_in(&r, Subsystem::Networkd, "40-sparewall-swwan.network");
+    assert_has(&swwan, &["LinkLocalAddressing=no\n", "IPv6Forwarding=no\n"]);
+    let sysctl = file_in(&r, Subsystem::Sysctl, sparewall_render::sysctl::FILE);
+    let at = |k: &str| sysctl.find(k).unwrap_or_else(|| panic!("{k}\n{sysctl}"));
+    assert!(
+        at("net.ipv6.conf.all.forwarding = 1\n") < at("net.ipv6.conf.swwan.addr_gen_mode = 1\n")
+    );
+    assert!(
+        at("net.ipv6.conf.swwan.addr_gen_mode = 1\n") < at("net.ipv6.conf.swwan.forwarding = 0\n")
+    );
+    assert!(
+        at("net.ipv6.conf.swwan.forwarding = 0\n") < at("net.ipv6.conf.swwan.disable_ipv6 = 0\n")
+    );
+    // The nodes take no IPv6 address on the WAN.
+    let wan = file_in(&r, Subsystem::Networkd, "30-sparewall-wan.network");
+    assert!(!wan.contains("2001:db8"), "{wan}");
+    // A static network: the prefix advertised and routed from the
+    // gateway's link, and named as the resolver there.
+    let gw = file_in(&r, Subsystem::Networkd, "40-sparewall-swgw20.network");
+    assert_has(
+        &gw,
+        &[
+            "DNS=fe80::1\n",
+            "[IPv6Prefix]\nPrefix=2001:db8:20::/64\n",
+            "[Route]\nDestination=2001:db8:20::/64\n",
+        ],
+    );
+    assert!(!gw.contains("DHCPPrefixDelegation"), "{gw}");
+    let users = file_in(&r, Subsystem::Networkd, "30-sparewall-users.network");
+    assert!(!users.contains("2001:db8"), "{users}");
+}
+
+#[test]
+fn pair_ipv6_static_address_on_a_leased_wan() {
+    // The lease link is down on the backup, where keepalived could not
+    // add a route: networkd holds the address on the master's.
+    let r = pair_v6(serde_json::json!({
+        "networks": {
+            "wan": {"dhcp_client": true, "vip": null, "extra_vips": [], "gateway": null,
+                "ipv6": {"mode": "static", "prefix": "2001:db8:10::/64",
+                    "vip": "2001:db8:10::1", "gateway": "fe80::1"}},
+        },
+    }));
+    let swwan = file_in(&r, Subsystem::Networkd, "40-sparewall-swwan.network");
+    assert_has(
+        &swwan,
+        &[
+            "LinkLocalAddressing=no\nIPv6AcceptRA=no\n",
+            "[Address]\nAddress=2001:db8:10::1/64\nDuplicateAddressDetection=none\n",
+            "[Route]\nGateway=fe80::1\nMetric=100\n",
+        ],
+    );
+    let ka = file_in(
+        &r,
+        Subsystem::Keepalived,
+        sparewall_render::keepalived::CONF,
+    );
+    assert!(!ka.contains("2001:db8"), "{ka}");
+}
