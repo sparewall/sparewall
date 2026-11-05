@@ -370,6 +370,22 @@ pub struct HelloReply {
     /// reported read revision 1 only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<i64>,
+    /// The prefixes DHCPv6 delegated to the callee (#215): a pair's
+    /// master's, which the backup advertises at a failover until its own
+    /// reply arrives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegated: Vec<DelegatedPrefix>,
+}
+
+/// A prefix DHCPv6 delegated, with the seconds left of its lifetimes when
+/// it was sent; `None` is forever.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct DelegatedPrefix {
+    pub prefix: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_seconds: Option<i64>,
 }
 
 /// One node's view of a network with a gateway address: whether the peer

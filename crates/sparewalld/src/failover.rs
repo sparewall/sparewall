@@ -412,6 +412,7 @@ mod tests {
             link_decision: None,
             reach: vec![],
             schema: None,
+            delegated: vec![],
         };
         change(&mut h);
         FakePeer {

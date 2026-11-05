@@ -149,21 +149,68 @@ fn prefix_of(address: &str) -> Option<String> {
     Some(format!("{}/{len}", Ipv6Addr::from(u128::from(a) & mask)))
 }
 
+/// The `subnet_id`th /64 of a delegated prefix (`2001:db8:100::/56`), as
+/// networkd's `SubnetId=` picks it; `None` if it does not fit.
+pub fn subnet64(prefix: &str, subnet_id: u16) -> Option<String> {
+    let (a, len) = prefix.split_once('/')?;
+    let (a, len) = (a.parse::<Ipv6Addr>().ok()?, len.parse::<u32>().ok()?);
+    if len > 64 || (64 - len < 16 && u64::from(subnet_id) >> (64 - len) != 0) {
+        return None;
+    }
+    let mask = u128::MAX.checked_shl(128 - len).unwrap_or(0);
+    let net = (u128::from(a) & mask) | (u128::from(subnet_id) << 64);
+    Some(format!("{}/64", Ipv6Addr::from(net)))
+}
+
+/// The prefixes delegated to the WAN on `dhcpv6`, on the link its client
+/// runs on (a pair's lease link).
+pub fn delegated(doc: &Document, links: &BTreeMap<String, LinkIpv6>) -> Vec<Lifetimed> {
+    doc.networks
+        .iter()
+        .find(|(_, n)| {
+            n.role == NetworkRole::Wan
+                && n.ipv6.as_ref().is_some_and(|v| v.mode == Ipv6Mode::Dhcpv6)
+        })
+        .and_then(|(name, _)| links.get(doc.public_iface(name)?))
+        .map(|l| l.delegated.clone())
+        .unwrap_or_default()
+}
+
 /// Each network with `ipv6`, by name: its interface and that interface's
 /// state; an inside network also its advertised prefixes. `None` when no
-/// network has IPv6.
+/// network has IPv6. A WAN's interface is the one its public addresses are
+/// on (a pair's lease link or static block's macvlan), and a pair's
+/// inside network's its gateway's (#215), which takes no address in the
+/// prefix: it advertises the static one, or the delegated one's /64 while
+/// the node holds it.
 pub fn status(doc: &Document, links: &BTreeMap<String, LinkIpv6>) -> Option<Value> {
     let mut out = serde_json::Map::new();
+    let held = delegated(doc, links);
     for (name, net) in &doc.networks {
         let Some(v6) = &net.ipv6 else { continue };
-        let Some(iface) = doc.network_iface(name) else {
+        let gateway = doc.ipv6_gateway_iface(name);
+        let Some(iface) = gateway
+            .clone()
+            .or_else(|| doc.public_iface(name).map(str::to_string))
+        else {
             continue;
         };
-        let st = links.get(iface).cloned().unwrap_or_default();
+        let st = links.get(&iface).cloned().unwrap_or_default();
         let mut v = serde_json::to_value(&st).unwrap_or_else(|_| json!({}));
         v["iface"] = json!(iface);
         v["mode"] = serde_json::to_value(v6.mode).unwrap_or_default();
-        if net.role != NetworkRole::Wan {
+        if gateway.is_some() {
+            let prefixes: Vec<String> = match (v6.mode, v6.prefix, v6.subnet_id) {
+                (Ipv6Mode::Static, Some(p), _) => vec![p.0.trunc().to_string()],
+                (Ipv6Mode::Delegated, _, Some(id)) => held
+                    .iter()
+                    .filter(|p| p.preferred_seconds != Some(0))
+                    .filter_map(|p| subnet64(&p.address, id))
+                    .collect(),
+                _ => vec![],
+            };
+            v["prefixes"] = json!(prefixes);
+        } else if net.role != NetworkRole::Wan {
             // networkd drops the node's address in a withdrawn delegated
             // prefix; one it keeps deprecated (preferred lifetime spent)
             // is not advertised either.
@@ -183,7 +230,9 @@ pub fn status(doc: &Document, links: &BTreeMap<String, LinkIpv6>) -> Option<Valu
 /// The `ipv6` health check, once a network has IPv6: degraded while a WAN
 /// has no IPv6 default route, or a WAN that should delegate a prefix to
 /// the inside networks has none. Degraded, never failed: IPv4 still
-/// flows, so a pair should not move its gateway addresses over it.
+/// flows, so a pair should not move its gateway addresses over it. A
+/// pair's IPv6 runs on the master (#215), which alone is checked: see
+/// [`standby`].
 pub fn health(doc: &Document, links: &BTreeMap<String, LinkIpv6>) -> Option<Check> {
     if !doc.networks.values().any(|n| n.ipv6.is_some()) {
         return None;
@@ -205,7 +254,7 @@ pub fn health(doc: &Document, links: &BTreeMap<String, LinkIpv6>) -> Option<Chec
             continue;
         }
         let st = doc
-            .network_iface(name)
+            .public_iface(name)
             .and_then(|i| links.get(i))
             .cloned()
             .unwrap_or_default();
@@ -231,6 +280,13 @@ pub fn health(doc: &Document, links: &BTreeMap<String, LinkIpv6>) -> Option<Chec
     } else {
         Check::new("ipv6", Level::Ok, good.join("; "))
     })
+}
+
+/// The `ipv6` check of a pair's node that is not the master, whose WAN
+/// has no IPv6 by design.
+pub fn standby(doc: &Document) -> Option<Check> {
+    doc.routes_ipv6()
+        .then(|| Check::new("ipv6", Level::Ok, "IPv6 runs on the master"))
 }
 
 #[cfg(test)]
@@ -401,6 +457,71 @@ mod tests {
             );
             assert!(!s.contains_key("lan0"), "{s:?}");
         }
+    }
+
+    #[test]
+    fn a_delegated_prefix_s_subnets() {
+        assert_eq!(
+            subnet64("2001:db8:100::/56", 1).as_deref(),
+            Some("2001:db8:100:1::/64")
+        );
+        assert_eq!(
+            subnet64("2001:db8:100::/56", 0xff).as_deref(),
+            Some("2001:db8:100:ff::/64")
+        );
+        assert_eq!(subnet64("2001:db8:100::/56", 0x100), None);
+        assert_eq!(
+            subnet64("2001:db8::/48", 0xabcd).as_deref(),
+            Some("2001:db8:0:abcd::/64")
+        );
+        assert_eq!(
+            subnet64("2001:db8:100:7::/64", 0).as_deref(),
+            Some("2001:db8:100:7::/64")
+        );
+        assert_eq!(subnet64("2001:db8:100:7::/64", 1), None);
+        assert_eq!(subnet64("2001:db8::/80", 0), None);
+        assert_eq!(subnet64("junk", 0), None);
+    }
+
+    /// A pair's (#215): the WAN on the lease link, an inside network on
+    /// its gateway link, advertising the /64 of the prefix the node holds.
+    #[test]
+    fn a_pair_s_status_and_health() {
+        let text = std::fs::read_to_string(format!(
+            "{}/../../examples/pair.yaml",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let d = sparewall_config::parse(&text, sparewall_config::Format::Yaml).unwrap();
+        let mut v = sparewall_config::to_value(&d);
+        sparewall_config::merge_patch(
+            &mut v,
+            &json!({"networks": {
+                "wan": {"dhcp_client": true, "vip": null, "extra_vips": [], "gateway": null,
+                    "ipv6": {"mode": "dhcpv6"}},
+                "users": {"ipv6": {"mode": "delegated", "subnet_id": 2}}}}),
+        );
+        let d: Document = sparewall_config::from_value(v).unwrap();
+        let mut links = BTreeMap::new();
+        links.insert(
+            "swwan".to_string(),
+            LinkIpv6 {
+                delegated: vec![lt("2001:db8:100::/56")],
+                default_gateway: Some("fe80::1".parse().unwrap()),
+                ..Default::default()
+            },
+        );
+        let s = status(&d, &links).unwrap();
+        assert_eq!(s["wan"]["iface"], "swwan");
+        assert_eq!(s["users"]["iface"], "swgw20");
+        assert_eq!(s["users"]["prefixes"], json!(["2001:db8:100:2::/64"]));
+        assert_eq!(delegated(&d, &links), vec![lt("2001:db8:100::/56")]);
+        let h = health(&d, &links).unwrap();
+        assert_eq!(h.level, Level::Ok, "{h:?}");
+        // The backup's: nothing on the lease link, by design.
+        let s = status(&d, &BTreeMap::new()).unwrap();
+        assert_eq!(s["users"]["prefixes"], json!([]));
+        assert_eq!(standby(&d).unwrap().level, Level::Ok);
     }
 
     #[test]

@@ -14,9 +14,9 @@ use futures_util::Stream;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sparewall_api::{
-    EventReply, FailoverReply, FetchReply, HelloReply, LineageEntry, LinkDecisionReply,
-    NetworkReach, PEER_PORT, PEER_PROTOCOL, PeerError, PeerGeneration, PeerProxy, PeerSecret,
-    PeerSecretsProxy, PushReply, PutSecretsReply, UpgradeReply,
+    DelegatedPrefix, EventReply, FailoverReply, FetchReply, HelloReply, LineageEntry,
+    LinkDecisionReply, NetworkReach, PEER_PORT, PEER_PROTOCOL, PeerError, PeerGeneration,
+    PeerProxy, PeerSecret, PeerSecretsProxy, PushReply, PutSecretsReply, UpgradeReply,
 };
 use sparewall_core::pair::{NodeView, SyncState, adopt_peer_base, push_plan, sync_state};
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass, SecretInfo, SharedSecret};
@@ -55,6 +55,14 @@ pub struct PairStatus {
     /// The same from the peer's last hello, while it answers.
     #[serde(skip)]
     pub peer_reach: Option<Vec<NetworkReach>>,
+    /// The prefixes DHCPv6 delegated to this node (`lease::lease_loop`),
+    /// for the peer's hello (#215).
+    #[serde(skip)]
+    pub delegated: Vec<DelegatedPrefix>,
+    /// The last the peer reported, and when: kept while it does not
+    /// answer, since a backup takes them over when the master is gone.
+    #[serde(skip)]
+    pub peer_delegated: Option<(std::time::Instant, Vec<DelegatedPrefix>)>,
 }
 
 /// How long an in-doubt node tries one sync link before the other.
@@ -145,12 +153,12 @@ impl PeerService {
     }
 }
 
-#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, LinkDecisionReply, NetworkReach, PeerSecret])]
+#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, LinkDecisionReply, NetworkReach, PeerSecret, DelegatedPrefix])]
 impl PeerService {
     async fn hello(&mut self, node: String, protocol: i64) -> Result<HelloReply, PeerError> {
-        let (role, reach) = {
+        let (role, reach, delegated) = {
             let p = self.pair.lock().unwrap_or_else(|p| p.into_inner());
-            (p.role.clone(), p.reach.clone())
+            (p.role.clone(), p.reach.clone(), p.delegated.clone())
         };
         with_core_raw(&self.core, &self.events, move |c| {
             if let Some(doc) = c.active_document()?
@@ -192,6 +200,7 @@ impl PeerService {
                 link_decision,
                 reach,
                 schema: Some(i64::from(sparewall_config::SCHEMA_VERSION)),
+                delegated,
             }))
         })
         .await
@@ -704,6 +713,9 @@ async fn sync_once(
                 })
                 .await;
                 status.peer_reach = Some(h.reach.clone());
+                if !h.delegated.is_empty() {
+                    status.peer_delegated = Some((std::time::Instant::now(), h.delegated.clone()));
+                }
                 if let Err(e) = send_secrets(core, events, link, &mut status.secrets_sent).await {
                     tracing::warn!(peer, error = %e, "sending secrets to the peer failed");
                     status.last_error = Some(e);
@@ -824,6 +836,10 @@ async fn sync_once(
         let mut p = pair.lock().unwrap_or_else(|p| p.into_inner());
         status.role = p.role.take();
         status.reach = std::mem::take(&mut p.reach);
+        status.delegated = std::mem::take(&mut p.delegated);
+        if status.peer_delegated.is_none() {
+            status.peer_delegated = p.peer_delegated.take();
+        }
         *p = status;
     }
     let _ = with_core_raw(core, events, move |c| {
