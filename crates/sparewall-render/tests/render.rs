@@ -1534,9 +1534,7 @@ fn ipv6_dns_only_from_served_networks() {
     assert!(!nft.contains("service:dns-served-only"), "{nft}");
 }
 
-/// The pair example with a patch, for IPv6 in a pair (#215), which
-/// validation still refuses at activation until the coordinator and the
-/// VM suite are in: that error alone is allowed.
+/// The pair example with a patch, for IPv6 in a pair (#215).
 fn pair_v6(patch: serde_json::Value) -> Rendered {
     let text = std::fs::read_to_string(format!(
         "{}/../../examples/pair.yaml",
@@ -1547,10 +1545,7 @@ fn pair_v6(patch: serde_json::Value) -> Rendered {
     sparewall_config::merge_patch(&mut v, &patch);
     let mut doc = sparewall_config::from_value(v).unwrap();
     doc.cluster.sync_keys = paired().cluster.sync_keys;
-    let errs: Vec<_> = validate::errors(&validate(&doc))
-        .into_iter()
-        .filter(|e| !e.contains("not built yet (#215)"))
-        .collect();
+    let errs = validate::errors(&validate(&doc));
     assert!(errs.is_empty(), "{errs:#?}");
     let r = render(&doc, "fw1").unwrap();
     assert_nft_ok(&r);

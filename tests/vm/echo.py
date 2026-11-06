@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 # Echo servers and clients for the VM suites.
 #
-#   echo.py server            TCP echo on 7000, a thread per connection
+#   echo.py server            TCP echo on 7000 (IPv4 and IPv6), a thread
+#                             per connection
 #   echo.py udpserver         UDP echo on 7001
 #   echo.py client HOST [T]   a line every 0.5 s on one connection,
 #                             printing the count of echoes ("broken" if
@@ -17,7 +18,7 @@ def serve(c):
         f.write(line)
 if sys.argv[1] == "server":
     # One thread per connection: the LAN and VPN clients run at once.
-    s = socket.create_server(("0.0.0.0", 7000))
+    s = socket.create_server(("::", 7000), family=socket.AF_INET6, dualstack_ipv6=True)
     while True:
         c, _ = s.accept()
         threading.Thread(target=serve, args=(c,), daemon=True).start()

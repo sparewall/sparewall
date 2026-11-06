@@ -1445,7 +1445,7 @@ fn v6(patch: serde_json::Value) -> Document {
 fn ipv6_networks_take_the_modes_their_role_allows() {
     assert_eq!(history_errors(&v6(json!({}))), Vec::<String>::new());
     // A standalone node's WAN (#213) and inside networks (#214) activate
-    // IPv6; a pair waits for #215.
+    // IPv6, as a pair's do (#215).
     assert_valid(&v6(json!({})));
     // Hosts by suffix in a delegated prefix are not built yet; in a
     // static one they are.
@@ -1464,15 +1464,6 @@ fn ipv6_networks_take_the_modes_their_role_allows() {
         json!({"networks": {"wan": {"ipv6": {"mode": "dhcpv6"}}}}),
     );
     assert_valid(&wan_only);
-    let mut v = to_value(&load(PAIR));
-    merge_patch(
-        &mut v,
-        &json!({"networks": {"wan": {"ipv6": {"mode": "ra"}}}}),
-    );
-    assert!(has_error(
-        &from_value(v).unwrap(),
-        "networks.wan.ipv6: IPv6 in a pair is not built yet (#215)"
-    ));
 
     let d = v6(
         json!({"networks": {"wan": {"ipv6": {"mode": "delegated", "prefix_length": null, "subnet_id": 0}}}}),
@@ -1911,7 +1902,7 @@ fn ipv6_in_a_pair() {
         "vip": "2001:db8:ffff::2"});
     let users = json!({"mode": "static", "prefix": "2001:db8:0:1::/64"});
     let d = pair(json!({"networks": {"wan": {"ipv6": st}, "users": {"ipv6": users}}}));
-    assert_eq!(history_errors(&d), Vec::<String>::new());
+    assert_valid(&d);
     let mut b = st.clone();
     b["vip"] = serde_json::Value::Null;
     b["addresses"] = json!({"fw1": "2001:db8:ffff::3", "fw2": "2001:db8:ffff::4"});
@@ -1956,7 +1947,7 @@ fn ipv6_in_a_pair() {
         &json!({"networks": {"wan": {"ipv6": {"mode": "dhcpv6"}}, "users": {"ipv6": lan}}}),
     );
     let leased: Document = from_value(leased).unwrap();
-    assert_eq!(history_errors(&leased), Vec::<String>::new());
+    assert_valid(&leased);
 
     // A vip is a pair's.
     let mut b = st;
