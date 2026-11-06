@@ -36,6 +36,7 @@ cleanup() {
             [ -f "$f" ] && { echo "--- $f"; tail -5 "$f"; }
         done
         [ -f "$VPN_RESULTS" ] && cat "$VPN_RESULTS"
+        [ -z "${V6_DUMP:-}" ] || v6_dump
         dump_nodes
     fi
     selinux_reports
@@ -46,6 +47,24 @@ cleanup() {
     [ $rc -ne 0 ] || ! declare -F selinux_gate >/dev/null || selinux_gate || exit 1
 }
 trap cleanup EXIT
+v6_dump() {
+    set +e
+    echo "--- isp"; ns isp ip -6 addr show dev eth0; ns isp ip -6 route; ns isp ip -6 neigh
+    echo "--- users"; ns users ip -6 addr show dev eth0; ns users ip -6 route
+    ns users sysctl net.ipv6.conf.eth0.accept_ra net.ipv6.conf.eth0.autoconf net.ipv6.conf.eth0.disable_ipv6
+    ns users timeout 10 rdisc6 eth0
+    local n
+    for n in fw1 fw2; do
+        echo "--- $n"
+        at "$n" 'ip -6 addr; ip -6 route; ip -br link
+            networkctl status users swgw20 swwan --no-pager -n 0
+            cat /run/systemd/network/40-sparewall-swgw20.network 2>/dev/null
+            sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "ndisc|radv|swgw|swwan|prefix|ipv6" | tail -40
+            sudo journalctl -b -u sparewalld --no-pager | grep -iE "ipv6|link that follows|swgw" | tail -20
+            sudo nft list chain inet sparewall input | head -40'
+    done
+    set -e
+} 2>&1
 
 log "booting two nodes"
 boot "${FW1[@]}"
@@ -161,6 +180,7 @@ check_wan() { # master backup
 # the gateway on users is fe80::1. The backup's swwan stays silent with
 # IPv6 on as well (check_wan), sending not even an MLD report.
 log "IPv6: a static block on the WAN's vip, fe80::1 on users (#215)"
+V6_DUMP=1
 ns isp sysctl -qw net.ipv6.conf.all.forwarding=1
 ns isp ip -6 addr add 2001:db8:10::fffe/64 dev eth0 nodad
 ns isp ip -6 route add 2001:db8:20::/64 via 2001:db8:10::1 dev eth0
