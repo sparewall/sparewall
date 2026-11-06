@@ -297,8 +297,12 @@ impl<S: System> Coordinator<S> {
     /// Refuse a change the peer of the running pair could not read (#168).
     /// What it reads is what its latest hello said; until a hello from
     /// that peer succeeds (after a restart, while it is unreachable, or a
-    /// different node), it may be a release that reads revision 1 only. A
-    /// new pairing is not checked here: the peer checks its own apply.
+    /// different node), it may be a release that reads revision 1 only,
+    /// unless the change needs no later revision than the generation the
+    /// pair runs: that generation reached the peer, or was applied there by
+    /// hand, as when a pair is restored from its backups and re-paired
+    /// with new sync keys, which the peer cannot be reached without. A new
+    /// pairing is not checked here: the peer checks its own apply.
     fn check_peer_reads(&self, doc: &Document) -> Result<(), Error> {
         if doc.schema <= 1 || !doc.is_pair() {
             return Ok(());
@@ -319,6 +323,7 @@ impl<S: System> Coordinator<S> {
                 "schema: this change needs schema revision {need}, and {peer} reads revisions 1 to {reads}: \
                  upgrade {peer} first"
             )])),
+            _ if need <= running.schema => Ok(()),
             _ => Err(Error::Validation(vec![format!(
                 "schema: this change needs schema revision {need}, and which revisions {peer} reads is \
                  not known until it is reached (it may read revision 1 only): reach {peer} first"
