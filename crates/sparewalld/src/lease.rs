@@ -25,14 +25,18 @@
 //!   addresses as they were. With the expected same prefix, networkd's own
 //!   routes take over, and these go.
 //! - **Health:** the master checks its IPv6; the backup has none by design.
+//! - **ipv6 objects** on a delegated network: networkd fills them from the
+//!   node's address there, which a pair's nodes do not take, so this loop
+//!   keeps them at the /64s of the prefixes in use: the node's own, and
+//!   the peer's last while valid (routed at a takeover).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sparewall_api::DelegatedPrefix;
 use sparewall_config::Document;
-use sparewall_config::model::Ipv6Mode;
+use sparewall_config::model::{DynamicKind, Ipv6Mode, ObjectKind};
 use sparewall_config::topology::LEASE_IFACE;
 use sparewall_core::ipv6::{self, Lifetimed};
 use tokio::sync::broadcast;
@@ -119,17 +123,12 @@ pub fn takeovers(
     let Some((heard, prefixes)) = peer else {
         return vec![];
     };
-    let elapsed = now.saturating_duration_since(*heard).as_secs();
     let mut out = Vec::new();
     for p in prefixes
         .iter()
         .filter(|p| !own.iter().any(|o| o.address == p.prefix))
     {
-        let valid = p
-            .valid_seconds
-            .map_or(TAKEOVER_MAX_S, |s| u64::try_from(s).unwrap_or(0))
-            .min(TAKEOVER_MAX_S);
-        let Some(left) = valid.checked_sub(elapsed).filter(|l| *l > 0) else {
+        let Some(left) = left(p, *heard, now) else {
             continue;
         };
         for (name, net) in &doc.networks {
@@ -151,6 +150,196 @@ pub fn takeovers(
     out.sort();
     out.dedup_by(|a, b| a.iface == b.iface && a.dst == b.dst);
     out
+}
+
+/// The seconds left of a heard prefix's valid lifetime, capped; `None`
+/// once lapsed.
+fn left(p: &DelegatedPrefix, heard: Instant, now: Instant) -> Option<u64> {
+    let elapsed = now.saturating_duration_since(heard).as_secs();
+    p.valid_seconds
+        .map_or(TAKEOVER_MAX_S, |s| u64::try_from(s).unwrap_or(0))
+        .min(TAKEOVER_MAX_S)
+        .checked_sub(elapsed)
+        .filter(|l| *l > 0)
+}
+
+/// A pair's ipv6 objects on delegated networks (#215), by set name, with
+/// the elements they should hold: the network's /64 of each prefix the
+/// node holds, and of each the peer last reported while it is valid.
+pub fn object_elements(
+    doc: &Document,
+    own: &[Lifetimed],
+    peer: Option<&(Instant, Vec<DelegatedPrefix>)>,
+    now: Instant,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut prefixes: Vec<&str> = own
+        .iter()
+        .filter(|p| p.valid_seconds != Some(0))
+        .map(|p| p.address.as_str())
+        .collect();
+    if let Some((heard, ps)) = peer {
+        prefixes.extend(
+            ps.iter()
+                .filter(|p| left(p, *heard, now).is_some())
+                .map(|p| p.prefix.as_str()),
+        );
+    }
+    let mut out = BTreeMap::new();
+    for (name, o) in &doc.objects {
+        let Some(d) = &o.dynamic else { continue };
+        if o.kind != ObjectKind::Ipv6 || d.source != DynamicKind::Prefix {
+            continue;
+        }
+        let Some(v6) = doc.networks.get(&d.network).and_then(|n| n.ipv6.as_ref()) else {
+            continue;
+        };
+        if doc.ipv6_gateway_iface(&d.network).is_none() || v6.mode != Ipv6Mode::Delegated {
+            continue;
+        }
+        let Some(id) = v6.subnet_id else { continue };
+        out.insert(
+            name.clone(),
+            prefixes
+                .iter()
+                .filter_map(|p| ipv6::subnet64(p, id))
+                .collect(),
+        );
+    }
+    out
+}
+
+/// A set's elements from `nft -j list set`: addresses, prefixes
+/// (`2001:db8::/64`) and ranges (`a-b`).
+pub fn set_elements(listing: &Value) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for item in listing["nftables"].as_array().into_iter().flatten() {
+        for e in item["set"]["elem"].as_array().into_iter().flatten() {
+            let e = e.get("elem").map_or(e, |x| &x["val"]);
+            if let Some(a) = e.as_str() {
+                out.insert(a.to_string());
+            } else if let (Some(a), Some(l)) =
+                (e["prefix"]["addr"].as_str(), e["prefix"]["len"].as_u64())
+            {
+                out.insert(format!("{a}/{l}"));
+            } else if let Some([a, b]) = e["range"].as_array().map(Vec::as_slice)
+                && let (Some(a), Some(b)) = (a.as_str(), b.as_str())
+            {
+                out.insert(format!("{a}-{b}"));
+            }
+        }
+    }
+    out
+}
+
+async fn nft(args: &[&str]) -> Option<Vec<u8>> {
+    let out = tokio::process::Command::new("nft")
+        .args(args)
+        .output()
+        .await
+        .ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+/// The addresses an element covers (`2001:db8::/64`, `a-b`, or one
+/// address), as an inclusive range.
+fn span(e: &str) -> Option<(u128, u128)> {
+    let a = |s: &str| s.parse::<std::net::Ipv6Addr>().ok().map(u128::from);
+    if let Some((x, len)) = e.split_once('/') {
+        let len: u32 = len.parse().ok().filter(|l| *l <= 128)?;
+        let host = u128::MAX.checked_shr(len).unwrap_or(0);
+        let x = a(x)? & !host;
+        Some((x, x | host))
+    } else if let Some((x, y)) = e.split_once('-') {
+        Some((a(x)?, a(y)?))
+    } else {
+        a(e).map(|x| (x, x))
+    }
+}
+
+/// What a set of elements covers, as sorted disjoint ranges, adjacent
+/// ones joined, as nft's `auto-merge` lists them; `None` if one does not
+/// parse.
+pub fn coverage<'a>(els: impl IntoIterator<Item = &'a String>) -> Option<Vec<(u128, u128)>> {
+    let mut v: Vec<(u128, u128)> = els.into_iter().map(|e| span(e)).collect::<Option<_>>()?;
+    v.sort();
+    let mut out: Vec<(u128, u128)> = Vec::new();
+    for (a, b) in v {
+        match out.last_mut() {
+            Some((_, e)) if a <= e.saturating_add(1) => *e = (*e).max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    Some(out)
+}
+
+/// The `nft -f` script that makes a set hold `want` in place of `have`,
+/// in one transaction, so rules never see it empty between; `None` when
+/// it covers the same addresses already (`auto-merge` may list adjacent
+/// /64s as one range).
+pub fn refill(name: &str, have: &BTreeSet<String>, want: &BTreeSet<String>) -> Option<String> {
+    if coverage(have).is_some_and(|h| coverage(want) == Some(h)) {
+        return None;
+    }
+    let table = sparewall_render::nft::TABLE;
+    let mut s = String::new();
+    if !have.is_empty() {
+        let els: Vec<&str> = have.iter().map(String::as_str).collect();
+        s.push_str(&format!(
+            "delete element inet {table} {name} {{ {} }}\n",
+            els.join(", ")
+        ));
+    }
+    if !want.is_empty() {
+        let els: Vec<&str> = want.iter().map(String::as_str).collect();
+        s.push_str(&format!(
+            "add element inet {table} {name} {{ {} }}\n",
+            els.join(", ")
+        ));
+    }
+    Some(s)
+}
+
+/// Bring a coordinator-filled set to `want`.
+async fn fill_set(name: &str, want: &BTreeSet<String>) {
+    let table = sparewall_render::nft::TABLE;
+    // Not there (an apply is on its way): next round.
+    let Some(listing) = nft(&["-j", "list", "set", "inet", table, name]).await else {
+        return;
+    };
+    let have = serde_json::from_slice(&listing)
+        .map(|v| set_elements(&v))
+        .unwrap_or_default();
+    let Some(script) = refill(name, &have, want) else {
+        return;
+    };
+    let ok = async {
+        use tokio::io::AsyncWriteExt;
+        let mut child = tokio::process::Command::new("nft")
+            .args(["-f", "-"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .ok()?;
+        child
+            .stdin
+            .take()?
+            .write_all(script.as_bytes())
+            .await
+            .ok()?;
+        child.wait().await.ok().filter(|s| s.success())
+    }
+    .await
+    .is_some();
+    let want: Vec<&str> = want.iter().map(String::as_str).collect();
+    let want = want.join(", ");
+    if ok {
+        tracing::info!(
+            set = name,
+            elements = want,
+            "an ipv6 object follows the delegated prefix"
+        );
+    } else {
+        tracing::warn!(set = name, elements = want, "cannot update an ipv6 object");
+    }
 }
 
 /// A pair's `ipv6` check by role: the master's own; the backup's says
@@ -239,6 +428,11 @@ pub async fn lease_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair
                     tracing::warn!(link, verb, "cannot change a link that follows the master");
                 }
                 let _ = events.send(json!({"type": "lease", "link": link, "up": up, "ok": ok}));
+            }
+        }
+        if let Some(d) = &doc {
+            for (set, els) in object_elements(d, &own, peer.as_ref(), Instant::now()) {
+                fill_set(&set, &els).await;
             }
         }
         let want = match (&doc, master) {
@@ -344,6 +538,94 @@ mod tests {
             let c = ipv6_check(&d, &none, role).unwrap();
             assert_eq!(c.level, Level::Degraded, "{role:?}");
         }
+    }
+
+    #[test]
+    fn a_pair_s_ipv6_objects_follow_the_prefixes_in_use() {
+        let mut v = sparewall_config::to_value(&pair_v6());
+        sparewall_config::merge_patch(
+            &mut v,
+            &json!({"objects": {
+                "users6": {"type": "ipv6", "dynamic": {"network": "users", "source": "prefix"}}}}),
+        );
+        let d: Document = sparewall_config::from_value(v).unwrap();
+        let t0 = Instant::now();
+        let own = [Lifetimed {
+            address: "2001:db8:200::/56".into(),
+            preferred_seconds: Some(1800),
+            valid_seconds: Some(3600),
+        }];
+        let heard = (
+            t0,
+            vec![DelegatedPrefix {
+                prefix: "2001:db8:100::/56".into(),
+                preferred_seconds: Some(0),
+                valid_seconds: Some(600),
+            }],
+        );
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+        let e = object_elements(&d, &own, Some(&heard), t0);
+        assert_eq!(
+            e["users6"],
+            set(&["2001:db8:100:1::/64", "2001:db8:200:1::/64"])
+        );
+        // The peer's lapses; the node's own stays.
+        let e = object_elements(&d, &own, Some(&heard), t0 + Duration::from_secs(600));
+        assert_eq!(e["users6"], set(&["2001:db8:200:1::/64"]));
+        // Nothing known: empty, so a stale element goes.
+        assert_eq!(object_elements(&d, &[], None, t0)["users6"], set(&[]));
+        // Only a pair's delegated networks' prefix objects.
+        assert!(object_elements(&pair_v6(), &own, None, t0).is_empty());
+    }
+
+    #[test]
+    fn a_set_is_refilled_only_when_it_covers_other_addresses() {
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+        let want = set(&["2001:db8:100:1::/64", "2001:db8:100:2::/64"]);
+        // auto-merge lists adjacent /64s as one range: the same addresses.
+        let merged = set(&["2001:db8:100:1::-2001:db8:100:2:ffff:ffff:ffff:ffff"]);
+        assert_eq!(refill("users6", &merged, &want), None);
+        assert_eq!(refill("users6", &want, &want), None);
+        // A stale prefix goes, the new one comes, in one transaction.
+        let s = refill("users6", &merged, &set(&["2001:db8:200:1::/64"])).unwrap();
+        assert_eq!(
+            s,
+            "delete element inet sparewall users6 { 2001:db8:100:1::-2001:db8:100:2:ffff:ffff:ffff:ffff }\n\
+             add element inet sparewall users6 { 2001:db8:200:1::/64 }\n"
+        );
+        // Empty to full, and full to empty.
+        assert_eq!(
+            refill("users6", &set(&[]), &want).unwrap(),
+            "add element inet sparewall users6 { 2001:db8:100:1::/64, 2001:db8:100:2::/64 }\n"
+        );
+        assert!(
+            refill("users6", &want, &set(&[]))
+                .unwrap()
+                .starts_with("delete element")
+        );
+        assert_eq!(refill("users6", &set(&[]), &set(&[])), None);
+        // Junk listed: replace it.
+        assert!(refill("users6", &set(&["junk"]), &want).is_some());
+    }
+
+    #[test]
+    fn reads_a_set_s_elements() {
+        let l = json!({"nftables": [{"metainfo": {}}, {"set": {"name": "users6", "elem": [
+            {"prefix": {"addr": "2001:db8:100:1::", "len": 64}},
+            "2001:db8::1",
+            {"range": ["2001:db8::10", "2001:db8::20"]},
+            {"elem": {"val": {"prefix": {"addr": "2001:db8:200:1::", "len": 64}}, "timeout": 5}}]}}]});
+        let want: BTreeSet<String> = [
+            "2001:db8:100:1::/64",
+            "2001:db8::1",
+            "2001:db8::10-2001:db8::20",
+            "2001:db8:200:1::/64",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(set_elements(&l), want);
+        assert!(set_elements(&json!({})).is_empty());
     }
 
     #[test]

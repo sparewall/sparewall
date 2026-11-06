@@ -1255,6 +1255,16 @@ impl Validator<'_> {
                         format!("{p}.dynamic.network"),
                         format!("network {:?} has no IPv6 (networks.{0}.ipv6)", d.network),
                     ),
+                    (ObjectKind::Ipv6, Some(_))
+                        if d.source == DynamicKind::Address
+                            && doc.ipv6_gateway_iface(&d.network).is_some() =>
+                    {
+                        self.err(
+                            format!("{p}.dynamic.source"),
+                            "in a pair, the nodes take no IPv6 address on an inside network (its \
+                             gateway is fe80::1); use source: prefix",
+                        )
+                    }
                     _ => {}
                 }
             }

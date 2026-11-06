@@ -288,13 +288,19 @@ fn ipv6_dynamic_elements(doc: &Document, node: &str, d: &DynamicSource) -> Optio
     let prefix = static_ipv6_prefix(doc, &d.network)?;
     match d.source {
         DynamicKind::Prefix => Some(vec![prefix.to_string()]),
+        // A pair's static WAN: its address is the vip, on the master
+        // (#215).
         DynamicKind::Address if net.role == NetworkRole::Wan => Some(
             v6.addresses
                 .get(node)
+                .or(v6.vip.as_ref())
                 .map(|a| a.to_string())
                 .into_iter()
                 .collect(),
         ),
+        // A pair's inside network: the nodes take no address there
+        // (validation refuses one).
+        DynamicKind::Address if doc.is_pair() => Some(vec![]),
         // An inside network's: the node is ::1 in its /64 (#214).
         DynamicKind::Address => Some(vec![crate::networkd::node_in_prefix(prefix).to_string()]),
     }
@@ -413,10 +419,14 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 Some(e) => ("ipv6_addr", e),
                 // Learned at run time (DHCPv6, SLAAC, a delegated prefix):
                 // networkd fills it, as a lease does an ipv4 one (#213,
-                // #214).
+                // #214). A pair's delegated network's, the coordinator
+                // (#215): networkd fills sets from the node's address
+                // there, which a pair's nodes do not take.
                 None => {
                     out.meta.preserved_sets.push(name.clone());
-                    if let Some(i) = doc.public_iface(&d.network) {
+                    if doc.ipv6_gateway_iface(&d.network).is_none()
+                        && let Some(i) = doc.public_iface(&d.network)
+                    {
                         out.meta.set_links.insert(name.clone(), i.to_string());
                     }
                     ("ipv6_addr", vec![])
