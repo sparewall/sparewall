@@ -3647,7 +3647,7 @@ fn what_the_peer_reads_is_unknown_until_it_answers() {
     web["management"]["web"] = json!(true);
     // A new pairing is not checked here: the peer checks its own apply.
     let mut a = pair_node("fw1");
-    a.c.apply(web.clone(), &opts(0, None)).unwrap();
+    a.c.apply(pair_example(), &opts(0, None)).unwrap();
     // Once paired, a revision-2 change needs to know what fw2 reads: not
     // before its first hello, and not from another node.
     let mut v = web.clone();
@@ -3675,11 +3675,18 @@ fn what_the_peer_reads_is_unknown_until_it_answers() {
     a2.apply(v.clone(), &opts(2, None)).unwrap();
     // Forgotten only with the peer.
     a2.set_peer_reads(None);
-    v["networks"]["users"]["mtu"] = json!(1200);
-    let e = a2.apply(v, &opts(3, None)).unwrap_err().to_string();
+    let mut later = v.clone();
+    later["management"]["sources"] = json!(["10.0.0.0/8"]);
+    let e = a2.apply(later, &opts(3, None)).unwrap_err().to_string();
     assert!(e.contains("not known until it is reached"), "{e}");
+    // A change that needs no later revision than the running generation's
+    // goes ahead: that generation is the peer's too. So a pair restored
+    // from its backups can be re-paired, which takes a change before the
+    // peer can be reached.
+    v["networks"]["users"]["mtu"] = json!(1200);
+    a2.apply(v, &opts(3, None)).unwrap();
     // A revision-1 change goes ahead regardless.
-    a2.apply(pair_example(), &opts(3, None)).unwrap();
+    a2.apply(pair_example(), &opts(4, None)).unwrap();
 }
 
 #[test]
