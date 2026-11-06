@@ -154,7 +154,44 @@ check_wan() { # master backup
         || fail "a node claimed a gateway address from its own MAC: $(ns isp nft list chain arp isp in)"
     # The backup's macvlan sent nothing while its peer's traffic went out.
     [ "$(swwan_tx "$2")" = "$tx" ] || fail "$2 (backup) sent from the virtual MAC ($tx, then $(swwan_tx "$2") packets)"
+    check_wan6 "$1" "$2"
 }
+# IPv6 with a static block (#215): the ISP routes the users network's
+# /64 to the WAN's vip, which keepalived moves with the IPv4 ones, and
+# the gateway on users is fe80::1. The backup's swwan stays silent with
+# IPv6 on as well (check_wan), sending not even an MLD report.
+log "IPv6: a static block on the WAN's vip, fe80::1 on users (#215)"
+ns isp sysctl -qw net.ipv6.conf.all.forwarding=1
+ns isp ip -6 addr add 2001:db8:10::fffe/64 dev eth0 nodad
+ns isp ip -6 route add 2001:db8:20::/64 via 2001:db8:10::1 dev eth0
+at fw1 'sudo sparewall merge -f - --confirm 0' <<'JSON'
+{"networks": {"wan": {"ipv6": {"mode": "static", "prefix": "2001:db8:10::/64",
+                               "vip": "2001:db8:10::1", "gateway": "2001:db8:10::fffe"}},
+              "users": {"ipv6": {"mode": "static", "prefix": "2001:db8:20::/64"}}},
+ "policy": {"users->wan": {"action": "accept"}}}
+JSON
+wait_for 120 "fw1 in sync with IPv6" in_sync fw1
+wait_for 60 "fw2 in sync with IPv6" in_sync fw2
+# The client: the flush above took its link-local address too.
+ns users ip -6 addr add fe80::20/64 dev eth0 nodad 2>/dev/null || true
+client6() {
+    ns users rdisc6 -1 eth0 >/dev/null 2>&1 || true
+    ns users ip -6 -br addr show dev eth0 scope global -tentative | grep -o '2001:db8:20:0:[0-9a-f:]*' | head -1 | grep .
+}
+wait_for 60 "the client's SLAAC address in 2001:db8:20::/64" client6
+C6=$(client6)
+vip6() { at "$1" 'ip -6 -br addr show dev swwan' | grep -q ' 2001:db8:10::1/64'; }
+isp_mac6() { ns isp ip -j -6 neigh show 2001:db8:10::1 dev eth0 | jq -r '.[0].lladdr // empty'; }
+check_wan6() { # master backup
+    vip6 "$1" || fail "$1 (master) does not hold 2001:db8:10::1: $(at "$1" 'ip -6 -br addr show dev swwan')"
+    ! vip6 "$2" || fail "$2 (backup) holds 2001:db8:10::1"
+    at "$1" 'ip -6 route show default' | grep -q 'via 2001:db8:10::fffe dev swwan' \
+        || fail "$1 (master) has no IPv6 default route via the ISP: $(at "$1" 'ip -6 route show default')"
+    ns users ping -6 -c 2 -W 2 2001:db8:10::fffe >/dev/null \
+        || fail "the client cannot reach the ISP over IPv6 through $1"
+    [ "$(isp_mac6)" = "$VMAC" ] || fail "the ISP has 2001:db8:10::1 at $(isp_mac6), not the virtual MAC $VMAC"
+}
+
 wait_for 30 "fw1 reaches the outside" egress fw1
 check_wan fw1 fw2
 
@@ -348,6 +385,11 @@ src=$(egress fw2) || fail "fw2 cannot reach the outside after the failover"
 [ "$src" = 203.0.113.1 ] || fail "fw2 reached the outside as $src after the failover"
 mac=$(isp_mac)
 [ "$mac" = "$VMAC" ] || fail "after the failover the ISP has 203.0.113.1 at ${mac:-no MAC}, not $VMAC"
+# The client keeps its IPv6 address and reaches the ISP through fw2.
+ns users ip -6 -br addr show dev eth0 | grep -q "$C6" || fail "the client lost $C6 in the failover"
+vip6 fw2 || fail "fw2 does not hold 2001:db8:10::1 after the failover"
+ns users ping -6 -c 2 -W 2 2001:db8:10::fffe >/dev/null || fail "the client cannot reach the ISP over IPv6 after the failover"
+[ "$(isp_mac6)" = "$VMAC" ] || fail "after the failover the ISP has 2001:db8:10::1 at $(isp_mac6), not $VMAC"
 wait_for 60 "fw2 reports the peer down" unreachable fw2
 # The client keeps its address, now from fw2. (Without flushing it first:
 # the connection above runs from it.)

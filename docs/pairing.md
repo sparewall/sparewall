@@ -116,6 +116,52 @@ MAC (`00:00:5e:00:01:0a` here), so the ISP sees one MAC and one client and
 the lease moves with the gateway. Another network of the pair must have
 a gateway address: the lease follows its VRRP master.
 
+## IPv6
+
+A pair takes IPv6 as a standalone node does ([IPv6 on the
+WAN](operations.md#ipv6-on-the-wan), [IPv6 on inside
+networks](operations.md#ipv6-on-inside-networks)), with what moves at a
+failover held by the master (#215):
+
+- **A leased WAN** (`dhcp_client` and a `vrid`) takes `dhcpv6` or `ra`.
+  The master alone runs the DHCPv6 client, on `swwan`, with a DUID made
+  from the virtual MAC and the `vrid` as its IAID, so the ISP sees one
+  client whichever node asks, and gives a new master the same address and
+  prefix. The client sends no Release when a node stops being the master.
+- **A static block** takes `mode: static` with a `vip`, the gateway
+  address the ISP routes the block to, which moves with the IPv4 ones:
+
+  ```yaml
+  networks:
+    wan:
+      # ... the static block above
+      ipv6:
+        mode: static
+        prefix: "2001:db8:10::/64"
+        vip: "2001:db8:10::1"
+        gateway: "2001:db8:10::fffe"
+  ```
+
+  The nodes take no IPv6 address of their own on the WAN, and the
+  backup's `swwan` sends nothing, not even a multicast listener report
+  from the virtual MAC.
+- **A WAN with `vmac: false`** is IPv4 only.
+- **Inside networks** need a `vrid`. Each network's gateway is `fe80::1`,
+  on the IPv6 VRRP virtual MAC (`00:00:5e:00:02:<vrid>`), up on the master
+  only: it sends the router advertisements, and names `fe80::1` as the
+  resolver where the network's DNS is the node's. The nodes take no
+  global address there, so an `ipv6` object with `source: address` on an
+  inside network is refused; `source: prefix` holds the network's /64.
+- **At a failover** the new master routes the /64s of the prefix its
+  peer last reported, for that prefix's remaining valid lifetime, until
+  its own DHCPv6 reply arrives; hosts keep their addresses and
+  connections. With the same DUID and IAID the reply is normally the same
+  prefix. If the ISP delegates another, the networks renumber as on a
+  standalone node: the old prefix is withdrawn, not deprecated (#232).
+- **Health:** the `ipv6` check runs on the master. The backup's is ok
+  while it is the backup, as it has no IPv6 on the WAN by design, and
+  degraded in FAULT.
+
 ## Changing configuration
 
 Apply a change on either node; it runs there first and is pushed to the

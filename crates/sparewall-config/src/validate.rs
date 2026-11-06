@@ -1064,26 +1064,12 @@ impl Validator<'_> {
         }
     }
 
-    /// IPv6 is in the schema (#211) before all of it is rendered. The
-    /// firewall (#212), a standalone node's WAN (#213) and inside networks
-    /// (#214) render it; pairs (#215), and hosts by suffix in a delegated
-    /// prefix, do not yet,
-    /// and management over IPv6 is a choice for later: until then a
-    /// document that uses them is refused, rather than run as if it did
-    /// not.
+    /// IPv6 is in the schema (#211) before all of it is rendered. Hosts
+    /// by suffix in a delegated prefix are not built yet, and management
+    /// over IPv6 is a choice for later: until then a document that uses
+    /// them is refused, rather than run as if it did not.
     fn unbuilt_ipv6(&mut self) {
         let doc = self.doc;
-        for (name, net) in &doc.networks {
-            if net.ipv6.is_none() {
-                continue;
-            }
-            if doc.is_pair() {
-                self.err(
-                    format!("networks.{name}.ipv6"),
-                    "IPv6 in a pair is not built yet (#215)",
-                );
-            }
-        }
         // Hosts by suffix in a delegated prefix need the node to follow
         // the prefix as it runs, which is not built yet.
         for (oname, o) in &doc.objects {

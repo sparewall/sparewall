@@ -270,8 +270,8 @@ loads nothing from outside the node.
 
 ## IPv6 on the WAN
 
-A standalone node's WAN takes IPv6 from the upstream (#213; inside
-networks follow in #214, pairs in #215):
+A node's WAN takes IPv6 from the upstream (#213). A pair's follows the
+master: see [Running an HA pair](pairing.md#ipv6).
 
 ```shell
 sparewall set networks.wan.ipv6.mode=dhcpv6     # or ra, or static
@@ -311,8 +311,9 @@ sparewall set networks.wan.ipv6.mode=dhcpv6     # or ra, or static
 
 ## IPv6 on inside networks
 
-Each inside network with `ipv6` gets a /64 and advertises it (#214); a
-standalone node for now (pairs: #215):
+Each inside network with `ipv6` gets a /64 and advertises it (#214). In
+a pair the gateway is `fe80::1` on the master, and the nodes take no
+address in the /64: see [Running an HA pair](pairing.md#ipv6).
 
 ```yaml
 networks:
@@ -322,7 +323,7 @@ networks:
     ipv6: { mode: static, prefix: "2001:db8:0:2::/64" }
 ```
 
-- **Addresses:** the node is `::1` in the /64; hosts configure
+- **Addresses:** a standalone node is `::1` in the /64; hosts configure
   themselves by SLAAC from its router advertisements. DHCPv6 on inside
   networks is a later feature (#217).
 - **A new delegated prefix** renumbers the network by itself: the node
@@ -1091,13 +1092,13 @@ what the test suites see, and a denial on a real node is a missing rule.
 ## Settings not built yet
 
 `provider_options` and `dhcp.provider: networkd` are rejected with an
-error at their path, and so, until the rest of 0.6.0 renders it, is
-IPv6 in a pair (#215), hosts by suffix in a delegated prefix, and IPv6
-in `management.sources` (management stays IPv4 for now). The document takes
-them, and validation checks them in full; activating one is refused.
-`ipv6` objects, IPv6 in policies (#212), a standalone node's WAN (#213,
-[IPv6 on the WAN](#ipv6-on-the-wan)) and inside networks (#214, [IPv6 on
-inside networks](#ipv6-on-inside-networks)) are built. (`updates.mode: windowed` and `updates.window` were
+error at their path, and so are hosts by suffix in a delegated prefix
+and IPv6 in `management.sources` (management stays IPv4 for now). The
+document takes them, and validation checks them in full; activating one
+is refused. `ipv6` objects, IPv6 in policies (#212), a node's WAN (#213,
+[IPv6 on the WAN](#ipv6-on-the-wan)), inside networks (#214, [IPv6 on
+inside networks](#ipv6-on-inside-networks)) and IPv6 in a pair (#215,
+[Running an HA pair](pairing.md#ipv6)) are built. (`updates.mode: windowed` and `updates.window` were
 too, before 0.4.0 built them, and `logging.remote.provider: syslog`,
 `metrics.mode: local` and `metrics.retention` before 0.5.0.) Builds
 before 0.1.0 accepted them, though nothing acted on them. After
