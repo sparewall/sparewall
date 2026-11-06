@@ -123,11 +123,14 @@ WAN](operations.md#ipv6-on-the-wan), [IPv6 on inside
 networks](operations.md#ipv6-on-inside-networks)), with what moves at a
 failover held by the master (#215):
 
-- **A leased WAN** (`dhcp_client` and a `vrid`) takes `dhcpv6` or `ra`.
-  The master alone runs the DHCPv6 client, on `swwan`, with a DUID made
-  from the virtual MAC and the `vrid` as its IAID, so the ISP sees one
-  client whichever node asks, and gives a new master the same address and
-  prefix. The client sends no Release when a node stops being the master.
+- **A leased WAN** (`dhcp_client` and a `vrid`) takes `dhcpv6` or `ra`,
+  on `swwan`, which is up on the master only. With `dhcpv6` the master
+  alone runs the DHCPv6 client, with a DUID made from the virtual MAC and
+  the `vrid` as its IAID, so the ISP sees one client whichever node asks,
+  and gives a new master the same address and prefix. The client sends no
+  Release when a node stops being the master. With `ra` there is no
+  DHCPv6 client: the address comes by SLAAC from the virtual MAC, the
+  same on either node, and there is no delegated prefix.
 - **A static block** takes `mode: static` with a `vip`, the gateway
   address the ISP routes the block to, which moves with the IPv4 ones:
 
