@@ -208,10 +208,15 @@ client6() {
 wait_for 60 "the client's SLAAC address in 2001:db8:20::/64" client6
 C6=$(client6)
 vip6() { at "$1" 'ip -6 -br addr show dev swwan' | grep -q ' 2001:db8:10::1/64'; }
+ll6() { at "$1" 'ip -6 -br addr show dev swwan' | grep -q ' fe80::200:5eff:fe00:10a/64'; }
 isp_mac6() { ns isp ip -j -6 neigh show 2001:db8:10::1 dev eth0 | jq -r '.[0].lladdr // empty'; }
 check_wan6() { # master backup
     vip6 "$1" || fail "$1 (master) does not hold 2001:db8:10::1: $(at "$1" 'ip -6 -br addr show dev swwan')"
     ! vip6 "$2" || fail "$2 (backup) holds 2001:db8:10::1"
+    # The virtual MAC's link-local address, the source of the master's
+    # neighbour solicitations for forwarded packets: the master's alone.
+    ll6 "$1" || fail "$1 (master) has no fe80::200:5eff:fe00:10a on swwan"
+    ! ll6 "$2" || fail "$2 (backup) has fe80::200:5eff:fe00:10a on swwan"
     at "$1" 'ip -6 route show default' | grep -q 'via 2001:db8:10::fffe dev swwan' \
         || fail "$1 (master) has no IPv6 default route via the ISP: $(at "$1" 'ip -6 route show default')"
     # The first may be a few seconds after the gateway link came up.

@@ -145,9 +145,12 @@ failover held by the master (#215):
         gateway: "2001:db8:10::fffe"
   ```
 
-  The nodes take no IPv6 address of their own on the WAN, and the
-  backup's `swwan` sends nothing, not even a multicast listener report
-  from the virtual MAC.
+  The nodes take no IPv6 address of their own on the WAN. The master
+  holds the `vip` and the virtual MAC's link-local address
+  (`fe80::200:5eff:fe00:1XX`, `XX` the WAN's `vrid` in hex), the source
+  of its neighbour solicitations; the backup's `swwan` has neither and
+  sends nothing, not even a multicast listener report from the virtual
+  MAC.
 - **A WAN with `vmac: false`** is IPv4 only.
 - **Inside networks** need a `vrid`. Each network's gateway is `fe80::1`,
   on the IPv6 VRRP virtual MAC (`00:00:5e:00:02:<vrid>`), up on the master

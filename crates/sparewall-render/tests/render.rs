@@ -1686,7 +1686,9 @@ fn pair_ipv6_static_block_and_static_network() {
     assert_has(
         &ka,
         &[
-            "    virtual_ipaddress_excluded {\n        2001:db8:10::1/64 dev swwan\n    }\n",
+            // The virtual MAC's link-local address too: the kernel
+            // solicits a forwarded packet's next hop from one.
+            "    virtual_ipaddress_excluded {\n        2001:db8:10::1/64 dev swwan\n        fe80::200:5eff:fe00:10a/64 dev swwan\n    }\n",
             "        ::/0 via 2001:db8:10::fffe dev swwan metric 100\n",
         ],
     );
