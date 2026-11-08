@@ -67,7 +67,9 @@ v6_dump() {
             sudo nft list chain inet sparewall input | head -40
             ip -6 neigh; sysctl -a 2>/dev/null | grep -E "ipv6.conf.(all|default|users|swgw20|swwan|wan).forwarding"
             ip -6 route get 2001:db8:10::fffe from 2001:db8:20::ff:fe00:20 iif swgw20
-            sudo nft list chain inet sparewall forward'
+            sudo nft list chain inet sparewall forward
+            echo "-- route and address changes"
+            sudo journalctl -b -u sw-route-monitor --no-pager -o cat | grep -E "swwan|swgw|default" | tail -60'
     done
     set -e
 } 2>&1
@@ -198,6 +200,12 @@ at fw1 'sudo sparewall merge -f - --confirm 0' <<'JSON'
 JSON
 wait_for 120 "fw1 in sync with IPv6" in_sync fw1
 wait_for 60 "fw2 in sync with IPv6" in_sync fw2
+# Every route and address change from here, for a failure's log: which
+# step takes the master's IPv6 default route away. Until each node's
+# next reboot.
+for n in fw1 fw2; do
+    at "$n" 'sudo systemd-run -q --unit sw-route-monitor ip -ts monitor route address' || true
+done
 # The client: the flush above took its link-local address too.
 ns users ip -6 addr add fe80::20/64 dev eth0 nodad 2>/dev/null || true
 client6() {
@@ -342,6 +350,10 @@ wait_for 60 "fw2 in sync after sync --from" in_sync fw2
 # degrades, nothing fails over, and replication comes back.
 sync_loss() { # description, command that breaks it on fw1, command that restores it
     log "sync loss on the master: $1"
+    [ "$(level fw1)" = ok ] || {
+        at fw1 'sudo sparewall health --verbose' || true
+        fail "fw1 health is $(level fw1) before $1"
+    }
     at fw1 "$2"
     wait_for 120 "fw1 reports the peer down ($1)" unreachable fw1
     [ "$(level fw1)" = degraded ] || {
