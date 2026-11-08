@@ -53,6 +53,9 @@ v6_dump() {
     echo "--- users"; ns users ip -6 addr show dev eth0; ns users ip -6 route
     ns users sysctl net.ipv6.conf.eth0.accept_ra net.ipv6.conf.eth0.autoconf net.ipv6.conf.eth0.disable_ipv6
     ns users timeout 10 rdisc6 eth0
+    echo "--- users pings the vip, then the ISP"
+    ns users ping -6 -c 2 -W 2 2001:db8:10::1; ns users ping -6 -c 2 -W 2 2001:db8:10::fffe
+    ns users ip -6 neigh
     local n
     for n in fw1 fw2; do
         echo "--- $n"
@@ -61,7 +64,10 @@ v6_dump() {
             cat /run/systemd/network/40-sparewall-swgw20.network 2>/dev/null
             sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "ndisc|radv|swgw|swwan|prefix|ipv6" | tail -40
             sudo journalctl -b -u sparewalld --no-pager | grep -iE "ipv6|link that follows|swgw" | tail -20
-            sudo nft list chain inet sparewall input | head -40'
+            sudo nft list chain inet sparewall input | head -40
+            ip -6 neigh; sysctl -a 2>/dev/null | grep -E "ipv6.conf.(all|default|users|swgw20|swwan|wan).forwarding"
+            ip -6 route get 2001:db8:10::fffe from 2001:db8:20::ff:fe00:20 iif swgw20
+            sudo nft list chain inet sparewall forward'
     done
     set -e
 } 2>&1
@@ -208,8 +214,9 @@ check_wan6() { # master backup
     ! vip6 "$2" || fail "$2 (backup) holds 2001:db8:10::1"
     at "$1" 'ip -6 route show default' | grep -q 'via 2001:db8:10::fffe dev swwan' \
         || fail "$1 (master) has no IPv6 default route via the ISP: $(at "$1" 'ip -6 route show default')"
-    ns users ping -6 -c 2 -W 2 2001:db8:10::fffe >/dev/null \
-        || fail "the client cannot reach the ISP over IPv6 through $1"
+    # The first may be a few seconds after the gateway link came up.
+    wait_for 30 "the client reaches the ISP over IPv6 through $1" \
+        ns users ping -6 -c 1 -W 2 2001:db8:10::fffe
     [ "$(isp_mac6)" = "$VMAC" ] || fail "the ISP has 2001:db8:10::1 at $(isp_mac6), not the virtual MAC $VMAC"
 }
 
