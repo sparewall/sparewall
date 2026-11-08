@@ -229,8 +229,8 @@ ns users ip -6 addr add fe80::20/64 dev eth0 nodad 2>/dev/null || true
 P6=2001:db8:100:1::
 client6() { # the client's SLAAC address in prefix $1 (2001:db8:...:1::)
     # A solicitation, for an advertisement now rather than at the next
-    # interval. A SLAAC address fills all 64 bits after the prefix, so it
-    # has no "::": match on the prefix's four groups.
+    # interval. Match on the prefix's four groups (ip compresses zero
+    # groups, but this prefix's fourth group is not zero).
     ns users rdisc6 -1 eth0 >/dev/null 2>&1 || true
     ns users ip -6 -br addr show dev eth0 scope global -tentative \
         | grep -o "${1%::}:[0-9a-f:]*" | head -1 | grep .

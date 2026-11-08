@@ -195,8 +195,9 @@ wait_for 60 "fw2 in sync with IPv6" in_sync fw2
 # The client: the flush above took its link-local address too.
 ns users ip -6 addr add fe80::20/64 dev eth0 nodad 2>/dev/null || true
 client6() {
+    # ip prints the address compressed (the client's is 2001:db8:20::ff:fe00:20).
     ns users rdisc6 -1 eth0 >/dev/null 2>&1 || true
-    ns users ip -6 -br addr show dev eth0 scope global -tentative | grep -o '2001:db8:20:0:[0-9a-f:]*' | head -1 | grep .
+    ns users ip -6 -br addr show dev eth0 scope global -tentative | grep -o '2001:db8:20:[0-9a-f:]*' | head -1 | grep .
 }
 wait_for 60 "the client's SLAAC address in 2001:db8:20::/64" client6
 C6=$(client6)
