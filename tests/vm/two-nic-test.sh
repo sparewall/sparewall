@@ -73,22 +73,18 @@ cleanup() {
     fi
     [ $rc -eq 0 ] || [ -z "${V6_DUMP:-}" ] || v6_dump
     sudo pkill -f "$HERE/echo.py" 2>/dev/null || true
-    stop_v6_isp
+    isp6_stop
     stop_vm fw1
     stop_vm fw2
 }
 trap cleanup EXIT
 
-# The ISP's IPv6 (#213): radvd and Kea's DHCPv6 server in sw-tisp. Kea's
-# files are where Ubuntu's AppArmor profile for it allows.
-KEA6_CONF=/etc/kea/sparewall-test-dhcp6.conf
-KEA6_LEASES=/var/lib/kea/sparewall-test-leases6.csv
-KEA6_LOG=/var/log/kea/sparewall-test-dhcp6.log
+# The ISP's IPv6 (#213): radvd and Kea's DHCPv6 server in sw-tisp.
+# shellcheck source=isp6.sh
+. "$HERE/isp6.sh"
 v6_dump() {
     set +e
-    echo "--- radvd"; tail -n 5 radvd.log
-    echo "--- tisp"; ns tisp ip -6 addr show dev eth0
-    for f in kea6.out "$KEA6_LOG" "$KEA6_LEASES"; do echo "--- $f"; sudo tail -n 30 "$f"; done
+    isp6_dump tisp
     echo "--- tclient"; ns tclient ip -6 addr show dev eth0; ns tclient ip -6 route
     ns tclient timeout 10 rdisc6 -1 eth0
     echo "--- fw1"
@@ -107,10 +103,6 @@ v6_dump() {
     echo "--- sparewall status ipv6"; status fw1 | jq -c .ipv6
     set -e
 } 2>&1
-stop_v6_isp() {
-    [ -f "$WORK/radvd.pid" ] && sudo kill "$(sudo cat "$WORK/radvd.pid")" 2>/dev/null || true
-    sudo pkill -f "kea-dhcp6 -c $KEA6_CONF" 2>/dev/null || true
-}
 
 stop_vm() { # node
     [ -f "$1.pid" ] || return 0
@@ -351,43 +343,8 @@ log "IPv6 on the WAN: an address by DHCPv6, a delegated prefix, routes from RAs 
 # flags and carry no prefix, so the WAN's address comes from DHCPv6 only;
 # Kea gives it one from 2001:db8:ffff::/64 and delegates /56s out of
 # 2001:db8:100::/48.
-ns tisp sysctl -qw net.ipv6.conf.all.forwarding=1
-ns tisp ip -6 addr add 2001:db8:ffff::1/64 dev eth0 nodad
-cat > radvd.conf <<'EOF'
-interface eth0 {
-    AdvSendAdvert on;
-    AdvManagedFlag on;
-    AdvOtherConfigFlag on;
-    MinRtrAdvInterval 3;
-    MaxRtrAdvInterval 6;
-};
-EOF
-ns tisp radvd -n -u root -C "$PWD/radvd.conf" -p "$PWD/radvd.pid" -m stderr > radvd.log 2>&1 &
-# Ubuntu's AppArmor profile for kea-dhcp6 withholds dac_override, so
-# root may not write into /run/kea (the _kea user's) and the like; this
-# runner's Kea is a test fixture, not a service.
-for f in /etc/apparmor.d/*kea-dhcp6*; do
-    [ -f "$f" ] && sudo apparmor_parser -R "$f" 2>/dev/null || true
-done
-kea6_start() { # the /48 to delegate /56s from, as 2001:db8:N::
-    sudo tee "$KEA6_CONF" > /dev/null <<EOF
-{"Dhcp6": {
-  "interfaces-config": {"interfaces": ["eth0"]},
-  "lease-database": {"type": "memfile", "persist": true, "name": "$KEA6_LEASES"},
-  "renew-timer": 30, "rebind-timer": 45, "preferred-lifetime": 90, "valid-lifetime": 180,
-  "subnet6": [{"id": 1, "subnet": "2001:db8:ffff::/64", "interface": "eth0",
-    "pools": [{"pool": "2001:db8:ffff::100-2001:db8:ffff::1ff"}],
-    "pd-pools": [{"prefix": "$1", "prefix-len": 48, "delegated-len": 56}]}],
-  "option-data": [{"name": "dns-servers", "data": "2001:db8:ffff::1"}],
-  "loggers": [{"name": "kea-dhcp6", "severity": "INFO",
-    "output_options": [{"output": "$KEA6_LOG"}]}]
-}}
-EOF
-    sudo rm -f "$KEA6_LEASES"*
-    ns tisp env KEA_PIDFILE_DIR=/run/kea KEA_LOCKFILE_DIR=/run/kea \
-        kea-dhcp6 -c "$KEA6_CONF" > kea6.out 2>&1 &
-}
-kea6_start 2001:db8:100::
+isp6_start tisp
+kea6_start tisp 2001:db8:100::
 jq -n '{networks: {wan: {ipv6: {mode: "dhcpv6"}}},
         objects: {wan6: {type: "ipv6", dynamic: {network: "wan"}}}}' | at fw1 'cat > /tmp/v6.json'
 at fw1 'sudo sparewall merge -f /tmp/v6.json --confirm 0' >/dev/null
@@ -468,9 +425,8 @@ if ns tisp ping -6 -c 2 -W 2 "$c6" >/dev/null 2>&1; then
 fi
 
 log "a new delegated prefix renumbers the LAN, and the client follows (#214)"
-sudo pkill -f "kea-dhcp6 -c $KEA6_CONF" || true
-sleep 1
-kea6_start 2001:db8:200::
+kea6_stop
+kea6_start tisp 2001:db8:200::
 ns tisp ip -6 route add 2001:db8:200::/48 via "$a" dev eth0
 # As an ISP renumbers: at its next renewal (the leases above are short)
 # fw1 asks the server, which no longer holds its binding, and is given
@@ -497,7 +453,7 @@ wait_for 30 "the client to reach the ISP from the new prefix ($c6)" \
 wait_for 60 "fw1 healthy with IPv6 inside" healthy fw1
 wait_for 30 "status to show the LAN advertising $p2/64" lan_status_prefix "$p2"
 V6_DUMP=
-stop_v6_isp
+isp6_stop
 stop_vm fw1
 
 # --- 2. pair ---------------------------------------------------------------

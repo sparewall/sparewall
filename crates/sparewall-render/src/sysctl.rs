@@ -90,7 +90,8 @@ pub(crate) fn render(doc: &Document, _node: &str, out: &mut Rendered) {
     // the global forwarding key above, which resets every interface's
     // whenever it is written; the coordinator writes no key whose value is
     // unchanged, and enables IPv6 here last. keepalived adds the master's
-    // `vip`.
+    // `vip`, and the virtual MAC's link-local address, which the kernel
+    // needs to solicit a forwarded packet's next hop.
     if let Some((name, _)) = doc.networks.iter().find(|(n, _)| doc.vmac_wan(n)) {
         let v6 = doc.networks[name].ipv6.is_some();
         if v6 && doc.leased_wan(name).is_none() {

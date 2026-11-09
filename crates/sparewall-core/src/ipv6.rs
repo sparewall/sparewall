@@ -1,7 +1,8 @@
 //! A link's IPv6 state as networkd describes it (#216): its global
 //! addresses, the prefixes DHCPv6 delegated to it, and whether it has an
 //! IPv6 default route. Read from `networkctl --json=short status`, which
-//! prints networkd's `Describe` (`{"Interfaces": [...]}`).
+//! prints networkd's `Describe` (`{"Interfaces": [...]}`), with default
+//! routes networkd does not list taken from the kernel.
 
 use std::collections::BTreeMap;
 use std::net::Ipv6Addr;
@@ -100,6 +101,47 @@ fn default_gateway(describe: &Value, link: &Value) -> Option<Ipv6Addr> {
                 .is_some_and(|id| nexthops.contains_key(&id))
         });
     own.chain(shared).filter(is_default).find_map(via)
+}
+
+/// Fill in each link's default route from the kernel's main table (`ip
+/// -j -6 route show default`) where networkd lists none. networkd can lose
+/// track of a route it did not add: keepalived's on a pair's WAN (#215)
+/// is gone from its description once a reload replaces it, though the
+/// kernel still routes by it. A route through a nexthop object, without
+/// a gateway of its own, is networkd's to report; one marked `linkdown`
+/// (or a `dead` nexthop) is not a usable route at all.
+pub fn with_kernel_defaults(links: &mut BTreeMap<String, LinkIpv6>, routes: &Value) {
+    for r in routes.as_array().into_iter().flatten() {
+        if r["dst"].as_str() != Some("default") {
+            continue;
+        }
+        let hops: Vec<&Value> = match r["nexthops"].as_array() {
+            Some(n) => n.iter().collect(),
+            None => vec![r],
+        };
+        // A route whose link is down, or a dead nexthop, carries nothing.
+        let unusable = |v: &Value| {
+            v["flags"].as_array().is_some_and(|f| {
+                f.iter()
+                    .any(|f| matches!(f.as_str(), Some("linkdown" | "dead")))
+            })
+        };
+        if unusable(r) {
+            continue;
+        }
+        for h in hops.into_iter().filter(|h| !unusable(h)) {
+            let (Some(dev), Some(gw)) = (
+                h["dev"].as_str().or(r["dev"].as_str()),
+                h["gateway"]
+                    .as_str()
+                    .and_then(|g| g.parse::<Ipv6Addr>().ok()),
+            ) else {
+                continue;
+            };
+            let link = links.entry(dev.to_string()).or_default();
+            link.default_gateway.get_or_insert(gw);
+        }
+    }
 }
 
 /// Each link's IPv6 state, by name, from networkd's description, `now_usec`
@@ -457,6 +499,47 @@ mod tests {
             );
             assert!(!s.contains_key("lan0"), "{s:?}");
         }
+    }
+
+    /// keepalived's default route on a pair's WAN, which networkd may not
+    /// list (#215): taken from the kernel, never over networkd's own.
+    #[test]
+    fn a_default_route_from_the_kernel() {
+        let mut s = BTreeMap::from([
+            ("swwan".to_string(), LinkIpv6::default()),
+            (
+                "wan0".to_string(),
+                LinkIpv6 {
+                    default_gateway: Some("fe80::1".parse().unwrap()),
+                    ..LinkIpv6::default()
+                },
+            ),
+        ]);
+        let routes = json!([
+            {"dst": "default", "gateway": "2001:db8:10::fffe", "dev": "swwan",
+             "protocol": "keepalived", "metric": 100, "flags": []},
+            {"dst": "default", "gateway": "fe80::2", "dev": "wan0", "metric": 1024},
+            {"dst": "default", "nhid": 7, "dev": "wan1"},
+            {"dst": "default", "metric": 1024, "nexthops": [
+                {"gateway": "fe80::3", "dev": "wan2"}, {"gateway": "fe80::4", "dev": "wan3"}]},
+            {"dst": "2001:db8::/64", "gateway": "fe80::5", "dev": "lan0"},
+            {"dst": "default", "gateway": "fe80::6", "dev": "wan4", "flags": ["linkdown"]},
+            {"dst": "default", "metric": 1024, "nexthops": [
+                {"gateway": "fe80::7", "dev": "wan5", "flags": ["dead", "linkdown"]},
+                {"gateway": "fe80::8", "dev": "wan6", "flags": []}]},
+        ]);
+        with_kernel_defaults(&mut s, &routes);
+        let gw = |n: &str| s.get(n).and_then(|l| l.default_gateway);
+        assert_eq!(gw("swwan"), Some("2001:db8:10::fffe".parse().unwrap()));
+        assert_eq!(gw("wan0"), Some("fe80::1".parse().unwrap()));
+        assert_eq!(gw("wan1"), None);
+        assert_eq!(gw("wan2"), Some("fe80::3".parse().unwrap()));
+        assert_eq!(gw("wan3"), Some("fe80::4".parse().unwrap()));
+        assert_eq!(gw("lan0"), None);
+        assert_eq!(gw("wan4"), None);
+        assert_eq!(gw("wan5"), None);
+        assert_eq!(gw("wan6"), Some("fe80::8".parse().unwrap()));
+        with_kernel_defaults(&mut s, &json!(null));
     }
 
     #[test]

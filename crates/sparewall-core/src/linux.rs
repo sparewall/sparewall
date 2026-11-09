@@ -647,10 +647,21 @@ impl System for Linux {
         let describe = run("networkctl", &["--json=short", "status"], None)
             .ok()
             .and_then(|o| serde_json::from_str::<serde_json::Value>(&o).ok());
-        match (describe, now_usec) {
+        let mut links = match (describe, now_usec) {
             (Some(d), Some(now)) => crate::ipv6::from_describe(&d, now),
             _ => BTreeMap::new(),
+        };
+        if let Some(routes) = run(
+            "ip",
+            &["-j", "-6", "route", "show", "default", "table", "main"],
+            None,
+        )
+        .ok()
+        .and_then(|o| serde_json::from_str::<serde_json::Value>(&o).ok())
+        {
+            crate::ipv6::with_kernel_defaults(&mut links, &routes);
         }
+        links
     }
 
     fn install_files(&mut self, sub: Subsystem, files: &Files) -> Result<(), Error> {

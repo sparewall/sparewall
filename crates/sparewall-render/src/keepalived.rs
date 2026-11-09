@@ -197,15 +197,18 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
         s.push_str("    }\n");
         // A static block's IPv6 address (#215) moves in the same step, on
         // the same link. It is excluded from the adverts, which carry one
-        // family.
+        // family. So does a link-local address: the kernel solicits a
+        // forwarded packet's next hop from one, and the link has none
+        // otherwise (the backup's must join no group, see sysctl.rs).
         let block_v6 = net
             .ipv6
             .as_ref()
             .filter(|v| v.mode == Ipv6Mode::Static && net.vmac && doc.split_wan(name).is_some());
         if let Some((vip, p)) = block_v6.and_then(|v| Some((v.vip?, v.prefix?))) {
+            let ll = vmac_link_local(net.vrid.expect("filtered"));
             writeln!(
                 s,
-                "    virtual_ipaddress_excluded {{\n        {vip}/{} dev {public}\n    }}",
+                "    virtual_ipaddress_excluded {{\n        {vip}/{} dev {public}\n        {ll}/64 dev {public}\n    }}",
                 p.0.prefix_len()
             )
             .unwrap();
@@ -284,4 +287,19 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
             }),
         },
     );
+}
+
+/// The modified EUI-64 link-local address of a VRRP ID's virtual MAC
+/// (`00:00:5e:00:01:<vrid>`): a pair's WAN's on its master (#215).
+pub fn vmac_link_local(vrid: u8) -> std::net::Ipv6Addr {
+    std::net::Ipv6Addr::new(
+        0xfe80,
+        0,
+        0,
+        0,
+        0x0200,
+        0x5eff,
+        0xfe00,
+        0x0100 | u16::from(vrid),
+    )
 }
