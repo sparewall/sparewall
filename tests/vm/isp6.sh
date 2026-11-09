@@ -60,6 +60,20 @@ isp6_stop() {
     kea6_stop
 }
 
+# A withdrawn delegated prefix (#232): whether a client hears it announced
+# with a preferred lifetime of 0, and whether its address there is
+# deprecated.
+deprecated_in_ra() { # namespace, prefix (2001:db8:...:1::)
+    ns "$1" rdisc6 -1 eth0 2>/dev/null | awk -v p="Prefix *: *${2}/64" '
+        $0 ~ p { inside = 1; next }
+        inside && /Prefix/ { inside = 0 }
+        inside && /Pref\. time/ { found = ($4 == 0); exit }
+        END { exit !found }'
+}
+old_deprecated() { # namespace, prefix (2001:db8:...:1::)
+    ns "$1" ip -6 addr show dev eth0 scope global | grep "inet6 ${2%::}:" | grep -q deprecated
+}
+
 # The ISP's side, for a failure's log.
 isp6_dump() { # namespace
     echo "--- radvd"; tail -n 5 "$WORK/radvd.log"
