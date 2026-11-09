@@ -338,6 +338,21 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
 /// document names none (#213).
 pub const DEFAULT_PREFIX_LENGTH: u8 = 56;
 
+/// The name of the `.network` file whose link sends an inside network's
+/// router advertisements: in a pair, its IPv6 gateway's; else its own
+/// (a VLAN's, or its port's when untagged). A drop-in beside it
+/// (`<name>.d/`) adds prefixes to them (#232).
+pub fn ra_network_file(doc: &Document, name: &str) -> Option<String> {
+    if let Some(gw) = doc.ipv6_gateway_iface(name) {
+        return Some(format!("40-sparewall-{gw}.network"));
+    }
+    let net = doc.networks.get(name)?;
+    Some(match net.vlan {
+        Some(_) => format!("30-sparewall-{name}.network"),
+        None => format!("20-sparewall-{}.network", net.port),
+    })
+}
+
 /// A standalone node's WAN IPv6 settings, if any (a pair's are on
 /// [`LEASE_IFACE`], #215).
 fn wan_ipv6(net: &Network, pair: bool) -> Option<&NetworkIpv6> {

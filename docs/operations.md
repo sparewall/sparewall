@@ -327,11 +327,14 @@ networks:
   themselves by SLAAC from its router advertisements. DHCPv6 on inside
   networks is a later feature (#217).
 - **A new delegated prefix** renumbers the network by itself: the node
-  takes `::1` in the new /64 and advertises it, and stops advertising the
-  old one. networkd does not announce the old prefix as deprecated
-  (systemd #29651), so hosts keep their old address, still preferred,
-  until its preferred lifetime runs out (up to 30 minutes), and may pick
-  it for new connections in that time. #232 tracks a workaround.
+  takes `::1` in the new /64 and advertises it. networkd would simply
+  stop advertising the old one (systemd #29651), leaving hosts to prefer
+  their old address for up to 30 minutes, so the node goes on
+  advertising it as deprecated (a preferred lifetime of 0) while it is
+  still valid, for at most 2 hours (#232). Hosts keep their address
+  there for existing connections, but pick the new one for new ones. The
+  last prefix in use is kept across a reboot, so a node that comes back
+  with another deprecates the old one too.
 - **DNS:** where DHCPv4 hands out the node as the resolver (`dns` serves
   the network, and `dhcp.<network>.options.dns` names no other servers),
   its advertisements name it too, with DHCP's search domain: on a static network by its

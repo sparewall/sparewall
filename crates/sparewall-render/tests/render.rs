@@ -1793,3 +1793,37 @@ fn pair_ipv6_static_address_on_a_leased_wan() {
     );
     assert!(!ka.contains("2001:db8"), "{ka}");
 }
+
+/// The file whose link advertises a delegated network's prefix (#232): its
+/// own on a single node (here an untagged port's), its IPv6 gateway's in a
+/// pair.
+#[test]
+fn the_file_that_advertises_a_network_s_prefix() {
+    let doc = ipv6_two_nic();
+    let r = render(&doc, "fw1").unwrap();
+    let f = sparewall_render::networkd::ra_network_file(&doc, "lan").unwrap();
+    let text = file_in(&r, Subsystem::Networkd, &f);
+    assert!(text.contains("[DHCPPrefixDelegation]"), "{f}\n{text}");
+
+    let text = std::fs::read_to_string(format!(
+        "{}/../../examples/pair.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"networks": {
+            "wan": {"dhcp_client": true, "vip": null, "extra_vips": [], "gateway": null,
+                "ipv6": {"mode": "dhcpv6"}},
+            "users": {"ipv6": {"mode": "delegated", "subnet_id": 1}},
+        }}),
+    );
+    let mut doc = sparewall_config::from_value(v).unwrap();
+    doc.cluster.sync_keys = paired().cluster.sync_keys;
+    let r = render(&doc, "fw1").unwrap();
+    let f = sparewall_render::networkd::ra_network_file(&doc, "users").unwrap();
+    assert_eq!(f, "40-sparewall-swgw20.network");
+    let text = file_in(&r, Subsystem::Networkd, &f);
+    assert!(text.contains("IPv6SendRA=yes"), "{text}");
+}

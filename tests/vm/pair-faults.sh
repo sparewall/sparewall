@@ -63,7 +63,8 @@ v6_dump() {
         at "$n" 'ip -6 addr; ip -6 route; ip -br link
             networkctl status swwan swgw20 --no-pager -n 0
             sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "dhcp6|ndisc|swgw|swwan|prefix" | tail -40
-            sudo journalctl -b -u sparewalld --no-pager | grep -iE "ipv6|prefix|takeover|nft" | tail -20'
+            sudo journalctl -b -u sparewalld --no-pager | grep -iE "ipv6|prefix|takeover|nft" | tail -20
+            sudo head -50 /run/systemd/network/*.network.d/60-sparewall-withdrawn.conf 2>/dev/null'
         status "$n" | jq -c '.ipv6, (.health.checks[] | select(.name == "ipv6"))'
     done
     set -e
@@ -330,14 +331,24 @@ status fw2 | jq -r '.health.checks[] | select(.name == "reach") | .message'
 log "fw1 takes over the prefix, then the ISP renumbers it (#215)"
 takeover() { at fw1 "ip -6 route show ${P6}/64 dev swgw20 proto static" | grep -q expires; }
 takeover || fail "fw1 does not route the peer's $P6/64: $(at fw1 'ip -6 route show dev swgw20')"
-ns users ping -6 -c 2 -W 2 -I "$c6" 2001:db8:ffff::1 >/dev/null \
-    || fail "the client cannot reach the ISP from $c6 while fw1 holds the peer's prefix"
+# The virtual MAC just moved to fw1: the bridge learns its new port from
+# fw1's first frames, so the ISP's first replies may still go to fw2's.
+wait_for 30 "the client to reach the ISP from $c6 while fw1 holds the peer's prefix" \
+    ns users ping -6 -c 1 -W 2 -I "$c6" 2001:db8:ffff::1
 kea6_start isp 2001:db8:200::
 P6B=2001:db8:200:1::
 wait_for 150 "fw1 advertising $P6B/64 from fe80::1" ra_from_gateway "$P6B"
 wait_for 60 "the client's address in $P6B/64" client6 "$P6B"
 c6b=$(client6 "$P6B")
 ns users ping -6 -c 2 -W 2 -I "$c6b" 2001:db8:ffff::1 >/dev/null || fail "the client cannot reach the ISP from $c6b"
+# The old prefix, while still valid, is announced with a preferred
+# lifetime of 0 (#232), so the client stops picking its address there.
+# With the ISP's short leases it may have lapsed already, address and all.
+old_gone_or_deprecated() {
+    ! ns users ip -6 addr show dev eth0 scope global | grep -q "inet6 ${P6%::}:" \
+        || old_deprecated users "$P6"
+}
+wait_for 30 "the client's address in $P6/64 deprecated or gone" old_gone_or_deprecated
 one_client6
 check fw2 reach | grep -qx failed || fail "fw2's reach check is not failed: $(check fw2 reach)"
 sudo bridge vlan add dev swtap2 vid 20

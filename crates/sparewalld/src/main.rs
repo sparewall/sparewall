@@ -24,6 +24,7 @@ mod update;
 mod upgrade;
 mod varlink;
 mod vrrp;
+mod withdrawn;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -496,6 +497,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 lease::lease_loop(core.clone(), tx.clone(), pair.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no networkd.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                withdrawn::withdrawn_loop(core.clone(), tx.clone(), pair.clone(), args.state.clone()).await
             } => Ok(()),
             () = async {
                 // A fake system has no WireGuard interfaces.

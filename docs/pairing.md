@@ -163,7 +163,9 @@ failover held by the master (#215):
   its own DHCPv6 reply arrives; hosts keep their addresses and
   connections. With the same DUID and IAID the reply is normally the same
   prefix. If the ISP delegates another, the networks renumber as on a
-  standalone node: the old prefix is withdrawn, not deprecated (#232).
+  standalone node, the old prefix advertised as deprecated (#232). The
+  backup tracks the master's prefix from its hellos, so a failover in
+  that time goes on deprecating it.
 - **Health:** the `ipv6` check runs on the master. The backup's is ok
   while it is the backup, as it has no IPv6 on the WAN by design, and
   degraded in FAULT.

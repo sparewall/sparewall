@@ -90,6 +90,8 @@ v6_dump() {
     echo "--- fw1"
     at fw1 'ip -6 addr; ip -6 route; networkctl status wan0 lan0 --no-pager -n 0
         sudo journalctl -b -u systemd-networkd --no-pager | grep -iE "dhcp6|ndisc|ipv6|pd|prefix" | tail -40
+        sudo journalctl -b -u sparewalld --no-pager | grep -iE "withdrawn|prefix" | tail -10
+        sudo head -50 /run/systemd/network/*.network.d/60-sparewall-withdrawn.conf 2>/dev/null
         sudo nft list chain inet sparewall input; sudo nft list chain inet sparewall forward
         sysctl net.ipv6.conf.all.forwarding net.ipv6.conf.lan0.forwarding net.ipv6.conf.wan0.forwarding'
     # What sparewalld reads for its ipv6 status (#216): networkd's IPv6
@@ -437,19 +439,19 @@ wait_for 120 "a new prefix on fw1's LAN" new_prefix
 p2=$(lan_prefix)
 case $p2 in 2001:db8:200:1::) ;; *) fail "the LAN's new prefix is $p2, not subnet 1 of 2001:db8:200::/56" ;; esac
 wait_for 60 "the client's address in $p2/64" client6 "$p2"
-# fw1 stops announcing the old prefix. networkd does not announce it as
-# deprecated (systemd #29651), so the client's old address lives out its
-# preferred lifetime; that is a known limitation, not checked here.
+# networkd moves to the new prefix but would not announce the old one as
+# deprecated (systemd #29651): the coordinator adds it with a preferred
+# lifetime of 0 (#232), so the client stops picking its old address.
 ns tclient rdisc6 -1 eth0 > ra.txt 2>&1 || true
 grep -q "Prefix *: *${p2}/64" ra.txt || fail "the RA does not announce $p2/64: $(cat ra.txt)"
-if grep -q "Prefix *: *${p1}/64" ra.txt; then
-    fail "the RA still announces the old prefix $p1/64: $(cat ra.txt)"
-fi
-# The old address is still preferred, so the kernel may pick it as the
-# source (#232): ping from the new one.
+wait_for 30 "the old prefix $p1/64 announced as deprecated" deprecated_in_ra tclient "$p1"
+wait_for 30 "the client's address in $p1/64 deprecated" old_deprecated tclient "$p1"
+# Its source is the new address now, without asking for it.
 c6=$(client6 "$p2")
 wait_for 30 "the client to reach the ISP from the new prefix ($c6)" \
-    ns tclient ping -6 -c 1 -W 2 -I "$c6" 2001:db8:ffff::1
+    ns tclient ping -6 -c 1 -W 2 2001:db8:ffff::1
+src=$(ns tclient ip -6 route get 2001:db8:ffff::1 | grep -o 'src [0-9a-f:]*' | cut -d' ' -f2)
+[ "$src" = "$c6" ] || fail "the client's source for the ISP is $src, not its new address $c6"
 wait_for 60 "fw1 healthy with IPv6 inside" healthy fw1
 wait_for 30 "status to show the LAN advertising $p2/64" lan_status_prefix "$p2"
 V6_DUMP=
