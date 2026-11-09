@@ -48,10 +48,12 @@ pub struct Withdrawn {
 pub struct Announced {
     /// When to stop announcing it (Unix seconds).
     pub until: u64,
-    /// The valid lifetime announced: [`ANNOUNCE_MAX_S`] while the prefix
-    /// had longer left, which cuts hosts' to that; else 0, which hosts
-    /// ignore, leaving their own countdown alone (a lifetime above it
-    /// would restart that with each advertisement).
+    /// The valid lifetime announced: [`ANNOUNCE_MAX_S`] when the prefix
+    /// had at least twice that left, which cuts hosts' to it (heard
+    /// until `until`, it ends by the prefix's own end); else 0, which
+    /// hosts ignore, leaving their own countdown alone, which networkd's
+    /// advertisements kept within the prefix's (a positive lifetime
+    /// would restart it with each advertisement, past the prefix's end).
     pub valid_seconds: u64,
 }
 
@@ -105,7 +107,7 @@ impl Withdrawn {
                     .entry(p)
                     .or_insert(Announced {
                         until: now + left.min(ANNOUNCE_MAX_S),
-                        valid_seconds: if left > ANNOUNCE_MAX_S {
+                        valid_seconds: if left >= 2 * ANNOUNCE_MAX_S {
                             ANNOUNCE_MAX_S
                         } else {
                             0
@@ -229,6 +231,29 @@ mod tests {
                 valid_seconds: ANNOUNCE_MAX_S
             }
         );
+    }
+
+    /// With between 2 and 4 hours left, a 2-hour lifetime heard near the
+    /// end of the announcement would outlive the prefix: 0 instead.
+    #[test]
+    fn a_two_hour_lifetime_never_outlives_the_prefix() {
+        for (left, want) in [
+            (2 * ANNOUNCE_MAX_S, ANNOUNCE_MAX_S),
+            (2 * ANNOUNCE_MAX_S - 1, 0),
+            (ANNOUNCE_MAX_S + 1, 0),
+            (ANNOUNCE_MAX_S, 0),
+        ] {
+            let mut w = Withdrawn::default();
+            w.update(&using(&[("2001:db8:100:1::/64", 100 + left)]), 0);
+            w.update(&using(&[("2001:db8:200:1::/64", u64::MAX)]), 100);
+            let a = w.announced["lan"]["2001:db8:100:1::/64"];
+            assert_eq!(a.valid_seconds, want, "{left} s left");
+            // Heard at the last moment, it ends by the prefix's own end.
+            assert!(
+                a.until + a.valid_seconds <= 100 + left,
+                "{left} s left: {a:?}"
+            );
+        }
     }
 
     #[test]
