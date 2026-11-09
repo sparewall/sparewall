@@ -108,7 +108,8 @@ fn default_gateway(describe: &Value, link: &Value) -> Option<Ipv6Addr> {
 /// track of a route it did not add: keepalived's on a pair's WAN (#215)
 /// is gone from its description once a reload replaces it, though the
 /// kernel still routes by it. A route through a nexthop object, without
-/// a gateway of its own, is networkd's to report.
+/// a gateway of its own, is networkd's to report; one marked `linkdown`
+/// (or a `dead` nexthop) is not a usable route at all.
 pub fn with_kernel_defaults(links: &mut BTreeMap<String, LinkIpv6>, routes: &Value) {
     for r in routes.as_array().into_iter().flatten() {
         if r["dst"].as_str() != Some("default") {
@@ -118,7 +119,17 @@ pub fn with_kernel_defaults(links: &mut BTreeMap<String, LinkIpv6>, routes: &Val
             Some(n) => n.iter().collect(),
             None => vec![r],
         };
-        for h in hops {
+        // A route whose link is down, or a dead nexthop, carries nothing.
+        let unusable = |v: &Value| {
+            v["flags"].as_array().is_some_and(|f| {
+                f.iter()
+                    .any(|f| matches!(f.as_str(), Some("linkdown" | "dead")))
+            })
+        };
+        if unusable(r) {
+            continue;
+        }
+        for h in hops.into_iter().filter(|h| !unusable(h)) {
             let (Some(dev), Some(gw)) = (
                 h["dev"].as_str().or(r["dev"].as_str()),
                 h["gateway"]
@@ -512,6 +523,10 @@ mod tests {
             {"dst": "default", "metric": 1024, "nexthops": [
                 {"gateway": "fe80::3", "dev": "wan2"}, {"gateway": "fe80::4", "dev": "wan3"}]},
             {"dst": "2001:db8::/64", "gateway": "fe80::5", "dev": "lan0"},
+            {"dst": "default", "gateway": "fe80::6", "dev": "wan4", "flags": ["linkdown"]},
+            {"dst": "default", "metric": 1024, "nexthops": [
+                {"gateway": "fe80::7", "dev": "wan5", "flags": ["dead", "linkdown"]},
+                {"gateway": "fe80::8", "dev": "wan6", "flags": []}]},
         ]);
         with_kernel_defaults(&mut s, &routes);
         let gw = |n: &str| s.get(n).and_then(|l| l.default_gateway);
@@ -521,6 +536,9 @@ mod tests {
         assert_eq!(gw("wan2"), Some("fe80::3".parse().unwrap()));
         assert_eq!(gw("wan3"), Some("fe80::4".parse().unwrap()));
         assert_eq!(gw("lan0"), None);
+        assert_eq!(gw("wan4"), None);
+        assert_eq!(gw("wan5"), None);
+        assert_eq!(gw("wan6"), Some("fe80::8".parse().unwrap()));
         with_kernel_defaults(&mut s, &json!(null));
     }
 
