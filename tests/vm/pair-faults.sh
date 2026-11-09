@@ -331,8 +331,10 @@ status fw2 | jq -r '.health.checks[] | select(.name == "reach") | .message'
 log "fw1 takes over the prefix, then the ISP renumbers it (#215)"
 takeover() { at fw1 "ip -6 route show ${P6}/64 dev swgw20 proto static" | grep -q expires; }
 takeover || fail "fw1 does not route the peer's $P6/64: $(at fw1 'ip -6 route show dev swgw20')"
-ns users ping -6 -c 2 -W 2 -I "$c6" 2001:db8:ffff::1 >/dev/null \
-    || fail "the client cannot reach the ISP from $c6 while fw1 holds the peer's prefix"
+# The virtual MAC just moved to fw1: the bridge learns its new port from
+# fw1's first frames, so the ISP's first replies may still go to fw2's.
+wait_for 30 "the client to reach the ISP from $c6 while fw1 holds the peer's prefix" \
+    ns users ping -6 -c 1 -W 2 -I "$c6" 2001:db8:ffff::1
 kea6_start isp 2001:db8:200::
 P6B=2001:db8:200:1::
 wait_for 150 "fw1 advertising $P6B/64 from fe80::1" ra_from_gateway "$P6B"
