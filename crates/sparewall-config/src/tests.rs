@@ -1988,6 +1988,18 @@ fn ipv6_in_a_pair() {
     );
     let leased: Document = from_value(leased).unwrap();
     assert_valid(&leased);
+    // A static address on the one lease's link is on the virtual MAC too
+    // (#247): still valid.
+    let mut lst = to_value(&leased);
+    let mut users_static = users.clone();
+    users_static["subnet_id"] = serde_json::Value::Null;
+    merge_patch(
+        &mut lst,
+        &json!({"networks": {"wan": {"ipv6": st}, "users": {"ipv6": users_static}}}),
+    );
+    let lst: Document = from_value(lst).unwrap();
+    assert!(lst.leased_wan("wan").is_some());
+    assert_valid(&lst);
 
     // A vip is a pair's.
     let mut b = st;
