@@ -334,9 +334,7 @@ fn network_body(ini: &mut Ini, doc: &Document, node: &str, name: &str, net: &Net
     }
 }
 
-/// The prefix length a `dhcpv6` WAN asks the ISP to delegate when the
-/// document names none (#213).
-pub const DEFAULT_PREFIX_LENGTH: u8 = 56;
+pub use sparewall_config::model::DEFAULT_PREFIX_LENGTH;
 
 /// The name of the `.network` file whose link sends an inside network's
 /// router advertisements: in a pair, its IPv6 gateway's; else its own

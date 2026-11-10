@@ -341,6 +341,10 @@ pub struct Network {
     pub ipv6: Option<NetworkIpv6>,
 }
 
+/// The prefix length a `dhcpv6` WAN asks the ISP to delegate when the
+/// document names none (#213).
+pub const DEFAULT_PREFIX_LENGTH: u8 = 56;
+
 /// How a network gets its IPv6 addresses. Which fields apply depends on
 /// `mode` and on the network's role: each field's `x-modes` lists the
 /// modes it applies to, and `x-role` the networks: `wan`, or `inside`

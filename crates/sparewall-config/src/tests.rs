@@ -1491,6 +1491,19 @@ fn ipv6_networks_take_the_modes_their_role_allows() {
     // A /56 has 256 subnets.
     let d = v6(json!({"networks": {"lan": {"ipv6": {"subnet_id": 256}}}}));
     assert!(history_error(&d, "a /56 has 256 subnets (0 to 255)"));
+    // The default the WAN asks for is a /56 too (#248).
+    let d = v6(
+        json!({"networks": {"wan": {"ipv6": {"prefix_length": null}},
+        "lan": {"ipv6": {"subnet_id": 256}}}}),
+    );
+    assert!(history_error(
+        &d,
+        "networks.lan.ipv6.subnet_id: a /56, the default the WAN asks for when its prefix_length is unset, has 256 subnets (0 to 255)"
+    ));
+    assert_valid(&v6(
+        json!({"networks": {"wan": {"ipv6": {"prefix_length": null}},
+        "lan": {"ipv6": {"subnet_id": 255}}}}),
+    ));
     let d = v6(
         json!({"networks": {"wan": {"ipv6": {"prefix_length": 64}}, "lan": {"ipv6": {"subnet_id": 1}}}}),
     );
@@ -1926,6 +1939,33 @@ fn ipv6_in_a_pair() {
     assert!(history_error(
         &d,
         "networks.wan.ipv6: a pair's WAN on the nodes' own MACs (vmac: false) is IPv4 only"
+    ));
+    // Not on the virtual MAC (#247): public node addresses in the gateway
+    // address's subnet, or each node leasing its own, are IPv4 only.
+    let public = json!({"addresses": {"fw1": "203.0.113.2/29", "fw2": "203.0.113.3/29"}});
+    let mut wan6 = public.clone();
+    wan6["ipv6"] = st.clone();
+    let d = pair(json!({"networks": {"wan": wan6, "users": {"ipv6": users}}}));
+    assert!(history_error(
+        &d,
+        "networks.wan.ipv6: in a pair, IPv6 on the WAN needs it on the virtual MAC"
+    ));
+    assert_valid(&pair(json!({"networks": {"wan": public}})));
+    let mut own = to_value(&load(PAIR));
+    let wan = own["networks"]["wan"].as_object_mut().unwrap();
+    for k in ["vip", "gateway", "extra_vips", "vrid"] {
+        wan.remove(k);
+    }
+    wan.insert("dhcp_client".into(), json!(true));
+    merge_patch(
+        &mut own,
+        &json!({"networks": {"wan": {"ipv6": st}, "users": {"ipv6": users}}}),
+    );
+    let own: Document = from_value(own).unwrap();
+    assert_eq!(own.leased_wan("wan"), None);
+    assert!(history_error(
+        &own,
+        "networks.wan.ipv6: in a pair, IPv6 on the WAN needs it on the virtual MAC"
     ));
     // An inside network without a vrid has no virtual MAC for its gateway.
     let d = pair(json!({"networks": {"wan": {"ipv6": st},
