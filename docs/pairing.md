@@ -151,7 +151,11 @@ failover held by the master (#215):
   of its neighbour solicitations; the backup's `swwan` has neither and
   sends nothing, not even a multicast listener report from the virtual
   MAC.
-- **A WAN with `vmac: false`** is IPv4 only.
+- **Other WAN shapes are IPv4 only:** IPv6 on a pair's WAN needs it on the
+  virtual MAC, either as a static block with private node addresses or as
+  the one DHCP lease. A WAN with `vmac: false`, public node addresses in
+  the gateway address's subnet, or each node leasing its own address is
+  refused with `ipv6` (#247).
 - **Inside networks** need a `vrid`. Each network's gateway is `fe80::1`,
   on the IPv6 VRRP virtual MAC (`00:00:5e:00:02:<vrid>`), up on the master
   only: it sends the router advertisements, and names `fe80::1` as the

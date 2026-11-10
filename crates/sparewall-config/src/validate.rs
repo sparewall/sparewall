@@ -899,15 +899,29 @@ impl Validator<'_> {
                             format!("{p}.mode"),
                             "no WAN has ipv6 mode dhcpv6 to delegate a prefix",
                         ),
-                        // An invalid length is reported at the WAN.
-                        [(_, Some(len))]
-                            if (48..=64).contains(len) && u32::from(id) >> (64 - len) != 0 =>
+                        // An invalid length is reported at the WAN. With
+                        // none, the WAN asks for the default (#248).
+                        [(_, asked)]
+                            if (48..=64).contains(&asked.unwrap_or(DEFAULT_PREFIX_LENGTH))
+                                && u32::from(id)
+                                    >> (64 - asked.unwrap_or(DEFAULT_PREFIX_LENGTH))
+                                    != 0 =>
                         {
+                            let len = asked.unwrap_or(DEFAULT_PREFIX_LENGTH);
+                            let default = if asked.is_none() {
+                                ", the default the WAN asks for when its prefix_length is unset,"
+                                    .to_string()
+                            } else {
+                                String::new()
+                            };
                             self.err(
                                 format!("{p}.subnet_id"),
                                 match 1u32 << (64 - len) {
                                     1 => "a /64 is one subnet, 0".to_string(),
-                                    n => format!("a /{len} has {n} subnets (0 to {})", n - 1),
+                                    n => format!(
+                                        "a /{len}{default} has {n} subnets (0 to {})",
+                                        n - 1
+                                    ),
                                 },
                             )
                         }
@@ -1044,6 +1058,18 @@ impl Validator<'_> {
                 self.err(
                     &p,
                     "a pair's WAN on the nodes' own MACs (vmac: false) is IPv4 only",
+                );
+                return;
+            }
+            // Only a WAN on the virtual MAC carries IPv6 (#247): a static
+            // block with private node addresses, or the one DHCP lease.
+            if !doc.vmac_wan(name) {
+                self.err(
+                    &p,
+                    "in a pair, IPv6 on the WAN needs it on the virtual MAC: a static block with \
+                     private node addresses (and a vip), or the one DHCP lease (dhcp_client and \
+                     a vrid); public node addresses in the gateway's subnet, or each node \
+                     leasing its own, are IPv4 only",
                 );
                 return;
             }
