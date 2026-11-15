@@ -227,13 +227,19 @@ where
         = GuardError<S::ReplyError<'ser>>
     where
         Self: 'ser;
+    type Upgrade = S::Upgrade;
 
     async fn handle<'ser>(
         &'ser mut self,
         call: &'ser Call<Self::MethodCall<'_>>,
         conn: &mut Connection<Sock>,
         fds: Vec<std::os::fd::OwnedFd>,
-    ) -> HandleResult<Self::ReplyParams<'ser>, Self::ReplyStream, Self::ReplyError<'ser>> {
+    ) -> HandleResult<
+        Self::ReplyParams<'ser>,
+        Self::ReplyStream,
+        Self::ReplyError<'ser>,
+        Self::Upgrade,
+    > {
         let g = call.method();
         let inner = g.call(call);
         if let Err(e) = self.check(&g.name) {
@@ -244,6 +250,15 @@ where
             MethodReply::Single(p) => MethodReply::Single(p),
             MethodReply::Multi(s) => MethodReply::Multi(s),
             MethodReply::Error(e) => MethodReply::Error(GuardError::Inner(e)),
+            MethodReply::Upgrade(p, u) => MethodReply::Upgrade(p, u),
+            // A kind of reply a later zlink adds: refuse the call rather
+            // than pass on something the guard has not been taught.
+            _ => {
+                tracing::error!(method = g.name, "unknown kind of reply from the service");
+                MethodReply::Error(GuardError::Denied(FirewallError::NotSupported {
+                    message: format!("{}: unknown kind of reply", g.name),
+                }))
+            }
         };
         (reply, fds)
     }
