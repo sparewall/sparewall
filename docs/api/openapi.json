@@ -1327,7 +1327,7 @@
               },
               "type": "array"
             },
-            "description": "`ipv6`: hosts in a network's IPv6 prefix, by the network and their\nsuffix, the address's last 64 bits (`users: [\"::20\"]`). They follow\nthe prefix, so a rule for a host survives the ISP renumbering a\ndelegated one.",
+            "description": "`ipv6`: hosts in a network's IPv6 prefix, by the network and their\nsuffix, the address's last 64 bits (`users: [\"::20\"]`). They follow\nthe prefix, so a rule for a host survives the ISP renumbering a\ndelegated one (schema revision 6). Each host configures its own\naddress, with that suffix.",
             "type": "object",
             "x-since": 5
           },

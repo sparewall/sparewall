@@ -1096,23 +1096,6 @@ impl Validator<'_> {
     /// them is refused, rather than run as if it did not.
     fn unbuilt_ipv6(&mut self) {
         let doc = self.doc;
-        // Hosts by suffix in a delegated prefix need the node to follow
-        // the prefix as it runs, which is not built yet.
-        for (oname, o) in &doc.objects {
-            for net in o.suffixes.keys() {
-                if doc
-                    .networks
-                    .get(net)
-                    .and_then(|n| n.ipv6.as_ref())
-                    .is_some_and(|v| v.mode == Ipv6Mode::Delegated)
-                {
-                    self.err(
-                        format!("objects.{oname}.suffixes.{net}"),
-                        "hosts by suffix in a delegated prefix are not built yet; use a static prefix, or their addresses",
-                    );
-                }
-            }
-        }
         if let Some(m) = &doc.management.sources
             && !doc.split_families(m).1.is_empty()
         {

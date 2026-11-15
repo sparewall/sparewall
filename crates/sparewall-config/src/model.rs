@@ -19,8 +19,9 @@ use serde_json::Value;
 /// so a release that reads only older revisions can tell it apart from
 /// an invalid document, and reads every document that needs nothing newer
 /// (#168). A value that earlier releases reject as not built yet says so
-/// too, with `x-since-values` (`{"syslog": 4}`) on its field.
-pub const SCHEMA_VERSION: u32 = 5;
+/// too, with `x-since-values` (`{"syslog": 4}`) on its field, and a
+/// combination of fields does in [`crate::schema::revision`] itself.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// A whole deployment: one node or an HA pair.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -504,7 +505,8 @@ pub struct Object {
     /// `ipv6`: hosts in a network's IPv6 prefix, by the network and their
     /// suffix, the address's last 64 bits (`users: ["::20"]`). They follow
     /// the prefix, so a rule for a host survives the ISP renumbering a
-    /// delegated one.
+    /// delegated one (schema revision 6). Each host configures its own
+    /// address, with that suffix.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(extend("x-since" = 5))]
     pub suffixes: BTreeMap<String, Vec<String>>,

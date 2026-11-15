@@ -74,6 +74,7 @@ back to one of them keeps its configuration.
 | 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac`, `backup.retention`, `management.sources`; the value `updates.mode: windowed` | 0.4.0 |
 | 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`, `vpn_clients`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
 | 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
+| 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated` | 0.7.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -365,8 +366,16 @@ networks:
   between zones is the policies', for IPv6 as for IPv4, without NAT.
 - **Objects:** a dynamic `ipv6` object on an inside network holds its
   /64 (`source: prefix`) or the node's address (`source: address`).
-  Hosts by suffix (`suffixes`) follow a static prefix; in a delegated
-  one they are not built yet: name their addresses instead.
+  Hosts by suffix (`suffixes`) follow the network's prefix. In a static
+  one they are part of the ruleset. In a delegated one the coordinator
+  keeps them at each /64 a rule should still reach: the node's prefix,
+  in a pair the old master's after a failover while it is valid, and a
+  withdrawn /64 while it is announced as deprecated, so connections to
+  a renumbered host are not cut by the policy. `nft list set inet
+  sparewall <object>` shows what it holds. The host configures its own
+  address with that suffix, such as a static token.
+  [Schema revision](#schema-revisions) 6 (0.7.0) reads hosts by suffix in
+  a delegated prefix; 0.6 refused them.
 
 ### Checking IPv6
 
@@ -1095,13 +1104,14 @@ what the test suites see, and a denial on a real node is a missing rule.
 ## Settings not built yet
 
 `provider_options` and `dhcp.provider: networkd` are rejected with an
-error at their path, and so are hosts by suffix in a delegated prefix
-and IPv6 in `management.sources` (management stays IPv4 for now). The
+error at their path, and so is IPv6 in `management.sources`
+(management stays IPv4 for now). The
 document takes them, and validation checks them in full; activating one
 is refused. `ipv6` objects, IPv6 in policies (#212), a node's WAN (#213,
 [IPv6 on the WAN](#ipv6-on-the-wan)), inside networks (#214, [IPv6 on
 inside networks](#ipv6-on-inside-networks)) and IPv6 in a pair (#215,
-[Running an HA pair](pairing.md#ipv6)) are built. (`updates.mode: windowed` and `updates.window` were
+[Running an HA pair](pairing.md#ipv6)) are built, and hosts by suffix
+in a delegated prefix since 0.7.0 (#245). (`updates.mode: windowed` and `updates.window` were
 too, before 0.4.0 built them, and `logging.remote.provider: syslog`,
 `metrics.mode: local` and `metrics.retention` before 0.5.0.) Builds
 before 0.1.0 accepted them, though nothing acted on them. After

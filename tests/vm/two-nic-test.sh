@@ -426,6 +426,28 @@ if ns tisp ping -6 -c 2 -W 2 "$c6" >/dev/null 2>&1; then
     fail "the ISP reached the client $c6 unasked"
 fi
 
+log "a rule names a host by its suffix in the delegated prefix (#245)"
+# The client is also a server at ::20 in the LAN's /64, an address it
+# sets itself (a static token), and the ISP may reach its echo port there
+# only: the rule follows the prefix, whatever the ISP delegates.
+ns tclient ip -6 addr add "${p1}20/64" dev eth0 nodad
+# Until the suite ends (its cleanup stops every echo.py).
+ns tclient python3 "$HERE/echo.py" server &
+jq -n '{objects: {nas6: {type: "ipv6", suffixes: {lan: ["::20"]}}},
+        policy: {"wan->lan": {action: "drop", rules: {
+            echo: {order: 100, proto: "tcp", dport: 7000, dst: "@nas6", action: "accept"}}}}}' \
+    | at fw1 'cat > /tmp/nas6.json'
+at fw1 'sudo sparewall merge -f /tmp/nas6.json --confirm 0' >/dev/null
+echoes() { # namespace, address: an echo from port 7000 there
+    ns "$1" timeout 5 bash -c "exec 3<>/dev/tcp/$2/7000 && echo hello >&3 && read -r l <&3 && [ \"\$l\" = hello ]" 2>/dev/null
+}
+nas6_holds() { at fw1 'sudo nft list set inet sparewall nas6' | grep -q "$1"; }
+wait_for 30 "the nas6 set to hold ${p1}20" nas6_holds "${p1}20"
+wait_for 30 "the ISP to reach the client's echo port at ${p1}20" echoes tisp "${p1}20"
+if echoes tisp "$c6"; then
+    fail "the ISP reached the client's echo port at its SLAAC address $c6, which the rule does not name"
+fi
+
 log "a new delegated prefix renumbers the LAN, and the client follows (#214)"
 kea6_stop
 kea6_start tisp 2001:db8:200::
@@ -446,6 +468,12 @@ ns tclient rdisc6 -1 eth0 > ra.txt 2>&1 || true
 grep -q "Prefix *: *${p2}/64" ra.txt || fail "the RA does not announce $p2/64: $(cat ra.txt)"
 wait_for 30 "the old prefix $p1/64 announced as deprecated" deprecated_in_ra tclient "$p1"
 wait_for 30 "the client's address in $p1/64 deprecated" old_deprecated tclient "$p1"
+# The rule by suffix follows: ::20 in the new /64, and in the old one
+# while it is announced as deprecated.
+ns tclient ip -6 addr add "${p2}20/64" dev eth0 nodad
+wait_for 30 "the nas6 set to hold ${p2}20" nas6_holds "${p2}20"
+nas6_holds "${p1}20" || fail "the nas6 set dropped ${p1}20 while it is deprecated: $(at fw1 'sudo nft list set inet sparewall nas6')"
+wait_for 30 "the ISP to reach the client's echo port at ${p2}20" echoes tisp "${p2}20"
 # Its source is the new address now, without asking for it.
 c6=$(client6 "$p2")
 wait_for 30 "the client to reach the ISP from the new prefix ($c6)" \
