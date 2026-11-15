@@ -2,7 +2,10 @@ name: Release
 
 # Publishing a release (drafted by image.yml's release job for a v* tag)
 # tags the tested image with its version and, unless it is a prerelease,
-# promotes it to the stable channel (design: "Channels").
+# promotes it to the stable channel (design: "Channels"). A backport to an
+# older series (from a release branch, docs/releasing.md) is published
+# after a newer release: stable, the Homebrew tap and GitHub's "Latest"
+# stay with the newest.
 
 on:
   release:
@@ -24,7 +27,7 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write # GitHub's "Latest" release
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,6 +39,7 @@ jobs:
       - name: Tag and promote
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
           PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
@@ -46,14 +50,41 @@ jobs:
           cosign verify --key cosign.pub --new-bundle-format=false "$src" > /dev/null
           # The same manifest under new tags: its signature and SBOM,
           # attached by digest, carry over.
-          tags=("${TAG#v}")
-          [ "$PRERELEASE" = true ] || tags+=(stable)
+          v=${TAG#v}
+          tags=("$v")
+          if [ "$PRERELEASE" != true ]; then
+            # stable moves forward only: a backport to an older series
+            # leaves it with the newer release (or a rebuild of it).
+            current=$(skopeo inspect --no-tags "docker://$IMAGE:stable" | jq -r '.Labels["org.sparewall.version"] // ""')
+            current=${current%%+*}
+            if [ -z "$current" ] || [ "$(printf '%s\n%s\n' "$current" "$v" | sort -V | tail -1)" = "$v" ]; then
+              tags+=(stable)
+            else
+              echo "stable is $current, newer than $v: stable left alone" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
           for t in "${tags[@]}"; do
             skopeo copy --all --preserve-digests "docker://$src" "docker://$IMAGE:$t"
             cosign verify --key cosign.pub --new-bundle-format=false "$IMAGE:$t" > /dev/null
             .github/check-sigpolicy.sh "$IMAGE:$t"
             echo "$src is now $IMAGE:$t" >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # GitHub marks the release published last as "Latest", which a
+      # backport is not; image.yml's rebuild promotion reads it as the
+      # newest release.
+      - name: Latest is the newest release
+        if: ${{ !github.event.release.prerelease }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          newest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1000 \
+            --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          latest=$(gh release view --json tagName --jq .tagName)
+          if [ "$latest" != "$newest" ]; then
+            gh release edit "$newest" --latest
+            echo "Latest: $newest (GitHub had $latest)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   homebrew:
     # The tap's formula follows each release, so `brew upgrade` does too.

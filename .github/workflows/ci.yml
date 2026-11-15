@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
   workflow_dispatch:
 
@@ -20,7 +20,7 @@ env:
 jobs:
   # What a pull request touches, so that a change to the web UI alone
   # skips the Rust jobs and a Rust change skips the UI's. Pushes to main
-  # run everything. The jobs are skipped with `if:` rather than path
+  # or a release branch run everything. The jobs are skipped with `if:` rather than path
   # filters on the workflow, so that a required check that does not apply
   # reports as skipped, which counts as passing, instead of never
   # reporting at all.

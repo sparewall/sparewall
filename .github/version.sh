@@ -7,6 +7,12 @@
 #   after v0.3.1        0.3.2-dev.N+gabc123456789   (before 0.3.2-rc1 and 0.3.2)
 #   after v0.4.0-rc1    0.4.0-rc1.dev.N+gabc123456789 (before 0.4.0-rc2)
 #
+# Once a release branch is cut for a series (release/0.6, for 0.6.x
+# backports), its releases are tagged there, out of main's history: main
+# then builds the next minor series, so that it sorts after every
+# backport (0.7.0-dev.N after v0.6.0, not 0.6.1-dev.N), and the release
+# branch, or a pull request into it, goes on with the next patch.
+#
 # or Cargo's version and the commit if no tag is reachable. Describing
 # needs the history: check out with fetch-depth 0.
 #
@@ -39,7 +45,15 @@ refs/tags/v*)
             echo "$base.dev.$n+g$sha"
         else
             IFS=. read -r major minor patch <<<"$base"
-            echo "$major.$minor.$((patch + 1))-dev.$n+g$sha"
+            # The branch built: a pull request's base, the pushed branch,
+            # or the one checked out.
+            branch=${GITHUB_BASE_REF:-${GITHUB_REF_NAME:-$(git symbolic-ref -q --short HEAD || true)}}
+            if [[ $branch != release/* ]] \
+                && git rev-parse -q --verify "refs/remotes/origin/release/$major.$minor" >/dev/null; then
+                echo "$major.$((minor + 1)).0-dev.$n+g$sha"
+            else
+                echo "$major.$minor.$((patch + 1))-dev.$n+g$sha"
+            fi
         fi
     else
         v=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$(dirname "$0")/../Cargo.toml" | head -1)

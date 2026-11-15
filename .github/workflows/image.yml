@@ -1,12 +1,14 @@
 name: Image
 
-# Build the bootc image, boot it in a VM, and (on main and tags) publish it
-# to ghcr.io/sparewall/sparewall:testing, signed, with an SBOM attached
-# (design: "Build, sign, publish").
+# Build the bootc image, boot it in a VM, and (on main, release branches
+# and tags) publish it as sha-<commit>, signed, with an SBOM attached
+# (design: "Build, sign, publish"). Only main's builds move `testing`: a
+# release branch (release/X.Y, docs/releasing.md) holds backports to an
+# older series.
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
     tags: ["v*"]
   pull_request:
     paths:
@@ -71,7 +73,8 @@ jobs:
           fetch-depth: 0 # for .github/version.sh
 
       # Before anything is built or pushed from a tag: the tag is this
-      # commit, on main, and a release tag is signed with a key on the
+      # commit, on main or a release branch (a branch whose rules require
+      # a pull request), and a release tag is signed with a key on the
       # GitHub account of one of the repository's maintainers (the
       # maintain or admin role; docs/releasing.md). The same rule holds
       # for a rebuild, which a bot dispatches: who runs the workflow
@@ -173,7 +176,8 @@ jobs:
             ref="$repo:sha-$short${REBUILD:+-r$REBUILD}"
             if [ "$PUSH" = true ]; then
               podman push --digestfile "$p.digest" "$repo:ci" "docker://$ref"
-              [ -n "$REBUILD" ] || podman push "$repo:ci" "docker://$repo:testing"
+              [ -n "$REBUILD" ] || [ "$GITHUB_REF" != refs/heads/main ] \
+                || podman push "$repo:ci" "docker://$repo:testing"
               .github/sign-image.sh "$repo@$(cat "$p.digest")"
             else
               # Pull requests boot with the provider images they build,
@@ -345,7 +349,10 @@ jobs:
             sudo podman push --digestfile digest "$LOCAL" "docker://$IMAGE:${v/+/_}"
           else
             sudo podman push --digestfile digest "$LOCAL" "docker://$IMAGE:sha-$short"
-            sudo podman push "$LOCAL" "docker://$IMAGE:testing"
+            # testing is main's newest build.
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              sudo podman push "$LOCAL" "docker://$IMAGE:testing"
+            fi
           fi
           echo "digest=$(cat digest)" >> "$GITHUB_OUTPUT"
 
