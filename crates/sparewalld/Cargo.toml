@@ -39,7 +39,7 @@ tracing = "0.1.44"
 tracing-journald = "0.3.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 x509-parser = "0.18.1"
-zlink = { version = "0.7.1", default-features = false, features = ["tokio", "service", "proxy", "tracing"] }
+zlink = { version = "0.8.0", default-features = false, features = ["tokio", "service", "proxy", "tracing"] }
 
 [lints]
 workspace = true
