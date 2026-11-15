@@ -289,9 +289,9 @@ pub fn run_spooled(id: &str) -> Result<(), Error> {
 struct LiveTable {
     exists: bool,
     chains: Vec<String>,
-    /// Set name to whether it is compatible with a networkd-filled set
-    /// (ipv4_addr with the interval flag).
-    sets: BTreeMap<String, bool>,
+    /// Set name to its type, when it has the interval flag that a
+    /// preserved set has; `None` without it.
+    sets: BTreeMap<String, Option<String>>,
     maps: Vec<String>,
 }
 
@@ -326,8 +326,11 @@ fn parse_live_table(json: &str) -> Result<LiveTable, Error> {
                 Value::String(f) => vec![f.as_str()],
                 _ => vec![],
             };
-            let compatible = s["type"].as_str() == Some("ipv4_addr") && flags.contains(&"interval");
-            t.sets.insert(name, compatible);
+            let ty = s["type"]
+                .as_str()
+                .filter(|_| flags.contains(&"interval"))
+                .map(str::to_string);
+            t.sets.insert(name, ty);
         } else if let Some(m) = item.get("map")
             && let Some(n) = m["name"].as_str()
         {
@@ -337,10 +340,30 @@ fn parse_live_table(json: &str) -> Result<LiveTable, Error> {
     Ok(t)
 }
 
+/// The type `body` declares for set `name`, as the renderer writes it.
+fn declared_type<'a>(body: &'a str, name: &str) -> Option<&'a str> {
+    let at = body.find(&format!("\tset {name} {{\n"))?;
+    body[at..]
+        .lines()
+        .nth(1)?
+        .trim()
+        .strip_prefix("type ")
+        .map(str::trim)
+}
+
 /// Statements that clear the coordinator-owned parts of the live table so
-/// the new body can be loaded in the same transaction. Sets in `preserved`
-/// survive (with their elements) when compatible.
-fn prelude(live: &LiveTable, preserved: &[String]) -> (String, Vec<String>) {
+/// `body` can be loaded in the same transaction. Sets in `preserved`
+/// survive (with their elements) when the live one has the type `body`
+/// declares, of either family, and the interval flag.
+fn prelude(live: &LiveTable, body: &str, preserved: &[String]) -> (String, Vec<String>) {
+    let keeps = |name: &String| {
+        preserved.contains(name)
+            && live
+                .sets
+                .get(name)
+                .and_then(Option::as_deref)
+                .is_some_and(|ty| declared_type(body, name) == Some(ty))
+    };
     let mut s = String::new();
     if !live.exists {
         let created = preserved.to_vec();
@@ -356,13 +379,13 @@ fn prelude(live: &LiveTable, preserved: &[String]) -> (String, Vec<String>) {
         s.push_str(&format!("delete map inet {TABLE} {m}\n"));
     }
     let mut created = Vec::new();
-    for (name, compatible) in &live.sets {
-        if !(preserved.contains(name) && *compatible) {
+    for name in live.sets.keys() {
+        if !keeps(name) {
             s.push_str(&format!("delete set inet {TABLE} {name}\n"));
         }
     }
     for p in preserved {
-        if !live.sets.get(p).copied().unwrap_or(false) {
+        if !keeps(p) {
             created.push(p.clone());
         }
     }
@@ -461,14 +484,14 @@ impl Linux {
 
 impl System for Linux {
     fn nft_check(&mut self, body: &str, preserved: &[String]) -> Result<(), Error> {
-        let (pre, _) = prelude(&live_table()?, preserved);
+        let (pre, _) = prelude(&live_table()?, body, preserved);
         run("nft", &["-c", "-f", "-"], Some(&format!("{pre}{body}")))
             .map(|_| ())
             .map_err(|e| Error::Check(e.to_string()))
     }
 
     fn nft_load(&mut self, body: &str, preserved: &[String]) -> Result<Vec<String>, Error> {
-        let (pre, created) = prelude(&live_table()?, preserved);
+        let (pre, created) = prelude(&live_table()?, body, preserved);
         run("nft", &["-f", "-"], Some(&format!("{pre}{body}")))?;
         Ok(created)
     }
@@ -1121,15 +1144,31 @@ mod tests {
     fn prelude_keeps_compatible_preserved_sets() {
         let json = r#"{"nftables":[{"metainfo":{}},{"table":{"family":"inet","name":"sparewall"}},
           {"set":{"family":"inet","name":"wan_address","table":"sparewall","type":"ipv4_addr","flags":["interval"]}},
+          {"set":{"family":"inet","name":"wan6","table":"sparewall","type":"ipv6_addr","flags":["interval"]}},
+          {"set":{"family":"inet","name":"flipped","table":"sparewall","type":"ipv4_addr","flags":["interval"]}},
           {"set":{"family":"inet","name":"old_static","table":"sparewall","type":"ipv4_addr","flags":["interval"]}},
           {"set":{"family":"inet","name":"bad_type","table":"sparewall","type":"ipv4_addr"}},
           {"chain":{"family":"inet","table":"sparewall","name":"input"}},
           {"chain":{"family":"inet","table":"sparewall","name":"in_wan"}}]}"#;
         let live = parse_live_table(json).unwrap();
+        let set = |n: &str, ty: &str| {
+            format!("\tset {n} {{\n\t\ttype {ty}\n\t\tflags interval\n\t\tauto-merge\n\t}}\n")
+        };
+        let body = [
+            set("wan_address", "ipv4_addr"),
+            set("wan6", "ipv6_addr"),
+            set("flipped", "ipv6_addr"),
+            set("bad_type", "ipv4_addr"),
+            set("new_dyn", "ipv6_addr"),
+        ]
+        .concat();
         let (pre, created) = prelude(
             &live,
+            &body,
             &[
                 "wan_address".to_string(),
+                "wan6".to_string(),
+                "flipped".to_string(),
                 "bad_type".to_string(),
                 "new_dyn".to_string(),
             ],
@@ -1138,14 +1177,15 @@ mod tests {
             pre,
             "flush chain inet sparewall input\nflush chain inet sparewall in_wan\n\
              delete chain inet sparewall input\ndelete chain inet sparewall in_wan\n\
-             delete set inet sparewall bad_type\ndelete set inet sparewall old_static\n"
+             delete set inet sparewall bad_type\ndelete set inet sparewall flipped\n\
+             delete set inet sparewall old_static\n"
         );
-        assert_eq!(created, ["bad_type", "new_dyn"]);
+        assert_eq!(created, ["flipped", "bad_type", "new_dyn"]);
     }
 
     #[test]
     fn prelude_for_absent_table() {
-        let (pre, created) = prelude(&LiveTable::default(), &["x".to_string()]);
+        let (pre, created) = prelude(&LiveTable::default(), "", &["x".to_string()]);
         assert!(pre.is_empty());
         assert_eq!(created, ["x"]);
     }
