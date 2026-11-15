@@ -9,8 +9,16 @@
 //! which also sends a few advertisements at once. A pair's backup keeps
 //! its drop-ins too, on a link that is down, so a failover inside the
 //! two hours goes on announcing them.
+//!
+//! The same round keeps the sets of `ipv6` objects that name hosts by
+//! suffix on a delegated network (#245) at each suffix in each /64 a
+//! rule should still reach: those of the prefixes in use (this node's
+//! own, and the peer's last while valid, so a host's rules keep working
+//! through a failover), and those announced as deprecated, so existing
+//! connections to a renumbered host are not cut by the policy. An apply,
+//! a rollback or a VRRP transition starts a round at once.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -34,19 +42,12 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// The prefixes in use, each with the seconds left of its valid lifetime:
-/// this node's own, or failing those the peer's last while valid.
-fn prefixes_in_use(
-    own: &[ipv6::Lifetimed],
+/// The peer's last prefixes while valid, each with the seconds left of
+/// its valid lifetime.
+fn peer_valid(
     peer: Option<&(Instant, Vec<sparewall_api::DelegatedPrefix>)>,
     now: Instant,
 ) -> Vec<(String, Option<u64>)> {
-    if !own.is_empty() {
-        return own
-            .iter()
-            .map(|p| (p.address.clone(), p.valid_seconds))
-            .collect();
-    }
     let Some((heard, prefixes)) = peer else {
         return vec![];
     };
@@ -61,6 +62,52 @@ fn prefixes_in_use(
             }
         })
         .collect()
+}
+
+fn own_prefixes(own: &[ipv6::Lifetimed]) -> Vec<(String, Option<u64>)> {
+    own.iter()
+        .map(|p| (p.address.clone(), p.valid_seconds))
+        .collect()
+}
+
+/// The prefixes in use, each with the seconds left of its valid lifetime:
+/// this node's own, or failing those the peer's last while valid.
+fn prefixes_in_use(
+    own: &[ipv6::Lifetimed],
+    peer: Option<&(Instant, Vec<sparewall_api::DelegatedPrefix>)>,
+    now: Instant,
+) -> Vec<(String, Option<u64>)> {
+    if !own.is_empty() {
+        return own_prefixes(own);
+    }
+    peer_valid(peer, now)
+}
+
+/// The /64s, by delegated network, that rules naming hosts by suffix
+/// reach (#245): of this node's own prefixes and the peer's last while
+/// valid, and those announced as deprecated.
+fn reached(
+    doc: &Document,
+    own: &[ipv6::Lifetimed],
+    peer: Option<&(Instant, Vec<sparewall_api::DelegatedPrefix>)>,
+    w: &Withdrawn,
+    now: (Instant, u64),
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut prefixes: Vec<(String, Option<u64>)> = own_prefixes(own)
+        .into_iter()
+        .filter(|(_, left)| *left != Some(0))
+        .collect();
+    prefixes.extend(peer_valid(peer, now.0));
+    let mut out: BTreeMap<String, BTreeSet<String>> = in_use(doc, &prefixes, now.1)
+        .into_iter()
+        .map(|(net, nets)| (net, nets.into_keys().collect()))
+        .collect();
+    for (net, a) in &w.announced {
+        if let Some(o) = out.get_mut(net) {
+            o.extend(a.keys().cloned());
+        }
+    }
+    out
 }
 
 /// The drop-ins wanted, by path.
@@ -129,6 +176,7 @@ pub async fn withdrawn_loop(
 ) {
     let state_file = state.join(STATE_FILE);
     let dir = Path::new(NETWORK_DIR);
+    let mut rx = events.subscribe();
     let mut w: Withdrawn = std::fs::read(&state_file)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -196,7 +244,29 @@ pub async fn withdrawn_loop(
             let _ =
                 events.send(json!({"type": "ipv6-withdrawn", "announced": w.announced, "ok": ok}));
         }
-        tokio::time::sleep(ROUND).await;
+        if let Some(d) = &doc {
+            let r = reached(d, &own, peer.as_ref(), &w, (Instant::now(), now));
+            for (set, els) in sparewall_render::nft::suffix_sets(d, &r) {
+                crate::lease::fill_set(&set, &els).await;
+            }
+        }
+        // Wake on an apply, a rollback or a transition, or after a round.
+        let _ = tokio::time::timeout(ROUND, async {
+            loop {
+                match rx.recv().await {
+                    Ok(v)
+                        if ["applied", "rolled-back", "vrrp"]
+                            .contains(&v["type"].as_str().unwrap_or_default()) =>
+                    {
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => return,
+                    Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+                }
+            }
+        })
+        .await;
     }
 }
 
@@ -247,6 +317,119 @@ mod tests {
             [("2001:db8:300::/56".to_string(), None)]
         );
         assert!(prefixes_in_use(&[], None, t0).is_empty());
+    }
+
+    /// The two-NIC example, its LAN on subnet 1 of a delegated prefix.
+    fn delegated_lan() -> Document {
+        let text = std::fs::read_to_string(format!(
+            "{}/../../examples/two-nic.yaml",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let d = sparewall_config::parse(&text, sparewall_config::Format::Yaml).unwrap();
+        let mut v = sparewall_config::to_value(&d);
+        sparewall_config::merge_patch(
+            &mut v,
+            &json!({"networks": {
+                "wan": {"ipv6": {"mode": "dhcpv6"}},
+                "lan": {"ipv6": {"mode": "delegated", "subnet_id": 1}}}}),
+        );
+        sparewall_config::from_value(v).unwrap()
+    }
+
+    /// The /64s a rule by suffix reaches (#245): this node's prefix, the
+    /// peer's last while valid (a takeover), and the deprecated ones.
+    #[test]
+    fn rules_by_suffix_reach_every_64_still_in_use() {
+        let doc = delegated_lan();
+        let t0 = Instant::now();
+        let now = (t0, 1_000_000);
+        let lan = |r: BTreeMap<String, BTreeSet<String>>| -> Vec<String> {
+            r.get("lan").into_iter().flatten().cloned().collect()
+        };
+        let own = |p: &str, valid: Option<u64>| Lifetimed {
+            address: p.into(),
+            preferred_seconds: valid,
+            valid_seconds: valid,
+        };
+        let w = Withdrawn::default();
+        assert!(lan(reached(&doc, &[], None, &w, now)).is_empty());
+        assert_eq!(
+            lan(reached(
+                &doc,
+                &[own("2001:db8:100::/56", Some(180))],
+                None,
+                &w,
+                now
+            )),
+            ["2001:db8:100:1::/64"]
+        );
+        // One whose lease has run out is not.
+        assert!(
+            lan(reached(
+                &doc,
+                &[own("2001:db8:100::/56", Some(0))],
+                None,
+                &w,
+                now
+            ))
+            .is_empty()
+        );
+        // A takeover: the old master's prefix while valid, beside this
+        // node's own once it has one.
+        let peer = (
+            t0,
+            vec![DelegatedPrefix {
+                prefix: "2001:db8:100::/56".into(),
+                preferred_seconds: Some(90),
+                valid_seconds: Some(180),
+            }],
+        );
+        assert_eq!(
+            lan(reached(&doc, &[], Some(&peer), &w, now)),
+            ["2001:db8:100:1::/64"]
+        );
+        assert_eq!(
+            lan(reached(
+                &doc,
+                &[own("2001:db8:200::/56", Some(180))],
+                Some(&peer),
+                &w,
+                now
+            )),
+            ["2001:db8:100:1::/64", "2001:db8:200:1::/64"]
+        );
+        let lapsed = (t0 + Duration::from_secs(200), now.1 + 200);
+        assert_eq!(
+            lan(reached(
+                &doc,
+                &[own("2001:db8:200::/56", Some(180))],
+                Some(&peer),
+                &w,
+                lapsed
+            )),
+            ["2001:db8:200:1::/64"]
+        );
+        // Renumbered: the withdrawn /64, while announced as deprecated.
+        let mut w = Withdrawn::default();
+        let first = in_use(&doc, &[("2001:db8:100::/56".into(), Some(3600))], now.1);
+        w.update(&first, now.1);
+        let second = in_use(
+            &doc,
+            &[("2001:db8:200::/56".into(), Some(3600))],
+            now.1 + 10,
+        );
+        w.update(&second, now.1 + 10);
+        assert_eq!(
+            lan(reached(
+                &doc,
+                &[own("2001:db8:200::/56", Some(3600))],
+                None,
+                &w,
+                (t0, now.1 + 10)
+            )),
+            ["2001:db8:100:1::/64", "2001:db8:200:1::/64"]
+        );
     }
 
     #[test]

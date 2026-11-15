@@ -300,7 +300,7 @@ pub fn refill(name: &str, have: &BTreeSet<String>, want: &BTreeSet<String>) -> O
 }
 
 /// Bring a coordinator-filled set to `want`.
-async fn fill_set(name: &str, want: &BTreeSet<String>) {
+pub async fn fill_set(name: &str, want: &BTreeSet<String>) {
     let table = sparewall_render::nft::TABLE;
     // Not there (an apply is on its way): next round.
     let Some(listing) = nft(&["-j", "list", "set", "inet", table, name]).await else {

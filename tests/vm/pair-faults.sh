@@ -198,7 +198,10 @@ ns isp python3 "$HERE/echo.py" server &
 at fw1 'sudo sparewall merge -f - --confirm 0' <<'JSON'
 {"networks": {"wan": {"ipv6": {"mode": "dhcpv6"}},
               "users": {"ipv6": {"mode": "delegated", "subnet_id": 1}}},
- "policy": {"users->wan": {"action": "accept"}}}
+ "objects": {"nas6": {"type": "ipv6", "suffixes": {"users": ["::20"]}}},
+ "policy": {"users->wan": {"action": "accept"},
+            "wan->users": {"action": "drop", "rules": {
+                "echo": {"order": 100, "proto": "tcp", "dport": 7000, "dst": "@nas6", "action": "accept"}}}}}
 JSON
 V6_DUMP=1
 wait_for 120 "fw1 in sync with IPv6" in_sync fw1
@@ -252,6 +255,21 @@ ns users ping -6 -c 2 -W 2 2001:db8:ffff::1 >/dev/null || fail "the client canno
 ns users python3 "$HERE/echo.py" client 2001:db8:ffff::1 > flow6.log 2>&1 &
 sleep 3
 count6=$(echoes flow6.log) || fail "no IPv6 echoes through fw1: $(cat flow6.log)"
+# A rule naming a host by its suffix (#245): the client is also a server
+# at ::20, and both nodes' sets hold it, the backup's from the master's
+# prefix, so a failover finds it there.
+ns users ip -6 addr add "${P6}20/64" dev eth0 nodad
+ns users python3 "$HERE/echo.py" server &
+nas6_holds() { at "$1" 'sudo nft list set inet sparewall nas6' | grep -q "$2"; }
+answers() { # address: the ISP gets an echo from port 7000 there
+    ns isp timeout 5 bash -c "exec 3<>/dev/tcp/$1/7000 && echo hello >&3 && read -r l <&3 && [ \"\$l\" = hello ]" 2>/dev/null
+}
+wait_for 30 "fw1's nas6 set to hold ${P6}20" nas6_holds fw1 "${P6}20"
+wait_for 30 "fw2's nas6 set (the backup's) to hold ${P6}20" nas6_holds fw2 "${P6}20"
+wait_for 30 "the ISP to reach the client's echo port at ${P6}20" answers "${P6}20"
+if answers "$c6"; then
+    fail "the ISP reached the client's echo port at its SLAAC address $c6, which the rule does not name"
+fi
 # The gateway link is up on the master only, and the backup has no WAN
 # address: it sends nothing of IPv6's on either side.
 gw_flags() { at "$1" 'ip -j link show dev swgw20' | jq -c '.[0].flags'; }
@@ -335,12 +353,19 @@ takeover || fail "fw1 does not route the peer's $P6/64: $(at fw1 'ip -6 route sh
 # fw1's first frames, so the ISP's first replies may still go to fw2's.
 wait_for 30 "the client to reach the ISP from $c6 while fw1 holds the peer's prefix" \
     ns users ping -6 -c 1 -W 2 -I "$c6" 2001:db8:ffff::1
+nas6_holds fw1 "${P6}20" \
+    || fail "fw1's nas6 set lost ${P6}20 at the takeover: $(at fw1 'sudo nft list set inet sparewall nas6')"
+wait_for 30 "the ISP to reach ${P6}20 through fw1 on the peer's prefix" answers "${P6}20"
 kea6_start isp 2001:db8:200::
 P6B=2001:db8:200:1::
 wait_for 150 "fw1 advertising $P6B/64 from fe80::1" ra_from_gateway "$P6B"
 wait_for 60 "the client's address in $P6B/64" client6 "$P6B"
 c6b=$(client6 "$P6B")
 ns users ping -6 -c 2 -W 2 -I "$c6b" 2001:db8:ffff::1 >/dev/null || fail "the client cannot reach the ISP from $c6b"
+# The rule by suffix follows the new prefix.
+ns users ip -6 addr add "${P6B}20/64" dev eth0 nodad
+wait_for 30 "fw1's nas6 set to hold ${P6B}20" nas6_holds fw1 "${P6B}20"
+wait_for 30 "the ISP to reach ${P6B}20" answers "${P6B}20"
 # The old prefix, while still valid, is announced with a preferred
 # lifetime of 0 (#232), so the client stops picking its address there.
 # With the ISP's short leases it may have lapsed already, address and all.

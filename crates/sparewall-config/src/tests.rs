@@ -1447,13 +1447,9 @@ fn ipv6_networks_take_the_modes_their_role_allows() {
     // A standalone node's WAN (#213) and inside networks (#214) activate
     // IPv6, as a pair's do (#215).
     assert_valid(&v6(json!({})));
-    // Hosts by suffix in a delegated prefix are not built yet; in a
-    // static one they are.
+    // Hosts by suffix, in a delegated prefix (#245) or a static one.
     let d = v6(json!({"objects": {"nas": {"type": "ipv6", "suffixes": {"lan": ["::20"]}}}}));
-    assert!(has_error(
-        &d,
-        "objects.nas.suffixes.lan: hosts by suffix in a delegated prefix are not built yet"
-    ));
+    assert_valid(&d);
     let d = v6(json!({
         "networks": {"lan": {"ipv6": {"mode": "static", "subnet_id": null, "prefix": "2001:db8:0:1::/64"}}},
         "objects": {"nas": {"type": "ipv6", "suffixes": {"lan": ["::20"]}}},

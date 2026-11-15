@@ -279,6 +279,75 @@ fn in_prefix(p: ipnet::Ipv6Net, x: std::net::Ipv6Addr) -> std::net::Ipv6Addr {
     std::net::Ipv6Addr::from(u128::from(p.network()) | u128::from(x))
 }
 
+/// Suffixes as addresses in prefix `p`; one that does not parse (which
+/// validation refuses) is left out.
+fn suffixes_in(p: ipnet::Ipv6Net, sfx: &[String]) -> impl Iterator<Item = String> + '_ {
+    sfx.iter().filter_map(move |x| {
+        let x: std::net::Ipv6Addr = x.parse().ok()?;
+        Some(in_prefix(p, x).to_string())
+    })
+}
+
+/// Whether a static `ipv6` object names hosts by suffix on a delegated
+/// network, whose prefix only the running node knows (#245).
+pub fn follows_delegated_prefix(doc: &Document, o: &Object) -> bool {
+    o.kind == ObjectKind::Ipv6
+        && o.dynamic.is_none()
+        && o.suffixes.keys().any(|net| {
+            doc.networks
+                .get(net)
+                .and_then(|n| n.ipv6.as_ref())
+                .is_some_and(|v| v.mode == Ipv6Mode::Delegated)
+        })
+}
+
+/// A static `ipv6` object's elements that the document states: its own,
+/// and its hosts by suffix in static prefixes.
+fn ipv6_static_elements(doc: &Document, o: &Object) -> Vec<String> {
+    let mut e: Vec<String> = o
+        .elements
+        .iter()
+        .map(|e| match e {
+            MatchItem::Text(s) => s.clone(),
+            MatchItem::Number(n) => n.to_string(),
+        })
+        .collect();
+    for (net, sfx) in &o.suffixes {
+        if let Some(p) = static_ipv6_prefix(doc, net) {
+            e.extend(suffixes_in(p, sfx));
+        }
+    }
+    e
+}
+
+/// What the coordinator keeps in the sets of objects that name hosts by
+/// suffix on a delegated network (#245), by set name: the object's
+/// static elements, and each suffix in each of its network's /64s in
+/// `in_use` (by network, as `2001:db8:0:1::/64`).
+pub fn suffix_sets(
+    doc: &Document,
+    in_use: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    doc.objects
+        .iter()
+        .filter(|(_, o)| follows_delegated_prefix(doc, o))
+        .map(|(name, o)| {
+            let mut want: BTreeSet<String> = ipv6_static_elements(doc, o).into_iter().collect();
+            for (net, sfx) in &o.suffixes {
+                if static_ipv6_prefix(doc, net).is_some() {
+                    continue;
+                }
+                for p in in_use.get(net).into_iter().flatten() {
+                    if let Ok(p) = p.parse::<ipnet::Ipv6Net>() {
+                        want.extend(suffixes_in(p.trunc(), sfx));
+                    }
+                }
+            }
+            (name.clone(), want)
+        })
+        .collect()
+}
+
 /// An ipv6 dynamic object's elements when the document states them: a
 /// static network's prefix, or a static WAN's own address. `None` when
 /// they are learned at run time.
@@ -433,25 +502,13 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 }
             },
             (ObjectKind::Ipv6, None) => {
-                let mut e: Vec<String> = o
-                    .elements
-                    .iter()
-                    .map(|e| match e {
-                        MatchItem::Text(s) => s.clone(),
-                        MatchItem::Number(n) => n.to_string(),
-                    })
-                    .collect();
-                // Hosts by suffix, in a static prefix. A delegated one is
-                // known only at run time (#214).
-                for (net, sfx) in &o.suffixes {
-                    if let Some(p) = static_ipv6_prefix(doc, net) {
-                        e.extend(sfx.iter().filter_map(|x| {
-                            let x: std::net::Ipv6Addr = x.parse().ok()?;
-                            Some(in_prefix(p, x).to_string())
-                        }));
-                    }
+                // Hosts by suffix in a delegated prefix: the coordinator
+                // adds them as the prefix changes (#245), so a reload
+                // keeps what it added.
+                if follows_delegated_prefix(doc, o) {
+                    out.meta.preserved_sets.push(name.clone());
                 }
-                ("ipv6_addr", e)
+                ("ipv6_addr", ipv6_static_elements(doc, o))
             }
             (ObjectKind::Port, _) => (
                 "inet_service",

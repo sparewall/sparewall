@@ -389,7 +389,8 @@ export interface Schemas {
     /** `ipv6`: hosts in a network's IPv6 prefix, by the network and their
      * suffix, the address's last 64 bits (`users: ["::20"]`). They follow
      * the prefix, so a rule for a host survives the ISP renumbering a
-     * delegated one. */
+     * delegated one (schema revision 6). Each host configures its own
+     * address, with that suffix. */
     "suffixes"?: Record<string, Array<string>>;
     /** Element type. */
     "type": Schemas["Document.ObjectKind"];

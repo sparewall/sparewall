@@ -120,9 +120,34 @@ fn since_address(root: &Value, node: &Value, v: &Value) -> u32 {
     }
 }
 
+/// The schema revision that first reads hosts by suffix on a delegated
+/// network (#245). `suffixes` is older (revision 5), but earlier releases
+/// refuse it there as not built, which a field's or a value's revision
+/// cannot say: it depends on the network's `ipv6.mode`.
+pub const SUFFIXES_IN_DELEGATED_SINCE: u32 = 6;
+
+/// The revision that a combination of fields needs, beyond what each
+/// says of itself, or 1.
+fn since_combination(doc: &Value) -> u32 {
+    let delegated = |net: &str| doc["networks"][net]["ipv6"]["mode"] == "delegated";
+    let suffix_in_delegated = doc["objects"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, o)| o["suffixes"].as_object())
+        .flatten()
+        .any(|(net, _)| delegated(net));
+    if suffix_in_delegated {
+        SUFFIXES_IN_DELEGATED_SINCE
+    } else {
+        1
+    }
+}
+
 /// The oldest schema revision that reads a document: the newest revision
-/// among the fields it uses (#168). Fields the schema does not describe
-/// are left to validation.
+/// among the fields it uses (#168), and among the combinations of them
+/// that earlier releases refuse. Fields the schema does not describe are
+/// left to validation.
 pub fn revision(doc: &Value) -> u32 {
     fn walk(root: &Value, node: &Value, v: &Value) -> u32 {
         let mut rev = 1;
@@ -150,7 +175,7 @@ pub fn revision(doc: &Value) -> u32 {
         rev
     }
     let root = json_schema();
-    walk(root, root, doc)
+    walk(root, root, doc).max(since_combination(doc))
 }
 
 /// The schema node at a path, if the schema describes it.
@@ -363,7 +388,8 @@ mod tests {
     /// The schema revisions (#168): a field that revision 1 (0.2.0's
     /// schema, `schema/v1.json`) does not have must say which revision
     /// added it, no field may disappear (a document that used it would no
-    /// longer read), and the newest revision is `SCHEMA_VERSION`.
+    /// longer read), and the newest revision, a field's or a
+    /// combination's, is `SCHEMA_VERSION`.
     #[test]
     fn new_fields_name_their_revision() {
         let v1: Value = serde_json::from_str(include_str!("../schema/v1.json")).unwrap();
@@ -380,11 +406,16 @@ mod tests {
         );
         let gone: Vec<_> = old.keys().filter(|p| !now.contains_key(*p)).collect();
         assert!(gone.is_empty(), "fields removed since revision 1: {gone:?}");
-        let newest = now.values().copied().max().unwrap_or(1);
+        let newest = now
+            .values()
+            .copied()
+            .chain([SUFFIXES_IN_DELEGATED_SINCE])
+            .max()
+            .unwrap_or(1);
         assert_eq!(
             newest,
             crate::SCHEMA_VERSION,
-            "SCHEMA_VERSION must be the newest revision a field names"
+            "SCHEMA_VERSION must be the newest revision a field or a combination names"
         );
     }
 
@@ -416,6 +447,23 @@ mod tests {
         assert_eq!(revision(&doc), 3);
         doc["logging"]["remote"]["provider"] = "syslog".into();
         assert_eq!(revision(&doc), 4);
+    }
+
+    /// Hosts by suffix on a delegated network need revision 6, though
+    /// `suffixes` is from 5: earlier releases refuse them there (#245).
+    #[test]
+    fn hosts_by_suffix_in_a_delegated_prefix_need_revision_6() {
+        let doc = |mode: &str| {
+            serde_json::json!({
+                "schema": 1,
+                "cluster": {"nodes": ["fw1"]},
+                "management": {"network": "mgmt"},
+                "networks": {"lan": {"ipv6": {"mode": mode}}},
+                "objects": {"nas": {"type": "ipv6", "suffixes": {"lan": ["::20"]}}},
+            })
+        };
+        assert_eq!(revision(&doc("static")), 5);
+        assert_eq!(revision(&doc("delegated")), 6);
     }
 
     /// An IPv6 address where a match takes one needs revision 5, though

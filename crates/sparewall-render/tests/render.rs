@@ -1137,6 +1137,70 @@ fn ipv6_two_nic() -> sparewall_config::Document {
     doc
 }
 
+/// Hosts by suffix in a delegated prefix (#245): the set holds what the
+/// document states, a reload keeps what the coordinator adds, and it adds
+/// each suffix in each /64 a rule should reach.
+#[test]
+fn hosts_by_suffix_follow_a_delegated_prefix() {
+    let doc = ipv6_two_nic();
+    let r = render(&doc, "fw1").unwrap();
+    assert!(
+        r.meta.preserved_sets.contains(&"nas".to_string()),
+        "{:?}",
+        r.meta.preserved_sets
+    );
+    assert!(
+        !r.meta.set_links.contains_key("nas"),
+        "networkd does not fill it"
+    );
+    assert!(!r.meta.preserved_sets.contains(&"nas4".to_string()));
+    let in_use = |nets: &[&str]| {
+        std::collections::BTreeMap::from([(
+            "lan".to_string(),
+            nets.iter().map(|n| n.to_string()).collect(),
+        )])
+    };
+    let want = |els: &[&str]| -> std::collections::BTreeSet<String> {
+        els.iter().map(|e| e.to_string()).collect()
+    };
+    let sets = nft::suffix_sets(&doc, &Default::default());
+    assert_eq!(
+        sets,
+        std::collections::BTreeMap::from([(
+            "nas".to_string(),
+            want(&["2001:db8:ffff::5", "2001:db8:0:2::20"])
+        )]),
+        "no prefix yet: what the document states"
+    );
+    let sets = nft::suffix_sets(&doc, &in_use(&["2001:db8:100:1::/64"]));
+    assert_eq!(
+        sets["nas"],
+        want(&["2001:db8:ffff::5", "2001:db8:0:2::20", "2001:db8:100:1::30"])
+    );
+    // Renumbered, with the old /64 still reached (deprecated, or the
+    // peer's at a takeover).
+    let sets = nft::suffix_sets(
+        &doc,
+        &in_use(&["2001:db8:100:1::/64", "2001:db8:200:1::/64"]),
+    );
+    assert_eq!(
+        sets["nas"],
+        want(&[
+            "2001:db8:ffff::5",
+            "2001:db8:0:2::20",
+            "2001:db8:100:1::30",
+            "2001:db8:200:1::30"
+        ])
+    );
+    // A static prefix's hosts are not the coordinator's to follow.
+    let lab =
+        std::collections::BTreeMap::from([("lab".to_string(), want(&["2001:db8:300:2::/64"]))]);
+    assert_eq!(
+        nft::suffix_sets(&doc, &lab)["nas"],
+        want(&["2001:db8:ffff::5", "2001:db8:0:2::20"])
+    );
+}
+
 #[test]
 fn ipv6_firewall() {
     let doc = ipv6_two_nic();
@@ -1145,7 +1209,7 @@ fn ipv6_firewall() {
     insta::assert_snapshot!("ipv6_two_nic_fw1__nft", nft);
     for want in [
         // Objects: static elements, a static prefix's hosts by suffix (a
-        // delegated one's waits for the prefix, #214), and dynamic ones.
+        // delegated one's the coordinator adds, #245), and dynamic ones.
         "elements = { 2001:db8:ffff::5, 2001:db8:0:2::20 }",
         "elements = { 2001:db8:0:2::/64 }",
         // Neighbour discovery everywhere, router solicitations from the
