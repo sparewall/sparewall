@@ -2,7 +2,9 @@
 # Check a v* tag before anything is built from it (docs/releasing.md):
 #   - it names a version;
 #   - it is the commit this workflow builds ($GITHUB_SHA), and that commit
-#     is on main, so the workflow and this script were reviewed there;
+#     is on a branch whose rules (GitHub's rulesets) require a pull request
+#     and refuse a force push: main, or a release branch (release/X.Y) for
+#     a backport, so the workflow and this script were reviewed there;
 #   - a release (no hyphen) is an annotated tag signed with a GPG key on
 #     the GitHub account of a maintainer of the repository, whoever has
 #     the maintain or admin role, directly or through a team. The account
@@ -24,14 +26,31 @@ n='(0|[1-9][0-9]*)'
 [[ $tag =~ ^v$n\.$n\.$n(-[0-9A-Za-z.-]+)?$ ]] \
     || die "not v<major>.<minor>.<patch>[-<prerelease>]"
 
+repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository}
+
 # actions/checkout may leave a lightweight copy of the tag, and a shallow
-# history: fetch the real tag and all of main.
+# history: fetch the real tag and every branch.
 [ "$(git rev-parse --is-shallow-repository)" = false ] || git fetch -q --unshallow origin
-git fetch -q --force origin "refs/tags/$tag:refs/tags/$tag" "+refs/heads/main:refs/remotes/origin/main"
+git fetch -q --force --prune origin "refs/tags/$tag:refs/tags/$tag" "+refs/heads/*:refs/remotes/origin/*"
 [ "$(git rev-parse "refs/tags/$tag^{commit}")" = "$sha" ] \
     || die "the tag is not the commit being built ($sha)"
-git merge-base --is-ancestor "$sha" refs/remotes/origin/main \
-    || die "$sha is not on main; release from a commit on main"
+# The branches that hold the commit, and the rules GitHub enforces on each
+# now (any token that reads the repository may ask). One that requires a
+# pull request and refuses a force push will do. Who may bypass the rules
+# takes an admin to read, so it is not checked: a maintainer can bypass
+# main's rules too.
+on=
+while read -r b; do
+    [ "$b" != HEAD ] || continue
+    rules=$(gh api "repos/$repo/rules/branches/$b" --jq '.[].type') \
+        || die "cannot ask GitHub for $b's rules"
+    if grep -qx pull_request <<<"$rules" && grep -qx non_fast_forward <<<"$rules"; then
+        on=$b
+        break
+    fi
+done < <(git for-each-ref --contains "$sha" --format='%(refname:lstrip=3)' refs/remotes/origin)
+[ -n "$on" ] || die "$sha is on no branch whose rules require a pull request and refuse a force push; release from main, or a release branch"
+echo "$sha is on $on"
 
 case $tag in *-*)
     echo "$tag is a prerelease: no signature required"
@@ -39,7 +58,6 @@ case $tag in *-*)
 esac
 [ "$(git cat-file -t "refs/tags/$tag")" = tag ] \
     || die "not an annotated tag; a release tag must be signed (git tag -s)"
-repo=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository}
 # The tagger's account, for the tag object fetched above.
 # shellcheck disable=SC2016 # the query's $variables are GraphQL's
 who=$(gh api graphql -f owner="${repo%/*}" -f name="${repo#*/}" -f ref="refs/tags/$tag" -f query='
