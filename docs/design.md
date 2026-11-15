@@ -492,7 +492,7 @@ policy:
     - A static block's `vip` and IPv6 default route ride in the WAN's keepalived instance (`virtual_ipaddress_excluded`, as adverts carry one family). Its link is up on the backup too, so there it joins no multicast group the kernel would report from the virtual MAC: no link-local address, and not a router on that link (`IPv6Forwarding=no`). Writing the global forwarding key resets every interface's, so the coordinator writes no sysctl whose value is unchanged.
     - Each inside network's gateway is a macvlan named `swgw<vrid>` (a network's name may already take the 15 bytes), with `ActivationPolicy=manual`. It holds only `fe80::1` and sends the RAs. The /64 is routed there: a delegated one by `DHCPPrefixDelegation=` with `Assign=no`, a static one by a route. Hosts' IPv6 arrives on it, so it is in the network's zone.
     - conntrackd syncs forwarded IPv6 flows and ICMPv6, and ignores the nodes' own link-local addresses.
-- **Older releases:** an IPv6 address in a rule's `src` or `dst`, or in `management.sources`, needs revision 5 as the new fields do (`x-since-ipv6` on the match types), so 0.5.x refuses such a document as too new, not as invalid.
+- **Older releases:** an IPv6 address in a rule's `src` or `dst` needs revision 5 as the new fields do (`x-since-ipv6` on the match types), so 0.5.x refuses such a document as too new, not as invalid. Hosts by suffix on a delegated network (#245) and IPv6 in `management.sources` (#246), which 0.6 parses but refuses as not built, need revision 6: combinations `schema::revision` names itself, as no one field's revision can say them.
 
 ## Firewall: zones plus raw rules
 
@@ -549,7 +549,7 @@ raw:
   - Router solicitations are accepted from the inside networks with IPv6; router advertisements only on a WAN in `dhcpv6` or `ra` mode, from a link-local address; DHCPv6 replies (547 to 546) only on a `dhcpv6` WAN, to the node.
   - ICMPv6 errors (Packet Too Big, which path MTU discovery needs, and the others RFC 4890 asks for) pass as conntrack's `related`; echo is the policies', with a flood limit to the node as for IPv4.
   - A rule with addresses renders one line per family it applies to, with that family's addresses (`ip saddr`, `ip6 saddr`); one without addresses is one line, for both. `ipv6` objects are `ipv6_addr` sets; their hosts by suffix in a static prefix are elements. In a delegated one the coordinator adds them (#245): each suffix in each /64 a rule should still reach, which are the node's prefix, the peer's last while valid (a takeover), and a withdrawn /64 while it is announced as deprecated (#232). The set is preserved across a reload, as a set networkd fills is, and refilled in one transaction when what it should hold changes.
-  - The anti-lockout rule, NAT and the extra-port redirects say `meta nfproto ipv4`: management over IPv6 is a later choice, and `masquerade` alone would translate IPv6 too.
+  - NAT and the extra-port redirects say `meta nfproto ipv4`, since `masquerade` alone would translate IPv6 too. The anti-lockout rule takes both families (#246): with `management.sources`, a line per family it names (`ip saddr`, `ip6 saddr`); without, one line for both, which IPv6 reaches only where the management network has it (`ipv6-off` drops it before elsewhere). A pair's nodes are managed over IPv6 at their own link-local addresses, as they take no global one on an inside network.
 
 ### Sharing nftables with other software
 

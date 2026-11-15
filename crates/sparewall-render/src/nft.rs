@@ -712,23 +712,31 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         && let Some(m) = &mgmt_if
     {
         // Narrowed to management.sources, where the management network is
-        // also an ordinary one (#177).
-        let from = doc
-            .management
-            .sources
-            .as_ref()
-            .map(|s| format!(" ip saddr {}", match_expr(s)))
-            .unwrap_or_default();
-        // IPv4 only, for now (#212): management over IPv6 is a choice for
-        // later.
-        writeln!(
-            input,
-            "iifname {}{}{from} tcp dport {} accept comment \"anti-lockout\"",
-            q(m),
-            if v6 { " meta nfproto ipv4" } else { "" },
-            set_lit(ANTI_LOCKOUT_PORTS.iter().map(u16::to_string))
-        )
-        .unwrap();
+        // also an ordinary one (#177), a line per family it names (#246).
+        // Unset, every host there reaches the node over either family;
+        // IPv6 only where the management network has it, as `ipv6-off`
+        // drops it before this elsewhere.
+        let ports = set_lit(ANTI_LOCKOUT_PORTS.iter().map(u16::to_string));
+        let mut line = |from: String| {
+            writeln!(
+                input,
+                "iifname {}{from} tcp dport {ports} accept comment \"anti-lockout\"",
+                q(m)
+            )
+            .unwrap();
+        };
+        match &doc.management.sources {
+            None => line(String::new()),
+            Some(s) => {
+                let (four, six) = doc.split_families(s);
+                if !four.is_empty() {
+                    line(format!(" ip saddr {}", set_lit(four)));
+                }
+                if !six.is_empty() {
+                    line(format!(" ip6 saddr {}", set_lit(six)));
+                }
+            }
+        }
     }
     if !v6 {
         input.push_str(IPV6_LINK_LOCAL);

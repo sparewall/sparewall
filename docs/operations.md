@@ -74,7 +74,7 @@ back to one of them keeps its configuration.
 | 3 | `updates.check`, `updates.window_minutes`, `networks.<name>.vmac`, `backup.retention`, `management.sources`; the value `updates.mode: windowed` | 0.4.0 |
 | 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`, `vpn_clients`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
 | 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
-| 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated` | 0.7.0 |
+| 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated`; an IPv6 address or `ipv6` object in `management.sources` | 0.7.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -376,6 +376,21 @@ networks:
   address with that suffix, such as a static token.
   [Schema revision](#schema-revisions) 6 (0.7.0) reads hosts by suffix in
   a delegated prefix; 0.6 refused them.
+- **Management over IPv6** (#246): where the management network has
+  IPv6, the anti-lockout rule admits SSH and HTTPS over it too. A
+  standalone node is `::1` in the network's /64 there, and at its
+  link-local address; a pair's nodes take no global address on an inside
+  network, so each is reached at its own link-local address
+  (`ssh admin@fe80::…%<interface>`), not at the gateway's `fe80::1`,
+  which moves between them. `management.sources` takes IPv6 addresses
+  and `ipv6` objects beside IPv4 ones, and admits each family from the
+  sources it names: sources of one family only close the node to the
+  other, and with no sources at all both are open. IPv6 sources while
+  the management network has no IPv6 match nothing, which validation
+  warns of, and refuses when there are no IPv4 sources beside them. sshd
+  and the HTTPS listener take both families; the node's self-signed
+  certificate names the node, not its addresses, for either. Schema
+  revision 6 (0.7.0) reads IPv6 in `management.sources`; 0.6 refused it.
 
 ### Checking IPv6
 
@@ -1104,14 +1119,14 @@ what the test suites see, and a denial on a real node is a missing rule.
 ## Settings not built yet
 
 `provider_options` and `dhcp.provider: networkd` are rejected with an
-error at their path, and so is IPv6 in `management.sources`
-(management stays IPv4 for now). The
+error at their path. The
 document takes them, and validation checks them in full; activating one
 is refused. `ipv6` objects, IPv6 in policies (#212), a node's WAN (#213,
 [IPv6 on the WAN](#ipv6-on-the-wan)), inside networks (#214, [IPv6 on
 inside networks](#ipv6-on-inside-networks)) and IPv6 in a pair (#215,
-[Running an HA pair](pairing.md#ipv6)) are built, and hosts by suffix
-in a delegated prefix since 0.7.0 (#245). (`updates.mode: windowed` and `updates.window` were
+[Running an HA pair](pairing.md#ipv6)) are built, and since 0.7.0 hosts
+by suffix in a delegated prefix (#245) and IPv6 in `management.sources`
+(#246). (`updates.mode: windowed` and `updates.window` were
 too, before 0.4.0 built them, and `logging.remote.provider: syslog`,
 `metrics.mode: local` and `metrics.retention` before 0.5.0.) Builds
 before 0.1.0 accepted them, though nothing acted on them. After

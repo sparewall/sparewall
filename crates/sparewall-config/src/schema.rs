@@ -126,6 +126,12 @@ fn since_address(root: &Value, node: &Value, v: &Value) -> u32 {
 /// cannot say: it depends on the network's `ipv6.mode`.
 pub const SUFFIXES_IN_DELEGATED_SINCE: u32 = 6;
 
+/// The schema revision that first reads IPv6 in `management.sources`
+/// (#246): revision 5 parses it, but earlier releases refuse it as not
+/// built, which the address's own revision (`x-since-ipv6`) cannot say,
+/// nor can an `@object` of type `ipv6` there.
+pub const IPV6_MANAGEMENT_SINCE: u32 = 6;
+
 /// The revision that a combination of fields needs, beyond what each
 /// says of itself, or 1.
 fn since_combination(doc: &Value) -> u32 {
@@ -137,11 +143,26 @@ fn since_combination(doc: &Value) -> u32 {
         .filter_map(|(_, o)| o["suffixes"].as_object())
         .flatten()
         .any(|(net, _)| delegated(net));
+    let ipv6_item = |i: &Value| match i.as_str() {
+        Some(s) => match s.strip_prefix('@') {
+            Some(o) => doc["objects"][o]["type"] == "ipv6",
+            None => crate::validate::ipv6_element_ok(s),
+        },
+        None => false,
+    };
+    let sources = &doc["management"]["sources"];
+    let ipv6_management = match sources.as_array() {
+        Some(a) => a.iter().any(ipv6_item),
+        None => ipv6_item(sources),
+    };
+    let mut rev = 1;
     if suffix_in_delegated {
-        SUFFIXES_IN_DELEGATED_SINCE
-    } else {
-        1
+        rev = rev.max(SUFFIXES_IN_DELEGATED_SINCE);
     }
+    if ipv6_management {
+        rev = rev.max(IPV6_MANAGEMENT_SINCE);
+    }
+    rev
 }
 
 /// The oldest schema revision that reads a document: the newest revision
@@ -409,7 +430,7 @@ mod tests {
         let newest = now
             .values()
             .copied()
-            .chain([SUFFIXES_IN_DELEGATED_SINCE])
+            .chain([SUFFIXES_IN_DELEGATED_SINCE, IPV6_MANAGEMENT_SINCE])
             .max()
             .unwrap_or(1);
         assert_eq!(
@@ -466,6 +487,32 @@ mod tests {
         assert_eq!(revision(&doc("delegated")), 6);
     }
 
+    /// IPv6 in management.sources needs revision 6, though the address
+    /// is read from 5: earlier releases refuse it there (#246).
+    #[test]
+    fn ipv6_management_sources_need_revision_6() {
+        let doc = |sources: Value| {
+            serde_json::json!({
+                "schema": 1,
+                "cluster": {"nodes": ["fw1"]},
+                "management": {"network": "mgmt", "sources": sources},
+                "objects": {
+                    "admins": {"type": "ipv4", "elements": ["10.0.0.5"]},
+                    "admins6": {"type": "ipv6", "elements": ["2001:db8::5"]},
+                },
+            })
+        };
+        // 5 for the ipv6 object alone.
+        assert_eq!(revision(&doc("10.0.0.5".into())), 5);
+        assert_eq!(revision(&doc(serde_json::json!(["@admins"]))), 5);
+        assert_eq!(revision(&doc("fe80::5".into())), 6);
+        assert_eq!(
+            revision(&doc(serde_json::json!(["10.0.0.5", "2001:db8::5"]))),
+            6
+        );
+        assert_eq!(revision(&doc(serde_json::json!(["@admins6"]))), 6);
+    }
+
     /// An IPv6 address where a match takes one needs revision 5, though
     /// the field is older: earlier releases read only IPv4 there (#211).
     #[test]
@@ -492,7 +539,11 @@ mod tests {
         );
         let mut doc = rule("10.0.0.0/8".into());
         doc["management"]["sources"] = "fd00::/8".into();
-        assert_eq!(revision(&doc), 5, "management.sources");
+        assert_eq!(
+            revision(&doc),
+            6,
+            "management.sources, which 0.6 refused (#246)"
+        );
         // A raw nft statement could always name IPv6 addresses.
         let mut doc = rule("10.0.0.0/8".into());
         doc["raw"] = serde_json::json!({"x": {"at": {"hook": "input"}, "order": 1,
