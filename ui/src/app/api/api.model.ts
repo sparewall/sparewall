@@ -729,6 +729,11 @@ export interface Schemas {
     /** Method is expected to be called with 'more' set to true, but wasn't. */
     "parameters": Record<string, never>;
   } | {
+    "error": "org.varlink.service.ExpectedUpgrade";
+    "message"?: string;
+    /** Method is expected to be called with 'upgrade' set to true, but wasn't. */
+    "parameters": Record<string, never>;
+  } | {
     "error": "org.varlink.service.InterfaceNotFound";
     "message"?: string;
     /** The requested interface was not found. */

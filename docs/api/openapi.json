@@ -2543,6 +2543,28 @@
           {
             "properties": {
               "error": {
+                "const": "org.varlink.service.ExpectedUpgrade"
+              },
+              "message": {
+                "type": "string"
+              },
+              "parameters": {
+                "additionalProperties": false,
+                "description": "Method is expected to be called with 'upgrade' set to true, but wasn't.",
+                "properties": {},
+                "type": "object"
+              }
+            },
+            "required": [
+              "error",
+              "parameters"
+            ],
+            "title": "org.varlink.service.ExpectedUpgrade",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "error": {
                 "const": "org.varlink.service.InterfaceNotFound"
               },
               "message": {
@@ -2701,6 +2723,7 @@
               "org.sparewall.Httpd.TooLarge",
               "org.sparewall.Httpd.Unavailable",
               "org.varlink.service.ExpectedMore",
+              "org.varlink.service.ExpectedUpgrade",
               "org.varlink.service.InterfaceNotFound",
               "org.varlink.service.InvalidParameter",
               "org.varlink.service.MethodNotFound",

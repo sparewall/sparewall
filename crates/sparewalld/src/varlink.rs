@@ -42,6 +42,8 @@ where
 }
 
 #[cfg(test)]
+// zlink 0.9 deprecates the `service` macro (#255).
+#[allow(deprecated)]
 mod tests {
     use std::time::Duration;
 
@@ -112,6 +114,40 @@ mod tests {
         tokio::select! {
             r = server => panic!("server ended: {r:?}"),
             r = clients => assert!(r.unwrap().unwrap().ok),
+        }
+    }
+
+    /// A method without parameters takes a call with them empty or left
+    /// out: the web API's gateway always sends them.
+    #[tokio::test(flavor = "current_thread")]
+    async fn empty_or_omitted_parameters() {
+        #[derive(Debug, Serialize)]
+        struct Raw {
+            method: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            parameters: Option<serde_json::Value>,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = serve(listener, || Slow);
+        let clients = async {
+            let mut c = zlink::tokio::unix::connect(&path).await.unwrap();
+            for parameters in [Some(serde_json::json!({})), None] {
+                let call = zlink::Call::new(Raw {
+                    method: "org.sparewall.Test.Ping",
+                    parameters,
+                });
+                let (r, _) = c
+                    .call_method::<_, Done, TestError>(&call, vec![])
+                    .await
+                    .unwrap();
+                assert!(r.unwrap().into_parameters().unwrap().ok);
+            }
+        };
+        tokio::select! {
+            r = server => panic!("server ended: {r:?}"),
+            () = clients => {}
         }
     }
 }
