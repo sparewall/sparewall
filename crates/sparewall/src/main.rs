@@ -10,8 +10,8 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
 use sparewall_api::{
-    ApplyReply, AuthProxy, ClusterProxy, FirewallError, FirewallProxy, Generation, SecretsProxy,
-    UpgradeProxy, VpnProxy,
+    ApplyReply, AuthProxy, ClusterProxy, DiagnosticsProxy, FirewallError, FirewallProxy,
+    Generation, LogEntry, SecretsProxy, UpgradeProxy, VpnProxy,
 };
 use sparewall_config::{Format, path};
 
@@ -254,6 +254,32 @@ enum Cmd {
     },
     /// Stream coordinator events.
     Events,
+    /// Logs of Sparewall's units, oldest first, as journalctl prints them.
+    Logs {
+        /// A unit, by name or short name (`kea`, `sparewalld`), or
+        /// `selinux` for the denials of the coordinator's domain; repeat
+        /// for several (default: all of them).
+        #[arg(short, long)]
+        unit: Vec<String>,
+        /// That priority and worse: 0 to 7, or emerg to debug.
+        #[arg(short, long)]
+        priority: Option<String>,
+        /// From this time on (`-1h`, `today`, `2026-11-15 10:00`).
+        #[arg(long)]
+        since: Option<String>,
+        /// Up to this time.
+        #[arg(long)]
+        until: Option<String>,
+        /// Only entries whose message holds this text, in any case.
+        #[arg(short, long)]
+        grep: Option<String>,
+        /// How many of the newest entries (default 100, at most 1000).
+        #[arg(short = 'n', long)]
+        lines: Option<i64>,
+        /// Then keep printing new entries as they are logged.
+        #[arg(short, long)]
+        follow: bool,
+    },
     /// Schema operations.
     #[command(subcommand)]
     Schema(SchemaCmd),
@@ -737,6 +763,31 @@ fn print_value(v: &Value, output: Option<Output>) {
             _ => print!("{}", sparewall_config::format_value(v, Format::Yaml)),
         },
     }
+}
+
+const PRIORITY: [&str; 8] = [
+    "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug",
+];
+
+/// One log entry: a JSON line with `-o json` or `-o yaml` (as when
+/// following), else a line like journalctl's with its fields after it.
+fn print_entry(e: &LogEntry, output: Option<Output>) {
+    if matches!(output, Some(Output::Json) | Some(Output::Yaml)) {
+        println!("{}", serde_json::to_string(e).unwrap_or_default());
+        return;
+    }
+    println!("{}", entry_line(e));
+}
+
+fn entry_line(e: &LogEntry) -> String {
+    // 2026-11-15T17:04:49.123456Z as 2026-11-15 17:04:49.
+    let when = e.time.get(..19).unwrap_or(&e.time).replacen('T', " ", 1);
+    let prio = PRIORITY.get(e.priority as usize).copied().unwrap_or("info");
+    let mut line = format!("{when} {} {prio}: {}", e.unit, e.message);
+    for (k, v) in &e.fields {
+        line.push_str(&format!(" {k}={v}"));
+    }
+    line
 }
 
 fn short_hash(h: &str) -> &str {
@@ -1277,6 +1328,53 @@ impl App {
                 while let Some(item) = stream.next().await {
                     let ev = item??;
                     println!("{}", ev.event);
+                }
+            }
+            Cmd::Logs {
+                unit,
+                priority,
+                since,
+                until,
+                grep,
+                lines,
+                follow,
+            } => {
+                let units = (!unit.is_empty()).then_some(unit.as_slice());
+                let r = self
+                    .conn()
+                    .await?
+                    .logs(
+                        units,
+                        priority.as_deref(),
+                        since.as_deref(),
+                        until.as_deref(),
+                        grep.as_deref(),
+                        lines,
+                        None,
+                    )
+                    .await??;
+                let structured = matches!(self.output, Some(Output::Json) | Some(Output::Yaml));
+                if structured && !follow {
+                    print_value(
+                        &serde_json::to_value(&r.entries).unwrap_or_default(),
+                        self.output,
+                    );
+                } else {
+                    for e in r.entries.iter().rev() {
+                        print_entry(e, self.output);
+                    }
+                }
+                if follow {
+                    let mut conn = self.conn().await?;
+                    let stream = conn
+                        .follow_logs(units, priority.as_deref(), grep.as_deref())
+                        .await?;
+                    pin_mut!(stream);
+                    while let Some(item) = stream.next().await {
+                        if let Some(e) = item??.entry {
+                            print_entry(&e, self.output);
+                        }
+                    }
                 }
             }
             Cmd::Secret(SecretCmd::Set {
@@ -2040,8 +2138,25 @@ fn ipv6_line(st: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, fingerprint, hash_password, node_only, paste_slip};
+    use super::{Cli, LogEntry, entry_line, fingerprint, hash_password, node_only, paste_slip};
     use clap::Parser;
+
+    #[test]
+    fn a_log_entry_reads_like_journalctl() {
+        let e = LogEntry {
+            time: "2026-11-15T17:04:49.123456Z".into(),
+            usec: 0,
+            unit: "sparewalld.service".into(),
+            priority: 4,
+            identifier: Some("sparewalld".into()),
+            message: "upgrade".into(),
+            fields: [("F_STEP".to_string(), "staged".to_string())].into(),
+        };
+        assert_eq!(
+            entry_line(&e),
+            "2026-11-15 17:04:49 sparewalld.service warning: upgrade F_STEP=staged"
+        );
+    }
 
     #[test]
     fn background_check_line() {

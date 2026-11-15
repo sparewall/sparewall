@@ -677,6 +677,35 @@ rule, a changed policy) fails `nft` and `applied`, so the node reports
 `apply-failed`. To restore it, reload the generation:
 `systemctl restart sparewalld` (or apply any new change).
 
+### Reading the logs
+
+Sparewall's own units log to the journal: the coordinator, the web
+gateway and helper jobs, and the providers (Kea, Unbound, keepalived,
+conntrackd, ulogd, chrony, Prometheus, node\_exporter, log forwarding).
+`sparewall logs` reads them, without SSH, from any `viewer` up, and the
+web UI's Logs page shows the same:
+
+```shell
+sparewall logs                          # the newest 100, oldest first
+sparewall logs -u kea -u unbound -p warning --since -1h
+sparewall logs -u sparewalld -g upgrade -n 500
+sparewall logs -u selinux               # the coordinator's SELinux denials
+sparewall logs -f                       # and new entries as they come
+```
+
+- **Units** go by their name or a short one (`kea` for
+  `sparewall-kea.service`). `selinux` is the kernel's denials of the
+  coordinator's domain, which the `selinux` health check counts. The
+  rest of the system journal is not on offer: that stays with SSH.
+- **Fields:** each entry shows its structured fields after the message.
+  An upgrade's progress is in `F_STEP` and `F_DETAIL`, and a rule hit's
+  in `F_RULE` and `F_PACKET`. `-o json` prints the entries whole.
+- **Limits:** at most 1000 entries a call (`-n`), a page back at a time
+  in the UI, and at most 8 clients following at once. A read that takes
+  longer than 10 seconds is refused (503).
+- **Over the HTTP API:** `org.sparewall.Diagnostics.Logs` and
+  `FollowLogs` (with `?more=true`).
+
 ### Logged traffic
 
 `log: true` logs the packets that reach a policy's default action, match

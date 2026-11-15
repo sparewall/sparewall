@@ -798,3 +798,80 @@ pub trait MetricsProxy {
         step: &str,
     ) -> zlink::Result<Result<QueryReply, FirewallError>>;
 }
+
+// ---------------------------------------------------------------------------
+// Diagnostics (#181): read-only views of the node, for the web UI and the
+// CLI alike.
+
+pub const DIAGNOSTICS_INTERFACE: &str = "org.sparewall.Diagnostics";
+
+/// One journal entry of Sparewall's own units.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct LogEntry {
+    /// When it was logged (RFC 3339, in microseconds).
+    pub time: String,
+    /// Microseconds since the Unix epoch: `before` for the next page.
+    pub usec: i64,
+    /// The unit it came from (`sparewalld.service`), or `selinux` for a
+    /// denial of the coordinator's domain.
+    pub unit: String,
+    /// syslog priority: 0 (emerg) to 7 (debug).
+    pub priority: i64,
+    /// The program that logged it (`SYSLOG_IDENTIFIER`).
+    pub identifier: Option<String>,
+    pub message: String,
+    /// The entry's other fields, such as an upgrade's `F_STEP` and
+    /// `F_DETAIL` or a rule hit's `F_RULE`; not the journal's own
+    /// (`_PID`, `__CURSOR` and the like).
+    pub fields: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct LogsReply {
+    /// Newest first.
+    pub entries: Vec<LogEntry>,
+    /// Pass as `before` for older entries; absent when there are none.
+    pub older: Option<i64>,
+    /// The units one may ask for, `selinux` included.
+    pub units: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct LogReply {
+    /// Absent in the first reply, which says the follow has started.
+    pub entry: Option<LogEntry>,
+}
+
+/// The client side of `org.sparewall.Diagnostics`, in a module of its own:
+/// the proxy's generated code takes `Logs`'s filters as arguments.
+mod diagnostics {
+    #![allow(clippy::too_many_arguments)]
+
+    use super::{FirewallError, LogReply, LogsReply};
+
+    #[zlink::proxy("org.sparewall.Diagnostics")]
+    pub trait DiagnosticsProxy {
+        /// Entries of Sparewall's units, newest first.
+        async fn logs(
+            &mut self,
+            units: Option<&[String]>,
+            priority: Option<&str>,
+            since: Option<&str>,
+            until: Option<&str>,
+            grep: Option<&str>,
+            limit: Option<i64>,
+            before: Option<i64>,
+        ) -> zlink::Result<Result<LogsReply, FirewallError>>;
+        /// New entries as they are logged.
+        #[zlink(more, rename = "FollowLogs")]
+        async fn follow_logs(
+            &mut self,
+            units: Option<&[String]>,
+            priority: Option<&str>,
+            grep: Option<&str>,
+        ) -> zlink::Result<
+            impl futures_util::Stream<Item = zlink::Result<Result<LogReply, FirewallError>>>,
+        >;
+    }
+}
+pub use diagnostics::DiagnosticsProxy;
