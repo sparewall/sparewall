@@ -1,5 +1,9 @@
 //! `org.sparewall.Firewall` served over Varlink.
 
+// zlink 0.9 deprecates the `service` macro, for `interface` and
+// `derive(Service)`: moving to them is #255.
+#![allow(deprecated)]
+
 use std::sync::{Arc, Mutex};
 
 use futures_util::Stream;

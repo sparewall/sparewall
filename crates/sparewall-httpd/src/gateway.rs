@@ -144,29 +144,7 @@ fn credentials(req: &Request<Incoming>) -> Result<Credentials, String> {
 #[derive(Debug, Serialize)]
 struct DynMethod<'a> {
     method: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parameters: Option<&'a Value>,
-}
-
-/// Methods that take no parameters, from the description. zlink's
-/// services take such a call only without `parameters`, and any other
-/// only with it (even empty), and drop the connection otherwise. Not
-/// needed once zlink takes both (z-galaxy/zlink#275 and #324).
-fn takes_parameters(method: &str) -> bool {
-    static NONE: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-        DESCRIPTION["paths"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter(|(_, op)| {
-                op.pointer("/post/requestBody/content/application~1json/schema/properties")
-                    .and_then(Value::as_object)
-                    .is_some_and(serde_json::Map::is_empty)
-            })
-            .filter_map(|(p, _)| p.strip_prefix("/call/").map(str::to_string))
-            .collect()
-    });
-    !NONE.iter().any(|m| m == method)
+    parameters: &'a Value,
 }
 
 /// Methods that stream replies, from the description. Only these take
@@ -387,7 +365,7 @@ impl Gateway {
             let bind = json!({"token": t});
             let call = Call::new(DynMethod {
                 method: "org.sparewall.Auth.Bind",
-                parameters: Some(&bind),
+                parameters: &bind,
             });
             match conn.call_method::<_, Value, DynError>(&call, vec![]).await {
                 Ok((Ok(_), _)) => {}
@@ -406,7 +384,7 @@ impl Gateway {
 
         let call = Call::new(DynMethod {
             method,
-            parameters: (takes_parameters(method) || params != json!({})).then_some(&params),
+            parameters: &params,
         })
         .set_more(more);
         if more {
@@ -555,14 +533,6 @@ mod tests {
         assert!(!method_ok("org.sparewall.Firewall.apply"));
         assert!(!method_ok("org..Firewall.Apply"));
         assert!(!method_ok("org.sparewall.Firewall.Ap/ply"));
-    }
-
-    #[test]
-    fn methods_without_parameters() {
-        assert!(!takes_parameters("org.sparewall.Auth.ListUsers"));
-        assert!(!takes_parameters("org.sparewall.Firewall.Status"));
-        assert!(takes_parameters("org.sparewall.Firewall.History"));
-        assert!(takes_parameters("org.example.Unknown.Method"));
     }
 
     #[test]
