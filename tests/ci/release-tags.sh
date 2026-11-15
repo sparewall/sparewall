@@ -34,8 +34,14 @@ main=$(git rev-parse HEAD)
 git switch -q -c elsewhere
 git commit -q --allow-empty -m "not on main"
 elsewhere=$(git rev-parse HEAD)
+git switch -q -c release/1.1 "$main"
+git commit -q --allow-empty -m "a backport"
+backport=$(git rev-parse HEAD)
+git switch -q -c weak "$main"
+git commit -q --allow-empty -m "on a branch with weaker rules"
+weak=$(git rev-parse HEAD)
 git switch -q main
-git push -q origin main
+git push -q origin main release/1.1 weak
 
 sign() { # signer tag [commit [tagger]]: tagged as the signer, or as someone else
     GNUPGHOME=$t/$1 git -c "user.signingkey=$1@example.com" -c "user.email=${4:-$1}@example.com" \
@@ -51,20 +57,28 @@ sign stranger v1.1.0-rc2
 git tag v1.1
 sign maintainer v2.0.0 "$elsewhere"
 git tag v2.0.1-rc1 "$elsewhere"
+sign maintainer v1.1.1 "$backport"
+git tag v1.1.2-rc1 "$backport"
+sign maintainer v1.1.3 "$weak"
 git push -q origin --tags
 
 # GitHub, in place of its API: a fake gh. The GraphQL query answers with
 # the tag object and the account of its tagger's email, when that account
 # is listed in $t/verified (it has verified the email); the role query
 # answers whether the account is listed in $t/roles. $t/offline makes
-# every call fail, $t/stale makes GitHub's tag another object, and with no
-# $t/roles the role query fails.
+# every call fail ($t/nographql only the tagger's), $t/stale makes GitHub's tag another object, and with no
+# $t/roles the role query fails. A branch's rules: main and release/*
+# require pull requests and refuse force pushes, as the repository's
+# ruleset does; weak only refuses deletion; any other has none. The
+# branch is asked for as one path segment (release%2F1.1): a raw slash
+# finds no rules.
 mkdir "$t/bin"
 cat > "$t/bin/gh" <<EOF
 #!/bin/bash
 [ ! -e "$t/offline" ] || exit 1
 case "\$1 \$2" in
 "api graphql")
+    [ ! -e "$t/nographql" ] || exit 1
     for a; do case \$a in ref=*) ref=\${a#ref=};; esac; done
     read -r oid email < <(git -C "$t/origin.git" for-each-ref --format='%(objectname) %(taggeremail)' "\$ref")
     [ ! -e "$t/stale" ] || oid=0000000000000000000000000000000000000000
@@ -75,6 +89,11 @@ case "\$1 \$2" in
     [ -f "$t/roles" ] || exit 1
     u=\${2#repos/sparewall/test/collaborators/}; u=\${u%/permission}
     if tr ' ' '\\n' < "$t/roles" | grep -qxF "\$u"; then echo true; else echo false; fi;;
+"api repos/sparewall/test/rules/branches/"*)
+    case \${2#repos/sparewall/test/rules/branches/} in
+    main|release%2F*) printf '%s\\n' deletion non_fast_forward pull_request required_status_checks;;
+    weak) echo deletion;;
+    esac;;
 *) echo "unexpected: gh \$*" >&2; exit 2;;
 esac
 EOF
@@ -101,8 +120,12 @@ expect 1 v1.0.3 'not an annotated tag'                 # lightweight
 expect 0 v1.1.0-rc1 'no signature required'            # a prerelease need not be signed
 expect 0 v1.1.0-rc2 'no signature required'
 expect 1 v1.1 'not v<major>'                           # not a version
-expect 1 v2.0.0 'is not on main' "$elsewhere"          # signed, but not on main
-expect 1 v2.0.1-rc1 'is not on main' "$elsewhere"
+expect 0 v1.0.0 "is on main"                           # on a branch the ruleset covers
+expect 1 v2.0.0 'on no branch whose rules' "$elsewhere" # signed, but on no branch
+expect 1 v2.0.1-rc1 'on no branch whose rules' "$elsewhere"
+expect 0 v1.1.1 'is on release/1.1' "$backport"       # a backport, on its release branch
+expect 0 v1.1.2-rc1 'is on release/1.1' "$backport"
+expect 1 v1.1.3 'on no branch whose rules' "$weak"     # a branch that does not require PRs
 expect 1 v1.0.0 'not the commit being built' "$elsewhere"
 
 signers maintainer stranger                           # the role given
@@ -117,9 +140,12 @@ touch "$t/stale"                                      # GitHub has another tag
 expect 1 v1.0.0 'GitHub has another tag object'
 rm "$t/stale"
 touch "$t/offline"                                    # GitHub out of reach
-expect 1 v1.0.0 'cannot ask GitHub who tagged it'
-expect 0 v1.1.0-rc1 'no signature required'           # a prerelease asks nothing
+expect 1 v1.0.0 "cannot ask GitHub for main's rules"
+expect 1 v1.1.0-rc1 "cannot ask GitHub for main's rules" # a prerelease asks the rules too
 rm "$t/offline"
+touch "$t/nographql"                                  # only the tagger cannot be asked
+expect 1 v1.0.0 'cannot ask GitHub who tagged it'
+rm "$t/nographql"
 rm "$t/roles"                                         # the role cannot be read
 expect 1 v1.0.0 "cannot ask GitHub for maintainer's role"
 signers maintainer
@@ -168,6 +194,23 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT
 git -C "$t/v" tag -f v1.3.0 >/dev/null
 [ "$(cd "$t/v" && env -u GITHUB_REF "$repo/.github/version.sh")" = 1.3.0 ] \
     || fail "version.sh on an untagged build of a tagged commit"
+# A release branch cut for 1.3: main builds 1.4.0's prereleases, and the
+# branch (pushed, checked out, or a pull request's base) 1.3.1's.
+git -C "$t/v" commit -q --allow-empty -m next
+git -C "$t/v" commit -q --allow-empty -m next
+dev() { (cd "$t/v" && env -u GITHUB_REF -u GITHUB_BASE_REF -u GITHUB_REF_NAME "$@" "$repo/.github/version.sh"); }
+[[ $(dev) =~ ^1\.3\.1-dev\.2\+g ]] || fail "version.sh with no release branch: $(dev)"
+git -C "$t/v" update-ref refs/remotes/origin/release/1.3 v1.3.0
+[[ $(dev) =~ ^1\.4\.0-dev\.2\+g ]] || fail "version.sh on main past release/1.3: $(dev)"
+[[ $(dev GITHUB_REF_NAME=main GITHUB_BASE_REF=) =~ ^1\.4\.0-dev\.2\+g ]] \
+    || fail "version.sh for a push to main: $(dev GITHUB_REF_NAME=main GITHUB_BASE_REF=)"
+[[ $(dev GITHUB_REF_NAME=release/1.3 GITHUB_BASE_REF=) =~ ^1\.3\.1-dev\.2\+g ]] \
+    || fail "version.sh for a push to release/1.3: $(dev GITHUB_REF_NAME=release/1.3 GITHUB_BASE_REF=)"
+[[ $(dev GITHUB_REF_NAME=7/merge GITHUB_BASE_REF=release/1.3) =~ ^1\.3\.1-dev\.2\+g ]] \
+    || fail "version.sh for a pull request into release/1.3"
+git -C "$t/v" switch -q -c release/1.3
+[[ $(dev) =~ ^1\.3\.1-dev\.2\+g ]] || fail "version.sh on release/1.3 checked out: $(dev)"
+git -C "$t/v" switch -q main
 
 # The releases a candidate is upgrade-tested from (#166): the newest before
 # it, and the newest of the previous minor series; never a prerelease, the
