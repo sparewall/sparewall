@@ -128,6 +128,62 @@ fn reload_keeps_networkd_set_elements() {
     assert!(nft(&["list", "set", "inet", "sparewall", "wan_address"]).contains("203.0.113.77"));
 }
 
+/// An ipv6 set networkd fills survives a reload as an ipv4 one does: were
+/// it recreated, its link would be reconfigured on every change of the
+/// firewall. One whose name now holds the other family is recreated.
+#[test]
+fn reload_keeps_ipv6_set_elements() {
+    if reexec("reload_keeps_ipv6_set_elements") {
+        return;
+    }
+    let mut sys = Linux::default();
+    let v6 = example().replace(
+        "objects:\n",
+        "objects:\n  wan6: { type: ipv6, dynamic: { network: wan } }\n",
+    );
+    let v6 = v6.replacen(
+        "    dhcp_client: true\n",
+        "    dhcp_client: true\n    ipv6: { mode: dhcpv6 }\n",
+        1,
+    );
+    let (body, preserved) = rendered(&v6);
+    assert!(preserved.contains(&"wan6".to_string()), "{preserved:?}");
+    sys.nft_load(&body, &preserved).unwrap();
+    nft(&[
+        "add",
+        "element",
+        "inet",
+        "sparewall",
+        "wan6",
+        "{ 2001:db8:ffff::123 }",
+    ]);
+    let changed = v6.replace(
+        "guests->users: { action: drop, log: true }",
+        "guests->users: { action: reject }",
+    );
+    let (body2, preserved2) = rendered(&changed);
+    sys.nft_check(&body2, &preserved2).unwrap();
+    let created = sys.nft_load(&body2, &preserved2).unwrap();
+    assert!(created.is_empty(), "set already existed: {created:?}");
+    let set = nft(&["list", "set", "inet", "sparewall", "wan6"]);
+    assert!(set.contains("2001:db8:ffff::123"), "element lost:\n{set}");
+
+    // wan6 an ipv4 object now: the ipv6 set goes, an ipv4 one comes.
+    let ipv4 = changed.replace(
+        "wan6: { type: ipv6, dynamic: { network: wan } }",
+        "wan6: { type: ipv4, dynamic: { network: wan } }",
+    );
+    let (body3, preserved3) = rendered(&ipv4);
+    sys.nft_check(&body3, &preserved3).unwrap();
+    let created = sys.nft_load(&body3, &preserved3).unwrap();
+    assert_eq!(created, ["wan6"]);
+    let set = nft(&["list", "set", "inet", "sparewall", "wan6"]);
+    assert!(
+        set.contains("ipv4_addr") && !set.contains("2001:db8"),
+        "{set}"
+    );
+}
+
 #[test]
 fn bad_script_changes_nothing() {
     if reexec("bad_script_changes_nothing") {
