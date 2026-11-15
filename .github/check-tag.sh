@@ -42,7 +42,8 @@ git fetch -q --force --prune origin "refs/tags/$tag:refs/tags/$tag" "+refs/heads
 on=
 while read -r b; do
     [ "$b" != HEAD ] || continue
-    rules=$(gh api "repos/$repo/rules/branches/$b" --jq '.[].type') \
+    # One path segment: release/0.6 as release%2F0.6.
+    rules=$(gh api "repos/$repo/rules/branches/$(jq -rn --arg b "$b" '$b|@uri')" --jq '.[].type') \
         || die "cannot ask GitHub for $b's rules"
     if grep -qx pull_request <<<"$rules" && grep -qx non_fast_forward <<<"$rules"; then
         on=$b

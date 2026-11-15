@@ -69,7 +69,9 @@ git push -q origin --tags
 # every call fail ($t/nographql only the tagger's), $t/stale makes GitHub's tag another object, and with no
 # $t/roles the role query fails. A branch's rules: main and release/*
 # require pull requests and refuse force pushes, as the repository's
-# ruleset does; weak only refuses deletion; any other has none.
+# ruleset does; weak only refuses deletion; any other has none. The
+# branch is asked for as one path segment (release%2F1.1): a raw slash
+# finds no rules.
 mkdir "$t/bin"
 cat > "$t/bin/gh" <<EOF
 #!/bin/bash
@@ -89,7 +91,7 @@ case "\$1 \$2" in
     if tr ' ' '\\n' < "$t/roles" | grep -qxF "\$u"; then echo true; else echo false; fi;;
 "api repos/sparewall/test/rules/branches/"*)
     case \${2#repos/sparewall/test/rules/branches/} in
-    main|release/*) printf '%s\\n' deletion non_fast_forward pull_request required_status_checks;;
+    main|release%2F*) printf '%s\\n' deletion non_fast_forward pull_request required_status_checks;;
     weak) echo deletion;;
     esac;;
 *) echo "unexpected: gh \$*" >&2; exit 2;;
