@@ -317,8 +317,12 @@ fn method_comments(m: &Method) -> (Option<String>, More) {
                 more = More::Required;
                 false
             }
+            // zlink marks every streaming method as supporting `more`,
+            // after any comment of ours that it requires it.
             SUPPORTS_MORE => {
-                more = More::Supported;
+                if more == More::No {
+                    more = More::Supported;
+                }
                 false
             }
             _ => true,
@@ -430,6 +434,7 @@ size: ?int, tags: [string]bool)
 method Get(prefix: ?string) -> (things: []Thing)
 
 # [Requires 'more' flag]
+# [Supports 'more' flag]
 method Watch() -> (event: object)
 
 method Secret() -> ()

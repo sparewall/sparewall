@@ -6,6 +6,10 @@
 //! that socket. Only the peer can reach the tunnel address: WireGuard
 //! authenticates it and nft admits the tunnel interface alone.
 
+// zlink 0.9 deprecates the `service` macro, for `interface` and
+// `derive(Service)`: moving to them is #255.
+#![allow(deprecated)]
+
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
