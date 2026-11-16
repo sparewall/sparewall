@@ -737,6 +737,22 @@ sparewall logs -f                       # and new entries as they come
 - **Over the HTTP API:** `org.sparewall.Diagnostics.Logs` and
   `FollowLogs` (with `?more=true`).
 
+### Neighbours and routes
+
+What the node sees on its networks now, without SSH, from any `viewer`
+up, and on the web UI's Network page:
+
+```shell
+sparewall neighbours            # ARP and NDP, every network
+sparewall neighbours lan        # one network's
+sparewall routes wan -4         # every table but the local one
+```
+
+Each entry names the network its interface carries. A neighbour that
+does not answer (`FAILED`, `INCOMPLETE`) stands out, as do routes that
+are not unicast or whose link is down. Over the HTTP API:
+`org.sparewall.Diagnostics.Neighbours` and `Routes`.
+
 ### Logged traffic
 
 `log: true` logs the packets that reach a policy's default action, match
