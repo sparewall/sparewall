@@ -301,6 +301,9 @@ logging_send_syslog_msg(sparewalld_t)
 allow sparewalld_t { ping_exec_t traceroute_exec_t }:file { execute execute_no_trans getattr map open read };
 allow sparewalld_t self:icmp_socket { bind connect create getattr getopt ioctl read setopt write };
 allow sparewalld_t self:rawip_socket { bind create getattr getopt ioctl read setopt write };
+# ping drops the capabilities it does not need as it starts
+# (cap_set_proc): only lowering its own.
+allow sparewalld_t self:process setcap;
 # Reading the journal of its own units for the API (#261): journalctl,
 # run in this domain rather than a transition to its own, over the
 # persistent (/var/log/journal) and runtime (/run/log/journal) files,
