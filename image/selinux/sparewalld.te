@@ -304,6 +304,9 @@ allow sparewalld_t self:rawip_socket { bind create getattr getopt ioctl read set
 # ping drops the capabilities it does not need as it starts
 # (cap_set_proc): only lowering its own.
 allow sparewalld_t self:process setcap;
+# --from: ping binds its socket to the node's address on a network
+# (traceroute's UDP one already may).
+allow sparewalld_t node_t:{ icmp_socket rawip_socket } node_bind;
 # Reading the journal of its own units for the API (#261): journalctl,
 # run in this domain rather than a transition to its own, over the
 # persistent (/var/log/journal) and runtime (/run/log/journal) files,
