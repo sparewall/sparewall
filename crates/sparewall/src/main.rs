@@ -11,7 +11,8 @@ use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, AuthProxy, ClusterProxy, DiagnosticsProxy, FirewallError, FirewallProxy,
-    Generation, LogEntry, Neighbour, Route, RuleHit, SecretsProxy, UpgradeProxy, VpnProxy,
+    Generation, LogEntry, MetricsProxy, Neighbour, QueryReply, Route, RuleHit, SecretsProxy,
+    UpgradeProxy, VpnProxy,
 };
 use sparewall_config::{Format, path};
 
@@ -345,6 +346,9 @@ enum Cmd {
     /// API tokens for scripts, monitoring and front ends.
     #[command(subcommand)]
     Token(TokenCmd),
+    /// The node's history, kept with `metrics.mode: local`.
+    #[command(subcommand)]
+    Metrics(MetricsCmd),
     /// Named users, who log in to the web UI with a password.
     #[command(subcommand)]
     User(UserCmd),
@@ -490,6 +494,26 @@ enum SecretCmd {
     List,
     /// Remove a secret.
     Delete { name: String },
+}
+
+#[derive(Subcommand)]
+enum MetricsCmd {
+    /// Evaluate a PromQL expression: now (or at --time), or over --range.
+    Query {
+        query: String,
+        /// When to evaluate it (RFC 3339 or Unix seconds; default now).
+        #[arg(long, conflicts_with = "range")]
+        time: Option<String>,
+        /// A series over this long a window up to --end: 30m, 6h, 7d.
+        #[arg(long)]
+        range: Option<String>,
+        /// Between points (default: the range / 120, at least 15s).
+        #[arg(long, requires = "range")]
+        step: Option<String>,
+        /// The window's end (RFC 3339 or Unix seconds; default now).
+        #[arg(long, requires = "range")]
+        end: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -940,6 +964,82 @@ fn entry_line(e: &LogEntry) -> String {
         line.push_str(&format!(" {k}={v}"));
     }
     line
+}
+
+/// The longest range a query takes: ten years, longer than any history.
+const MAX_RANGE: u64 = 10 * 366 * 86_400;
+
+/// `30s`, `5m`, `6h`, `7d`, `2w`, or plain seconds, as seconds; at most
+/// [`MAX_RANGE`].
+fn duration_secs(s: &str) -> Option<u64> {
+    let (n, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+    let n: u64 = n.parse().ok()?;
+    let m = match unit {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        "w" => 604_800,
+        _ => return None,
+    };
+    n.checked_mul(m).filter(|v| (1..=MAX_RANGE).contains(v))
+}
+
+/// A series' labels as Prometheus writes them: `{device="wan0"}`.
+fn labels(metric: &Value) -> String {
+    let parts: Vec<String> = metric
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| format!("{k}={}", serde_json::to_string(v).unwrap_or_default()))
+        .collect();
+    format!("{{{}}}", parts.join(", "))
+}
+
+/// A sample `[time, "value"]` as `time  value`, the time in UTC.
+fn sample(v: &Value) -> Option<String> {
+    let t = v.get(0)?.as_f64()?;
+    let value = v.get(1)?.as_str()?;
+    let when = jiff::Timestamp::from_second(t as i64)
+        .ok()?
+        .strftime("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    Some(format!("{when}  {value}"))
+}
+
+/// A query's result as text: a vector's series with their value, a
+/// matrix's with their points, a scalar or a string.
+fn query_table(r: &QueryReply) -> String {
+    let mut out = String::new();
+    match r.result_type.as_str() {
+        "vector" | "matrix" => {
+            let rows = r.result.as_array().cloned().unwrap_or_default();
+            if rows.is_empty() {
+                out.push_str("(no data)\n");
+            }
+            for s in &rows {
+                let l = labels(&s["metric"]);
+                if let Some(v) = s.get("value") {
+                    out.push_str(&format!("{l}  {}\n", sample(v).unwrap_or_default()));
+                } else {
+                    out.push_str(&format!("{l}\n"));
+                    for v in s["values"].as_array().into_iter().flatten() {
+                        if let Some(line) = sample(v) {
+                            out.push_str(&format!("  {line}\n"));
+                        }
+                    }
+                }
+            }
+        }
+        _ => out.push_str(&format!(
+            "{}\n",
+            sample(&r.result).unwrap_or_else(|| r.result.to_string())
+        )),
+    }
+    for w in &r.warnings {
+        out.push_str(&format!("warning: {w}\n"));
+    }
+    out
 }
 
 fn short_hash(h: &str) -> &str {
@@ -1704,6 +1804,67 @@ impl App {
                     r.info.name, r.info.role
                 ));
             }
+            Cmd::Metrics(MetricsCmd::Query {
+                query,
+                time,
+                range,
+                step,
+                end,
+            }) => {
+                let mut conn = self.conn().await?;
+                let r = match &range {
+                    None => conn.query(&query, time.as_deref()).await?,
+                    Some(range) => {
+                        let span = duration_secs(range).ok_or_else(|| {
+                            Fail::usage(format!("--range: {range:?} is not a duration such as 1h, of at most ten years"))
+                        })?;
+                        let end_s = match &end {
+                            Some(e) => e.clone(),
+                            None => std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |d| d.as_secs())
+                                .to_string(),
+                        };
+                        let start_s = match end_s.parse::<u64>() {
+                            Ok(e) => e.saturating_sub(span).to_string(),
+                            Err(_) => {
+                                let e: jiff::Timestamp = end_s.parse().map_err(|_| {
+                                    Fail::usage(format!(
+                                        "--end: {end_s:?} is not RFC 3339 or Unix seconds"
+                                    ))
+                                })?;
+                                // A span over ten years is refused by
+                                // duration_secs, so this fits an i64.
+                                e.checked_sub(jiff::SignedDuration::from_secs(span as i64))
+                                    .map_err(|_| {
+                                        Fail::usage(format!(
+                                            "--range: {range} before {end_s} is out of range"
+                                        ))
+                                    })?
+                                    .to_string()
+                            }
+                        };
+                        let step = match &step {
+                            Some(s) => s.clone(),
+                            None => format!("{}s", (span / 120).max(15)),
+                        };
+                        conn.query_range(&query, &start_s, &end_s, &step).await?
+                    }
+                };
+                let r = r.map_err(|e| match e {
+                    FirewallError::NotSupported { .. } => Fail {
+                        code: 1,
+                        message: format!("{e}. History needs metrics.mode: local (sparewall set metrics.mode=local)"),
+                    },
+                    e => Fail::from(e),
+                })?;
+                match self.output {
+                    Some(Output::Json) | Some(Output::Yaml) => {
+                        print_value(&serde_json::to_value(&r).unwrap_or_default(), self.output)
+                    }
+                    _ => print!("{}", query_table(&r)),
+                }
+            }
             Cmd::Token(TokenCmd::List) => {
                 let r = self.conn().await?.list_tokens().await??;
                 match self.output {
@@ -2382,10 +2543,55 @@ fn ipv6_line(st: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, LogEntry, Neighbour, Route, RuleHit, entry_line, fingerprint, hash_password, hit_line,
-        neighbour_table, node_only, paste_slip, route_table,
+        Cli, LogEntry, Neighbour, QueryReply, Route, RuleHit, duration_secs, entry_line,
+        fingerprint, hash_password, hit_line, neighbour_table, node_only, paste_slip, query_table,
+        route_table,
     };
     use clap::Parser;
+
+    #[test]
+    fn durations_for_a_range() {
+        assert_eq!(duration_secs("90"), Some(90));
+        assert_eq!(duration_secs("30s"), Some(30));
+        assert_eq!(duration_secs("6h"), Some(21_600));
+        assert_eq!(duration_secs("7d"), Some(604_800));
+        assert_eq!(duration_secs("0h"), None);
+        assert_eq!(duration_secs("1y"), None);
+        assert_eq!(duration_secs("h"), None);
+        // Past ten years, or past what a u64 holds: refused, not wrapped.
+        assert_eq!(duration_secs("520w"), Some(314_496_000));
+        assert_eq!(duration_secs("600w"), None);
+        assert_eq!(duration_secs("99999999999999999999d"), None);
+        assert_eq!(duration_secs("9223372036854775808"), None);
+    }
+
+    #[test]
+    fn query_results_as_text() {
+        let v = QueryReply {
+            result_type: "vector".into(),
+            result: serde_json::json!([{"metric": {"device": "wan0"}, "value": [1700000000.0, "42"]}]),
+            warnings: vec![],
+        };
+        assert_eq!(
+            query_table(&v),
+            "{device=\"wan0\"}  2023-11-14 22:13:20  42\n"
+        );
+        let m = QueryReply {
+            result_type: "matrix".into(),
+            result: serde_json::json!([{"metric": {}, "values": [[1700000000.0, "1"], [1700000060.0, "2"]]}]),
+            warnings: vec!["a warning".into()],
+        };
+        assert_eq!(
+            query_table(&m),
+            "{}\n  2023-11-14 22:13:20  1\n  2023-11-14 22:14:20  2\nwarning: a warning\n"
+        );
+        let e = QueryReply {
+            result_type: "vector".into(),
+            result: serde_json::json!([]),
+            warnings: vec![],
+        };
+        assert_eq!(query_table(&e), "(no data)\n");
+    }
 
     #[test]
     fn a_hit_reads_as_its_time_rule_and_packet() {
