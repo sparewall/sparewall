@@ -108,6 +108,8 @@ pub fn needed(method: &str) -> Option<Need> {
         // Read-only diagnostics (#181).
         | "org.sparewall.Diagnostics.Logs"
         | "org.sparewall.Diagnostics.FollowLogs"
+        | "org.sparewall.Diagnostics.Hits"
+        | "org.sparewall.Diagnostics.FollowHits"
         | "org.sparewall.Diagnostics.Neighbours"
         | "org.sparewall.Diagnostics.Routes" => Viewer,
         "org.sparewall.Firewall.Apply"
