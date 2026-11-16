@@ -13,8 +13,8 @@ use sparewall_api::{
     ExportReply, FailoverReply, FirewallError, GenerationReply, HealthCheck, HealthReply,
     HistoryReply, LogEntry, LogReply, LoginReply, LogsReply, Neighbour, NeighboursReply,
     QueryReply, Route, RoutesReply, SecretInfo, SecretListReply, SecretSetReply, StatusReply,
-    TokenCreateReply, TokenInfo, TokenListReply, UpgradeCheckReply, UpgradeStartReply, UserInfo,
-    UserListReply, ValidateReply, VpnConfigReply,
+    TokenCreateReply, TokenInfo, TokenListReply, ToolReply, UpgradeCheckReply, UpgradeStartReply,
+    UserInfo, UserListReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
@@ -210,6 +210,47 @@ impl Firewall {
         let w = window.unwrap_or(0).clamp(0, 24 * 3600) as u32;
         with_core(&self.core, &self.events, move |c| c.activate_staged(id, w)).await
     }
+}
+
+type ToolStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<Reply<ToolReply>, FirewallError>> + Send>>;
+
+/// A tool's run as replies: with `more`, a line each as it comes, then
+/// the exit status; without, all of it in one.
+fn tool_replies(run: Result<crate::tools::Run, FirewallError>, more: bool) -> ToolStream {
+    use crate::tools::Out;
+    let run = match run {
+        Err(e) => return Box::pin(tokio_stream::once(Err(e))),
+        Ok(r) => r,
+    };
+    if more {
+        return Box::pin(run.map(|o| {
+            o.map(|o| match o {
+                Out::Line(l) => Reply::new(Some(ToolReply {
+                    lines: vec![l],
+                    exit: None,
+                }))
+                .set_continues(Some(true)),
+                Out::Exit(c) => Reply::new(Some(ToolReply {
+                    lines: vec![],
+                    exit: Some(c),
+                }))
+                .set_continues(Some(false)),
+            })
+        }));
+    }
+    Box::pin(futures_util::stream::once(async move {
+        let mut lines = Vec::new();
+        let mut exit = None;
+        let mut run = run;
+        while let Some(o) = futures_util::StreamExt::next(&mut run).await {
+            match o? {
+                Out::Line(l) => lines.push(l),
+                Out::Exit(c) => exit = Some(c),
+            }
+        }
+        Ok(Reply::new(Some(ToolReply { lines, exit })))
+    }))
 }
 
 /// Run a coordinator call off the async thread, then publish its events.
@@ -1188,9 +1229,89 @@ where
         out.truncate(crate::network::MAX_ENTRIES);
         Ok(RoutesReply { routes: out, cut })
     }
+
+    /// Ping `host` from the node: from its own address on `network` if
+    /// named, `count` times (default 4, at most 10). With `more`, each
+    /// line as it comes, then the exit status.
+    /// [Supports 'more' flag]
+    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Ping", more)]
+    async fn diagnostics_ping(
+        &mut self,
+        more: bool,
+        host: String,
+        network: Option<String>,
+        count: Option<i64>,
+    ) -> impl Stream<Item = Result<Reply<ToolReply>, FirewallError>> + Unpin + 'static {
+        let run = match crate::tools::Target::parse(&host, "host") {
+            Err(e) => Err(e),
+            Ok(t) => match self.tool_source(network.as_deref(), &t).await {
+                Err(e) => Err(e),
+                Ok(src) => crate::tools::ping_args(&t, src.as_ref(), count)
+                    .and_then(|a| crate::tools::run("ping", a, crate::tools::PING_LIMIT)),
+            },
+        };
+        tool_replies(run, more)
+    }
+
+    /// Trace the route to `host` from the node, from its own address on
+    /// `network` if named: numeric, one probe a hop, at most 20 hops.
+    /// [Supports 'more' flag]
+    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Traceroute", more)]
+    async fn diagnostics_traceroute(
+        &mut self,
+        more: bool,
+        host: String,
+        network: Option<String>,
+    ) -> impl Stream<Item = Result<Reply<ToolReply>, FirewallError>> + Unpin + 'static {
+        let run = match crate::tools::Target::parse(&host, "host") {
+            Err(e) => Err(e),
+            Ok(t) => match self.tool_source(network.as_deref(), &t).await {
+                Err(e) => Err(e),
+                Ok(src) => crate::tools::run(
+                    "traceroute",
+                    crate::tools::traceroute_args(&t, src.as_ref()),
+                    crate::tools::TRACEROUTE_LIMIT,
+                ),
+            },
+        };
+        tool_replies(run, more)
+    }
+
+    /// Look `name` up from the node: a `record` type (default A; an
+    /// address in reverse), through `server` or the node's own resolver.
+    /// [Supports 'more' flag]
+    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Lookup", more)]
+    async fn diagnostics_lookup(
+        &mut self,
+        more: bool,
+        name: String,
+        record: Option<String>,
+        server: Option<String>,
+    ) -> impl Stream<Item = Result<Reply<ToolReply>, FirewallError>> + Unpin + 'static {
+        let run = crate::tools::Target::parse(&name, "name")
+            .and_then(|t| crate::tools::lookup_args(&t, record.as_deref(), server.as_deref()))
+            .and_then(|a| crate::tools::run("dig", a, crate::tools::LOOKUP_LIMIT));
+        tool_replies(run, more)
+    }
 }
 
 impl Firewall {
+    /// Where a tool's run leaves from, for `network`.
+    async fn tool_source(
+        &self,
+        network: Option<&str>,
+        target: &crate::tools::Target,
+    ) -> Result<Option<crate::tools::Source>, FirewallError> {
+        let Some(network) = network.map(str::to_string) else {
+            return Ok(None);
+        };
+        let (doc, node) = with_core(&self.core, &self.events, |c| {
+            Ok((c.active_document()?, c.node().to_string()))
+        })
+        .await?;
+        crate::tools::source(doc.as_ref(), &node, Some(&network), target)
+    }
+
     /// Each interface's network, from the live document, and the
     /// interfaces of `network` when one is asked for.
     async fn network_filter(

@@ -8,6 +8,8 @@ import { MatTabsModule } from '@angular/material/tabs';
 
 import { ApiClient, CallFailed } from '../../api/api-client';
 import { Schemas } from '../../api/api.model';
+import { Session } from '../../core/session';
+import { ToolsPanel } from './tools-panel';
 
 export type Neighbour = Schemas['org.sparewall.Diagnostics.Neighbour'];
 export type Route = Schemas['org.sparewall.Diagnostics.Route'];
@@ -25,6 +27,7 @@ const BAD = ['FAILED', 'INCOMPLETE'];
     MatIconModule,
     MatSelectModule,
     MatTabsModule,
+    ToolsPanel,
   ],
   template: `
     <div class="page-header">
@@ -132,6 +135,11 @@ const BAD = ['FAILED', 'INCOMPLETE'];
           <p class="note">More routes than one reply holds: the rest are left out.</p>
         }
       </mat-tab>
+      @if (session.can('operator')) {
+        <mat-tab label="Tools">
+          <app-tools-panel [networks]="networks()" />
+        </mat-tab>
+      }
     </mat-tab-group>
   `,
   styles: `
@@ -197,6 +205,7 @@ const BAD = ['FAILED', 'INCOMPLETE'];
 })
 export class Network implements OnInit {
   private readonly api = inject(ApiClient);
+  protected readonly session = inject(Session);
 
   protected network = '';
   protected readonly neighbours = signal<Neighbour[]>([]);

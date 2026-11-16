@@ -21,6 +21,7 @@ mod schedule;
 mod seed;
 mod selinux;
 mod service;
+mod tools;
 mod tunnels;
 mod update;
 mod upgrade;

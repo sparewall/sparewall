@@ -246,6 +246,19 @@ at fw1 'sudo sparewall routes wan -4 -o json' \
 if at fw1 'sudo sparewall neighbours nosuchnet' >/dev/null 2>&1; then
     fail "sparewall neighbours took a network the document does not have"
 fi
+# Tools from the node (#264): ping and traceroute to the admin from the
+# node's own LAN address; a host that is no host is refused.
+at fw1 'sudo sparewall ping 192.168.1.10 --from lan -c 2' > tool.txt \
+    || fail "sparewall ping from lan failed: $(cat tool.txt)"
+grep -q '2 received' tool.txt || fail "sparewall ping got no replies: $(cat tool.txt)"
+grep -q ') from 192\.168\.1\.1 :' tool.txt \
+    || fail "sparewall ping --from lan did not leave from 192.168.1.1: $(cat tool.txt)"
+at fw1 'sudo sparewall traceroute 192.168.1.10 --from lan' > tool.txt \
+    || fail "sparewall traceroute failed: $(cat tool.txt)"
+grep -q '192\.168\.1\.10' tool.txt || fail "sparewall traceroute did not reach the admin: $(cat tool.txt)"
+if at fw1 "sudo sparewall ping 'x;reboot'" >/dev/null 2>&1; then
+    fail "sparewall ping took a host that is no host"
+fi
 
 log "management.sources: the admin's SSH only; the rest of the LAN still pings the node"
 ns tother ping -c 2 -W 2 192.168.1.2 >/dev/null || fail "another LAN host cannot ping the node (lan->self allows it)"
@@ -452,6 +465,8 @@ grep -q "Recursive DNS server *: *$ll" ra.txt || fail "the RA names no DNS serve
 grep -q "DNS search list *: *home.arpa" ra.txt || fail "the RA names no search domain: $(cat ra.txt)"
 seen=$(ns tclient dig +short +time=3 +tries=2 "@$ll%eth0" nas.home.arpa A)
 [ "$seen" = 192.168.1.50 ] || fail "the node's resolver over IPv6 answered '$seen' for nas.home.arpa"
+at fw1 'sudo sparewall lookup nas.home.arpa A --server 192.168.1.1' | grep -q '192\.168\.1\.50' \
+    || fail "sparewall lookup does not find nas.home.arpa (#264)"
 ns tclient ping -6 -c 2 -W 2 2001:db8:ffff::1 >/dev/null || fail "the client cannot reach the ISP over IPv6"
 lan_status_prefix() { [ "$(status fw1 | jq -c .ipv6.lan.prefixes)" = "[\"$1/64\"]" ]; }
 lan_status_prefix "$p1" || fail "status does not show the LAN advertising $p1/64: $(status fw1 | jq -c .ipv6.lan)"

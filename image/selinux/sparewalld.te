@@ -76,6 +76,7 @@ gen_require(`
 	type chronyd_unit_file_t, keepalived_unit_file_t, conntrackd_unit_file_t;
 	type syslogd_t, syslogd_unit_file_t, syslogd_var_run_t, var_log_t;
 	type journalctl_exec_t;
+	type ping_exec_t, traceroute_exec_t;
 	type sshd_t, sshd_unit_file_t;
 	type http_port_t, unreserved_port_t, node_t;
 	class service { start stop status reload };
@@ -92,7 +93,8 @@ gen_require(`
 # it logs and takes another path the suites do not test. net_admin: nft,
 # ip and its own netlink requests; the base policy hides its denial, so
 # the suites saw it only once dontaudit rules were off (full_audit).
-allow sparewalld_t self:capability { chown dac_override fowner net_admin net_bind_service sys_admin };
+# net_raw: ping from the node (#264), where it takes a raw socket.
+allow sparewalld_t self:capability { chown dac_override fowner net_admin net_bind_service net_raw sys_admin };
 allow sparewalld_t self:tcp_socket { accept bind connect create getattr getopt listen setopt shutdown read write };
 allow sparewalld_t self:unix_dgram_socket { connect create getattr getopt ioctl setattr setopt read write };
 allow sparewalld_t self:unix_stream_socket connectto;
@@ -107,7 +109,7 @@ allow sparewalld_t self:netlink_audit_socket { bind create getattr read setopt }
 allow sparewalld_t self:netlink_kobject_uevent_socket { bind create getattr getopt setopt read };
 # The reach probes: an empty datagram to each address makes the kernel
 # resolve it, from the network's own address.
-allow sparewalld_t self:udp_socket { bind create getattr setopt write };
+allow sparewalld_t self:udp_socket { bind connect create getattr getopt ioctl read setopt write };
 allow sparewalld_t node_t:udp_socket node_bind;
 
 # The API and the sync link listen; backups, ACME and the peer are
@@ -292,6 +294,13 @@ allow sparewalld_t unconfined_t:file { getattr open read };
 #
 
 logging_send_syslog_msg(sparewalld_t)
+# Network tools for the API (#264), run in this domain, as journalctl is
+# (NoNewPrivileges would need a bounded transition to their own): ping
+# over ICMP sockets (raw, with net_raw, where ping_group_range leaves it
+# out), traceroute over UDP, dig (bin_t) over UDP and TCP.
+allow sparewalld_t { ping_exec_t traceroute_exec_t }:file { execute execute_no_trans getattr map open read };
+allow sparewalld_t self:icmp_socket { bind connect create getattr getopt ioctl read setopt write };
+allow sparewalld_t self:rawip_socket { bind create getattr getopt ioctl read setopt write };
 # Reading the journal of its own units for the API (#261): journalctl,
 # run in this domain rather than a transition to its own, over the
 # persistent (/var/log/journal) and runtime (/run/log/journal) files,
