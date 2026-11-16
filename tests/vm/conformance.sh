@@ -32,7 +32,9 @@ dhcp_script() {
 #!/bin/sh
 case "$1" in
 bound|renew)
-    ip addr flush dev "$interface"
+    # IPv4 only: the client's link-local IPv6 address is what it reaches
+    # its IPv6 gateway (fe80::1) from (#272).
+    ip -4 addr flush dev "$interface"
     ip addr add "$ip/${mask:-24}" dev "$interface"
     [ -n "$router" ] && ip route replace default via "${router%% *}"
     echo "$ip" > "/tmp/lease-$interface-$(cat /proc/sys/kernel/hostname 2>/dev/null)"
