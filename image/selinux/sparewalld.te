@@ -74,7 +74,8 @@ gen_require(`
 	type container_t, container_file_t, container_var_lib_t;
 	type systemd_generator_unit_file_t;
 	type chronyd_unit_file_t, keepalived_unit_file_t, conntrackd_unit_file_t;
-	type syslogd_t, syslogd_unit_file_t;
+	type syslogd_t, syslogd_unit_file_t, syslogd_var_run_t, var_log_t;
+	type journalctl_exec_t;
 	type sshd_t, sshd_unit_file_t;
 	type http_port_t, unreserved_port_t, node_t;
 	class service { start stop status reload };
@@ -291,6 +292,13 @@ allow sparewalld_t unconfined_t:file { getattr open read };
 #
 
 logging_send_syslog_msg(sparewalld_t)
+# Reading the journal of its own units for the API (#261): journalctl,
+# run in this domain rather than a transition to its own, over the
+# persistent (/var/log/journal) and runtime (/run/log/journal) files,
+# following them with inotify.
+allow sparewalld_t journalctl_exec_t:file { execute execute_no_trans getattr map open read };
+allow sparewalld_t { var_log_t syslogd_var_run_t }:dir { getattr open read search watch };
+allow sparewalld_t { var_log_t syslogd_var_run_t }:file { getattr map open read };
 # systemd's journal and notify sockets.
 allow sparewalld_t kernel_t:unix_dgram_socket sendto;
 allow sparewalld_t systemd_networkd_var_run_t:dir search;

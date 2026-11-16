@@ -2805,6 +2805,56 @@
         ],
         "type": "object"
       },
+      "org.sparewall.Diagnostics.LogEntry": {
+        "additionalProperties": false,
+        "description": "One journal entry of Sparewall's own units.",
+        "properties": {
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The entry's other fields, such as an upgrade's `F_STEP` and `F_DETAIL` or a rule hit's `F_RULE`; not the journal's own (`_PID`, `__CURSOR` and the like).",
+            "type": "object"
+          },
+          "identifier": {
+            "description": "The program that logged it (`SYSLOG_IDENTIFIER`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "priority": {
+            "description": "syslog priority: 0 (emerg) to 7 (debug).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "time": {
+            "description": "When it was logged (RFC 3339, in microseconds).",
+            "type": "string"
+          },
+          "unit": {
+            "description": "The unit it came from (`sparewalld.service`), or `selinux` for a denial of the coordinator's domain.",
+            "type": "string"
+          },
+          "usec": {
+            "description": "Microseconds since the Unix epoch.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "time",
+          "usec",
+          "unit",
+          "priority",
+          "message",
+          "fields"
+        ],
+        "type": "object"
+      },
       "org.sparewall.Firewall.Generation": {
         "additionalProperties": false,
         "description": "One configuration generation.",
@@ -3481,6 +3531,223 @@
           "org.sparewall.Cluster"
         ],
         "x-sparewall-role": "operator"
+      }
+    },
+    "/call/org.sparewall.Diagnostics.FollowLogs": {
+      "post": {
+        "description": "New entries of Sparewall's units as they are logged, filtered as `Logs` is, until the caller goes.",
+        "operationId": "Diagnostics.FollowLogs",
+        "parameters": [
+          {
+            "description": "Stream replies as an RFC 7464 JSON text sequence (application/json-seq) until the connection closes.",
+            "in": "query",
+            "name": "more",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "grep": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "priority": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "units": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "entry": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/org.sparewall.Diagnostics.LogEntry"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Absent in the first reply, which says the follow has started."
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "application/json-seq": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "entry": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/org.sparewall.Diagnostics.LogEntry"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Absent in the first reply, which says the follow has started."
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "New entries of Sparewall's units as they are logged, filtered as `Logs` is, until the caller goes.",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Diagnostics.Logs": {
+      "post": {
+        "description": "Entries of Sparewall's units (and `selinux`, the denials of the coordinator's domain), newest first. `before`, a reply's `older` as it is, pages back; `priority` keeps that one and worse; `grep` matches the message's text, in any case.",
+        "operationId": "Diagnostics.Logs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "before": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "grep": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "limit": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "priority": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "since": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "units": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  },
+                  "until": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "entries": {
+                      "description": "Newest first.",
+                      "items": {
+                        "$ref": "#/components/schemas/org.sparewall.Diagnostics.LogEntry"
+                      },
+                      "type": "array"
+                    },
+                    "older": {
+                      "description": "Pass as `before`, as it is, for older entries; absent when there are none.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "units": {
+                      "description": "The units one may ask for, `selinux` included.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "entries",
+                    "units"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Entries of Sparewall's units (and `selinux`, the denials of the coordinator's domain), newest first.",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "viewer"
       }
     },
     "/call/org.sparewall.Firewall.AckHealth": {
@@ -5222,6 +5489,9 @@
     },
     {
       "name": "org.sparewall.Metrics"
+    },
+    {
+      "name": "org.sparewall.Diagnostics"
     }
   ]
 }

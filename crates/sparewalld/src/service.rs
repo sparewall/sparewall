@@ -11,9 +11,9 @@ use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, BackupReply, BindReply, CheckBackupPasswordReply, ConfigReply, Empty, EventReply,
     ExportReply, FailoverReply, FirewallError, GenerationReply, HealthCheck, HealthReply,
-    HistoryReply, LoginReply, QueryReply, SecretInfo, SecretListReply, SecretSetReply, StatusReply,
-    TokenCreateReply, TokenInfo, TokenListReply, UpgradeCheckReply, UpgradeStartReply, UserInfo,
-    UserListReply, ValidateReply, VpnConfigReply,
+    HistoryReply, LogEntry, LogReply, LoginReply, LogsReply, QueryReply, SecretInfo,
+    SecretListReply, SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply,
+    UpgradeCheckReply, UpgradeStartReply, UserInfo, UserListReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
@@ -1081,6 +1081,63 @@ where
             ("step", &step),
         ];
         crate::history::query("/api/v1/query_range", &p).await
+    }
+
+    /// Entries of Sparewall's units (and `selinux`, the denials of the
+    /// coordinator's domain), newest first. `before`, a reply's `older`
+    /// as it is, pages back; `priority` keeps that one and worse; `grep`
+    /// matches the message's text, in any case.
+    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Logs", types = [LogEntry])]
+    #[allow(clippy::too_many_arguments)]
+    async fn diagnostics_logs(
+        &mut self,
+        units: Option<Vec<String>>,
+        priority: Option<String>,
+        since: Option<String>,
+        until: Option<String>,
+        grep: Option<String>,
+        limit: Option<i64>,
+        before: Option<String>,
+    ) -> Result<LogsReply, FirewallError> {
+        let q = crate::journal::Query::new(units, priority, since, until, grep, limit, before)?;
+        crate::journal::logs(&q).await
+    }
+
+    /// New entries of Sparewall's units as they are logged, filtered as
+    /// `Logs` is, until the caller goes.
+    /// [Requires 'more' flag]
+    #[zlink(interface = "org.sparewall.Diagnostics", rename = "FollowLogs", more)]
+    async fn diagnostics_follow_logs(
+        &mut self,
+        more: bool,
+        units: Option<Vec<String>>,
+        priority: Option<String>,
+        grep: Option<String>,
+    ) -> impl Stream<Item = Result<Reply<LogReply>, FirewallError>> + Unpin + 'static {
+        let follow = if more {
+            crate::journal::Query::new(units, priority, None, None, grep, None, None)
+                .and_then(|q| crate::journal::follow(&q))
+        } else {
+            Err(FirewallError::NotSupported {
+                message: "FollowLogs streams: call it with more".into(),
+            })
+        };
+        let s: std::pin::Pin<
+            Box<dyn Stream<Item = Result<Reply<LogReply>, FirewallError>> + Send>,
+        > = match follow {
+            Err(e) => Box::pin(tokio_stream::once(Err(e))),
+            // A first reply with no entry says the follow has started,
+            // as a quiet journal may have none for a long while.
+            Ok(entries) => {
+                let started = Reply::new(Some(LogReply { entry: None })).set_continues(Some(true));
+                Box::pin(tokio_stream::once(Ok(started)).chain(entries.map(|e| {
+                    e.map(|entry| {
+                        Reply::new(Some(LogReply { entry: Some(entry) })).set_continues(Some(true))
+                    })
+                })))
+            }
+        };
+        s
     }
 }
 

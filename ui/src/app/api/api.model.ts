@@ -789,6 +789,22 @@ export interface Schemas {
     "role": string;
     "updated": string;
   };
+  /** One journal entry of Sparewall's own units. */
+  "org.sparewall.Diagnostics.LogEntry": {
+    /** The entry's other fields, such as an upgrade's `F_STEP` and `F_DETAIL` or a rule hit's `F_RULE`; not the journal's own (`_PID`, `__CURSOR` and the like). */
+    "fields": Record<string, string>;
+    /** The program that logged it (`SYSLOG_IDENTIFIER`). */
+    "identifier"?: string | null;
+    "message": string;
+    /** syslog priority: 0 (emerg) to 7 (debug). */
+    "priority": number;
+    /** When it was logged (RFC 3339, in microseconds). */
+    "time": string;
+    /** The unit it came from (`sparewalld.service`), or `selinux` for a denial of the coordinator's domain. */
+    "unit": string;
+    /** Microseconds since the Unix epoch. */
+    "usec": number;
+  };
   /** One configuration generation. */
   "org.sparewall.Firewall.Generation": {
     /** When it was created (RFC 3339). */
@@ -934,6 +950,42 @@ export interface Calls {
       "message": string;
     };
     role: "operator";
+    streams: false;
+  };
+  /** New entries of Sparewall's units as they are logged, filtered as `Logs` is, until the caller goes. */
+  "org.sparewall.Diagnostics.FollowLogs": {
+    parameters: {
+      "grep"?: string | null;
+      "priority"?: string | null;
+      "units"?: Array<string> | null;
+    };
+    reply: {
+      /** Absent in the first reply, which says the follow has started. */
+      "entry"?: Schemas["org.sparewall.Diagnostics.LogEntry"] | null;
+    };
+    role: "viewer";
+    streams: true;
+  };
+  /** Entries of Sparewall's units (and `selinux`, the denials of the coordinator's domain), newest first. `before`, a reply's `older` as it is, pages back; `priority` keeps that one and worse; `grep` matches the message's text, in any case. */
+  "org.sparewall.Diagnostics.Logs": {
+    parameters: {
+      "before"?: string | null;
+      "grep"?: string | null;
+      "limit"?: number | null;
+      "priority"?: string | null;
+      "since"?: string | null;
+      "units"?: Array<string> | null;
+      "until"?: string | null;
+    };
+    reply: {
+      /** Newest first. */
+      "entries": Array<Schemas["org.sparewall.Diagnostics.LogEntry"]>;
+      /** Pass as `before`, as it is, for older entries; absent when there are none. */
+      "older"?: string | null;
+      /** The units one may ask for, `selinux` included. */
+      "units": Array<string>;
+    };
+    role: "viewer";
     streams: false;
   };
   /** Acknowledge a check that stays degraded until someone has seen it (`selinux`). */

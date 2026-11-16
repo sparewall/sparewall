@@ -356,6 +356,31 @@ $(vm 'sudo journalctl -b -u sparewalld -o verbose --no-pager | grep F_DETAIL | t
 done
 sleep 10
 [ "$(vm 'cat /proc/sys/kernel/random/boot_id')" = "$boot_id" ] || fail "a failed upgrade rebooted the node"
+# The same entries through the API's logs (#261), its fields included:
+# a viewer over HTTPS, and the CLI.
+vm "curl -sfk -X POST -H 'Authorization: Bearer $WEB' -H 'Content-Type: application/json' \
+    -d '{\"units\": [\"sparewalld\"], \"limit\": 500}' https://localhost/call/org.sparewall.Diagnostics.Logs" \
+    | jq -e '[.entries[] | select(.fields.F_STEP == "failed")] | length > 0' >/dev/null \
+    || fail "a viewer's Diagnostics.Logs does not show the upgrade's failed step"
+vm 'sudo sparewall logs -u sparewalld -n 500' | grep -q 'F_STEP=failed' \
+    || fail "sparewall logs does not show the upgrade's failed step"
+vm 'sudo sparewall logs -u selinux -n 5 -o json' | jq -e 'type == "array"' >/dev/null \
+    || fail "sparewall logs cannot read the coordinator's denials"
+if vm 'sudo sparewall logs -u sshd -n 1' >/dev/null 2>&1; then
+    fail "sparewall logs read a unit outside Sparewall's"
+fi
+# Following: a token created meanwhile is logged by sparewalld.
+vm "timeout 20 curl -sNk -X POST -H 'Authorization: Bearer $WEB' -H 'Content-Type: application/json' \
+    -d '{\"units\": [\"sparewalld\"]}' 'https://localhost/call/org.sparewall.Diagnostics.FollowLogs?more=true' \
+    > /tmp/follow.out 2>&1 &"
+sleep 5
+vm 'sudo sparewall token create ci-follow --role monitor -q' >/dev/null
+deadline=$((SECONDS + 15))
+until vm 'grep -q "created API token" /tmp/follow.out'; do
+    [ $SECONDS -lt $deadline ] || fail "following the logs did not show a new entry: $(vm 'cat /tmp/follow.out')"
+    sleep 1
+done
+vm 'sudo sparewall token revoke ci-follow; rm -f /tmp/follow.out'
 vm 'sudo sparewall token revoke ci-upgrade'
 vm 'sudo sparewall token revoke ci-web'
 [ "$(status -X POST -H "'Authorization: Bearer $WEB'" https://localhost/call/org.sparewall.Firewall.Status)" = 401 ] \

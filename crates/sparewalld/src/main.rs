@@ -10,6 +10,7 @@ mod history;
 mod http;
 #[cfg(test)]
 mod isolation_tests;
+mod journal;
 mod lease;
 mod motd;
 mod peer;
