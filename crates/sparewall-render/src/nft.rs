@@ -713,9 +713,12 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     {
         // Narrowed to management.sources, where the management network is
         // also an ordinary one (#177), a line per family it names (#246).
-        // Unset, every host there reaches the node over either family;
-        // IPv6 only where the management network has it, as `ipv6-off`
-        // drops it before this elsewhere.
+        // IPv6 sources only where the management network has IPv6:
+        // elsewhere they match nothing, as validation says. A node with no
+        // IPv6 at all drops IPv6 only after this rule, so a line here
+        // would admit them. Unset, every host there reaches the node over
+        // either family, IPv6 where the network has it or, on a node with
+        // no IPv6 at all, by link-local address, as before IPv6 (#212).
         let ports = set_lit(ANTI_LOCKOUT_PORTS.iter().map(u16::to_string));
         let mut line = |from: String| {
             writeln!(
@@ -732,7 +735,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 if !four.is_empty() {
                     line(format!(" ip saddr {}", set_lit(four)));
                 }
-                if !six.is_empty() {
+                let mgmt_v6 = doc
+                    .networks
+                    .get(&doc.management.network)
+                    .is_some_and(|n| n.ipv6.is_some());
+                if !six.is_empty() && mgmt_v6 {
                     line(format!(" ip6 saddr {}", set_lit(six)));
                 }
             }

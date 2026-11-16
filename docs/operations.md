@@ -385,7 +385,8 @@ networks:
   which moves between them. `management.sources` takes IPv6 addresses
   and `ipv6` objects beside IPv4 ones, and admits each family from the
   sources it names: sources of one family only close the node to the
-  other, and with no sources at all both are open. IPv6 sources while
+  other, and with no sources at all both are open (on a node with no
+  IPv6 anywhere, by link-local address, as before 0.6). IPv6 sources while
   the management network has no IPv6 match nothing, which validation
   warns of, and refuses when there are no IPv4 sources beside them. sshd
   and the HTTPS listener take both families; the node's self-signed

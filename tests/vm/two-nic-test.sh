@@ -246,6 +246,29 @@ if ns tother timeout 5 bash -c 'exec 3<>/dev/tcp/192.168.1.2/443' 2>/dev/null; t
 fi
 ns tadmin timeout 5 bash -c 'exec 3<>/dev/tcp/192.168.1.2/443' \
     || fail "the admin cannot reach the node's HTTPS"
+# Over IPv6 with no network on it (#246): with no sources, as before
+# IPv6, the admin reaches SSH by link-local address; an IPv6 source then
+# matches nothing, though IPv6 is dropped here only after this rule.
+tcp6() { # namespace, address[%eth0], port[, source]: a connection there over IPv6
+    ns "$1" timeout 6 python3 -c '
+import socket, sys
+src = (sys.argv[3], 0) if len(sys.argv) > 3 else None
+socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5, source_address=src)' "${@:2}" 2>/dev/null
+}
+lladdr() { ns "$1" ip -6 -br addr show dev eth0 scope link | grep -o 'fe80::[0-9a-f:]*' | head -1; }
+admin_ll=$(lladdr tadmin)
+node_ll=$(at fw1 'ip -6 -br addr show dev lan0 scope link' | grep -o 'fe80::[0-9a-f:]*' | head -1)
+[ -n "$admin_ll" ] && [ -n "$node_ll" ] || fail "no link-local addresses on the LAN ($admin_ll, $node_ll)"
+jq -n '{management: {sources: null}}' | at fw1 'cat > /tmp/ll.json'
+at fw1 'sudo sparewall merge -f /tmp/ll.json --confirm 0' >/dev/null
+wait_for 30 "the admin's SSH by link-local address, with no sources" tcp6 tadmin "$node_ll%eth0" 22
+jq -n --arg a "$admin_ll" '{management: {sources: ["192.168.1.10", $a]}}' | at fw1 'cat > /tmp/ll.json'
+at fw1 'sudo sparewall merge -f /tmp/ll.json --confirm 0' >/dev/null
+if tcp6 tadmin "$node_ll%eth0" 22; then
+    fail "the admin reached SSH over IPv6 ($admin_ll) with no IPv6 on the management network"
+fi
+jq -n '{management: {sources: ["192.168.1.10"]}}' | at fw1 'cat > /tmp/ll.json'
+at fw1 'sudo sparewall merge -f /tmp/ll.json --confirm 0' >/dev/null
 
 log "a site-to-site tunnel to a branch (#148)"
 # tsite, beside the ISP, is a branch office: fw1 routes its network,
@@ -451,13 +474,6 @@ fi
 log "management over IPv6: the admin's SSH and HTTPS, by its address in management.sources (#246)"
 # Over the LAN's link-local addresses, which the admin and another host
 # have from their MACs.
-tcp6() { # namespace, address[%eth0], port[, source]: a connection there over IPv6
-    ns "$1" timeout 6 python3 -c '
-import socket, sys
-src = (sys.argv[3], 0) if len(sys.argv) > 3 else None
-socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5, source_address=src)' "${@:2}" 2>/dev/null
-}
-lladdr() { ns "$1" ip -6 -br addr show dev eth0 scope link | grep -o 'fe80::[0-9a-f:]*' | head -1; }
 admin_ll=$(lladdr tadmin)
 [ -n "$admin_ll" ] || fail "the admin has no link-local address on the LAN"
 # management.sources names IPv4 only: nothing over IPv6.

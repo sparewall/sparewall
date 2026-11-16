@@ -1245,6 +1245,35 @@ fn management_over_ipv6() {
         [rule(" ip saddr 192.168.1.10"), rule(" ip6 saddr @admin6")]
     );
     assert_eq!(anti(serde_json::json!(null)), [rule("")]);
+
+    // IPv6 sources while the management network has no IPv6 match
+    // nothing, as validation warns: no line for them, whether some other
+    // network has IPv6 (`ipv6-off` drops it first on lan0) or none does
+    // (IPv6 is dropped only after this rule).
+    let without = |patch: serde_json::Value| -> Vec<String> {
+        let text = std::fs::read_to_string(format!(
+            "{}/../../examples/two-nic.yaml",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+        sparewall_config::merge_patch(&mut v, &patch);
+        let doc = sparewall_config::from_value(v).unwrap();
+        let errs = validate::errors(&validate::validate(&doc));
+        assert!(errs.is_empty(), "{errs:#?}");
+        let r = render(&doc, "fw1").unwrap();
+        assert_nft_ok(&r);
+        r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)]
+            .lines()
+            .filter(|l| l.contains("\"anti-lockout\""))
+            .map(|l| l.trim().to_string())
+            .collect()
+    };
+    let sources = serde_json::json!({"management": {"sources": ["192.168.1.10", "fe80::10"]}});
+    assert_eq!(without(sources.clone()), [rule(" ip saddr 192.168.1.10")]);
+    let mut wan6 = sources;
+    wan6["networks"] = serde_json::json!({"wan": {"ipv6": {"mode": "dhcpv6"}}});
+    assert_eq!(without(wan6), [rule(" ip saddr 192.168.1.10")]);
 }
 
 #[test]
