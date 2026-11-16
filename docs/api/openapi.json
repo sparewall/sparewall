@@ -905,7 +905,7 @@
                 "type": "null"
               }
             ],
-            "description": "Who on the management network reaches SSH and HTTPS through the\nanti-lockout rule: addresses, prefixes, ranges or `@objects`. Unset,\nevery host there does. Worth setting when the management network is\nalso an ordinary one, such as a two-NIC box's LAN (#177).",
+            "description": "Who on the management network reaches SSH and HTTPS through the\nanti-lockout rule: addresses, prefixes, ranges or `@objects`, of\neither family. Each family is admitted from the sources it names,\nIPv6 where the management network has it (schema revision 6). Unset,\nevery host there does. Worth setting when the management network is\nalso an ordinary one, such as a two-NIC box's LAN (#177).",
             "x-since": 3
           },
           "ssh": {

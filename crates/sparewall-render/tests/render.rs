@@ -1201,6 +1201,81 @@ fn hosts_by_suffix_follow_a_delegated_prefix() {
     );
 }
 
+/// Management over IPv6 (#246): the anti-lockout rule takes each family
+/// management.sources names, or both when it names none.
+#[test]
+fn management_over_ipv6() {
+    let anti = |sources: serde_json::Value| -> Vec<String> {
+        let mut v = sparewall_config::to_value(&ipv6_two_nic());
+        sparewall_config::merge_patch(
+            &mut v,
+            &serde_json::json!({
+                "networks": {"lan": {"ipv6": {"mode": "delegated", "subnet_id": 1}}},
+                "objects": {"admin6": {"type": "ipv6", "elements": ["2001:db8:ffff::99"]}},
+                "management": {"sources": sources},
+            }),
+        );
+        let doc = sparewall_config::from_value(v).unwrap();
+        let errs = validate::errors(&validate::validate(&doc));
+        assert!(errs.is_empty(), "{errs:#?}");
+        let r = render(&doc, "fw1").unwrap();
+        assert_nft_ok(&r);
+        r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)]
+            .lines()
+            .filter(|l| l.contains("\"anti-lockout\""))
+            .map(|l| l.trim().to_string())
+            .collect()
+    };
+    let rule = |from: &str| {
+        format!("iifname \"lan0\"{from} tcp dport {{ 22, 443 }} accept comment \"anti-lockout\"")
+    };
+    assert_eq!(
+        anti(serde_json::json!(["192.168.1.10", "fe80::10", "fe80::11"])),
+        [
+            rule(" ip saddr 192.168.1.10"),
+            rule(" ip6 saddr { fe80::10, fe80::11 }")
+        ]
+    );
+    assert_eq!(
+        anti(serde_json::json!("fe80::10")),
+        [rule(" ip6 saddr fe80::10")]
+    );
+    assert_eq!(
+        anti(serde_json::json!(["192.168.1.10", "@admin6"])),
+        [rule(" ip saddr 192.168.1.10"), rule(" ip6 saddr @admin6")]
+    );
+    assert_eq!(anti(serde_json::json!(null)), [rule("")]);
+
+    // IPv6 sources while the management network has no IPv6 match
+    // nothing, as validation warns: no line for them, whether some other
+    // network has IPv6 (`ipv6-off` drops it first on lan0) or none does
+    // (IPv6 is dropped only after this rule).
+    let without = |patch: serde_json::Value| -> Vec<String> {
+        let text = std::fs::read_to_string(format!(
+            "{}/../../examples/two-nic.yaml",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+        sparewall_config::merge_patch(&mut v, &patch);
+        let doc = sparewall_config::from_value(v).unwrap();
+        let errs = validate::errors(&validate::validate(&doc));
+        assert!(errs.is_empty(), "{errs:#?}");
+        let r = render(&doc, "fw1").unwrap();
+        assert_nft_ok(&r);
+        r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)]
+            .lines()
+            .filter(|l| l.contains("\"anti-lockout\""))
+            .map(|l| l.trim().to_string())
+            .collect()
+    };
+    let sources = serde_json::json!({"management": {"sources": ["192.168.1.10", "fe80::10"]}});
+    assert_eq!(without(sources.clone()), [rule(" ip saddr 192.168.1.10")]);
+    let mut wan6 = sources;
+    wan6["networks"] = serde_json::json!({"wan": {"ipv6": {"mode": "dhcpv6"}}});
+    assert_eq!(without(wan6), [rule(" ip saddr 192.168.1.10")]);
+}
+
 #[test]
 fn ipv6_firewall() {
     let doc = ipv6_two_nic();
@@ -1223,8 +1298,8 @@ fn ipv6_firewall() {
         "meta nfproto ipv6 oifname != { \"lab0\", \"lan0\", \"wan0\" } drop comment \"ipv6-off\"",
         "iifname \"wan0\" udp sport 547 udp dport 546 accept comment \"infra:dhcpv6-client\"",
         "icmpv6 type echo-request limit rate over 50/second burst 100 packets drop comment \"icmpv6-flood\"",
-        // Management and NAT stay IPv4.
-        "iifname \"lan0\" meta nfproto ipv4 ip saddr 192.168.1.10 tcp dport { 22, 443 } accept comment \"anti-lockout\"",
+        // Management from the IPv4 sources it names (#246), NAT IPv4's.
+        "iifname \"lan0\" ip saddr 192.168.1.10 tcp dport { 22, 443 } accept comment \"anti-lockout\"",
         "iifname \"lab0\" oifname \"wan0\" meta nfproto ipv4 counter masquerade comment \"nat:lab->wan\"",
         // A rule per family its addresses allow.
         "ip daddr @nas4 tcp dport 443 counter accept comment \"rule:wan->lab:nas-https\"",

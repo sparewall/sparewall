@@ -187,7 +187,9 @@ pub struct Management {
     #[schemars(extend("x-since" = 2))]
     pub web: bool,
     /// Who on the management network reaches SSH and HTTPS through the
-    /// anti-lockout rule: addresses, prefixes, ranges or `@objects`. Unset,
+    /// anti-lockout rule: addresses, prefixes, ranges or `@objects`, of
+    /// either family. Each family is admitted from the sources it names,
+    /// IPv6 where the management network has it (schema revision 6). Unset,
     /// every host there does. Worth setting when the management network is
     /// also an ordinary one, such as a two-NIC box's LAN (#177).
     #[serde(default, skip_serializing_if = "Option::is_none")]

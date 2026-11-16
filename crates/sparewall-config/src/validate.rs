@@ -1090,22 +1090,6 @@ impl Validator<'_> {
         }
     }
 
-    /// IPv6 is in the schema (#211) before all of it is rendered. Hosts
-    /// by suffix in a delegated prefix are not built yet, and management
-    /// over IPv6 is a choice for later: until then a document that uses
-    /// them is refused, rather than run as if it did not.
-    fn unbuilt_ipv6(&mut self) {
-        let doc = self.doc;
-        if let Some(m) = &doc.management.sources
-            && !doc.split_families(m).1.is_empty()
-        {
-            self.err(
-                "management.sources",
-                "management over IPv6 is not built yet: the anti-lockout rule is IPv4's",
-            );
-        }
-    }
-
     fn node_addresses(&mut self, p: &str, net: &Network) {
         for n in self.nodes().to_vec() {
             if !net.addresses.contains_key(&n) {
@@ -1148,6 +1132,29 @@ impl Validator<'_> {
         }
         if let Some(src) = &m.sources {
             self.check_addr_match_any("management.sources", src);
+            // IPv6 sources reach the node only where the management
+            // network has IPv6 (#246): elsewhere they match nothing, and
+            // with no IPv4 ones beside them nothing reaches SSH and HTTPS.
+            let (four, six) = self.doc.split_families(src);
+            let has_v6 = self
+                .doc
+                .networks
+                .get(&m.network)
+                .is_some_and(|n| n.ipv6.is_some());
+            if !six.is_empty() && !has_v6 {
+                let msg = format!(
+                    "IPv6 sources, while network {:?} has no IPv6 (networks.{0}.ipv6)",
+                    m.network
+                );
+                if four.is_empty() {
+                    self.err(
+                        "management.sources",
+                        format!("{msg}: nothing would reach the node's SSH and HTTPS"),
+                    );
+                } else {
+                    self.warn("management.sources", format!("{msg}: they match nothing"));
+                }
+            }
         } else if self
             .doc
             .zones
@@ -1967,7 +1974,6 @@ impl Validator<'_> {
                 "provider passthrough options are not supported yet",
             );
         }
-        self.unbuilt_ipv6();
         if let Some(m) = &doc.metrics {
             let local = m.mode == MetricsMode::Local;
             if let Some(r) = &m.retention {
