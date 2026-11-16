@@ -813,7 +813,11 @@ fn entry_line(e: &LogEntry) -> String {
     line
 }
 
-/// `30s`, `5m`, `6h`, `7d`, `2w`, or plain seconds, as seconds.
+/// The longest range a query takes: ten years, longer than any history.
+const MAX_RANGE: u64 = 10 * 366 * 86_400;
+
+/// `30s`, `5m`, `6h`, `7d`, `2w`, or plain seconds, as seconds; at most
+/// [`MAX_RANGE`].
 fn duration_secs(s: &str) -> Option<u64> {
     let (n, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
     let n: u64 = n.parse().ok()?;
@@ -825,7 +829,7 @@ fn duration_secs(s: &str) -> Option<u64> {
         "w" => 604_800,
         _ => return None,
     };
-    n.checked_mul(m).filter(|v| *v > 0)
+    n.checked_mul(m).filter(|v| (1..=MAX_RANGE).contains(v))
 }
 
 /// A series' labels as Prometheus writes them: `{device="wan0"}`.
@@ -1568,7 +1572,7 @@ impl App {
                     None => conn.query(&query, time.as_deref()).await?,
                     Some(range) => {
                         let span = duration_secs(range).ok_or_else(|| {
-                            Fail::usage(format!("--range: {range:?} is not a duration such as 1h"))
+                            Fail::usage(format!("--range: {range:?} is not a duration such as 1h, of at most ten years"))
                         })?;
                         let end_s = match &end {
                             Some(e) => e.clone(),
@@ -1585,7 +1589,15 @@ impl App {
                                         "--end: {end_s:?} is not RFC 3339 or Unix seconds"
                                     ))
                                 })?;
-                                (e - jiff::SignedDuration::from_secs(span as i64)).to_string()
+                                // A span over ten years is refused by
+                                // duration_secs, so this fits an i64.
+                                e.checked_sub(jiff::SignedDuration::from_secs(span as i64))
+                                    .map_err(|_| {
+                                        Fail::usage(format!(
+                                            "--range: {range} before {end_s} is out of range"
+                                        ))
+                                    })?
+                                    .to_string()
                             }
                         };
                         let step = match &step {
@@ -2301,6 +2313,11 @@ mod tests {
         assert_eq!(duration_secs("0h"), None);
         assert_eq!(duration_secs("1y"), None);
         assert_eq!(duration_secs("h"), None);
+        // Past ten years, or past what a u64 holds: refused, not wrapped.
+        assert_eq!(duration_secs("520w"), Some(314_496_000));
+        assert_eq!(duration_secs("600w"), None);
+        assert_eq!(duration_secs("99999999999999999999d"), None);
+        assert_eq!(duration_secs("9223372036854775808"), None);
     }
 
     #[test]
