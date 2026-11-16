@@ -162,6 +162,9 @@ failover held by the master (#215):
   resolver where the network's DNS is the node's. The nodes take no
   global address there, so an `ipv6` object with `source: address` on an
   inside network is refused; `source: prefix` holds the network's /64.
+  Over IPv6 on the management network, each node is managed at its own
+  link-local address ([management over
+  IPv6](operations.md#ipv6-on-inside-networks)).
 - **At a failover** the new master routes the /64s of the prefix its
   peer last reported, for that prefix's remaining valid lifetime, until
   its own DHCPv6 reply arrives; hosts keep their addresses and

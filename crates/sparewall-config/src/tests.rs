@@ -1818,15 +1818,29 @@ fn a_rule_takes_the_families_of_its_addresses() {
         }}}}),
     );
     assert_valid(&d);
-    // Management stays IPv4's for now.
+    // Management over IPv6 (#246), where the management network has it.
     let d = edit(
         TWO_NIC,
         json!({"management": {"sources": ["192.168.1.10", "2001:db8::10"]}}),
     );
+    assert!(warnings(&d).iter().any(|w| w.contains(
+        "management.sources: IPv6 sources, while network \"lan\" has no IPv6 (networks.lan.ipv6): they match nothing"
+    )));
+    let d = edit(
+        TWO_NIC,
+        json!({"management": {"sources": ["2001:db8::10"]}}),
+    );
     assert!(has_error(
         &d,
-        "management.sources: management over IPv6 is not built yet"
+        "management.sources: IPv6 sources, while network \"lan\" has no IPv6 (networks.lan.ipv6): nothing would reach the node's SSH and HTTPS"
     ));
+    let d = edit(
+        TWO_NIC,
+        json!({"networks": {"wan": {"ipv6": {"mode": "dhcpv6"}},
+                            "lan": {"ipv6": {"mode": "delegated", "subnet_id": 1}}},
+               "management": {"sources": ["fe80::10"]}}),
+    );
+    assert_valid(&d);
 }
 
 /// Forwards and NAT stay IPv4: opening a port to an inside IPv6 host is a
