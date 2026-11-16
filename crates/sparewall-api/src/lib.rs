@@ -843,6 +843,42 @@ pub struct LogReply {
     pub entry: Option<LogEntry>,
 }
 
+/// A hit of a rule, policy default or forward with `log: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct RuleHit {
+    /// When it was logged (RFC 3339, in microseconds).
+    pub time: String,
+    pub usec: i64,
+    /// `users->self:ssh`, `guests->users:default` or `forward:web`.
+    pub rule: String,
+    /// One line: `tcp 192.0.2.7:51234 -> 10.0.0.2:443 in=wan0 out=lan0`.
+    pub packet: String,
+    /// `tcp`, `udp`, `icmp`, or the protocol's number.
+    pub proto: Option<String>,
+    pub src: Option<String>,
+    pub dst: Option<String>,
+    pub sport: Option<i64>,
+    pub dport: Option<i64>,
+    /// The interfaces it came in on and was going out of.
+    pub in_iface: Option<String>,
+    pub out_iface: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct HitsReply {
+    /// Newest first.
+    pub hits: Vec<RuleHit>,
+    /// Pass as `before`, as it is, for older hits; absent when there are
+    /// none.
+    pub older: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct HitReply {
+    /// Absent in the first reply, which says the follow has started.
+    pub hit: Option<RuleHit>,
+}
+
 /// An entry of the neighbour table (ARP, NDP).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
 pub struct Neighbour {
@@ -905,7 +941,9 @@ pub struct RoutesReply {
 mod diagnostics {
     #![allow(clippy::too_many_arguments)]
 
-    use super::{FirewallError, LogReply, LogsReply, NeighboursReply, RoutesReply};
+    use super::{
+        FirewallError, HitReply, HitsReply, LogReply, LogsReply, NeighboursReply, RoutesReply,
+    };
 
     #[zlink::proxy("org.sparewall.Diagnostics")]
     pub trait DiagnosticsProxy {
@@ -929,6 +967,29 @@ mod diagnostics {
             grep: Option<&str>,
         ) -> zlink::Result<
             impl futures_util::Stream<Item = zlink::Result<Result<LogReply, FirewallError>>>,
+        >;
+        /// Hits of logged rules, newest first.
+        async fn hits(
+            &mut self,
+            rule: Option<&str>,
+            pair: Option<&str>,
+            address: Option<&str>,
+            port: Option<i64>,
+            since: Option<&str>,
+            until: Option<&str>,
+            limit: Option<i64>,
+            before: Option<&str>,
+        ) -> zlink::Result<Result<HitsReply, FirewallError>>;
+        /// New hits as they are logged.
+        #[zlink(more, rename = "FollowHits")]
+        async fn follow_hits(
+            &mut self,
+            rule: Option<&str>,
+            pair: Option<&str>,
+            address: Option<&str>,
+            port: Option<i64>,
+        ) -> zlink::Result<
+            impl futures_util::Stream<Item = zlink::Result<Result<HitReply, FirewallError>>>,
         >;
         /// The neighbour table, of one network or all.
         async fn neighbours(

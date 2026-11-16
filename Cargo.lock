@@ -1980,6 +1980,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "instant-acme",
+ "ipnet",
  "jiff",
  "listenfd",
  "rcgen",
