@@ -11,7 +11,8 @@ use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, AuthProxy, ClusterProxy, DiagnosticsProxy, FirewallError, FirewallProxy,
-    Generation, LogEntry, MetricsProxy, QueryReply, SecretsProxy, UpgradeProxy, VpnProxy,
+    Generation, LogEntry, MetricsProxy, Neighbour, QueryReply, Route, SecretsProxy, UpgradeProxy,
+    VpnProxy,
 };
 use sparewall_config::{Format, path};
 
@@ -251,6 +252,23 @@ enum Cmd {
             requires = "check_password"
         )]
         state: PathBuf,
+    },
+    /// The neighbour table (ARP and NDP), by network.
+    #[command(alias = "neighbors")]
+    Neighbours {
+        /// Only this network's.
+        network: Option<String>,
+    },
+    /// Routes, from every table but the local one, by network.
+    Routes {
+        /// Only this network's.
+        network: Option<String>,
+        /// IPv4 only.
+        #[arg(short = '4', conflicts_with = "ipv6")]
+        ipv4: bool,
+        /// IPv6 only.
+        #[arg(short = '6')]
+        ipv6: bool,
     },
     /// Stream coordinator events.
     Events,
@@ -775,6 +793,97 @@ fn background_check(u: &Value) -> Option<String> {
         ),
         None => format!("background: checked {checked}"),
     })
+}
+
+/// Rows as columns, each as wide as its widest cell.
+fn columns(rows: &[Vec<String>]) -> String {
+    let n = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..n)
+        .map(|i| {
+            rows.iter()
+                .filter_map(|r| r.get(i))
+                .map(|c| c.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let mut out = String::new();
+    for r in rows {
+        let line: Vec<String> = r
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{c:<w$}", w = widths[i]))
+            .collect();
+        out.push_str(line.join("  ").trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+fn or_dash(v: &Option<String>) -> String {
+    v.clone().unwrap_or_else(|| "-".into())
+}
+
+fn neighbour_table(ns: &[Neighbour]) -> String {
+    let mut rows = vec![vec![
+        "NETWORK".to_string(),
+        "INTERFACE".into(),
+        "ADDRESS".into(),
+        "MAC".into(),
+        "STATE".into(),
+    ]];
+    for n in ns {
+        let mut state = n.state.join(",");
+        if n.router {
+            state.push_str(" router");
+        }
+        rows.push(vec![
+            or_dash(&n.network),
+            n.iface.clone(),
+            n.address.clone(),
+            or_dash(&n.mac),
+            state,
+        ]);
+    }
+    columns(&rows)
+}
+
+fn route_table(rs: &[Route]) -> String {
+    let mut rows = vec![vec![
+        "TABLE".to_string(),
+        "DESTINATION".into(),
+        "GATEWAY".into(),
+        "NETWORK".into(),
+        "INTERFACE".into(),
+        "PROTO".into(),
+        "METRIC".into(),
+        "NOTE".into(),
+    ]];
+    for r in rs {
+        let mut note: Vec<String> = r.flags.clone();
+        if r.kind != "unicast" {
+            note.insert(0, r.kind.clone());
+        }
+        if let Some(e) = r.expires {
+            note.push(format!("expires {e}s"));
+        }
+        let dest = if r.family == "6" && r.destination == "default" {
+            "default (v6)".to_string()
+        } else {
+            r.destination.clone()
+        };
+        rows.push(vec![
+            r.table.clone(),
+            dest,
+            or_dash(&r.gateway),
+            or_dash(&r.network),
+            or_dash(&r.iface),
+            or_dash(&r.protocol),
+            r.metric.map_or("-".into(), |m| m.to_string()),
+            note.join(","),
+        ]);
+    }
+    columns(&rows)
 }
 
 fn print_value(v: &Value, output: Option<Output>) {
@@ -1417,6 +1526,49 @@ impl App {
                              `sparewall secret set {}`.",
                             sparewall_core::backup::PASSWORD_SECRET
                         );
+                    }
+                }
+            }
+            Cmd::Neighbours { network } => {
+                let r = self.conn().await?.neighbours(network.as_deref()).await??;
+                match self.output {
+                    Some(Output::Json) | Some(Output::Yaml) => print_value(
+                        &serde_json::to_value(&r.neighbours).unwrap_or_default(),
+                        self.output,
+                    ),
+                    _ => {
+                        print!("{}", neighbour_table(&r.neighbours));
+                        if r.cut {
+                            eprintln!("(more entries than one reply holds were left out)");
+                        }
+                    }
+                }
+            }
+            Cmd::Routes {
+                network,
+                ipv4,
+                ipv6,
+            } => {
+                let family = match (ipv4, ipv6) {
+                    (true, _) => Some("4"),
+                    (_, true) => Some("6"),
+                    _ => None,
+                };
+                let r = self
+                    .conn()
+                    .await?
+                    .routes(network.as_deref(), family)
+                    .await??;
+                match self.output {
+                    Some(Output::Json) | Some(Output::Yaml) => print_value(
+                        &serde_json::to_value(&r.routes).unwrap_or_default(),
+                        self.output,
+                    ),
+                    _ => {
+                        print!("{}", route_table(&r.routes));
+                        if r.cut {
+                            eprintln!("(more routes than one reply holds were left out)");
+                        }
                     }
                 }
             }
@@ -2299,8 +2451,8 @@ fn ipv6_line(st: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, LogEntry, QueryReply, duration_secs, entry_line, fingerprint, hash_password,
-        node_only, paste_slip, query_table,
+        Cli, LogEntry, Neighbour, QueryReply, Route, duration_secs, entry_line, fingerprint,
+        hash_password, neighbour_table, node_only, paste_slip, query_table, route_table,
     };
     use clap::Parser;
 
@@ -2346,6 +2498,46 @@ mod tests {
             warnings: vec![],
         };
         assert_eq!(query_table(&e), "(no data)\n");
+    }
+
+    #[test]
+    fn neighbours_and_routes_as_columns() {
+        let n = Neighbour {
+            address: "192.168.1.10".into(),
+            family: "4".into(),
+            iface: "lan0".into(),
+            network: Some("lan".into()),
+            mac: Some("52:54:00:00:00:10".into()),
+            state: vec!["REACHABLE".into()],
+            router: false,
+        };
+        assert_eq!(
+            neighbour_table(&[n]),
+            "NETWORK  INTERFACE  ADDRESS       MAC                STATE\n\
+             lan      lan0       192.168.1.10  52:54:00:00:00:10  REACHABLE\n"
+        );
+        let r = Route {
+            destination: "default".into(),
+            family: "4".into(),
+            table: "main".into(),
+            kind: "unicast".into(),
+            gateway: Some("203.0.113.1".into()),
+            iface: Some("wan0".into()),
+            network: Some("wan".into()),
+            source: None,
+            protocol: Some("dhcp".into()),
+            metric: Some(1024),
+            expires: None,
+            flags: vec![],
+        };
+        let t = route_table(&[r]);
+        assert!(
+            t.lines()
+                .nth(1)
+                .unwrap()
+                .starts_with("main   default      203.0.113.1  wan"),
+            "{t}"
+        );
     }
 
     #[test]
