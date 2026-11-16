@@ -11,10 +11,10 @@ use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, BackupReply, BindReply, CheckBackupPasswordReply, ConfigReply, Empty, EventReply,
     ExportReply, FailoverReply, FirewallError, GenerationReply, HealthCheck, HealthReply,
-    HistoryReply, LogEntry, LogReply, LoginReply, LogsReply, Neighbour, NeighboursReply,
-    QueryReply, Route, RoutesReply, SecretInfo, SecretListReply, SecretSetReply, StatusReply,
-    TokenCreateReply, TokenInfo, TokenListReply, ToolReply, UpgradeCheckReply, UpgradeStartReply,
-    UserInfo, UserListReply, ValidateReply, VpnConfigReply,
+    HistoryReply, HitReply, HitsReply, LogEntry, LogReply, LoginReply, LogsReply, Neighbour,
+    NeighboursReply, QueryReply, Route, RoutesReply, RuleHit, SecretInfo, SecretListReply,
+    SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply, ToolReply,
+    UpgradeCheckReply, UpgradeStartReply, UserInfo, UserListReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
@@ -1175,6 +1175,64 @@ where
                 Box::pin(tokio_stream::once(Ok(started)).chain(entries.map(|e| {
                     e.map(|entry| {
                         Reply::new(Some(LogReply { entry: Some(entry) })).set_continues(Some(true))
+                    })
+                })))
+            }
+        };
+        s
+    }
+
+    /// Hits of rules, policy defaults and forwards with `log: true`,
+    /// newest first: `rule` exactly (`users->self:ssh`,
+    /// `guests->users:default`, `forward:web`), a zone `pair`, an
+    /// `address` or prefix at either end, a `port` at either end. `before`,
+    /// a reply's `older` as it is, pages back.
+    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Hits", types = [RuleHit])]
+    #[allow(clippy::too_many_arguments)]
+    async fn diagnostics_hits(
+        &mut self,
+        rule: Option<String>,
+        pair: Option<String>,
+        address: Option<String>,
+        port: Option<i64>,
+        since: Option<String>,
+        until: Option<String>,
+        limit: Option<i64>,
+        before: Option<String>,
+    ) -> Result<HitsReply, FirewallError> {
+        let q = crate::hits::Query::new(rule, pair, address, port, since, until, limit, before)?;
+        crate::hits::hits(&q).await
+    }
+
+    /// New hits as they are logged, filtered as `Hits` is, until the
+    /// caller goes.
+    /// [Requires 'more' flag]
+    #[zlink(interface = "org.sparewall.Diagnostics", rename = "FollowHits", more)]
+    async fn diagnostics_follow_hits(
+        &mut self,
+        more: bool,
+        rule: Option<String>,
+        pair: Option<String>,
+        address: Option<String>,
+        port: Option<i64>,
+    ) -> impl Stream<Item = Result<Reply<HitReply>, FirewallError>> + Unpin + 'static {
+        let follow = if more {
+            crate::hits::Query::new(rule, pair, address, port, None, None, None, None)
+                .and_then(|q| crate::hits::follow(&q))
+        } else {
+            Err(FirewallError::NotSupported {
+                message: "FollowHits streams: call it with more".into(),
+            })
+        };
+        let s: std::pin::Pin<
+            Box<dyn Stream<Item = Result<Reply<HitReply>, FirewallError>> + Send>,
+        > = match follow {
+            Err(e) => Box::pin(tokio_stream::once(Err(e))),
+            Ok(hits) => {
+                let started = Reply::new(Some(HitReply { hit: None })).set_continues(Some(true));
+                Box::pin(tokio_stream::once(Ok(started)).chain(hits.map(|h| {
+                    h.map(|hit| {
+                        Reply::new(Some(HitReply { hit: Some(hit) })).set_continues(Some(true))
                     })
                 })))
             }

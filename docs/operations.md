@@ -795,6 +795,23 @@ journalctl -u sparewalld F_RULE='guests->users:default'   # one rule
 `F_RECORD` holds ulogd's full JSON record. Hits go to the journal and,
 with `logging.remote`, wherever the journal is forwarded.
 
+`sparewall hits` reads them without SSH, from any `viewer` up, and the
+web UI's Logged traffic page shows the same (the zone policy dialog
+links each logged rule there):
+
+```shell
+sparewall hits                                 # the newest 100, oldest first
+sparewall hits -r 'users->self:ssh' --since -1d
+sparewall hits --pair 'wan->lan' -a 192.0.2.0/24 -p 443
+sparewall hits -f                              # and new hits as they come
+```
+
+A rule matches exactly (`users->self:ssh`, `guests->users:default`,
+`forward:web`). A zone pair, an address or prefix and a port each match
+either end of the packet; with any of them, a call looks at up to 5000
+hits and the next page goes on from there. Over the HTTP API:
+`org.sparewall.Diagnostics.Hits` and `FollowHits`.
+
 ### Forwarding logs
 
 `logging.remote` sends the journal, rule hits included, to a collector

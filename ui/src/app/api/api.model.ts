@@ -845,6 +845,25 @@ export interface Schemas {
     /** `main`, or another table's number. */
     "table": string;
   };
+  /** A hit of a rule, policy default or forward with `log: true`. */
+  "org.sparewall.Diagnostics.RuleHit": {
+    "dport"?: number | null;
+    "dst"?: string | null;
+    /** The interfaces it came in on and was going out of. */
+    "in_iface"?: string | null;
+    "out_iface"?: string | null;
+    /** One line: `tcp 192.0.2.7:51234 -> 10.0.0.2:443 in=wan0 out=lan0`. */
+    "packet": string;
+    /** `tcp`, `udp`, `icmp`, or the protocol's number. */
+    "proto"?: string | null;
+    /** `users->self:ssh`, `guests->users:default` or `forward:web`. */
+    "rule": string;
+    "sport"?: number | null;
+    "src"?: string | null;
+    /** When it was logged (RFC 3339, in microseconds). */
+    "time": string;
+    "usec": number;
+  };
   /** One configuration generation. */
   "org.sparewall.Firewall.Generation": {
     /** When it was created (RFC 3339). */
@@ -992,6 +1011,21 @@ export interface Calls {
     role: "operator";
     streams: false;
   };
+  /** New hits as they are logged, filtered as `Hits` is, until the caller goes. */
+  "org.sparewall.Diagnostics.FollowHits": {
+    parameters: {
+      "address"?: string | null;
+      "pair"?: string | null;
+      "port"?: number | null;
+      "rule"?: string | null;
+    };
+    reply: {
+      /** Absent in the first reply, which says the follow has started. */
+      "hit"?: Schemas["org.sparewall.Diagnostics.RuleHit"] | null;
+    };
+    role: "viewer";
+    streams: true;
+  };
   /** New entries of Sparewall's units as they are logged, filtered as `Logs` is, until the caller goes. */
   "org.sparewall.Diagnostics.FollowLogs": {
     parameters: {
@@ -1005,6 +1039,27 @@ export interface Calls {
     };
     role: "viewer";
     streams: true;
+  };
+  /** Hits of rules, policy defaults and forwards with `log: true`, newest first: `rule` exactly (`users->self:ssh`, `guests->users:default`, `forward:web`), a zone `pair`, an `address` or prefix at either end, a `port` at either end. `before`, a reply's `older` as it is, pages back. */
+  "org.sparewall.Diagnostics.Hits": {
+    parameters: {
+      "address"?: string | null;
+      "before"?: string | null;
+      "limit"?: number | null;
+      "pair"?: string | null;
+      "port"?: number | null;
+      "rule"?: string | null;
+      "since"?: string | null;
+      "until"?: string | null;
+    };
+    reply: {
+      /** Newest first. */
+      "hits": Array<Schemas["org.sparewall.Diagnostics.RuleHit"]>;
+      /** Pass as `before`, as it is, for older hits; absent when there are none. */
+      "older"?: string | null;
+    };
+    role: "viewer";
+    streams: false;
   };
   /** Entries of Sparewall's units (and `selinux`, the denials of the coordinator's domain), newest first. `before`, a reply's `older` as it is, pages back; `priority` keeps that one and worse; `grep` matches the message's text, in any case. */
   "org.sparewall.Diagnostics.Logs": {

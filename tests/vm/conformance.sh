@@ -162,6 +162,15 @@ run_conformance() {
              fail "sparewall-ulogd is not running"; }
     vm "sudo journalctl -b -u sparewalld TARGET=sparewall::rules F_RULE='guests->users:default' --no-pager -o cat | grep -q 'rule hit'" \
         || fail "the logged guests->users drop is not in the journal"
+    # And through the API (#262): by rule, by pair, and by the users'
+    # prefix it was bound for, but not by another.
+    hits() { vm "sudo sparewall hits -o json -n 20 $*" | jq 'length'; }
+    [ "$(hits "--rule 'guests->users:default'")" -gt 0 ] || fail "sparewall hits finds no guests->users drop"
+    [ "$(hits "--pair 'guests->users'")" -gt 0 ] || fail "sparewall hits finds nothing for the pair"
+    [ "$(hits "--pair 'guests->users' --addr 192.0.2.0/24")" -gt 0 ] \
+        || fail "sparewall hits finds nothing bound for the users' prefix"
+    [ "$(hits "--pair 'guests->users' --addr 203.0.113.0/24")" = 0 ] \
+        || fail "sparewall hits matched an address the drop never had"
     log "conformance PASS"
 }
 
