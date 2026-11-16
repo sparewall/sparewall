@@ -758,7 +758,7 @@ are not unicast or whose link is down. Over the HTTP API:
 From any `operator` up, without SSH, and on the Network page's Tools tab:
 
 ```shell
-sparewall ping 192.0.2.1 --from lan -c 2      # from the node's own LAN address
+sparewall ping 192.0.2.1 --from lan -n 2      # from the node's own LAN address
 sparewall traceroute 192.0.2.1
 sparewall lookup nas.home.arpa AAAA --server 192.168.1.1
 ```

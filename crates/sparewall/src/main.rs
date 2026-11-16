@@ -271,17 +271,22 @@ enum Cmd {
     },
     /// Ping a host from the node.
     Ping {
-        host: String,
+        /// An address or host name. (Not `host`: that is the CLI's own
+        /// SSH target.)
+        #[arg(value_name = "HOST")]
+        destination: String,
         /// From the node's own address on this network.
         #[arg(long = "from")]
         network: Option<String>,
-        /// How many (default 4, at most 10).
-        #[arg(short, long)]
+        /// How many (default 4, at most 10). (-c is --context.)
+        #[arg(short = 'n', long)]
         count: Option<i64>,
     },
     /// Trace the route to a host from the node.
     Traceroute {
-        host: String,
+        /// An address or host name.
+        #[arg(value_name = "HOST")]
+        destination: String,
         /// From the node's own address on this network.
         #[arg(long = "from")]
         network: Option<String>,
@@ -1531,17 +1536,20 @@ impl App {
                 }
             }
             Cmd::Ping {
-                host,
+                destination,
                 network,
                 count,
             } => {
                 let mut conn = self.conn().await?;
-                let stream = conn.ping(&host, network.as_deref(), count).await?;
+                let stream = conn.ping(&destination, network.as_deref(), count).await?;
                 tool_output("ping", stream).await?;
             }
-            Cmd::Traceroute { host, network } => {
+            Cmd::Traceroute {
+                destination,
+                network,
+            } => {
                 let mut conn = self.conn().await?;
-                let stream = conn.traceroute(&host, network.as_deref()).await?;
+                let stream = conn.traceroute(&destination, network.as_deref()).await?;
                 tool_output("traceroute", stream).await?;
             }
             Cmd::Lookup {
@@ -2377,6 +2385,17 @@ mod tests {
         node_only, paste_slip, route_table,
     };
     use clap::Parser;
+
+    /// Every command's arguments are well formed: no two share a short
+    /// option (ping's count is not --context's -c) or a name with a
+    /// global one (not `host`, the SSH target).
+    #[test]
+    fn the_commands_are_well_formed() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+        let c = Cli::try_parse_from(["sparewall", "ping", "192.0.2.1", "-n", "2", "--from", "lan"]);
+        assert!(c.is_ok(), "{:?}", c.err());
+    }
 
     #[test]
     fn neighbours_and_routes_as_columns() {
