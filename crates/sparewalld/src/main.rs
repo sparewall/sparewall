@@ -14,6 +14,7 @@ mod isolation_tests;
 mod journal;
 mod lease;
 mod motd;
+mod network;
 mod peer;
 mod reach;
 mod rules;

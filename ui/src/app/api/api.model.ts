@@ -807,6 +807,44 @@ export interface Schemas {
     /** Microseconds since the Unix epoch. */
     "usec": number;
   };
+  /** An entry of the neighbour table (ARP, NDP). */
+  "org.sparewall.Diagnostics.Neighbour": {
+    "address": string;
+    /** `4` or `6`. */
+    "family": string;
+    "iface": string;
+    "mac"?: string | null;
+    /** The network the interface carries, if the document has it. */
+    "network"?: string | null;
+    /** It says it is a router (IPv6). */
+    "router": boolean;
+    /** `REACHABLE`, `STALE`, `DELAY`, `PROBE`, `FAILED`, `INCOMPLETE`, `PERMANENT`, `NOARP`. */
+    "state": Array<string>;
+  };
+  /** A route, from any table but the local one. */
+  "org.sparewall.Diagnostics.Route": {
+    /** A prefix, or `default`. */
+    "destination": string;
+    /** Seconds left, for one that expires. */
+    "expires"?: number | null;
+    /** `4` or `6`. */
+    "family": string;
+    /** `linkdown`, `onlink`… */
+    "flags": Array<string>;
+    "gateway"?: string | null;
+    "iface"?: string | null;
+    /** `unicast`, `unreachable`, `blackhole`… */
+    "kind": string;
+    "metric"?: number | null;
+    /** The network the interface carries, if the document has it. */
+    "network"?: string | null;
+    /** Who added it: `kernel`, `dhcp`, `ra`, `static`, `keepalived`… */
+    "protocol"?: string | null;
+    /** The source address it prefers. */
+    "source"?: string | null;
+    /** `main`, or another table's number. */
+    "table": string;
+  };
   /** A hit of a rule, policy default or forward with `log: true`. */
   "org.sparewall.Diagnostics.RuleHit": {
     "dport"?: number | null;
@@ -1041,6 +1079,33 @@ export interface Calls {
       "older"?: string | null;
       /** The units one may ask for, `selinux` included. */
       "units": Array<string>;
+    };
+    role: "viewer";
+    streams: false;
+  };
+  /** The neighbour table (ARP and NDP), of one network or all, each entry with the network its interface carries. */
+  "org.sparewall.Diagnostics.Neighbours": {
+    parameters: {
+      "network"?: string | null;
+    };
+    reply: {
+      /** More than a reply holds: the rest were left out. */
+      "cut": boolean;
+      "neighbours": Array<Schemas["org.sparewall.Diagnostics.Neighbour"]>;
+    };
+    role: "viewer";
+    streams: false;
+  };
+  /** Routes from every table but the local one, of one network or all, of one family (`4`, `6`) or both, each with the network its interface carries. */
+  "org.sparewall.Diagnostics.Routes": {
+    parameters: {
+      "family"?: string | null;
+      "network"?: string | null;
+    };
+    reply: {
+      /** More than a reply holds: the rest were left out. */
+      "cut": boolean;
+      "routes": Array<Schemas["org.sparewall.Diagnostics.Route"]>;
     };
     role: "viewer";
     streams: false;

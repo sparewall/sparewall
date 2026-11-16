@@ -662,6 +662,12 @@ sparewall set metrics.retention=30d metrics.retention_size=2GB   # optional
   `QueryRange` takes `start` and `end` (RFC 3339 or Unix seconds) and a
   `step` (`1m`). A call answers 400 when the node keeps no history, 422
   for a query Prometheus refuses, and 503 while Prometheus is down.
+- **In the web UI:** the status page charts the last hour, day or week
+  (#222): traffic in and out by interface, CPU and memory, the
+  connection tracking table's use, and the policy rules' hits. A chart
+  holds at most eight lines: past that it keeps the busiest seven and
+  sums the rest as "Other". Each chart has its values as a table too.
+  Without `metrics.mode: local` the page says so instead.
 - **Health:** a stopped Prometheus makes `services` degraded, never
   failed: it carries no traffic.
 - **Not backed up:** the history (the volume `sparewall-prometheus-data`)
@@ -730,6 +736,22 @@ sparewall logs -f                       # and new entries as they come
   longer than 10 seconds is refused (503).
 - **Over the HTTP API:** `org.sparewall.Diagnostics.Logs` and
   `FollowLogs` (with `?more=true`).
+
+### Neighbours and routes
+
+What the node sees on its networks now, without SSH, from any `viewer`
+up, and on the web UI's Network page:
+
+```shell
+sparewall neighbours            # ARP and NDP, every network
+sparewall neighbours lan        # one network's
+sparewall routes wan -4         # every table but the local one
+```
+
+Each entry names the network its interface carries. A neighbour that
+does not answer (`FAILED`, `INCOMPLETE`) stands out, as do routes that
+are not unicast or whose link is down. Over the HTTP API:
+`org.sparewall.Diagnostics.Neighbours` and `Routes`.
 
 ### Logged traffic
 

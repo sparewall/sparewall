@@ -109,7 +109,9 @@ pub fn needed(method: &str) -> Option<Need> {
         | "org.sparewall.Diagnostics.Logs"
         | "org.sparewall.Diagnostics.FollowLogs"
         | "org.sparewall.Diagnostics.Hits"
-        | "org.sparewall.Diagnostics.FollowHits" => Viewer,
+        | "org.sparewall.Diagnostics.FollowHits"
+        | "org.sparewall.Diagnostics.Neighbours"
+        | "org.sparewall.Diagnostics.Routes" => Viewer,
         "org.sparewall.Firewall.Apply"
         | "org.sparewall.Firewall.Merge"
         | "org.sparewall.Firewall.Patch"

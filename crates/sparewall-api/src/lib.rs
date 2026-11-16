@@ -879,12 +879,71 @@ pub struct HitReply {
     pub hit: Option<RuleHit>,
 }
 
+/// An entry of the neighbour table (ARP, NDP).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct Neighbour {
+    pub address: String,
+    /// `4` or `6`.
+    pub family: String,
+    pub iface: String,
+    /// The network the interface carries, if the document has it.
+    pub network: Option<String>,
+    pub mac: Option<String>,
+    /// `REACHABLE`, `STALE`, `DELAY`, `PROBE`, `FAILED`, `INCOMPLETE`,
+    /// `PERMANENT`, `NOARP`.
+    pub state: Vec<String>,
+    /// It says it is a router (IPv6).
+    pub router: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct NeighboursReply {
+    pub neighbours: Vec<Neighbour>,
+    /// More than a reply holds: the rest were left out.
+    pub cut: bool,
+}
+
+/// A route, from any table but the local one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, CustomType)]
+pub struct Route {
+    /// A prefix, or `default`.
+    pub destination: String,
+    /// `4` or `6`.
+    pub family: String,
+    /// `main`, or another table's number.
+    pub table: String,
+    /// `unicast`, `unreachable`, `blackhole`…
+    pub kind: String,
+    pub gateway: Option<String>,
+    pub iface: Option<String>,
+    /// The network the interface carries, if the document has it.
+    pub network: Option<String>,
+    /// The source address it prefers.
+    pub source: Option<String>,
+    /// Who added it: `kernel`, `dhcp`, `ra`, `static`, `keepalived`…
+    pub protocol: Option<String>,
+    pub metric: Option<i64>,
+    /// Seconds left, for one that expires.
+    pub expires: Option<i64>,
+    /// `linkdown`, `onlink`…
+    pub flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct RoutesReply {
+    pub routes: Vec<Route>,
+    /// More than a reply holds: the rest were left out.
+    pub cut: bool,
+}
+
 /// The client side of `org.sparewall.Diagnostics`, in a module of its own:
 /// the proxy's generated code takes `Logs`'s filters as arguments.
 mod diagnostics {
     #![allow(clippy::too_many_arguments)]
 
-    use super::{FirewallError, HitReply, HitsReply, LogReply, LogsReply};
+    use super::{
+        FirewallError, HitReply, HitsReply, LogReply, LogsReply, NeighboursReply, RoutesReply,
+    };
 
     #[zlink::proxy("org.sparewall.Diagnostics")]
     pub trait DiagnosticsProxy {
@@ -932,6 +991,17 @@ mod diagnostics {
         ) -> zlink::Result<
             impl futures_util::Stream<Item = zlink::Result<Result<HitReply, FirewallError>>>,
         >;
+        /// The neighbour table, of one network or all.
+        async fn neighbours(
+            &mut self,
+            network: Option<&str>,
+        ) -> zlink::Result<Result<NeighboursReply, FirewallError>>;
+        /// Routes, of one network or all, of one family (`4`, `6`) or both.
+        async fn routes(
+            &mut self,
+            network: Option<&str>,
+            family: Option<&str>,
+        ) -> zlink::Result<Result<RoutesReply, FirewallError>>;
     }
 }
 pub use diagnostics::DiagnosticsProxy;

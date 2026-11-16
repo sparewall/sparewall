@@ -2855,6 +2855,139 @@
         ],
         "type": "object"
       },
+      "org.sparewall.Diagnostics.Neighbour": {
+        "additionalProperties": false,
+        "description": "An entry of the neighbour table (ARP, NDP).",
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "family": {
+            "description": "`4` or `6`.",
+            "type": "string"
+          },
+          "iface": {
+            "type": "string"
+          },
+          "mac": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "network": {
+            "description": "The network the interface carries, if the document has it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "router": {
+            "description": "It says it is a router (IPv6).",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "`REACHABLE`, `STALE`, `DELAY`, `PROBE`, `FAILED`, `INCOMPLETE`, `PERMANENT`, `NOARP`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "address",
+          "family",
+          "iface",
+          "state",
+          "router"
+        ],
+        "type": "object"
+      },
+      "org.sparewall.Diagnostics.Route": {
+        "additionalProperties": false,
+        "description": "A route, from any table but the local one.",
+        "properties": {
+          "destination": {
+            "description": "A prefix, or `default`.",
+            "type": "string"
+          },
+          "expires": {
+            "description": "Seconds left, for one that expires.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "family": {
+            "description": "`4` or `6`.",
+            "type": "string"
+          },
+          "flags": {
+            "description": "`linkdown`, `onlink`…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "gateway": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "iface": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "description": "`unicast`, `unreachable`, `blackhole`…",
+            "type": "string"
+          },
+          "metric": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "network": {
+            "description": "The network the interface carries, if the document has it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protocol": {
+            "description": "Who added it: `kernel`, `dhcp`, `ra`, `static`, `keepalived`…",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "description": "The source address it prefers.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "table": {
+            "description": "`main`, or another table's number.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "destination",
+          "family",
+          "table",
+          "kind",
+          "flags"
+        ],
+        "type": "object"
+      },
       "org.sparewall.Diagnostics.RuleHit": {
         "additionalProperties": false,
         "description": "A hit of a rule, policy default or forward with `log: true`.",
@@ -4036,6 +4169,136 @@
           }
         },
         "summary": "Entries of Sparewall's units (and `selinux`, the denials of the coordinator's domain), newest first.",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Diagnostics.Neighbours": {
+      "post": {
+        "description": "The neighbour table (ARP and NDP), of one network or all, each entry with the network its interface carries.",
+        "operationId": "Diagnostics.Neighbours",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "network": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cut": {
+                      "description": "More than a reply holds: the rest were left out.",
+                      "type": "boolean"
+                    },
+                    "neighbours": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.sparewall.Diagnostics.Neighbour"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "neighbours",
+                    "cut"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "The neighbour table (ARP and NDP), of one network or all, each entry with the network its interface carries.",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Diagnostics.Routes": {
+      "post": {
+        "description": "Routes from every table but the local one, of one network or all, of one family (`4`, `6`) or both, each with the network its interface carries.",
+        "operationId": "Diagnostics.Routes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "family": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "network": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cut": {
+                      "description": "More than a reply holds: the rest were left out.",
+                      "type": "boolean"
+                    },
+                    "routes": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.sparewall.Diagnostics.Route"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "routes",
+                    "cut"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Routes from every table but the local one, of one network or all, of one family (`4`, `6`) or both, each with the network its interface carries.",
         "tags": [
           "org.sparewall.Diagnostics"
         ],

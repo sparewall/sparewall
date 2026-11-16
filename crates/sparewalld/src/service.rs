@@ -11,10 +11,10 @@ use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, BackupReply, BindReply, CheckBackupPasswordReply, ConfigReply, Empty, EventReply,
     ExportReply, FailoverReply, FirewallError, GenerationReply, HealthCheck, HealthReply,
-    HistoryReply, HitReply, HitsReply, LogEntry, LogReply, LoginReply, LogsReply, QueryReply,
-    RuleHit, SecretInfo, SecretListReply, SecretSetReply, StatusReply, TokenCreateReply, TokenInfo,
-    TokenListReply, UpgradeCheckReply, UpgradeStartReply, UserInfo, UserListReply, ValidateReply,
-    VpnConfigReply,
+    HistoryReply, HitReply, HitsReply, LogEntry, LogReply, LoginReply, LogsReply, Neighbour,
+    NeighboursReply, QueryReply, Route, RoutesReply, RuleHit, SecretInfo, SecretListReply,
+    SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply, UpgradeCheckReply,
+    UpgradeStartReply, UserInfo, UserListReply, ValidateReply, VpnConfigReply,
 };
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
@@ -1198,9 +1198,80 @@ where
         };
         s
     }
+
+    /// The neighbour table (ARP and NDP), of one network or all, each
+    /// entry with the network its interface carries.
+    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Neighbours", types = [Neighbour])]
+    async fn diagnostics_neighbours(
+        &mut self,
+        network: Option<String>,
+    ) -> Result<NeighboursReply, FirewallError> {
+        let (map, keep) = self.network_filter(network.as_deref()).await?;
+        let mut out = Vec::new();
+        for fam in ["4", "6"] {
+            let j = crate::network::ip_json(&[&format!("-{fam}"), "neigh", "show"]).await?;
+            out.extend(crate::network::neighbours(&j, fam, &map));
+        }
+        out.retain(|n| keep.as_ref().is_none_or(|k| k.contains(&n.iface)));
+        let cut = out.len() > crate::network::MAX_ENTRIES;
+        out.truncate(crate::network::MAX_ENTRIES);
+        Ok(NeighboursReply {
+            neighbours: out,
+            cut,
+        })
+    }
+
+    /// Routes from every table but the local one, of one network or all,
+    /// of one family (`4`, `6`) or both, each with the network its
+    /// interface carries.
+    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Routes", types = [Route])]
+    async fn diagnostics_routes(
+        &mut self,
+        network: Option<String>,
+        family: Option<String>,
+    ) -> Result<RoutesReply, FirewallError> {
+        let fams = crate::network::families(family.as_deref())?;
+        let (map, keep) = self.network_filter(network.as_deref()).await?;
+        let mut out = Vec::new();
+        for fam in fams {
+            let j = crate::network::ip_json(&[&format!("-{fam}"), "route", "show", "table", "all"])
+                .await?;
+            out.extend(crate::network::routes(&j, fam, &map));
+        }
+        out.retain(|r| {
+            keep.as_ref()
+                .is_none_or(|k| r.iface.as_ref().is_some_and(|i| k.contains(i)))
+        });
+        let cut = out.len() > crate::network::MAX_ENTRIES;
+        out.truncate(crate::network::MAX_ENTRIES);
+        Ok(RoutesReply { routes: out, cut })
+    }
 }
 
 impl Firewall {
+    /// Each interface's network, from the live document, and the
+    /// interfaces of `network` when one is asked for.
+    async fn network_filter(
+        &self,
+        network: Option<&str>,
+    ) -> Result<
+        (
+            std::collections::BTreeMap<String, String>,
+            Option<Vec<String>>,
+        ),
+        FirewallError,
+    > {
+        let doc = with_core(&self.core, &self.events, |c| c.active_document()).await?;
+        let map = doc
+            .as_ref()
+            .map(crate::network::iface_networks)
+            .unwrap_or_default();
+        let keep = network
+            .map(|n| crate::network::ifaces_of(&map, doc.as_ref(), n))
+            .transpose()?;
+        Ok((map, keep))
+    }
+
     /// Whether the live document keeps history here, to query.
     async fn history_kept(&self) -> Result<(), FirewallError> {
         let local = with_core(&self.core, &self.events, |c| {

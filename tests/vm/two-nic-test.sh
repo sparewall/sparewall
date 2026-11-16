@@ -235,6 +235,17 @@ c=$(lease tclient)
 case $c in 192.168.1.1[0-9][0-9]) ;; *) fail "the client's lease $c is not from the pool" ;; esac
 seen=$(ns tclient python3 "$HERE/echo.py" ask 198.18.0.1 7002) || fail "the client cannot reach the outside"
 [ "$seen" = 203.0.113.2 ] || fail "the client reached the outside as $seen, not 203.0.113.2"
+# What the node sees, by network (#263): the client among the LAN's
+# neighbours, and the default route on the WAN.
+at fw1 'sudo sparewall neighbours lan -o json' \
+    | jq -e --arg c "$c" 'any(.[]; .address == $c and .network == "lan" and .iface == "lan0")' >/dev/null \
+    || fail "sparewall neighbours lan does not list the client $c: $(at fw1 'sudo sparewall neighbours lan')"
+at fw1 'sudo sparewall routes wan -4 -o json' \
+    | jq -e 'any(.[]; .destination == "default" and .network == "wan")' >/dev/null \
+    || fail "sparewall routes wan has no default route: $(at fw1 'sudo sparewall routes wan -4')"
+if at fw1 'sudo sparewall neighbours nosuchnet' >/dev/null 2>&1; then
+    fail "sparewall neighbours took a network the document does not have"
+fi
 
 log "management.sources: the admin's SSH only; the rest of the LAN still pings the node"
 ns tother ping -c 2 -W 2 192.168.1.2 >/dev/null || fail "another LAN host cannot ping the node (lan->self allows it)"
