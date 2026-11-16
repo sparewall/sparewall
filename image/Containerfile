@@ -148,6 +148,7 @@ RUN for p in NetworkManager NetworkManager-wifi NetworkManager-wwan NetworkManag
         ethtool \
         iproute \
         iputils \
+        traceroute \
         bind-utils \
         jq \
         node-exporter \

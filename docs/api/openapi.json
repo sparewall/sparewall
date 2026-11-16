@@ -4175,6 +4175,121 @@
         "x-sparewall-role": "viewer"
       }
     },
+    "/call/org.sparewall.Diagnostics.Lookup": {
+      "post": {
+        "description": "Look `name` up from the node: a `record` type (default A; an address in reverse), through `server` or the node's own resolver.",
+        "operationId": "Diagnostics.Lookup",
+        "parameters": [
+          {
+            "description": "Stream replies as an RFC 7464 JSON text sequence (application/json-seq) until the connection closes.",
+            "in": "query",
+            "name": "more",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "record": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "server": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "exit": {
+                      "description": "The tool's exit status, in the last reply.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "lines": {
+                      "description": "Lines of output: one each as they come when streamed, all at once otherwise.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "lines"
+                  ],
+                  "type": "object"
+                }
+              },
+              "application/json-seq": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "exit": {
+                      "description": "The tool's exit status, in the last reply.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "lines": {
+                      "description": "Lines of output: one each as they come when streamed, all at once otherwise.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "lines"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Look `name` up from the node: a `record` type (default A; an address in reverse), through `server` or the node's own resolver.",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "operator"
+      }
+    },
     "/call/org.sparewall.Diagnostics.Neighbours": {
       "post": {
         "description": "The neighbour table (ARP and NDP), of one network or all, each entry with the network its interface carries.",
@@ -4235,6 +4350,122 @@
           "org.sparewall.Diagnostics"
         ],
         "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Diagnostics.Ping": {
+      "post": {
+        "description": "Ping `host` from the node: from its own address on `network` if named, `count` times (default 4, at most 10). With `more`, each line as it comes, then the exit status.",
+        "operationId": "Diagnostics.Ping",
+        "parameters": [
+          {
+            "description": "Stream replies as an RFC 7464 JSON text sequence (application/json-seq) until the connection closes.",
+            "in": "query",
+            "name": "more",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "host": {
+                    "type": "string"
+                  },
+                  "network": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "host"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "exit": {
+                      "description": "The tool's exit status, in the last reply.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "lines": {
+                      "description": "Lines of output: one each as they come when streamed, all at once otherwise.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "lines"
+                  ],
+                  "type": "object"
+                }
+              },
+              "application/json-seq": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "exit": {
+                      "description": "The tool's exit status, in the last reply.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "lines": {
+                      "description": "Lines of output: one each as they come when streamed, all at once otherwise.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "lines"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Ping `host` from the node: from its own address on `network` if named, `count` times (default 4, at most 10).",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "operator"
       }
     },
     "/call/org.sparewall.Diagnostics.Routes": {
@@ -4303,6 +4534,115 @@
           "org.sparewall.Diagnostics"
         ],
         "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Diagnostics.Traceroute": {
+      "post": {
+        "description": "Trace the route to `host` from the node, from its own address on `network` if named: numeric, one probe a hop, at most 20 hops.",
+        "operationId": "Diagnostics.Traceroute",
+        "parameters": [
+          {
+            "description": "Stream replies as an RFC 7464 JSON text sequence (application/json-seq) until the connection closes.",
+            "in": "query",
+            "name": "more",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "host": {
+                    "type": "string"
+                  },
+                  "network": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "host"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "exit": {
+                      "description": "The tool's exit status, in the last reply.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "lines": {
+                      "description": "Lines of output: one each as they come when streamed, all at once otherwise.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "lines"
+                  ],
+                  "type": "object"
+                }
+              },
+              "application/json-seq": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "exit": {
+                      "description": "The tool's exit status, in the last reply.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "lines": {
+                      "description": "Lines of output: one each as they come when streamed, all at once otherwise.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "lines"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Trace the route to `host` from the node, from its own address on `network` if named: numeric, one probe a hop, at most 20 hops.",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "operator"
       }
     },
     "/call/org.sparewall.Firewall.AckHealth": {

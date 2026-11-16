@@ -118,7 +118,11 @@ pub fn needed(method: &str) -> Option<Need> {
         | "org.sparewall.Firewall.Confirm"
         | "org.sparewall.Firewall.Rollback"
         | "org.sparewall.Firewall.Sync"
-        | "org.sparewall.Cluster.Failover" => Operator,
+        | "org.sparewall.Cluster.Failover"
+        // Traffic from the node (#264).
+        | "org.sparewall.Diagnostics.Ping"
+        | "org.sparewall.Diagnostics.Traceroute"
+        | "org.sparewall.Diagnostics.Lookup" => Operator,
         // The bundle carries the cluster secrets, and a client
         // configuration a peer's keys. A check that stays degraded until
         // seen (an SELinux denial) is an admin's to acknowledge.

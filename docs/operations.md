@@ -753,6 +753,25 @@ does not answer (`FAILED`, `INCOMPLETE`) stands out, as do routes that
 are not unicast or whose link is down. Over the HTTP API:
 `org.sparewall.Diagnostics.Neighbours` and `Routes`.
 
+### Network tools
+
+From any `operator` up, without SSH, and on the Network page's Tools tab:
+
+```shell
+sparewall ping 192.0.2.1 --from lan -n 2      # from the node's own LAN address
+sparewall traceroute 192.0.2.1
+sparewall lookup nas.home.arpa AAAA --server 192.168.1.1
+```
+
+`--from` leaves from the node's own address on that network (in a pair,
+its own, not the shared one), or for an IPv6 host from that network's
+interface. A ping is at most 10 echoes, a traceroute 20 hops with one
+probe each, and a lookup one try through the node's own resolver unless
+`--server` names another; a run stops after 30, 60 or 10 seconds and 200
+lines, and at most 3 run at once. Over the HTTP API:
+`org.sparewall.Diagnostics.Ping`, `Traceroute` and `Lookup`, each
+streaming with `?more=true`.
+
 ### Logged traffic
 
 `log: true` logs the packets that reach a policy's default action, match

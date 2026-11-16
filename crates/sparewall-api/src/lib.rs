@@ -936,6 +936,17 @@ pub struct RoutesReply {
     pub cut: bool,
 }
 
+/// Output of a network tool run from the node (ping, traceroute, a DNS
+/// lookup).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ToolReply {
+    /// Lines of output: one each as they come when streamed, all at once
+    /// otherwise.
+    pub lines: Vec<String>,
+    /// The tool's exit status, in the last reply.
+    pub exit: Option<i64>,
+}
+
 /// The client side of `org.sparewall.Diagnostics`, in a module of its own:
 /// the proxy's generated code takes `Logs`'s filters as arguments.
 mod diagnostics {
@@ -943,6 +954,7 @@ mod diagnostics {
 
     use super::{
         FirewallError, HitReply, HitsReply, LogReply, LogsReply, NeighboursReply, RoutesReply,
+        ToolReply,
     };
 
     #[zlink::proxy("org.sparewall.Diagnostics")]
@@ -1002,6 +1014,35 @@ mod diagnostics {
             network: Option<&str>,
             family: Option<&str>,
         ) -> zlink::Result<Result<RoutesReply, FirewallError>>;
+        /// Ping a host from the node, from a network's address if named.
+        #[zlink(more)]
+        async fn ping(
+            &mut self,
+            host: &str,
+            network: Option<&str>,
+            count: Option<i64>,
+        ) -> zlink::Result<
+            impl futures_util::Stream<Item = zlink::Result<Result<ToolReply, FirewallError>>>,
+        >;
+        /// Trace the route to a host from the node.
+        #[zlink(more)]
+        async fn traceroute(
+            &mut self,
+            host: &str,
+            network: Option<&str>,
+        ) -> zlink::Result<
+            impl futures_util::Stream<Item = zlink::Result<Result<ToolReply, FirewallError>>>,
+        >;
+        /// Look a name up from the node.
+        #[zlink(more)]
+        async fn lookup(
+            &mut self,
+            name: &str,
+            record: Option<&str>,
+            server: Option<&str>,
+        ) -> zlink::Result<
+            impl futures_util::Stream<Item = zlink::Result<Result<ToolReply, FirewallError>>>,
+        >;
     }
 }
 pub use diagnostics::DiagnosticsProxy;

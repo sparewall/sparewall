@@ -224,12 +224,14 @@ selinux_report() { # run-command node-name
     # domain, Prometheus in its container), bootupd (#111) or the guest
     # agent denied anything, or any domain denied the coordinator's own
     # files (a consumer of /run/sparewall, say). Not the checks of a domain
-    # transition's environment scrubbing, which the policy hides
-    # (dontaudit, off here): they are denied by design.
+    # transition's environment scrubbing, nor dig's io_uring, which it
+    # does without (#264), both of which the policy hides (dontaudit, off
+    # here): they are denied by design.
     denials=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
         | grep -oE 'avc: +denied .*' \
         | grep -E 'scontext=[^ ]*:(sparewalld|sparewall_httpd|keepalived|keepalived_unconfined_script|conntrackd|bootupd|virt_qemu_ga|virt_qemu_ga_unconfined)_t:|tcontext=[^ ]*:(sparewalld|sparewall_httpd)_[a-z_]*:|comm="rsyslogd" .*scontext=[^ ]*:syslogd_t:|comm="prometheus" .*scontext=[^ ]*:container_t:' \
         | grep -vE 'denied +\{ (noatsecure|siginh|rlimitinh) \}' \
+        | grep -vE 'denied +\{ create \} .*comm="dig" .*anonclass=\[io_uring\]' \
         | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=[01]//' \
         | sort | uniq -c | sort -rn) || true
     echo "$node: $(printf '%s' "$denials" | grep -c . || true) distinct denials"

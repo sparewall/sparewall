@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 
 import { ApiClient } from '../../api/api-client';
+import { Session } from '../../core/session';
 import { Neighbour, Network, Route } from './network';
 
 const neighbour = (
@@ -43,7 +44,11 @@ async function render(replies: Record<string, unknown[]>) {
     },
   };
   TestBed.configureTestingModule({
-    providers: [provideNoopAnimations(), { provide: ApiClient, useValue: api }],
+    providers: [
+      provideNoopAnimations(),
+      { provide: ApiClient, useValue: api },
+      { provide: Session, useValue: { can: (r: string) => r !== 'admin' } },
+    ],
   });
   const fixture = TestBed.createComponent(Network);
   fixture.detectChanges();

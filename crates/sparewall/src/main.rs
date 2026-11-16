@@ -270,6 +270,38 @@ enum Cmd {
         #[arg(short = '6')]
         ipv6: bool,
     },
+    /// Ping a host from the node.
+    Ping {
+        /// An address or host name. (Not `host`: that is the CLI's own
+        /// SSH target.)
+        #[arg(value_name = "HOST")]
+        destination: String,
+        /// From the node's own address on this network.
+        #[arg(long = "from")]
+        network: Option<String>,
+        /// How many (default 4, at most 10). (-c is --context.)
+        #[arg(short = 'n', long)]
+        count: Option<i64>,
+    },
+    /// Trace the route to a host from the node.
+    Traceroute {
+        /// An address or host name.
+        #[arg(value_name = "HOST")]
+        destination: String,
+        /// From the node's own address on this network.
+        #[arg(long = "from")]
+        network: Option<String>,
+    },
+    /// Look a name (or, in reverse, an address) up from the node.
+    Lookup {
+        name: String,
+        /// A record type: A (the default), AAAA, MX, TXT, NS, SOA, SRV,
+        /// CNAME, PTR or CAA.
+        record: Option<String>,
+        /// Through this server rather than the node's own resolver.
+        #[arg(long)]
+        server: Option<String>,
+    },
     /// Stream coordinator events.
     Events,
     /// Logs of Sparewall's units, oldest first, as journalctl prints them.
@@ -913,6 +945,37 @@ fn route_table(rs: &[Route]) -> String {
         ]);
     }
     columns(&rows)
+}
+
+/// A tool's output as it comes; its failure as this command's.
+async fn tool_output(
+    what: &str,
+    stream: impl futures_util::Stream<
+        Item = zlink::Result<Result<sparewall_api::ToolReply, FirewallError>>,
+    >,
+) -> Result<(), Fail> {
+    pin_mut!(stream);
+    let mut exit = None;
+    while let Some(item) = stream.next().await {
+        let r = item??;
+        for l in &r.lines {
+            println!("{l}");
+        }
+        if r.exit.is_some() {
+            exit = r.exit;
+        }
+    }
+    match exit {
+        Some(0) => Ok(()),
+        Some(c) => Err(Fail {
+            code: 1,
+            message: format!("{what} exited with status {c}"),
+        }),
+        None => Err(Fail {
+            code: 1,
+            message: format!("{what} did not finish"),
+        }),
+    }
 }
 
 fn print_value(v: &Value, output: Option<Output>) {
@@ -1615,6 +1678,34 @@ impl App {
                         }
                     }
                 }
+            }
+            Cmd::Ping {
+                destination,
+                network,
+                count,
+            } => {
+                let mut conn = self.conn().await?;
+                let stream = conn.ping(&destination, network.as_deref(), count).await?;
+                tool_output("ping", stream).await?;
+            }
+            Cmd::Traceroute {
+                destination,
+                network,
+            } => {
+                let mut conn = self.conn().await?;
+                let stream = conn.traceroute(&destination, network.as_deref()).await?;
+                tool_output("traceroute", stream).await?;
+            }
+            Cmd::Lookup {
+                name,
+                record,
+                server,
+            } => {
+                let mut conn = self.conn().await?;
+                let stream = conn
+                    .lookup(&name, record.as_deref(), server.as_deref())
+                    .await?;
+                tool_output("lookup", stream).await?;
             }
             Cmd::Events => {
                 let mut conn = self.conn().await?;
@@ -2548,6 +2639,17 @@ mod tests {
         route_table,
     };
     use clap::Parser;
+
+    /// Every command's arguments are well formed: no two share a short
+    /// option (ping's count is not --context's -c) or a name with a
+    /// global one (not `host`, the SSH target).
+    #[test]
+    fn the_commands_are_well_formed() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+        let c = Cli::try_parse_from(["sparewall", "ping", "192.0.2.1", "-n", "2", "--from", "lan"]);
+        assert!(c.is_ok(), "{:?}", c.err());
+    }
 
     #[test]
     fn durations_for_a_range() {

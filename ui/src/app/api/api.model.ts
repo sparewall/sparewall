@@ -1083,6 +1083,22 @@ export interface Calls {
     role: "viewer";
     streams: false;
   };
+  /** Look `name` up from the node: a `record` type (default A; an address in reverse), through `server` or the node's own resolver. */
+  "org.sparewall.Diagnostics.Lookup": {
+    parameters: {
+      "name": string;
+      "record"?: string | null;
+      "server"?: string | null;
+    };
+    reply: {
+      /** The tool's exit status, in the last reply. */
+      "exit"?: number | null;
+      /** Lines of output: one each as they come when streamed, all at once otherwise. */
+      "lines": Array<string>;
+    };
+    role: "operator";
+    streams: true;
+  };
   /** The neighbour table (ARP and NDP), of one network or all, each entry with the network its interface carries. */
   "org.sparewall.Diagnostics.Neighbours": {
     parameters: {
@@ -1095,6 +1111,22 @@ export interface Calls {
     };
     role: "viewer";
     streams: false;
+  };
+  /** Ping `host` from the node: from its own address on `network` if named, `count` times (default 4, at most 10). With `more`, each line as it comes, then the exit status. */
+  "org.sparewall.Diagnostics.Ping": {
+    parameters: {
+      "count"?: number | null;
+      "host": string;
+      "network"?: string | null;
+    };
+    reply: {
+      /** The tool's exit status, in the last reply. */
+      "exit"?: number | null;
+      /** Lines of output: one each as they come when streamed, all at once otherwise. */
+      "lines": Array<string>;
+    };
+    role: "operator";
+    streams: true;
   };
   /** Routes from every table but the local one, of one network or all, of one family (`4`, `6`) or both, each with the network its interface carries. */
   "org.sparewall.Diagnostics.Routes": {
@@ -1109,6 +1141,21 @@ export interface Calls {
     };
     role: "viewer";
     streams: false;
+  };
+  /** Trace the route to `host` from the node, from its own address on `network` if named: numeric, one probe a hop, at most 20 hops. */
+  "org.sparewall.Diagnostics.Traceroute": {
+    parameters: {
+      "host": string;
+      "network"?: string | null;
+    };
+    reply: {
+      /** The tool's exit status, in the last reply. */
+      "exit"?: number | null;
+      /** Lines of output: one each as they come when streamed, all at once otherwise. */
+      "lines": Array<string>;
+    };
+    role: "operator";
+    streams: true;
   };
   /** Acknowledge a check that stays degraded until someone has seen it (`selinux`). */
   "org.sparewall.Firewall.AckHealth": {
