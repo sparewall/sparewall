@@ -463,6 +463,11 @@ until history; do
     [ $SECONDS -lt $deadline ] || fail "no history of the coordinator's metrics: $(cat history.json)"
     sleep 5
 done
+# The CLI (#266): now, and over a range.
+vm "sudo sparewall metrics query 'up{job=\"sparewall\"}' -o json" | jq -e '.result_type == "vector" and (.result | length) > 0' >/dev/null \
+    || fail "sparewall metrics query finds no up series"
+vm "sudo sparewall metrics query sparewall_generation --range 5m" | grep -q '^{' \
+    || fail "sparewall metrics query --range shows no series"
 query Query '{"query": "node_network_receive_bytes_total{device=\"uplink\"}"}' > history.json
 jq -e '.result | length == 1' history.json >/dev/null || fail "no host metrics in the history: $(cat history.json)"
 [ "$(status -X POST -H "'Authorization: Bearer $MON'" -H "'Content-Type: application/json'" \
