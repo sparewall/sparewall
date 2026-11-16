@@ -11,7 +11,7 @@ use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
 use sparewall_api::{
     ApplyReply, AuthProxy, ClusterProxy, DiagnosticsProxy, FirewallError, FirewallProxy,
-    Generation, LogEntry, SecretsProxy, UpgradeProxy, VpnProxy,
+    Generation, LogEntry, RuleHit, SecretsProxy, UpgradeProxy, VpnProxy,
 };
 use sparewall_config::{Format, path};
 
@@ -277,6 +277,35 @@ enum Cmd {
         #[arg(short = 'n', long)]
         lines: Option<i64>,
         /// Then keep printing new entries as they are logged.
+        #[arg(short, long)]
+        follow: bool,
+    },
+    /// Hits of rules, policy defaults and forwards with `log: true`,
+    /// oldest first.
+    Hits {
+        /// One rule, as hits name it: `users->self:ssh`,
+        /// `guests->users:default`, `forward:web`.
+        #[arg(short, long)]
+        rule: Option<String>,
+        /// One zone pair's: `wan->lan`.
+        #[arg(long)]
+        pair: Option<String>,
+        /// To or from this address or prefix.
+        #[arg(short, long)]
+        addr: Option<String>,
+        /// To or from this port.
+        #[arg(short, long)]
+        port: Option<i64>,
+        /// From this time on (`-1h`, `today`, `2026-11-15 10:00`).
+        #[arg(long)]
+        since: Option<String>,
+        /// Up to this time.
+        #[arg(long)]
+        until: Option<String>,
+        /// How many of the newest hits (default 100, at most 1000).
+        #[arg(short = 'n', long)]
+        lines: Option<i64>,
+        /// Then keep printing new hits as they are logged.
         #[arg(short, long)]
         follow: bool,
     },
@@ -777,6 +806,21 @@ fn print_entry(e: &LogEntry, output: Option<Output>) {
         return;
     }
     println!("{}", entry_line(e));
+}
+
+/// One rule hit: a JSON line with `-o json` or `-o yaml`, else its
+/// time, rule and packet.
+fn print_hit(h: &RuleHit, output: Option<Output>) {
+    if matches!(output, Some(Output::Json) | Some(Output::Yaml)) {
+        println!("{}", serde_json::to_string(h).unwrap_or_default());
+        return;
+    }
+    println!("{}", hit_line(h));
+}
+
+fn hit_line(h: &RuleHit) -> String {
+    let when = h.time.get(..19).unwrap_or(&h.time).replacen('T', " ", 1);
+    format!("{when} {} {}", h.rule, h.packet)
 }
 
 fn entry_line(e: &LogEntry) -> String {
@@ -1373,6 +1417,54 @@ impl App {
                     while let Some(item) = stream.next().await {
                         if let Some(e) = item??.entry {
                             print_entry(&e, self.output);
+                        }
+                    }
+                }
+            }
+            Cmd::Hits {
+                rule,
+                pair,
+                addr,
+                port,
+                since,
+                until,
+                lines,
+                follow,
+            } => {
+                let r = self
+                    .conn()
+                    .await?
+                    .hits(
+                        rule.as_deref(),
+                        pair.as_deref(),
+                        addr.as_deref(),
+                        port,
+                        since.as_deref(),
+                        until.as_deref(),
+                        lines,
+                        None,
+                    )
+                    .await??;
+                let structured = matches!(self.output, Some(Output::Json) | Some(Output::Yaml));
+                if structured && !follow {
+                    print_value(
+                        &serde_json::to_value(&r.hits).unwrap_or_default(),
+                        self.output,
+                    );
+                } else {
+                    for h in r.hits.iter().rev() {
+                        print_hit(h, self.output);
+                    }
+                }
+                if follow {
+                    let mut conn = self.conn().await?;
+                    let stream = conn
+                        .follow_hits(rule.as_deref(), pair.as_deref(), addr.as_deref(), port)
+                        .await?;
+                    pin_mut!(stream);
+                    while let Some(item) = stream.next().await {
+                        if let Some(h) = item??.hit {
+                            print_hit(&h, self.output);
                         }
                     }
                 }
@@ -2138,8 +2230,32 @@ fn ipv6_line(st: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, LogEntry, entry_line, fingerprint, hash_password, node_only, paste_slip};
+    use super::{
+        Cli, LogEntry, RuleHit, entry_line, fingerprint, hash_password, hit_line, node_only,
+        paste_slip,
+    };
     use clap::Parser;
+
+    #[test]
+    fn a_hit_reads_as_its_time_rule_and_packet() {
+        let h = RuleHit {
+            time: "2026-11-15T17:04:49.123456Z".into(),
+            usec: 0,
+            rule: "wan->lan:https".into(),
+            packet: "tcp 192.0.2.7:51234 -> 10.0.0.2:443 in=wan0 out=lan0".into(),
+            proto: Some("tcp".into()),
+            src: None,
+            dst: None,
+            sport: None,
+            dport: None,
+            in_iface: None,
+            out_iface: None,
+        };
+        assert_eq!(
+            hit_line(&h),
+            "2026-11-15 17:04:49 wan->lan:https tcp 192.0.2.7:51234 -> 10.0.0.2:443 in=wan0 out=lan0"
+        );
+    }
 
     #[test]
     fn a_log_entry_reads_like_journalctl() {

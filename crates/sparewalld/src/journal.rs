@@ -88,7 +88,7 @@ pub fn unit_named(u: &str) -> Option<String> {
     .find(|c| UNITS.contains(&c.as_str()))
 }
 
-fn invalid(msg: impl Into<String>) -> FirewallError {
+pub(crate) fn invalid(msg: impl Into<String>) -> FirewallError {
     FirewallError::ValidationFailed {
         errors: vec![msg.into()],
     }
@@ -289,7 +289,7 @@ impl Query {
     }
 }
 
-fn base_args(follow: bool, limit: usize) -> Vec<String> {
+pub(crate) fn base_args(follow: bool, limit: usize) -> Vec<String> {
     let mut a = vec![
         "--output=json".to_string(),
         "--quiet".into(),
@@ -351,7 +351,7 @@ pub fn parse(line: &str, selinux: bool) -> Option<LogEntry> {
 }
 
 /// An entry and its journal cursor.
-fn parse_at(line: &str, selinux: bool) -> Option<(LogEntry, String)> {
+pub(crate) fn parse_at(line: &str, selinux: bool) -> Option<(LogEntry, String)> {
     let v: Value = serde_json::from_str(line).ok()?;
     let o = v.as_object()?;
     let cursor = o.get("__CURSOR")?.as_str()?.to_string();
@@ -436,7 +436,10 @@ pub fn merge(q: &Query, units: Read, denials: Read) -> LogsReply {
     }
 }
 
-async fn read(args: Vec<String>, selinux: bool) -> Result<Vec<(LogEntry, String)>, FirewallError> {
+pub(crate) async fn read(
+    args: Vec<String>,
+    selinux: bool,
+) -> Result<Vec<(LogEntry, String)>, FirewallError> {
     let unavailable = |m: String| FirewallError::ServiceUnavailable {
         service: "journal".into(),
         message: m,
@@ -483,7 +486,7 @@ pub async fn logs(q: &Query) -> Result<LogsReply, FirewallError> {
 static FOLLOWERS: AtomicUsize = AtomicUsize::new(0);
 
 /// A follower's place, given back when its stream ends.
-struct Slot;
+pub(crate) struct Slot;
 
 impl Drop for Slot {
     fn drop(&mut self) {
@@ -491,9 +494,9 @@ impl Drop for Slot {
     }
 }
 
-type Entries = Pin<Box<dyn Stream<Item = Result<LogEntry, FirewallError>> + Send>>;
+pub(crate) type Entries = Pin<Box<dyn Stream<Item = Result<LogEntry, FirewallError>> + Send>>;
 
-fn follow_one(args: Vec<String>, selinux: bool) -> Entries {
+pub(crate) fn follow_one(args: Vec<String>, selinux: bool) -> Entries {
     let child = tokio::process::Command::new("journalctl")
         .args(&args)
         .stdin(Stdio::null())
@@ -535,15 +538,21 @@ fn follow_one(args: Vec<String>, selinux: bool) -> Entries {
 }
 
 /// New entries for `q` as they are logged, until the caller goes.
-pub fn follow(q: &Query) -> Result<Entries, FirewallError> {
+/// A follower's place, if there is one free: logs and rule hits share
+/// them.
+pub(crate) fn slot() -> Result<Slot, FirewallError> {
     if FOLLOWERS.fetch_add(1, Ordering::SeqCst) >= MAX_FOLLOWERS {
         FOLLOWERS.fetch_sub(1, Ordering::SeqCst);
         return Err(FirewallError::ServiceUnavailable {
             service: "journal".into(),
-            message: format!("{MAX_FOLLOWERS} clients follow the logs already"),
+            message: format!("{MAX_FOLLOWERS} clients follow the journal already"),
         });
     }
-    let slot = Slot;
+    Ok(Slot)
+}
+
+pub fn follow(q: &Query) -> Result<Entries, FirewallError> {
+    let slot = slot()?;
     let (units, selinux) = q.wants();
     let mut streams: Vec<Entries> = Vec::new();
     if units {

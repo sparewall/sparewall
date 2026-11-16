@@ -7,6 +7,7 @@ mod backup;
 mod dhcp_ha;
 mod failover;
 mod history;
+mod hits;
 mod http;
 #[cfg(test)]
 mod isolation_tests;

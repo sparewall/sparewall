@@ -61,6 +61,11 @@ export const routes: Routes = [
         loadComponent: () => import('./features/logs/logs').then((m) => m.Logs),
       },
       {
+        path: 'hits',
+        title: 'Logged traffic · Sparewall',
+        loadComponent: () => import('./features/hits/hits').then((m) => m.Hits),
+      },
+      {
         path: 'history',
         title: 'History · Sparewall',
         loadComponent: () => import('./features/history/history').then((m) => m.History),

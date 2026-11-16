@@ -62,6 +62,7 @@ export class Shell implements OnInit, OnDestroy {
     { path: '/config', icon: 'tune', label: 'Configuration', role: 'viewer' as Role },
     { path: '/history', icon: 'history', label: 'History', role: 'viewer' as Role },
     { path: '/logs', icon: 'receipt_long', label: 'Logs', role: 'viewer' as Role },
+    { path: '/hits', icon: 'policy', label: 'Logged traffic', role: 'viewer' as Role },
     { path: '/api', icon: 'api', label: 'API', role: 'viewer' as Role },
     { path: '/users', icon: 'group', label: 'Users', role: 'admin' as Role, admin: true },
     { path: '/tokens', icon: 'key', label: 'API tokens', role: 'admin' as Role, admin: true },

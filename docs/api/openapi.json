@@ -2855,6 +2855,81 @@
         ],
         "type": "object"
       },
+      "org.sparewall.Diagnostics.RuleHit": {
+        "additionalProperties": false,
+        "description": "A hit of a rule, policy default or forward with `log: true`.",
+        "properties": {
+          "dport": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "dst": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_iface": {
+            "description": "The interfaces it came in on and was going out of.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "out_iface": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "packet": {
+            "description": "One line: `tcp 192.0.2.7:51234 -> 10.0.0.2:443 in=wan0 out=lan0`.",
+            "type": "string"
+          },
+          "proto": {
+            "description": "`tcp`, `udp`, `icmp`, or the protocol's number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rule": {
+            "description": "`users->self:ssh`, `guests->users:default` or `forward:web`.",
+            "type": "string"
+          },
+          "sport": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "src": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time": {
+            "description": "When it was logged (RFC 3339, in microseconds).",
+            "type": "string"
+          },
+          "usec": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "time",
+          "usec",
+          "rule",
+          "packet"
+        ],
+        "type": "object"
+      },
       "org.sparewall.Firewall.Generation": {
         "additionalProperties": false,
         "description": "One configuration generation.",
@@ -3533,6 +3608,114 @@
         "x-sparewall-role": "operator"
       }
     },
+    "/call/org.sparewall.Diagnostics.FollowHits": {
+      "post": {
+        "description": "New hits as they are logged, filtered as `Hits` is, until the caller goes.",
+        "operationId": "Diagnostics.FollowHits",
+        "parameters": [
+          {
+            "description": "Stream replies as an RFC 7464 JSON text sequence (application/json-seq) until the connection closes.",
+            "in": "query",
+            "name": "more",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "address": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "pair": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "port": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "rule": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "hit": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/org.sparewall.Diagnostics.RuleHit"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Absent in the first reply, which says the follow has started."
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "application/json-seq": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "hit": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/org.sparewall.Diagnostics.RuleHit"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Absent in the first reply, which says the follow has started."
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "New hits as they are logged, filtered as `Hits` is, until the caller goes.",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
     "/call/org.sparewall.Diagnostics.FollowLogs": {
       "post": {
         "description": "New entries of Sparewall's units as they are logged, filtered as `Logs` is, until the caller goes.",
@@ -3631,6 +3814,115 @@
           }
         },
         "summary": "New entries of Sparewall's units as they are logged, filtered as `Logs` is, until the caller goes.",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "viewer"
+      }
+    },
+    "/call/org.sparewall.Diagnostics.Hits": {
+      "post": {
+        "description": "Hits of rules, policy defaults and forwards with `log: true`, newest first: `rule` exactly (`users->self:ssh`, `guests->users:default`, `forward:web`), a zone `pair`, an `address` or prefix at either end, a `port` at either end. `before`, a reply's `older` as it is, pages back.",
+        "operationId": "Diagnostics.Hits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "address": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "before": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "limit": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "pair": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "port": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "rule": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "since": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "until": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "hits": {
+                      "description": "Newest first.",
+                      "items": {
+                        "$ref": "#/components/schemas/org.sparewall.Diagnostics.RuleHit"
+                      },
+                      "type": "array"
+                    },
+                    "older": {
+                      "description": "Pass as `before`, as it is, for older hits; absent when there are none.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "hits"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Hits of rules, policy defaults and forwards with `log: true`, newest first: `rule` exactly (`users->self:ssh`, `guests->users:default`, `forward:web`), a zone `pair`, an `address` or prefix at either end, a `port` at either end.",
         "tags": [
           "org.sparewall.Diagnostics"
         ],
