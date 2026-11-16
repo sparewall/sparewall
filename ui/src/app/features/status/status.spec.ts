@@ -1,12 +1,17 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { signal } from '@angular/core';
+import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Subject } from 'rxjs';
 
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
+import { MetricsHistory } from './history';
 import { Status } from './status';
+
+/** The history's own tests are in history.spec.ts. */
+@Component({ selector: 'app-metrics-history', template: '' })
+class NoHistory {}
 
 const reply = (update: unknown, sync: Record<string, unknown> = {}) => ({
   node: 'fw1',
@@ -39,6 +44,10 @@ async function render(r: object, role = 'admin') {
         },
       },
     ],
+  });
+  TestBed.overrideComponent(Status, {
+    remove: { imports: [MetricsHistory] },
+    add: { imports: [NoHistory] },
   });
   const fixture = TestBed.createComponent(Status);
   TestBed.tick();

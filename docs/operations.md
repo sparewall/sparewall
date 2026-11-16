@@ -662,6 +662,12 @@ sparewall set metrics.retention=30d metrics.retention_size=2GB   # optional
   `QueryRange` takes `start` and `end` (RFC 3339 or Unix seconds) and a
   `step` (`1m`). A call answers 400 when the node keeps no history, 422
   for a query Prometheus refuses, and 503 while Prometheus is down.
+- **In the web UI:** the status page charts the last hour, day or week
+  (#222): traffic in and out by interface, CPU and memory, the
+  connection tracking table's use, and the policy rules' hits. A chart
+  holds at most eight lines: past that it keeps the busiest seven and
+  sums the rest as "Other". Each chart has its values as a table too.
+  Without `metrics.mode: local` the page says so instead.
 - **Health:** a stopped Prometheus makes `services` degraded, never
   failed: it carries no traffic.
 - **Not backed up:** the history (the volume `sparewall-prometheus-data`)

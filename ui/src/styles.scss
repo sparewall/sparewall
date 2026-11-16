@@ -26,6 +26,19 @@ html {
   --sw-degraded-container: light-dark(#ffe7c6, #4a2c00);
   --sw-failed: var(--mat-sys-error);
   --sw-failed-container: var(--mat-sys-error-container);
+
+  // Chart series, in this fixed order: a series keeps its slot, never
+  // cycled. Each mode's steps were checked for colour-blind separation
+  // and contrast as a set; three light ones fall below 3:1, so every
+  // chart has a table view too.
+  --sw-series-1: light-dark(#2a78d6, #3987e5);
+  --sw-series-2: light-dark(#eb6834, #d95926);
+  --sw-series-3: light-dark(#1baf7a, #199e70);
+  --sw-series-4: light-dark(#eda100, #c98500);
+  --sw-series-5: light-dark(#e87ba4, #d55181);
+  --sw-series-6: light-dark(#008300, #0ca30c);
+  --sw-series-7: light-dark(#6250d6, #9085e9);
+  --sw-series-8: light-dark(#e34948, #e66767);
 }
 
 body {

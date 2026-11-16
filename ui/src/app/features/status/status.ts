@@ -19,6 +19,7 @@ import {
   UpdateState,
 } from '../../api/status.model';
 import { checkProblem, mixedImages, updateNotice } from '../../shared/update-notice';
+import { MetricsHistory } from './history';
 import { UpgradePanel } from './upgrade-panel';
 
 const LEVEL_ICON: Record<string, string> = {
@@ -44,6 +45,7 @@ const LEVEL_TEXT: Record<string, string> = {
     MatIconModule,
     MatProgressBarModule,
     UpgradePanel,
+    MetricsHistory,
   ],
   templateUrl: './status.html',
   styleUrl: './status.scss',
