@@ -801,7 +801,7 @@ export interface Schemas {
     "time": string;
     /** The unit it came from (`sparewalld.service`), or `selinux` for a denial of the coordinator's domain. */
     "unit": string;
-    /** Microseconds since the Unix epoch: `before` for the next page. */
+    /** Microseconds since the Unix epoch. */
     "usec": number;
   };
   /** One configuration generation. */
@@ -965,10 +965,10 @@ export interface Calls {
     role: "viewer";
     streams: true;
   };
-  /** Entries of Sparewall's units (and `selinux`, the denials of the coordinator's domain), newest first. `before` (from `older`) pages back; `priority` keeps that one and worse; `grep` matches the message's text, in any case. */
+  /** Entries of Sparewall's units (and `selinux`, the denials of the coordinator's domain), newest first. `before`, a reply's `older` as it is, pages back; `priority` keeps that one and worse; `grep` matches the message's text, in any case. */
   "org.sparewall.Diagnostics.Logs": {
     parameters: {
-      "before"?: number | null;
+      "before"?: string | null;
       "grep"?: string | null;
       "limit"?: number | null;
       "priority"?: string | null;
@@ -979,8 +979,8 @@ export interface Calls {
     reply: {
       /** Newest first. */
       "entries": Array<Schemas["org.sparewall.Diagnostics.LogEntry"]>;
-      /** Pass as `before` for older entries; absent when there are none. */
-      "older"?: number | null;
+      /** Pass as `before`, as it is, for older entries; absent when there are none. */
+      "older"?: string | null;
       /** The units one may ask for, `selinux` included. */
       "units": Array<string>;
     };

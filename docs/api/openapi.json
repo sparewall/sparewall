@@ -2840,7 +2840,7 @@
             "type": "string"
           },
           "usec": {
-            "description": "Microseconds since the Unix epoch: `before` for the next page.",
+            "description": "Microseconds since the Unix epoch.",
             "format": "int64",
             "type": "integer"
           }
@@ -3639,7 +3639,7 @@
     },
     "/call/org.sparewall.Diagnostics.Logs": {
       "post": {
-        "description": "Entries of Sparewall's units (and `selinux`, the denials of the coordinator's domain), newest first. `before` (from `older`) pages back; `priority` keeps that one and worse; `grep` matches the message's text, in any case.",
+        "description": "Entries of Sparewall's units (and `selinux`, the denials of the coordinator's domain), newest first. `before`, a reply's `older` as it is, pages back; `priority` keeps that one and worse; `grep` matches the message's text, in any case.",
         "operationId": "Diagnostics.Logs",
         "requestBody": {
           "content": {
@@ -3648,9 +3648,8 @@
                 "additionalProperties": false,
                 "properties": {
                   "before": {
-                    "format": "int64",
                     "type": [
-                      "integer",
+                      "string",
                       "null"
                     ]
                   },
@@ -3716,10 +3715,9 @@
                       "type": "array"
                     },
                     "older": {
-                      "description": "Pass as `before` for older entries; absent when there are none.",
-                      "format": "int64",
+                      "description": "Pass as `before`, as it is, for older entries; absent when there are none.",
                       "type": [
-                        "integer",
+                        "string",
                         "null"
                       ]
                     },

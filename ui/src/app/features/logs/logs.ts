@@ -258,7 +258,7 @@ export class Logs implements OnInit {
 
   protected readonly known = signal<string[]>([]);
   protected readonly entries = signal<LogEntry[]>([]);
-  protected readonly older = signal<number | null>(null);
+  protected readonly older = signal<string | null>(null);
   protected readonly loading = signal(false);
   protected readonly problem = signal<string | null>(null);
   protected readonly following = signal(false);
@@ -277,7 +277,7 @@ export class Logs implements OnInit {
     return Object.entries(e.fields);
   }
 
-  private params(before?: number) {
+  private params(before?: string) {
     return {
       units: this.units.length ? this.units : null,
       priority: this.priorityFilter || null,

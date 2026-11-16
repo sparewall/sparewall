@@ -1084,9 +1084,9 @@ where
     }
 
     /// Entries of Sparewall's units (and `selinux`, the denials of the
-    /// coordinator's domain), newest first. `before` (from `older`) pages
-    /// back; `priority` keeps that one and worse; `grep` matches the
-    /// message's text, in any case.
+    /// coordinator's domain), newest first. `before`, a reply's `older`
+    /// as it is, pages back; `priority` keeps that one and worse; `grep`
+    /// matches the message's text, in any case.
     #[zlink(interface = "org.sparewall.Diagnostics", rename = "Logs", types = [LogEntry])]
     #[allow(clippy::too_many_arguments)]
     async fn diagnostics_logs(
@@ -1097,7 +1097,7 @@ where
         until: Option<String>,
         grep: Option<String>,
         limit: Option<i64>,
-        before: Option<i64>,
+        before: Option<String>,
     ) -> Result<LogsReply, FirewallError> {
         let q = crate::journal::Query::new(units, priority, since, until, grep, limit, before)?;
         crate::journal::logs(&q).await

@@ -79,7 +79,7 @@ describe('Logs', () => {
     const { el, calls, settle } = await render([
       {
         entries: [entry(3e15, 'third', { priority: 3 }), entry(2e15, 'second')],
-        older: 2e15,
+        older: 'page-2',
         units,
       },
       { entries: [entry(1e15, 'first')], older: null, units },
@@ -99,7 +99,7 @@ describe('Logs', () => {
     const older = [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('Older'))!;
     older.click();
     await settle();
-    expect(calls[1].params['before']).toBe(2e15);
+    expect(calls[1].params['before']).toBe('page-2');
     expect(lines()).toEqual(['third', 'second', 'first']);
     expect([...el.querySelectorAll('button')].some((b) => b.textContent?.includes('Older'))).toBe(
       false,

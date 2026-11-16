@@ -810,7 +810,7 @@ pub const DIAGNOSTICS_INTERFACE: &str = "org.sparewall.Diagnostics";
 pub struct LogEntry {
     /// When it was logged (RFC 3339, in microseconds).
     pub time: String,
-    /// Microseconds since the Unix epoch: `before` for the next page.
+    /// Microseconds since the Unix epoch.
     pub usec: i64,
     /// The unit it came from (`sparewalld.service`), or `selinux` for a
     /// denial of the coordinator's domain.
@@ -830,8 +830,9 @@ pub struct LogEntry {
 pub struct LogsReply {
     /// Newest first.
     pub entries: Vec<LogEntry>,
-    /// Pass as `before` for older entries; absent when there are none.
-    pub older: Option<i64>,
+    /// Pass as `before`, as it is, for older entries; absent when there
+    /// are none.
+    pub older: Option<String>,
     /// The units one may ask for, `selinux` included.
     pub units: Vec<String>,
 }
@@ -860,7 +861,7 @@ mod diagnostics {
             until: Option<&str>,
             grep: Option<&str>,
             limit: Option<i64>,
-            before: Option<i64>,
+            before: Option<&str>,
         ) -> zlink::Result<Result<LogsReply, FirewallError>>;
         /// New entries as they are logged.
         #[zlink(more, rename = "FollowLogs")]

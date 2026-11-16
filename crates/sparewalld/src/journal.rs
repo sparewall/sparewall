@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures_util::Stream;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sparewall_api::{FirewallError, LogEntry, LogsReply};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -102,8 +103,52 @@ pub struct Query {
     pub until: Option<String>,
     pub grep: Option<String>,
     pub limit: usize,
-    /// Only entries before this (microseconds since the epoch).
-    pub before: Option<i64>,
+    /// Where each source goes on from, from a reply's `older`.
+    pub page: Page,
+}
+
+/// Where a source of entries stands in paging back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pos {
+    /// From the newest.
+    #[default]
+    Start,
+    /// From the entry before this journal cursor.
+    After(String),
+    /// Nothing older.
+    Done,
+}
+
+/// The two sources' positions: a reply's `older`, and the next call's
+/// `before`, as an opaque token. A journal cursor, not a time, so a page
+/// never skips entries logged in the same microsecond as its last.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Page {
+    #[serde(default)]
+    pub units: Pos,
+    #[serde(default)]
+    pub selinux: Pos,
+}
+
+impl Page {
+    fn parse(token: &str) -> Result<Page, FirewallError> {
+        let p: Page = serde_json::from_str(token)
+            .map_err(|_| invalid("before: not a page from a reply's older"))?;
+        for pos in [&p.units, &p.selinux] {
+            if let Pos::After(c) = pos
+                && (c.is_empty() || c.len() > 512 || c.chars().any(char::is_control))
+            {
+                return Err(invalid("before: not a page from a reply's older"));
+            }
+        }
+        Ok(p)
+    }
+
+    fn token(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
 }
 
 impl Query {
@@ -118,7 +163,7 @@ impl Query {
         until: Option<String>,
         grep: Option<String>,
         limit: Option<i64>,
-        before: Option<i64>,
+        before: Option<String>,
     ) -> Result<Query, FirewallError> {
         let units = units
             .unwrap_or_default()
@@ -165,7 +210,11 @@ impl Query {
             until,
             grep: grep.filter(|g| !g.is_empty()),
             limit,
-            before,
+            page: before
+                .as_deref()
+                .map(Page::parse)
+                .transpose()?
+                .unwrap_or_default(),
         })
     }
 
@@ -190,8 +239,9 @@ impl Query {
         }
     }
 
-    /// Filters both reads share: priority, times, the text.
-    fn common(&self, out: &mut Vec<String>, follow: bool) {
+    /// Filters both reads share: priority, the times, and where the
+    /// source goes on from.
+    fn common(&self, out: &mut Vec<String>, follow: bool, pos: &Pos) {
         if let Some(p) = &self.priority {
             out.push(format!("--priority={p}"));
         }
@@ -199,18 +249,12 @@ impl Query {
             if let Some(s) = &self.since {
                 out.push(format!("--since={s}"));
             }
-            // The earlier of `until` and `before`: journalctl takes one.
-            match (self.before, &self.until) {
-                (Some(b), _) => {
-                    let b = b - 1;
-                    out.push(format!(
-                        "--until=@{}.{:06}",
-                        b.div_euclid(1_000_000),
-                        b.rem_euclid(1_000_000)
-                    ));
-                }
-                (None, Some(u)) => out.push(format!("--until={u}")),
-                (None, None) => {}
+            if let Some(u) = &self.until {
+                out.push(format!("--until={u}"));
+            }
+            // Newest first, so "after" is older.
+            if let Pos::After(c) = pos {
+                out.push(format!("--after-cursor={c}"));
             }
         }
     }
@@ -221,7 +265,7 @@ impl Query {
         for u in self.units() {
             a.push(format!("--unit={u}"));
         }
-        self.common(&mut a, follow);
+        self.common(&mut a, follow, &self.page.units);
         if let Some(g) = &self.grep {
             a.push("--case-sensitive=false".into());
             a.push(format!("--grep={}", regex_escape(g)));
@@ -229,13 +273,18 @@ impl Query {
         a
     }
 
-    /// journalctl's arguments for the denials; the text, if any, is
-    /// matched here afterwards, as journalctl takes one pattern.
+    /// journalctl's arguments for the denials. The caller's text joins
+    /// the denial's pattern as a lookahead, so journalctl matches both
+    /// before it counts the entries.
     pub fn selinux_args(&self, follow: bool) -> Vec<String> {
         let mut a = base_args(follow, self.limit);
         a.push("_TRANSPORT=audit".into());
-        self.common(&mut a, follow);
-        a.push(format!("--grep={AVC_PATTERN}"));
+        self.common(&mut a, follow, &self.page.selinux);
+        a.push("--case-sensitive=true".into());
+        a.push(match &self.grep {
+            Some(g) => format!("--grep=^(?=.*(?i:{})).*{AVC_PATTERN}", regex_escape(g)),
+            None => format!("--grep={AVC_PATTERN}"),
+        });
         a
     }
 }
@@ -298,8 +347,14 @@ fn text(v: &Value) -> String {
 
 /// An entry from journalctl's JSON; `None` for a line that is not one.
 pub fn parse(line: &str, selinux: bool) -> Option<LogEntry> {
+    parse_at(line, selinux).map(|(e, _)| e)
+}
+
+/// An entry and its journal cursor.
+fn parse_at(line: &str, selinux: bool) -> Option<(LogEntry, String)> {
     let v: Value = serde_json::from_str(line).ok()?;
     let o = v.as_object()?;
+    let cursor = o.get("__CURSOR")?.as_str()?.to_string();
     let usec: i64 = o.get("__REALTIME_TIMESTAMP")?.as_str()?.parse().ok()?;
     let time = jiff::Timestamp::from_microsecond(usec)
         .ok()?
@@ -318,7 +373,7 @@ pub fn parse(line: &str, selinux: bool) -> Option<LogEntry> {
         .filter(|(k, _)| !k.starts_with('_') && !HIDDEN.contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), text(v)))
         .collect();
-    Some(LogEntry {
+    let e = LogEntry {
         time,
         usec,
         unit,
@@ -330,32 +385,49 @@ pub fn parse(line: &str, selinux: bool) -> Option<LogEntry> {
         identifier: o.get("SYSLOG_IDENTIFIER").map(text),
         message: o.get("MESSAGE").map(text).unwrap_or_default(),
         fields,
-    })
+    };
+    Some((e, cursor))
 }
 
-/// Whether a denial matches the caller's text, which journalctl could
-/// not apply to it.
-fn matches(e: &LogEntry, grep: Option<&str>) -> bool {
-    grep.is_none_or(|g| e.message.to_lowercase().contains(&g.to_lowercase()))
+/// One source's read: its entries with their cursors, newest first, or
+/// `None` when it was not read (not asked for, or done).
+pub type Read = Option<Vec<(LogEntry, String)>>;
+
+/// Where a source goes on from, after `taken` of its `read` entries made
+/// the page.
+fn next(pos: &Pos, read: &Read, taken: usize, limit: usize) -> Pos {
+    let Some(r) = read else { return Pos::Done };
+    if taken == r.len() && r.len() < limit {
+        // All of it shown, and journalctl had no more.
+        return Pos::Done;
+    }
+    match taken {
+        0 => pos.clone(),
+        n => Pos::After(r[n - 1].1.clone()),
+    }
 }
 
-/// The units' entries and the denials, newest first, cut to `limit`.
-pub fn merge(q: &Query, units: Vec<LogEntry>, denials: Vec<LogEntry>) -> LogsReply {
-    let mut all: Vec<LogEntry> = units
-        .into_iter()
-        .chain(
-            denials
-                .into_iter()
-                .filter(|e| matches(e, q.grep.as_deref())),
-        )
+/// The units' entries and the denials, newest first, cut to `limit`;
+/// `older` says where each source goes on from.
+pub fn merge(q: &Query, units: Read, denials: Read) -> LogsReply {
+    let mut all: Vec<(bool, &(LogEntry, String))> = units
+        .iter()
+        .flatten()
+        .map(|e| (false, e))
+        .chain(denials.iter().flatten().map(|e| (true, e)))
         .collect();
-    all.sort_by_key(|e| std::cmp::Reverse(e.usec));
-    // A full page may have more behind it.
-    let full = all.len() >= q.limit;
+    // Stable, so each source keeps its own order within a microsecond.
+    all.sort_by_key(|(_, (e, _))| std::cmp::Reverse(e.usec));
     all.truncate(q.limit);
+    let taken = |selinux: bool| all.iter().filter(|(s, _)| *s == selinux).count();
+    let page = Page {
+        units: next(&q.page.units, &units, taken(false), q.limit),
+        selinux: next(&q.page.selinux, &denials, taken(true), q.limit),
+    };
+    let done = page.units == Pos::Done && page.selinux == Pos::Done;
     LogsReply {
-        older: full.then(|| all.last().map(|e| e.usec)).flatten(),
-        entries: all,
+        older: (!done).then(|| page.token()),
+        entries: all.into_iter().map(|(_, (e, _))| e.clone()).collect(),
         units: UNITS
             .iter()
             .map(|u| u.to_string())
@@ -364,7 +436,7 @@ pub fn merge(q: &Query, units: Vec<LogEntry>, denials: Vec<LogEntry>) -> LogsRep
     }
 }
 
-async fn read(args: Vec<String>, selinux: bool) -> Result<Vec<LogEntry>, FirewallError> {
+async fn read(args: Vec<String>, selinux: bool) -> Result<Vec<(LogEntry, String)>, FirewallError> {
     let unavailable = |m: String| FirewallError::ServiceUnavailable {
         service: "journal".into(),
         message: m,
@@ -388,22 +460,22 @@ async fn read(args: Vec<String>, selinux: bool) -> Result<Vec<LogEntry>, Firewal
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|l| parse(l, selinux))
+        .filter_map(|l| parse_at(l, selinux))
         .collect())
 }
 
 /// Entries for `q`, newest first.
 pub async fn logs(q: &Query) -> Result<LogsReply, FirewallError> {
     let (units, selinux) = q.wants();
-    let u = if units {
-        read(q.unit_args(false), false).await?
+    let u = if units && q.page.units != Pos::Done {
+        Some(read(q.unit_args(false), false).await?)
     } else {
-        vec![]
+        None
     };
-    let d = if selinux {
-        read(q.selinux_args(false), true).await?
+    let d = if selinux && q.page.selinux != Pos::Done {
+        Some(read(q.selinux_args(false), true).await?)
     } else {
-        vec![]
+        None
     };
     Ok(merge(q, u, d))
 }
@@ -421,7 +493,7 @@ impl Drop for Slot {
 
 type Entries = Pin<Box<dyn Stream<Item = Result<LogEntry, FirewallError>> + Send>>;
 
-fn follow_one(args: Vec<String>, selinux: bool, grep: Option<String>) -> Entries {
+fn follow_one(args: Vec<String>, selinux: bool) -> Entries {
     let child = tokio::process::Command::new("journalctl")
         .args(&args)
         .stdin(Stdio::null())
@@ -445,14 +517,11 @@ fn follow_one(args: Vec<String>, selinux: bool, grep: Option<String>) -> Entries
     Box::pin(futures_util::stream::unfold(
         (lines, child),
         move |(mut lines, child)| {
-            let grep = grep.clone();
             async move {
                 loop {
                     match lines.next_line().await {
                         Ok(Some(l)) => {
-                            if let Some(e) = parse(&l, selinux)
-                                && (!selinux || matches(&e, grep.as_deref()))
-                            {
+                            if let Some(e) = parse(&l, selinux) {
                                 return Some((Ok(e), (lines, child)));
                             }
                         }
@@ -478,10 +547,10 @@ pub fn follow(q: &Query) -> Result<Entries, FirewallError> {
     let (units, selinux) = q.wants();
     let mut streams: Vec<Entries> = Vec::new();
     if units {
-        streams.push(follow_one(q.unit_args(true), false, None));
+        streams.push(follow_one(q.unit_args(true), false));
     }
     if selinux {
-        streams.push(follow_one(q.selinux_args(true), true, q.grep.clone()));
+        streams.push(follow_one(q.selinux_args(true), true));
     }
     let merged = futures_util::stream::select_all(streams);
     // The slot goes with the stream.
@@ -548,7 +617,7 @@ mod tests {
             None,
             Some("a.b (c)".into()),
             Some(50),
-            Some(1_700_000_000_000_000),
+            Some(r#"{"units": {"after": "s=1;i=2"}, "selinux": "done"}"#.into()),
         )
         .unwrap();
         assert_eq!(
@@ -563,7 +632,7 @@ mod tests {
                 "--unit=sparewall-run@*.service",
                 "--priority=warning",
                 "--since=-1h",
-                "--until=@1699999999.999999",
+                "--after-cursor=s=1;i=2",
                 "--case-sensitive=false",
                 "--grep=a\\.b \\(c\\)",
             ]
@@ -576,7 +645,34 @@ mod tests {
         );
         let s = q.selinux_args(false);
         assert!(s.contains(&"_TRANSPORT=audit".to_string()));
-        assert!(s.iter().any(|a| a.starts_with("--grep=avc:")));
+        // The caller's text is matched by journalctl too, in any case,
+        // before it counts the denials.
+        assert!(
+            s.contains(&format!("--grep=^(?=.*(?i:a\\.b \\(c\\))).*{AVC_PATTERN}")),
+            "{s:?}"
+        );
+        assert!(!s.iter().any(|a| a.starts_with("--after-cursor")));
+        let mut plain = super::tests::q(&["selinux"]);
+        plain.page.selinux = Pos::After("s=9".into());
+        let s = plain.selinux_args(false);
+        assert!(
+            s.contains(&format!("--grep={AVC_PATTERN}"))
+                && s.contains(&"--after-cursor=s=9".to_string())
+        );
+        // `until` stays as given beside a page.
+        let mut until = super::tests::q(&[]);
+        until.until = Some("-1d".into());
+        until.page.units = Pos::After("s=3".into());
+        let u = until.unit_args(false);
+        assert!(
+            u.contains(&"--until=-1d".to_string()) && u.contains(&"--after-cursor=s=3".to_string())
+        );
+        // A page token is checked.
+        let bad = |b: &str| Query::new(None, None, None, None, None, None, Some(b.into())).is_err();
+        assert!(bad("12345"));
+        assert!(bad(r#"{"units": {"after": "a
+b"}}"#));
+        assert!(bad(r#"{"units": "start", "other": 1}"#));
         // Only denials: every unit's entries are left out.
         assert_eq!(super::tests::q(&["selinux"]).wants(), (false, true));
         assert_eq!(super::tests::q(&[]).wants(), (true, true));
@@ -601,7 +697,7 @@ mod tests {
         );
         assert!(parse("not json", false).is_none());
         let long = format!(
-            r#"{{"__REALTIME_TIMESTAMP":"1","MESSAGE":"{}"}}"#,
+            r#"{{"__REALTIME_TIMESTAMP":"1","__CURSOR":"s=2","MESSAGE":"{}"}}"#,
             "x".repeat(MAX_TEXT + 10)
         );
         assert!(parse(&long, false).unwrap().message.ends_with('…'));
@@ -610,33 +706,64 @@ mod tests {
 
     #[test]
     fn denials_merge_by_time_and_a_full_page_says_where_to_go_on() {
-        let e = |usec: i64, unit: &str, msg: &str| LogEntry {
-            time: String::new(),
-            usec,
-            unit: unit.into(),
-            priority: 6,
-            identifier: None,
-            message: msg.into(),
-            fields: BTreeMap::new(),
+        let e = |usec: i64, unit: &str, c: &str| {
+            (
+                LogEntry {
+                    time: String::new(),
+                    usec,
+                    unit: unit.into(),
+                    priority: 6,
+                    identifier: None,
+                    message: String::new(),
+                    fields: BTreeMap::new(),
+                },
+                c.to_string(),
+            )
         };
         let mut q = q(&[]);
         q.limit = 3;
-        let r = merge(
-            &q,
-            vec![e(5, "a", "x"), e(3, "a", "y")],
-            vec![e(4, SELINUX, "avc: denied"), e(1, SELINUX, "avc: denied")],
-        );
+        // Three of each read; the page takes the newest three of both.
+        let units = Some(vec![e(5, "a", "u5"), e(3, "a", "u3"), e(3, "a", "u3b")]);
+        let denials = Some(vec![
+            e(4, SELINUX, "s4"),
+            e(1, SELINUX, "s1"),
+            e(0, SELINUX, "s0"),
+        ]);
+        let r = merge(&q, units, denials);
         assert_eq!(
             r.entries.iter().map(|e| e.usec).collect::<Vec<_>>(),
             [5, 4, 3]
         );
-        assert_eq!(r.older, Some(3));
+        // Each source goes on after the last of its own on the page: the
+        // units after u3, so u3b, logged in the same microsecond, comes next.
+        let next = Page::parse(r.older.as_deref().unwrap()).unwrap();
+        assert_eq!(next.units, Pos::After("u3".into()));
+        assert_eq!(next.selinux, Pos::After("s4".into()));
         assert!(r.units.contains(&SELINUX.to_string()));
+        // A source that showed nothing goes on from where it was.
+        q.page = Page {
+            units: Pos::After("u0".into()),
+            selinux: Pos::Start,
+        };
+        let r = merge(
+            &q,
+            Some(vec![e(9, "a", "u9"), e(8, "a", "u8"), e(7, "a", "u7")]),
+            Some(vec![e(1, SELINUX, "s1")]),
+        );
+        let next = Page::parse(r.older.as_deref().unwrap()).unwrap();
+        assert_eq!(next.units, Pos::After("u7".into()));
+        assert_eq!(next.selinux, Pos::Start);
+        // Both read out, all shown: nothing older.
         q.limit = 10;
-        q.grep = Some("Y".into());
-        // journalctl matched the units' text; the denials are matched here.
-        let r = merge(&q, vec![e(3, "a", "y")], vec![e(4, SELINUX, "avc: denied")]);
-        assert_eq!(r.entries.len(), 1);
+        let r = merge(
+            &q,
+            Some(vec![e(3, "a", "u3")]),
+            Some(vec![e(4, SELINUX, "s4")]),
+        );
+        assert_eq!(r.entries.len(), 2);
+        assert_eq!(r.older, None);
+        // A source not read (not asked for, or done) stays done.
+        let r = merge(&q, Some(vec![e(3, "a", "u3")]), None);
         assert_eq!(r.older, None);
     }
 }
