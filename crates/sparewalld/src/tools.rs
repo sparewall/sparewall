@@ -268,9 +268,6 @@ pub fn run(
     let slot = slot()?;
     let mut child = tokio::process::Command::new(program)
         .args(&args)
-        // dig's event loop (libuv) would try io_uring first, which the
-        // coordinator's domain may not create: it works without it.
-        .env("UV_USE_IO_URING", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
