@@ -490,6 +490,7 @@ fn provider_image_ok(container: &str, image: &str) -> Result<(), String> {
 /// components: the kernel resolves it once, under `RESOLVE_NO_SYMLINKS`
 /// (openat2), so a link the coordinator plants, even mid-open, is never
 /// followed. `flags` are added to `O_CLOEXEC` (`O_RDONLY` when empty).
+#[cfg(target_os = "linux")]
 pub fn open_no_symlinks(
     p: &std::path::Path,
     flags: rustix::fs::OFlags,
@@ -514,10 +515,24 @@ pub fn open_no_symlinks(
     })
 }
 
+/// The run unit runs on a node, which is Linux: elsewhere (the CLI, built
+/// for macOS too) there is no openat2, and nothing is opened.
+#[cfg(not(target_os = "linux"))]
+pub fn open_no_symlinks(
+    p: &std::path::Path,
+    _flags: rustix::fs::OFlags,
+) -> Result<std::os::fd::OwnedFd, String> {
+    Err(format!("{}: only on Linux", p.display()))
+}
+
 /// That `p` exists and no component of it is a symbolic link, at the
 /// moment of the check (see [`open_no_symlinks`]).
 pub fn no_symlinks(p: &std::path::Path) -> Result<(), String> {
-    open_no_symlinks(p, rustix::fs::OFlags::PATH).map(|_| ())
+    #[cfg(target_os = "linux")]
+    let flags = rustix::fs::OFlags::PATH;
+    #[cfg(not(target_os = "linux"))]
+    let flags = rustix::fs::OFlags::RDONLY;
+    open_no_symlinks(p, flags).map(|_| ())
 }
 
 /// An image reference: registry/path[:tag][@digest], nothing that could be
