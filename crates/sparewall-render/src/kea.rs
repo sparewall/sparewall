@@ -306,12 +306,21 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             reload: true,
             management: false,
             check: Some(CheckSpec {
-                container: Some(CONTAINER.into()),
-                mount: "/etc/kea".into(),
-                command: vec!["kea-dhcp4".into(), "-t".into(), format!("/etc/kea/{CONF}")],
                 overrides: [(CONF.to_string(), check_text)].into(),
+                ..check_spec()
             }),
         },
     );
     Ok(())
+}
+
+/// Kea's config test, in its container, with the files at `/etc/kea`.
+/// `sparewall-run@` accepts this check and no other for Kea (#279).
+pub fn check_spec() -> CheckSpec {
+    CheckSpec {
+        container: Some(CONTAINER.into()),
+        mount: "/etc/kea".into(),
+        command: vec!["kea-dhcp4".into(), "-t".into(), format!("/etc/kea/{CONF}")],
+        overrides: Default::default(),
+    }
 }

@@ -173,13 +173,20 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             subsystem: Subsystem::Dns,
             reload: true,
             management: false,
-            check: Some(CheckSpec {
-                container: Some(CONTAINER.into()),
-                mount: "/etc/unbound".into(),
-                command: vec!["unbound-checkconf".into(), format!("/etc/unbound/{CONF}")],
-                overrides: Default::default(),
-            }),
+            check: Some(check_spec()),
         },
     );
     Ok(())
+}
+
+/// Unbound's config test, in its container, with the files at
+/// `/etc/unbound`. `sparewall-run@` accepts this check and no other for
+/// Unbound (#279).
+pub fn check_spec() -> CheckSpec {
+    CheckSpec {
+        container: Some(CONTAINER.into()),
+        mount: "/etc/unbound".into(),
+        command: vec!["unbound-checkconf".into(), format!("/etc/unbound/{CONF}")],
+        overrides: Default::default(),
+    }
 }

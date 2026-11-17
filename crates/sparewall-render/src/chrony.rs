@@ -43,17 +43,7 @@ fn service(out: &mut Rendered) {
             subsystem: Subsystem::Ntp,
             reload: false,
             management: false,
-            check: Some(CheckSpec {
-                container: None,
-                mount: DIR.into(),
-                command: vec![
-                    "chronyd".into(),
-                    "-p".into(),
-                    "-f".into(),
-                    format!("{DIR}/{CONF}"),
-                ],
-                overrides: Default::default(),
-            }),
+            check: Some(check_spec()),
         },
     );
 }
@@ -73,4 +63,21 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
 pub(crate) fn render_bootstrap(out: &mut Rendered) {
     out.add(Subsystem::Ntp, CONF, base(&[]));
     service(out);
+}
+
+/// chronyd's config parse (`-p`), on the host, with the files at
+/// [`DIR`]. `sparewall-run@` accepts this check and no other for chrony
+/// (#279).
+pub fn check_spec() -> CheckSpec {
+    CheckSpec {
+        container: None,
+        mount: DIR.into(),
+        command: vec![
+            "chronyd".into(),
+            "-p".into(),
+            "-f".into(),
+            format!("{DIR}/{CONF}"),
+        ],
+        overrides: Default::default(),
+    }
 }

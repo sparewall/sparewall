@@ -436,32 +436,14 @@ async fn issue_with_lego(
 /// due, so the renewal is forced; the names are forced too, for a
 /// certificate whose names changed.
 fn lego_args(name: &str, cert: &Certificate, acme: &Acme, provider: &str) -> Vec<String> {
-    let mut a: Vec<String> = [
-        "--log.format",
-        "text",
-        "run",
-        "--path",
-        "/data",
-        "--accept-tos",
-        "--no-random-sleep",
-        "--renew-force",
-        "--force-cert-domains",
-        "--server",
-        &acme.directory,
-        "--dns",
-        provider,
-        "--cert.name",
+    // One definition, which sparewall-run@ checks lego's arguments against.
+    sparewall_core::hostop::lego_args(
         name,
-    ]
-    .map(String::from)
-    .to_vec();
-    if let Some(e) = &acme.email {
-        a.extend(["--email".into(), e.clone()]);
-    }
-    for n in &cert.names {
-        a.extend(["--domains".into(), n.clone()]);
-    }
-    a
+        &acme.directory,
+        provider,
+        acme.email.as_deref(),
+        &cert.names,
+    )
 }
 
 async fn stored(core: &Core, events: &broadcast::Sender<Value>, name: &str) -> Option<Issued> {

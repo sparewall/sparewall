@@ -171,6 +171,31 @@ Where the implementation departs from, or settles open questions in,
 - **Commands the coordinator's sandbox forbids** (podman config checks,
   the keepalived netns check, bootc) run as the oneshot unit
   `sparewall-run@<id>.service`; `systemd-run` from inside the sandbox fails.
+  The coordinator spools an operation for it, not a command line
+  (`sparewall_core::hostop::HostOp`, #279): bootc status, check, stage and
+  apply; `skopeo inspect`; a reboot; keepalived's stop, start and state;
+  `sparewall-*` timers that run a known job; a calendar check; one lego
+  order (its arguments rebuilt from checked values, so no hook or other
+  option), in the image `/usr` ships, with only the state directory's
+  `lego` mounted; the renderer's own config checks (keepalived's rebuilt
+  from its interface names), in the provider's own image, against files
+  under `/run/sparewall/check`; the admin password hash; the hostname. The
+  unit builds the command from the operation after checking its arguments
+  against its own directories (`SPAREWALL_STATE`, as the coordinator's),
+  refuses any path through a symbolic link (openat2 with
+  `RESOLVE_NO_SYMLINKS`, so the check and the open are one step). lego
+  runs confined (`container_t`) on private copies, in
+  `/run/sparewall-run`, which the coordinator cannot write: its
+  environment file, and its data (regular files only, read through such
+  descriptors), relabelled there for its container. Afterwards the data
+  is copied back relative to directory descriptors, each file under a
+  temporary name and renamed, so a link the coordinator plants is
+  replaced, never written through. Anything else is refused and logged,
+  so a compromised coordinator gets these operations as root and nothing
+  more. What remains: podman mounts a config check's directory by path,
+  after the check, so a coordinator that swaps it for a link in between
+  gets that mount instead, read-only and unlabelled, for the provider's
+  checker alone.
 - **Bound images** are reached with
   `--storage-opt=additionalimagestore=/usr/lib/bootc/storage` per podman
   invocation (Quadlet `GlobalArgs=`): a global storage setting breaks

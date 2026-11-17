@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
@@ -14,6 +14,7 @@ use sparewall_render::nft::TABLE;
 use sparewall_render::{CheckSpec, Meta, Subsystem};
 
 use crate::Error;
+use crate::hostop::HostOp;
 use crate::store::write_atomic;
 use crate::system::{Files, System};
 
@@ -161,7 +162,7 @@ pub const RUN_SPOOL: &str = "/run/sparewall/run";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Spooled {
-    argv: Vec<String>,
+    op: crate::hostop::HostOp,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -171,15 +172,21 @@ struct SpoolResult {
     stderr: String,
 }
 
-/// Run a command outside this service's sandbox. Under systemd it runs as
-/// the oneshot `sparewall-run@<id>.service` (podman, unshare and bootc need
-/// what the coordinator's sandbox forbids); elsewhere it runs directly.
-pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, Error> {
+/// Run an operation outside this service's sandbox (#279). Under systemd
+/// it runs as the oneshot `sparewall-run@<id>.service` (podman, unshare
+/// and bootc need what the coordinator's sandbox forbids), which checks it
+/// again; elsewhere it runs directly.
+pub fn host_op(op: &crate::hostop::HostOp) -> Result<String, Error> {
+    // Checked here too, so a bad operation fails before it is spooled;
+    // the run unit checks it again against its own directories.
+    let argv = op.argv(None).map_err(Error::Apply)?;
+    let (cmd, args) = argv.split_first().expect("an operation has a command");
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let under_systemd = std::env::var_os("INVOCATION_ID").is_some()
         && std::path::Path::new("/run/systemd/system").exists()
         && std::env::var_os("SPAREWALL_NO_HOST_RUN").is_none();
     if !under_systemd {
-        return run(cmd, args, None);
+        return run(cmd, &args, None);
     }
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let id = format!(
@@ -192,10 +199,11 @@ pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, Error> {
     let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     let job = dir.join(format!("{id}.json"));
     let out = dir.join(format!("{id}.out.json"));
-    let mut argv = vec![cmd.to_string()];
-    argv.extend(args.iter().map(|a| a.to_string()));
-    write_atomic(&job, &serde_json::to_vec(&Spooled { argv }).expect("json"))
-        .map_err(|e| Error::io(&job, e))?;
+    write_atomic(
+        &job,
+        &serde_json::to_vec(&Spooled { op: op.clone() }).expect("json"),
+    )
+    .map_err(|e| Error::io(&job, e))?;
     // A oneshot unit: `systemctl start` returns when it has finished.
     let started = run(
         "systemctl",
@@ -256,32 +264,285 @@ pub fn creds_encrypt(name: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(out.stdout)
 }
 
-/// The body of `sparewall-run@<id>.service`: run a spooled command and
-/// record its result.
+/// The body of `sparewall-run@<id>.service`: run a spooled operation, if
+/// it is one [`crate::hostop::HostOp`] allows, and record its result. A
+/// job that is not, or whose arguments fail its checks, is refused and
+/// logged, never run (#279).
 pub fn run_spooled(id: &str) -> Result<(), Error> {
+    run_spooled_in(
+        std::path::Path::new(RUN_SPOOL),
+        id,
+        &crate::hostop::Roots::from_env(),
+    )
+}
+
+fn run_spooled_in(
+    dir: &std::path::Path,
+    id: &str,
+    roots: &crate::hostop::Roots,
+) -> Result<(), Error> {
     if !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
         return Err(Error::Validation(vec![format!("bad job id {id:?}")]));
     }
-    let dir = PathBuf::from(RUN_SPOOL);
     let job = dir.join(format!("{id}.json"));
-    let j: Spooled = serde_json::from_slice(&fs::read(&job).map_err(|e| Error::io(&job, e))?)
-        .map_err(|e| Error::Internal(e.to_string()))?;
-    let (cmd, args) = j
-        .argv
-        .split_first()
-        .ok_or_else(|| Error::Internal("empty job".into()))?;
-    let o = Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| Error::Apply(format!("{cmd}: {e}")))?;
-    let r = SpoolResult {
+    let out = dir.join(format!("{id}.out.json"));
+    let refuse = |why: String| {
+        tracing::error!(job = id, "refused: {why}");
+        let r = SpoolResult {
+            code: -1,
+            stdout: String::new(),
+            stderr: format!("refused by sparewall-run: {why}"),
+        };
+        write_atomic(&out, &serde_json::to_vec(&r).expect("json"))
+            .map_err(|e| Error::io(&out, e))?;
+        Err(Error::Validation(vec![why]))
+    };
+    let bytes = fs::read(&job).map_err(|e| Error::io(&job, e))?;
+    let j: Spooled = match serde_json::from_slice(&bytes) {
+        Ok(j) => j,
+        Err(e) => return refuse(format!("not an operation: {e}")),
+    };
+    let mut argv = match j.op.argv(Some(roots)) {
+        Ok(a) => a,
+        Err(e) => return refuse(e),
+    };
+    let prepared = match prepare(&j.op, id, roots, &mut argv) {
+        Ok(p) => p,
+        Err(e) => {
+            return refuse(e);
+        }
+    };
+    let (cmd, args) = argv.split_first().expect("an operation has a command");
+    let o = Command::new(cmd).args(args).stdin(Stdio::null()).output();
+    let finished = prepared.finish();
+    let o = o.map_err(|e| Error::Apply(format!("{cmd}: {e}")))?;
+    let mut r = SpoolResult {
         code: o.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
     };
-    let out = dir.join(format!("{id}.out.json"));
+    if let Err(e) = finished {
+        r.code = if r.code == 0 { -1 } else { r.code };
+        r.stderr.push_str(&format!("\nsparewall-run: {e}"));
+    }
     write_atomic(&out, &serde_json::to_vec(&r).expect("json")).map_err(|e| Error::io(&out, e))
+}
+
+/// What [`prepare`] set up for one job, finished after it runs. What is
+/// private to the job is removed when this is dropped, so also when
+/// `prepare` fails partway or the job's command cannot be run.
+#[derive(Default)]
+struct Prepared {
+    /// Files and directories of the run unit's own, removed after.
+    private: Vec<PathBuf>,
+    /// lego's private data, copied back to the coordinator's after.
+    lego: Option<(PathBuf, String)>,
+}
+
+impl Prepared {
+    /// Copy lego's results back; dropping `self` then removes what was
+    /// private to the job.
+    fn finish(mut self) -> Result<(), String> {
+        match self.lego.take() {
+            Some((copy, data)) => {
+                let from = crate::hostop::open_no_symlinks(&copy, DIR_FLAGS)?;
+                let to = crate::hostop::open_no_symlinks(Path::new(&data), DIR_FLAGS)?;
+                copy_tree(&from, &to, &mut COPY_BUDGET.clone(), 0)
+                    .map_err(|e| format!("copying lego's data back: {e}"))
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        for p in self.private.iter().rev() {
+            let _ = fs::remove_dir_all(p).or_else(|_| fs::remove_file(p));
+        }
+    }
+}
+
+const DIR_FLAGS: rustix::fs::OFlags =
+    rustix::fs::OFlags::RDONLY.union(rustix::fs::OFlags::DIRECTORY);
+/// The most lego's data may hold, copied either way (accounts and
+/// certificates: kilobytes).
+const COPY_BUDGET: u64 = 64 << 20;
+
+/// What the run unit checks and sets up on disk before it runs an
+/// operation, so that no path it uses can be redirected by a symbolic link
+/// the coordinator plants, even mid-check: paths are opened with openat2
+/// and `RESOLVE_NO_SYMLINKS`, and below that only relative to descriptors.
+///
+/// - A config check's directory is checked so; podman mounts it read-only
+///   and unlabelled, for the provider's checker alone.
+/// - lego's environment file is read through such a descriptor into a
+///   copy in the private directory (root's alone: the coordinator cannot
+///   write it), and its data is copied there too, regular files only.
+///   lego, confined, works on that copy, relabelled for its container, and
+///   [`Prepared::finish`] copies it back. So nothing podman mounts or
+///   relabels is a path the coordinator can change.
+fn prepare(
+    op: &crate::hostop::HostOp,
+    id: &str,
+    roots: &crate::hostop::Roots,
+    argv: &mut [String],
+) -> Result<Prepared, String> {
+    use crate::hostop::{HostOp, lego_mount, no_symlinks, open_no_symlinks};
+    use rustix::fs::{Mode, OFlags};
+    match op {
+        HostOp::ConfigCheck { dir, .. } => {
+            no_symlinks(Path::new(dir))?;
+            Ok(Prepared::default())
+        }
+        HostOp::Lego { data, env_file, .. } => {
+            let mut prepared = Prepared::default();
+            let private = Path::new(&roots.private);
+            fs::create_dir_all(private).map_err(|e| format!("{}: {e}", private.display()))?;
+            let pfd = open_no_symlinks(private, DIR_FLAGS)?;
+            rustix::fs::fchmod(&pfd, Mode::from_raw_mode(0o700))
+                .map_err(|e| format!("{}: {e}", private.display()))?;
+
+            // The environment file.
+            let fd = open_no_symlinks(Path::new(env_file), OFlags::RDONLY | OFlags::NOFOLLOW)?;
+            let mut f = fs::File::from(fd);
+            if !f.metadata().map_err(|e| e.to_string())?.is_file() {
+                return Err(format!("{env_file}: not a file"));
+            }
+            let mut env = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::Read::take(&mut f, 1 << 20), &mut env)
+                .map_err(|e| e.to_string())?;
+            let name = format!("{id}.env");
+            let copy = private.join(&name);
+            prepared.private.push(copy.clone());
+            write_new_at(&pfd, &name, &env, 0o600)?;
+            for a in argv.iter_mut().filter(|a| *a == env_file) {
+                *a = copy.display().to_string();
+            }
+
+            // The data.
+            let name = format!("{id}-lego");
+            let copy = private.join(&name);
+            let _ = fs::remove_dir_all(&copy);
+            prepared.private.push(copy.clone());
+            rustix::fs::mkdirat(&pfd, name.as_str(), Mode::from_raw_mode(0o700))
+                .map_err(|e| format!("{}: {e}", copy.display()))?;
+            let to = rustix::fs::openat(
+                &pfd,
+                name.as_str(),
+                DIR_FLAGS | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| format!("{}: {e}", copy.display()))?;
+            let from = open_no_symlinks(Path::new(data), DIR_FLAGS)?;
+            copy_tree(&from, &to, &mut COPY_BUDGET.clone(), 0)
+                .map_err(|e| format!("copying lego's data: {e}"))?;
+            let mount = lego_mount(data);
+            for a in argv.iter_mut().filter(|a| **a == mount) {
+                *a = lego_mount(&copy.display().to_string());
+            }
+            prepared.lego = Some((copy, data.clone()));
+            Ok(prepared)
+        }
+        _ => Ok(Prepared::default()),
+    }
+}
+
+/// Write a new file `name` under the directory `dir`, replacing one there
+/// (never following a link): under a temporary name, then renamed.
+fn write_new_at(
+    dir: &impl std::os::fd::AsFd,
+    name: &str,
+    bytes: &[u8],
+    mode: rustix::fs::RawMode,
+) -> Result<(), String> {
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    let tmp = format!(".{name}.sparewall-run");
+    let _ = rustix::fs::unlinkat(dir, tmp.as_str(), AtFlags::empty());
+    let fd = rustix::fs::openat(
+        dir,
+        tmp.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(mode),
+    )
+    .map_err(|e| format!("{name}: {e}"))?;
+    let written = fs::File::from(fd)
+        .write_all(bytes)
+        .map_err(|e| format!("{name}: {e}"))
+        .and_then(|()| {
+            rustix::fs::renameat(dir, tmp.as_str(), dir, name).map_err(|e| format!("{name}: {e}"))
+        });
+    if written.is_err() {
+        let _ = rustix::fs::unlinkat(dir, tmp.as_str(), AtFlags::empty());
+    }
+    written
+}
+
+/// Copy the directory `from` into `to`, both descriptors: regular files
+/// and directories only (links and anything else are skipped), nothing
+/// followed, at most `budget` bytes and eight levels deep. Files keep
+/// their owner's permission bits only; directories are created 0700.
+fn copy_tree(
+    from: &impl std::os::fd::AsFd,
+    to: &impl std::os::fd::AsFd,
+    budget: &mut u64,
+    depth: u32,
+) -> Result<(), String> {
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+    if depth > 8 {
+        return Err("too deep".into());
+    }
+    let dir = rustix::fs::Dir::read_from(from).map_err(|e| e.to_string())?;
+    for entry in dir {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "." || name == ".." || name.ends_with(".sparewall-run") {
+            continue;
+        }
+        let st = rustix::fs::statat(from, name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| format!("{name}: {e}"))?;
+        match FileType::from_raw_mode(st.st_mode) {
+            FileType::Directory => {
+                match rustix::fs::mkdirat(to, name.as_str(), Mode::from_raw_mode(0o700)) {
+                    Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                    Err(e) => return Err(format!("{name}: {e}")),
+                }
+                let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+                let sub_from = rustix::fs::openat(from, name.as_str(), flags, Mode::empty())
+                    .map_err(|e| format!("{name}: {e}"))?;
+                let sub_to = rustix::fs::openat(to, name.as_str(), flags, Mode::empty())
+                    .map_err(|e| format!("{name}: {e}"))?;
+                copy_tree(&sub_from, &sub_to, budget, depth + 1)
+                    .map_err(|e| format!("{name}/{e}"))?;
+            }
+            FileType::RegularFile => {
+                let fd = rustix::fs::openat(
+                    from,
+                    name.as_str(),
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|e| format!("{name}: {e}"))?;
+                let mut f = fs::File::from(fd);
+                if !f.metadata().map_err(|e| e.to_string())?.is_file() {
+                    continue;
+                }
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(&mut f, *budget + 1),
+                    &mut bytes,
+                )
+                .map_err(|e| format!("{name}: {e}"))?;
+                if bytes.len() as u64 > *budget {
+                    return Err("more data than lego keeps".into());
+                }
+                *budget -= bytes.len() as u64;
+                write_new_at(to, &name, &bytes, (st.st_mode & 0o700) | 0o600)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// What the live `inet sparewall` table holds.
@@ -736,48 +997,30 @@ impl System for Linux {
             fs::set_permissions(&p, fs::Permissions::from_mode(0o644))
                 .map_err(|e| Error::io(&p, e))?;
         }
-        let d = dir.display().to_string();
-        // Under systemd the checks run as transient units, outside this
-        // service's sandbox (podman and unshare need what it forbids).
-        let wrap = |cmd: &str, args: &[&str]| host_run(cmd, args);
-        let result = match &spec.container {
+        // Under systemd the checks run outside this service's sandbox
+        // (podman and unshare need what it forbids), as an operation
+        // sparewall-run@ checks: only the renderer's own checks (#279).
+        let image = match &spec.container {
             Some(container) => match self.quadlet_image(container) {
-                Some(image) => {
-                    let vol = format!("{d}:{}:ro", spec.mount);
-                    let mut args = vec![
-                        // Bound images live in bootc's store.
-                        "--storage-opt=additionalimagestore=/usr/lib/bootc/storage",
-                        "run",
-                        "--rm",
-                        "--network=none",
-                        "--read-only",
-                        "--pull=never",
-                        "--security-opt",
-                        "label=disable",
-                        "-v",
-                        &vol,
-                        &image,
-                    ];
-                    args.extend(spec.command.iter().map(String::as_str));
-                    wrap("podman", &args).map(|_| ())
-                }
+                Some(image) => Some(image),
                 None => {
                     tracing::warn!(container, "no image for the config check; skipping it");
-                    Ok(())
+                    let _ = fs::remove_dir_all(&dir);
+                    return Ok(());
                 }
             },
-            None => {
-                // Host checker: point its paths at the scratch copy.
-                let args: Vec<String> = spec
-                    .command
-                    .iter()
-                    .skip(1)
-                    .map(|a| a.replace(&spec.mount, &d))
-                    .collect();
-                let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                wrap(&spec.command[0], &args).map(|_| ())
-            }
+            None => None,
         };
+        let check = CheckSpec {
+            overrides: Default::default(),
+            ..spec.clone()
+        };
+        let result = host_op(&HostOp::ConfigCheck {
+            spec: check,
+            dir: dir.display().to_string(),
+            image,
+        })
+        .map(|_| ());
         let _ = fs::remove_dir_all(&dir);
         result.map_err(|e| Error::Check(e.to_string()))
     }
@@ -902,7 +1145,7 @@ impl System for Linux {
     fn set_admin_password(&mut self, hash: &str) -> Result<(), Error> {
         // usermod edits shadow as the account tools do, outside this
         // domain (sparewall-run@), so the policy grants no shadow access.
-        host_run("usermod", &["-p", hash, "admin"]).map(|_| ())
+        host_op(&HostOp::SetAdminPassword { hash: hash.into() }).map(|_| ())
     }
 
     fn set_hostname(&mut self, name: &str) -> Result<bool, Error> {
@@ -910,18 +1153,21 @@ impl System for Linux {
         // reads and writes /etc/hostname outside this domain. Both must
         // match: a running name alone is lost at the next boot.
         if rustix::system::uname().nodename().to_bytes() == name.as_bytes()
-            && host_run("hostnamectl", &["hostname", "--static"])?.trim() == name
+            && host_op(&HostOp::Hostname)?.trim() == name
         {
             return Ok(false);
         }
-        host_run("hostnamectl", &["set-hostname", name]).map(|_| true)
+        host_op(&HostOp::SetHostname { name: name.into() }).map(|_| true)
     }
 
     fn calendar_check(&mut self, expr: &str) -> Result<(), String> {
         // Outside this domain, as the scheduler's own reading of it is.
-        host_run("systemd-analyze", &["calendar", "--iterations=1", expr])
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        host_op(&HostOp::CalendarNext {
+            expr: expr.into(),
+            base: None,
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
@@ -1055,6 +1301,208 @@ impl Linux {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// The run unit copies lego's data through descriptors: links and
+    /// anything but regular files are skipped on the way in, and on the
+    /// way back a link where a directory belongs is refused and a link
+    /// where a file belongs is replaced, never written through.
+    #[test]
+    fn lego_data_is_copied_without_following_links() {
+        use std::os::unix::fs::symlink;
+        let t = tempfile::tempdir().unwrap();
+        let (src, dst, outside) = (
+            t.path().join("src"),
+            t.path().join("dst"),
+            t.path().join("outside"),
+        );
+        for d in [&src, &dst, &outside] {
+            fs::create_dir(d).unwrap();
+        }
+        fs::create_dir(src.join("certificates")).unwrap();
+        fs::write(src.join("certificates/mgmt.crt"), "cert").unwrap();
+        fs::write(src.join("ca.pem"), "ca").unwrap();
+        symlink("/etc/hostname", src.join("leak")).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            src.join("fifo").as_path(),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        fs::write(outside.join("victim"), "untouched").unwrap();
+        symlink(outside.join("victim"), dst.join("ca.pem")).unwrap();
+
+        let open = |p: &Path| crate::hostop::open_no_symlinks(p, DIR_FLAGS).unwrap();
+        copy_tree(&open(&src), &open(&dst), &mut COPY_BUDGET.clone(), 0).unwrap();
+        assert_eq!(
+            fs::read_to_string(dst.join("certificates/mgmt.crt")).unwrap(),
+            "cert"
+        );
+        assert_eq!(fs::read_to_string(dst.join("ca.pem")).unwrap(), "ca");
+        assert!(
+            !fs::symlink_metadata(dst.join("ca.pem"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("victim")).unwrap(),
+            "untouched"
+        );
+        assert!(!dst.join("leak").exists() && !dst.join("fifo").exists());
+
+        // A link where a directory belongs.
+        let dst2 = t.path().join("dst2");
+        fs::create_dir(&dst2).unwrap();
+        symlink(&outside, dst2.join("certificates")).unwrap();
+        assert!(copy_tree(&open(&src), &open(&dst2), &mut COPY_BUDGET.clone(), 0).is_err());
+        assert!(!outside.join("mgmt.crt").exists());
+
+        // Too much.
+        assert!(copy_tree(&open(&src), &open(&dst), &mut 3, 0).is_err());
+    }
+
+    /// lego's mount and environment file become the run unit's private
+    /// copies, and what lego leaves there is copied back after.
+    #[test]
+    fn lego_runs_on_a_private_copy() {
+        let t = tempfile::tempdir().unwrap();
+        let roots = crate::hostop::Roots {
+            state: t.path().join("state").display().to_string(),
+            runtime: t.path().join("run").display().to_string(),
+            private: t.path().join("private").display().to_string(),
+            lego_image: Some("ghcr.io/sparewall/lego:sha-1".into()),
+        };
+        let data = roots.lego_data();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(Path::new(&data).join("ca.pem"), "ca").unwrap();
+        let env_file = format!("{}/lego/.env-1", roots.runtime);
+        fs::create_dir_all(Path::new(&env_file).parent().unwrap()).unwrap();
+        fs::write(&env_file, "SECRET=1\n").unwrap();
+        let op = crate::hostop::HostOp::Lego {
+            image: "ghcr.io/sparewall/lego:sha-1".into(),
+            data: data.clone(),
+            env_file: env_file.clone(),
+            args: crate::hostop::lego_args(
+                "mgmt",
+                "https://acme.example/dir",
+                "rfc2136",
+                None,
+                &["fw.example.org".into()],
+            ),
+        };
+        let mut argv = op.argv(Some(&roots)).unwrap();
+        let prepared = prepare(&op, "7-1", &roots, &mut argv).unwrap();
+        let copy = Path::new(&roots.private).join("7-1-lego");
+        assert!(argv.contains(&crate::hostop::lego_mount(&copy.display().to_string())));
+        assert!(!argv.contains(&crate::hostop::lego_mount(&data)));
+        let env_copy = Path::new(&roots.private).join("7-1.env");
+        assert!(argv.contains(&env_copy.display().to_string()));
+        assert_eq!(fs::read_to_string(&env_copy).unwrap(), "SECRET=1\n");
+        assert_eq!(fs::read_to_string(copy.join("ca.pem")).unwrap(), "ca");
+
+        // lego's work, in the copy.
+        fs::create_dir(copy.join("certificates")).unwrap();
+        fs::write(copy.join("certificates/mgmt.crt"), "new").unwrap();
+        prepared.finish().unwrap();
+        assert_eq!(
+            fs::read_to_string(Path::new(&data).join("certificates/mgmt.crt")).unwrap(),
+            "new"
+        );
+        assert!(
+            !copy.exists() && !env_copy.exists(),
+            "private copies removed"
+        );
+
+        // When copying the data fails partway, the environment copy and
+        // what was copied are removed all the same.
+        let deep = (0..10).fold(Path::new(&data).join("deep"), |p, i| p.join(i.to_string()));
+        fs::create_dir_all(&deep).unwrap();
+        let mut argv = op.argv(Some(&roots)).unwrap();
+        assert!(prepare(&op, "7-2", &roots, &mut argv).is_err());
+        assert_eq!(
+            fs::read_dir(&roots.private).unwrap().count(),
+            0,
+            "nothing left in the private directory"
+        );
+    }
+
+    /// sparewall-run@ runs operations only: a command line, or an
+    /// operation whose arguments fail its checks, is refused with a result
+    /// saying so, and nothing runs (#279).
+    #[test]
+    fn the_run_unit_refuses_anything_but_a_checked_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let jobs = [
+            (
+                "1-0",
+                json!({"argv": ["touch", marker.display().to_string()]}),
+            ),
+            (
+                "1-1",
+                json!({"op": {"op": "set-hostname", "name": "x; touch /tmp/y"}}),
+            ),
+            (
+                "1-2",
+                json!({"op": {"op": "timer-create", "unit": "sparewall-x",
+                    "description": "x", "calendar": "daily",
+                    "command": ["touch", marker.display().to_string()]}}),
+            ),
+        ];
+        // lego, with every argument right but its environment file a link
+        // to a file the coordinator should not have read as root.
+        let (state, run) = (dir.path().join("state"), dir.path().join("run"));
+        fs::create_dir_all(state.join("lego")).unwrap();
+        fs::create_dir_all(run.join("lego")).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", run.join("lego/.env-1")).unwrap();
+        let lego = crate::hostop::HostOp::Lego {
+            image: "ghcr.io/sparewall/lego:sha-1".into(),
+            data: state.join("lego").display().to_string(),
+            env_file: run.join("lego/.env-1").display().to_string(),
+            args: crate::hostop::lego_args(
+                "mgmt",
+                "https://acme.example/dir",
+                "rfc2136",
+                None,
+                &["fw.example.org".into()],
+            ),
+        };
+        let jobs: Vec<(&str, serde_json::Value)> = jobs
+            .into_iter()
+            .chain([("1-3", json!({ "op": lego }))])
+            .collect();
+        for (id, job) in jobs {
+            fs::write(
+                dir.path().join(format!("{id}.json")),
+                serde_json::to_vec(&job).unwrap(),
+            )
+            .unwrap();
+            let roots = crate::hostop::Roots {
+                state: dir.path().join("state").display().to_string(),
+                runtime: dir.path().join("run").display().to_string(),
+                private: dir.path().join("private").display().to_string(),
+                lego_image: Some("ghcr.io/sparewall/lego:sha-1".into()),
+            };
+            assert!(run_spooled_in(dir.path(), id, &roots).is_err(), "{id}");
+            let r: SpoolResult = serde_json::from_slice(
+                &fs::read(dir.path().join(format!("{id}.out.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(r.code, -1, "{id}");
+            assert!(
+                r.stderr.starts_with("refused by sparewall-run"),
+                "{id}: {}",
+                r.stderr
+            );
+            if id == "1-3" {
+                assert!(r.stderr.contains("a symbolic link"), "{}", r.stderr);
+            }
+        }
+        assert!(!marker.exists(), "nothing ran");
+    }
 
     /// Only keys whose value changes are written (#215): writing the
     /// global IPv6 forwarding key resets every interface's.

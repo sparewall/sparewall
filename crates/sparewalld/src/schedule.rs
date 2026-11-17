@@ -224,15 +224,10 @@ pub fn parse_next(out: &str) -> Option<jiff::Timestamp> {
 
 /// The first time `expr` elapses after `base`.
 fn next_after(expr: &str, base: jiff::Timestamp) -> Result<Option<jiff::Timestamp>, String> {
-    let out = crate::upgrade::host_run(
-        "systemd-analyze",
-        &[
-            "calendar",
-            "--iterations=1",
-            &format!("--base-time=@{}", base.as_second()),
-            expr,
-        ],
-    )?;
+    let out = crate::upgrade::host_run(&sparewall_core::hostop::HostOp::CalendarNext {
+        expr: expr.into(),
+        base: Some(base.as_second()),
+    })?;
     Ok(parse_next(&out))
 }
 

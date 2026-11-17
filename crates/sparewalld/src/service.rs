@@ -16,6 +16,7 @@ use sparewall_api::{
     SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply, ToolReply,
     UpgradeCheckReply, UpgradeStartReply, UserInfo, UserListReply, ValidateReply, VpnConfigReply,
 };
+use sparewall_core::hostop::HostOp;
 use sparewall_core::pair::SyncState;
 use sparewall_core::secrets::{ADMIN_PASSWORD, SecretClass};
 use sparewall_core::tokens::Role;
@@ -47,7 +48,7 @@ pub fn booted_image_digest() -> Option<String> {
 /// while during boot. Blocking; run it off the async workers.
 pub fn lookup_booted_image() {
     for _ in 0..20 {
-        let found = crate::upgrade::host_run("bootc", &["status", "--format=json"])
+        let found = crate::upgrade::host_run(&HostOp::BootcStatus)
             .ok()
             .and_then(|out| {
                 let v: Value = serde_json::from_str(&out).ok()?;
@@ -809,13 +810,11 @@ where
         let available = if let Some(a) = offer.available {
             a
         } else if tracked.as_deref() == Some(target.as_str()) {
-            let out = tokio::task::spawn_blocking(|| {
-                crate::upgrade::host_run("bootc", &["upgrade", "--check"])
-            })
-            .await
-            .map_err(|e| FirewallError::ApplyFailed {
-                message: e.to_string(),
-            })?;
+            let out = tokio::task::spawn_blocking(|| crate::upgrade::host_run(&HostOp::BootcCheck))
+                .await
+                .map_err(|e| FirewallError::ApplyFailed {
+                    message: e.to_string(),
+                })?;
             match &out {
                 Ok(o) => !o.contains("No changes") && !o.contains("No update available"),
                 Err(_) => false,

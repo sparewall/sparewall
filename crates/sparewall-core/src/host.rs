@@ -11,7 +11,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use crate::linux::host_run;
+use crate::hostop::{HostOp, UnitAction};
+use crate::linux::host_op;
 
 /// One conntrackd command in a VRRP transition (the primary-backup
 /// sequence shipped with conntrack-tools).
@@ -255,35 +256,24 @@ pub struct SystemdTimers;
 
 impl Timers for SystemdTimers {
     fn remove(&self, unit: &str) -> Result<(), String> {
-        match host_run("systemctl", &["stop", &format!("{unit}.timer")]) {
+        match host_op(&HostOp::TimerStop { unit: unit.into() }) {
             Err(e) if !e.to_string().contains("not loaded") => return Err(e.to_string()),
             _ => {}
         }
         // Only clears a failed state; nothing to report if there is none.
-        let _ = host_run(
-            "systemctl",
-            &[
-                "reset-failed",
-                &format!("{unit}.timer"),
-                &format!("{unit}.service"),
-            ],
-        );
+        let _ = host_op(&HostOp::TimerResetFailed { unit: unit.into() });
         Ok(())
     }
 
     fn create(&self, t: &TimerSpec) -> Result<(), String> {
-        let mut args = vec![
-            format!("--unit={}", t.unit),
-            format!("--description={}", t.description),
-            format!("--on-calendar={}", t.calendar),
-            "--timer-property=Persistent=yes".into(),
-            "--timer-property=RandomizedDelaySec=5min".into(),
-        ];
-        args.extend(t.command.iter().cloned());
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        host_run("systemd-run", &args)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        host_op(&HostOp::TimerCreate {
+            unit: t.unit.clone(),
+            description: t.description.clone(),
+            calendar: t.calendar.clone(),
+            command: t.command.clone(),
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -308,12 +298,6 @@ pub trait Lego: Send + Sync {
     fn run(&self, data: &Path, env_file: &Path, args: &[String]) -> Result<(), String>;
 }
 
-/// Where the image ships the lego image reference, as a Quadlet `.image`
-/// unit that is also a logically bound image.
-pub const LEGO_IMAGE_UNIT: &str = "/usr/share/containers/systemd/sparewall-lego.image";
-/// bootc's store of logically bound images.
-const BOUND_STORE: &str = "/usr/lib/bootc/storage";
-
 /// lego in its provider image, run by podman outside the coordinator's
 /// sandbox.
 pub struct LegoContainer {
@@ -323,45 +307,20 @@ pub struct LegoContainer {
 impl LegoContainer {
     /// The image the node ships (`SPAREWALL_LEGO_IMAGE` overrides it).
     pub fn shipped() -> Result<LegoContainer, String> {
-        if let Ok(image) = std::env::var("SPAREWALL_LEGO_IMAGE") {
-            return Ok(LegoContainer { image });
-        }
-        let unit = std::fs::read_to_string(LEGO_IMAGE_UNIT)
-            .map_err(|e| format!("{LEGO_IMAGE_UNIT}: {e}"))?;
-        unit.lines()
-            .find_map(|l| l.trim().strip_prefix("Image="))
-            .map(|i| LegoContainer {
-                image: i.trim().to_string(),
-            })
-            .ok_or_else(|| format!("{LEGO_IMAGE_UNIT} names no image"))
+        crate::hostop::lego_image().map(|image| LegoContainer { image })
     }
 }
 
 impl Lego for LegoContainer {
     fn run(&self, data: &Path, env_file: &Path, args: &[String]) -> Result<(), String> {
-        let mut argv: Vec<String> = Vec::new();
-        if Path::new(BOUND_STORE).is_dir() {
-            argv.push(format!("--storage-opt=additionalimagestore={BOUND_STORE}"));
-        }
-        argv.extend(
-            [
-                "run",
-                "--rm",
-                "--pull=never",
-                "--network=host",
-                "--env-file",
-            ]
-            .map(String::from),
-        );
-        argv.push(env_file.display().to_string());
-        argv.push("-v".into());
-        argv.push(format!("{}:/data:Z", data.display()));
-        argv.push(self.image.clone());
-        argv.extend(args.iter().cloned());
-        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-        host_run("podman", &argv)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        host_op(&HostOp::Lego {
+            image: self.image.clone(),
+            data: data.display().to_string(),
+            env_file: env_file.display().to_string(),
+            args: args.to_vec(),
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -473,13 +432,13 @@ pub trait UpgradeHost: Send + Sync {
 /// bootc and systemctl, outside the daemon's sandbox.
 pub struct HostUpgrade;
 
-fn host(cmd: &str, args: &[&str]) -> Result<String, String> {
-    host_run(cmd, args).map_err(|e| e.to_string())
+fn host(op: HostOp) -> Result<String, String> {
+    host_op(&op).map_err(|e| e.to_string())
 }
 
 /// `bootc status` as JSON.
 pub fn bootc_status() -> Option<serde_json::Value> {
-    serde_json::from_str(&host("bootc", &["status", "--format=json"]).ok()?).ok()
+    serde_json::from_str(&host(HostOp::BootcStatus).ok()?).ok()
 }
 
 /// The bootc command that stages `image`, given `bootc status`. `switch`
@@ -495,6 +454,16 @@ pub fn stage_args<'a>(status: Option<&serde_json::Value>, image: &'a str) -> Vec
         vec!["upgrade"]
     } else {
         vec!["switch", "--enforce-container-sigpolicy", image]
+    }
+}
+
+/// The operation that stages `image` ([`stage_args`]), optionally only
+/// downloading it.
+fn stage_op(status: Option<&serde_json::Value>, image: &str, download_only: bool) -> HostOp {
+    let switch = stage_args(status, image).first() == Some(&"switch");
+    HostOp::BootcStage {
+        image: switch.then(|| image.to_string()),
+        download_only,
     }
 }
 
@@ -549,14 +518,12 @@ pub fn downloaded(
 
 impl UpgradeHost for HostUpgrade {
     fn stage(&self, image: &str) -> Result<Option<String>, String> {
-        host("bootc", &stage_args(bootc_status().as_ref(), image))?;
+        host(stage_op(bootc_status().as_ref(), image, false))?;
         staged_image(image)
     }
 
     fn download(&self, image: &str) -> Result<Option<String>, String> {
-        let mut args = stage_args(bootc_status().as_ref(), image);
-        args.insert(1, "--download-only");
-        let out = host("bootc", &args)?;
+        let out = host(stage_op(bootc_status().as_ref(), image, true))?;
         downloaded(
             &bootc_status().ok_or("cannot read bootc status")?,
             image,
@@ -565,7 +532,7 @@ impl UpgradeHost for HostUpgrade {
     }
 
     fn apply_downloaded(&self) -> Result<(), String> {
-        host("bootc", &["upgrade", "--from-downloaded"]).map(|_| ())
+        host(HostOp::BootcApplyDownloaded).map(|_| ())
     }
 
     fn booted(&self) -> Option<String> {
@@ -579,32 +546,28 @@ impl UpgradeHost for HostUpgrade {
     }
 
     fn reboot_soon(&self) -> Result<(), String> {
-        host(
-            "systemd-run",
-            &["--on-active=5s", "--", "systemctl", "reboot"],
-        )
-        .map(|_| ())
+        host(HostOp::RebootSoon).map(|_| ())
     }
 
     fn stop_keepalived(&self) -> Result<(), String> {
-        host("systemctl", &["stop", "--no-block", "keepalived.service"]).map(|_| ())
+        host(HostOp::Keepalived {
+            action: UnitAction::Stop,
+        })
+        .map(|_| ())
     }
 
     fn keepalived_state(&self) -> Result<String, String> {
-        host(
-            "systemctl",
-            &[
-                "show",
-                "--property=ActiveState",
-                "--value",
-                "keepalived.service",
-            ],
-        )
+        host(HostOp::Keepalived {
+            action: UnitAction::State,
+        })
         .map(|s| s.trim().to_string())
     }
 
     fn start_keepalived(&self) -> Result<(), String> {
-        host("systemctl", &["start", "keepalived.service"]).map(|_| ())
+        host(HostOp::Keepalived {
+            action: UnitAction::Start,
+        })
+        .map(|_| ())
     }
 }
 

@@ -52,7 +52,8 @@ systemd_unit_file(sparewalld_unit_file_t)
 
 # sparewall-run@ runs the same binary for commands the coordinator's
 # confinement forbids, in unconfined_service_t (SELinuxContext=), so that
-# domain may be entered through it.
+# domain may be entered through it. It runs only the operations
+# sparewall_core::hostop allows, with their arguments checked (#279).
 gen_require(`
 	type unconfined_service_t;
 ')
