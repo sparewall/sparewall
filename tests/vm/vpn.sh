@@ -416,6 +416,10 @@ vpn_after_move() { # event
         check_recovery "$event" "$c (idle)" "$(cat "$c.recovery")" "$VPN_BOUND"
     done
     check_recovery "$event" "natk (idle, keepalives only)" "$(cat natk.recovery)" "$VPN_KEEPALIVE_BOUND"
+    count() { local c; c=$(grep -c -- "$1" "$2" 2>/dev/null); echo "${c:-0}"; }
+    echo "  site watch: $(count ' IPv4 ' site-wire.log) packets," \
+        "$(count ' fw[12] endpoint=' site-poll.log) polls," \
+        "$(count ' unreachable$' site-poll.log) unreachable"
     s=$(cat site.recovery)
     if [ "$s" = never ] || awk -v s="$s" -v b="$VPN_BOUND" 'BEGIN { exit !(s > b) }'; then
         site_evidence "$since"
