@@ -2075,3 +2075,49 @@ fn a_pair_s_inside_ipv6_objects_take_the_prefix() {
     );
     assert!(!has_error(&d, "objects.net6"), "{:?}", error_paths(&d));
 }
+
+/// A rule nft matches with several lines of one family (@objects beside
+/// other addresses, #259) can't have a limit: each line would have one of
+/// its own, so the rule's rate would multiply.
+#[test]
+fn a_limit_needs_one_line_per_family() {
+    let rule = |r: serde_json::Value| {
+        let mut r = r;
+        r["order"] = 900.into();
+        r["action"] = "accept".into();
+        r["limit"] = "10/second".into();
+        v6(json!({
+            "objects": {
+                "a4": {"type": "ipv4", "elements": ["192.168.1.20"]},
+                "b4": {"type": "ipv4", "elements": ["192.168.1.21"]},
+                "h6": {"type": "ipv6", "suffixes": {"lan": ["::20"]}},
+            },
+            "policy": {"wan->lan": {"action": "drop", "rules": {"r": r}}},
+        }))
+    };
+    let ok = |r: serde_json::Value| {
+        assert_eq!(
+            history_errors(&rule(r.clone())),
+            Vec::<String>::new(),
+            "{r}"
+        )
+    };
+    ok(json!({}));
+    ok(json!({"dst": ["192.168.1.20", "192.168.1.21"]}));
+    ok(json!({"dst": "@a4", "src": "10.0.0.0/8"}));
+    // One line per family.
+    ok(json!({"dst": ["@a4", "@h6"]}));
+    ok(json!({"dst": ["@a4", "2001:db8::1"]}));
+    let bad = |r: serde_json::Value| {
+        assert!(
+            history_error(
+                &rule(r.clone()),
+                "policy.'wan->lan'.rules.r.limit: with @objects among one family's addresses"
+            ),
+            "{r}"
+        );
+    };
+    bad(json!({"dst": ["192.168.1.22", "@a4"]}));
+    bad(json!({"dst": ["@a4", "@b4"]}));
+    bad(json!({"src": ["10.0.0.1", "@a4"], "dst": "192.168.1.20"}));
+}
