@@ -27,8 +27,10 @@ q() { jq -r "$1" "$tmp/sbom.json"; }
     || fail "ulogd's version"
 [ "$(q '.packages[] | select(.name == "libnetfilter_log") | .checksums[0].checksumValue')" = "$(v NFLOG_SHA256)" ] \
     || fail "libnetfilter_log's checksum"
-[ "$(q '[.packages[] | select(.licenseDeclared == "NOASSERTION")] | length')" = 2 ] \
-    || fail "licenses"
+[ "$(q '.packages[] | select(.name == "ulogd") | .licenseDeclared')" = GPL-2.0-only ] \
+    || fail "ulogd's license"
+[ "$(q '.packages[] | select(.name == "libnetfilter_log") | .licenseDeclared')" = GPL-2.0-or-later ] \
+    || fail "libnetfilter_log's license"
 # SPDX 2.3: IDs of letters, digits, "." and "-"; purl qualifier values
 # percent-encoded.
 [ "$(q '[.packages[].SPDXID | select(test("^SPDXRef-[A-Za-z0-9.-]+$") | not)] | length')" = 0 ] \
