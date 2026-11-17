@@ -5,6 +5,7 @@ pub mod backup;
 pub mod coordinator;
 pub mod health;
 pub mod host;
+pub mod hostop;
 pub mod ipv6;
 pub mod linux;
 pub mod metrics;

@@ -16,6 +16,7 @@ use futures_util::{StreamExt, pin_mut};
 use serde_json::{Value, json};
 use sparewall_api::{HelloReply, PEER_PROTOCOL, PeerProxy, PeerUpgradeProxy};
 use sparewall_core::host::{HostUpgrade, UpgradeHost, bootc_status};
+use sparewall_core::hostop::HostOp;
 use tokio::sync::{broadcast, oneshot};
 
 use crate::peer::{Link, Pair, connect, tunnel_addrs};
@@ -64,9 +65,9 @@ pub const DEFAULT_CHANNEL: &str = "stable";
 /// version (`45.20261030.0`) in every image, older ones included.
 pub const VERSION_LABEL: &str = "org.sparewall.version";
 
-/// Run a host command outside this service's sandbox.
-pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, String> {
-    sparewall_core::linux::host_run(cmd, args).map_err(|e| e.to_string())
+/// Run a host operation outside this service's sandbox (#279).
+pub fn host_run(op: &HostOp) -> Result<String, String> {
+    sparewall_core::linux::host_op(op).map_err(|e| e.to_string())
 }
 
 /// The image reference the node tracks, e.g. `ghcr.io/sparewall/sparewall:testing`.
@@ -146,15 +147,10 @@ pub const INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 
 /// Read an image's digest and version label (`skopeo inspect`).
 pub fn inspect(image: &str) -> Result<Remote, String> {
-    let out = host_run(
-        "skopeo",
-        &[
-            &format!("--command-timeout={}s", INSPECT_TIMEOUT.as_secs()),
-            "inspect",
-            "--no-tags",
-            &format!("docker://{image}"),
-        ],
-    )?;
+    let out = host_run(&HostOp::SkopeoInspect {
+        image: image.into(),
+        timeout_s: INSPECT_TIMEOUT.as_secs(),
+    })?;
     let v: Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
     let text = |x: &Value| x.as_str().filter(|s| !s.is_empty()).map(str::to_string);
     Ok(Remote {

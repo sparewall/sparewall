@@ -269,22 +269,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
             management: false,
             // keepalived insists the interfaces exist; check in a private
             // network namespace holding dummy links of the same names.
-            check: Some(CheckSpec {
-                container: None,
-                mount: DIR.into(),
-                command: vec![
-                    "unshare".into(),
-                    "--net".into(),
-                    "sh".into(),
-                    "-ec".into(),
-                    format!(
-                        "for i in {}; do ip link add \"$i\" type dummy; ip link set \"$i\" multicast on up; done; \
-                         exec keepalived --config-test --use-file {DIR}/{CONF}",
-                        links.join(" ")
-                    ),
-                ],
-                overrides: Default::default(),
-            }),
+            check: Some(check_spec(&links)),
         },
     );
 }
@@ -303,3 +288,30 @@ pub fn vmac_link_local(vrid: u8) -> std::net::Ipv6Addr {
         0x0100 | u16::from(vrid),
     )
 }
+
+/// keepalived's config test, on the host, in a private network namespace
+/// holding dummy links named `links` (it insists the interfaces exist).
+/// `sparewall-run@` accepts this check, for links it can rebuild it from,
+/// and no other for keepalived (#279).
+pub fn check_spec(links: &[String]) -> CheckSpec {
+    CheckSpec {
+        container: None,
+        mount: DIR.into(),
+        command: vec![
+            "unshare".into(),
+            "--net".into(),
+            "sh".into(),
+            "-ec".into(),
+            format!(
+                "{CHECK_LINKS_START}{}{CHECK_LINKS_END}ip link add \"$i\" type dummy; ip link set \"$i\" multicast on up; done; \
+                 exec keepalived --config-test --use-file {DIR}/{CONF}",
+                links.join(" ")
+            ),
+        ],
+        overrides: Default::default(),
+    }
+}
+
+/// What precedes and follows the links in the check's script.
+pub const CHECK_LINKS_START: &str = "for i in ";
+pub const CHECK_LINKS_END: &str = "; do ";

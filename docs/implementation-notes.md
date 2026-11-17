@@ -163,6 +163,16 @@ Where the implementation departs from, or settles open questions in,
 - **Commands the coordinator's sandbox forbids** (podman config checks,
   the keepalived netns check, bootc) run as the oneshot unit
   `sparewall-run@<id>.service`; `systemd-run` from inside the sandbox fails.
+  The coordinator spools an operation for it, not a command line
+  (`sparewall_core::hostop::HostOp`, #279): bootc status, check, stage and
+  apply; `skopeo inspect`; a reboot; keepalived's stop, start and state;
+  `sparewall-*` timers that run a known job; a calendar check; lego in its
+  image with only its own data mounted; the renderer's own config checks
+  (keepalived's rebuilt from its interface names), against files under
+  `/run/sparewall/check`; the admin password hash; the hostname. The unit
+  builds the command from the operation after checking its arguments, and
+  refuses and logs anything else, so a compromised coordinator gets these
+  operations as root and nothing more.
 - **Bound images** are reached with
   `--storage-opt=additionalimagestore=/usr/lib/bootc/storage` per podman
   invocation (Quadlet `GlobalArgs=`): a global storage setting breaks

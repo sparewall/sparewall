@@ -14,6 +14,7 @@ use sparewall_render::nft::TABLE;
 use sparewall_render::{CheckSpec, Meta, Subsystem};
 
 use crate::Error;
+use crate::hostop::HostOp;
 use crate::store::write_atomic;
 use crate::system::{Files, System};
 
@@ -161,7 +162,7 @@ pub const RUN_SPOOL: &str = "/run/sparewall/run";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Spooled {
-    argv: Vec<String>,
+    op: crate::hostop::HostOp,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -171,15 +172,19 @@ struct SpoolResult {
     stderr: String,
 }
 
-/// Run a command outside this service's sandbox. Under systemd it runs as
-/// the oneshot `sparewall-run@<id>.service` (podman, unshare and bootc need
-/// what the coordinator's sandbox forbids); elsewhere it runs directly.
-pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, Error> {
+/// Run an operation outside this service's sandbox (#279). Under systemd
+/// it runs as the oneshot `sparewall-run@<id>.service` (podman, unshare
+/// and bootc need what the coordinator's sandbox forbids), which checks it
+/// again; elsewhere it runs directly.
+pub fn host_op(op: &crate::hostop::HostOp) -> Result<String, Error> {
+    let argv = op.argv().map_err(Error::Apply)?;
+    let (cmd, args) = argv.split_first().expect("an operation has a command");
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let under_systemd = std::env::var_os("INVOCATION_ID").is_some()
         && std::path::Path::new("/run/systemd/system").exists()
         && std::env::var_os("SPAREWALL_NO_HOST_RUN").is_none();
     if !under_systemd {
-        return run(cmd, args, None);
+        return run(cmd, &args, None);
     }
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let id = format!(
@@ -192,10 +197,11 @@ pub fn host_run(cmd: &str, args: &[&str]) -> Result<String, Error> {
     let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     let job = dir.join(format!("{id}.json"));
     let out = dir.join(format!("{id}.out.json"));
-    let mut argv = vec![cmd.to_string()];
-    argv.extend(args.iter().map(|a| a.to_string()));
-    write_atomic(&job, &serde_json::to_vec(&Spooled { argv }).expect("json"))
-        .map_err(|e| Error::io(&job, e))?;
+    write_atomic(
+        &job,
+        &serde_json::to_vec(&Spooled { op: op.clone() }).expect("json"),
+    )
+    .map_err(|e| Error::io(&job, e))?;
     // A oneshot unit: `systemctl start` returns when it has finished.
     let started = run(
         "systemctl",
@@ -256,20 +262,41 @@ pub fn creds_encrypt(name: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(out.stdout)
 }
 
-/// The body of `sparewall-run@<id>.service`: run a spooled command and
-/// record its result.
+/// The body of `sparewall-run@<id>.service`: run a spooled operation, if
+/// it is one [`crate::hostop::HostOp`] allows, and record its result. A
+/// job that is not, or whose arguments fail its checks, is refused and
+/// logged, never run (#279).
 pub fn run_spooled(id: &str) -> Result<(), Error> {
+    run_spooled_in(std::path::Path::new(RUN_SPOOL), id)
+}
+
+fn run_spooled_in(dir: &std::path::Path, id: &str) -> Result<(), Error> {
     if !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
         return Err(Error::Validation(vec![format!("bad job id {id:?}")]));
     }
-    let dir = PathBuf::from(RUN_SPOOL);
     let job = dir.join(format!("{id}.json"));
-    let j: Spooled = serde_json::from_slice(&fs::read(&job).map_err(|e| Error::io(&job, e))?)
-        .map_err(|e| Error::Internal(e.to_string()))?;
-    let (cmd, args) = j
-        .argv
-        .split_first()
-        .ok_or_else(|| Error::Internal("empty job".into()))?;
+    let out = dir.join(format!("{id}.out.json"));
+    let refuse = |why: String| {
+        tracing::error!(job = id, "refused: {why}");
+        let r = SpoolResult {
+            code: -1,
+            stdout: String::new(),
+            stderr: format!("refused by sparewall-run: {why}"),
+        };
+        write_atomic(&out, &serde_json::to_vec(&r).expect("json"))
+            .map_err(|e| Error::io(&out, e))?;
+        Err(Error::Validation(vec![why]))
+    };
+    let bytes = fs::read(&job).map_err(|e| Error::io(&job, e))?;
+    let j: Spooled = match serde_json::from_slice(&bytes) {
+        Ok(j) => j,
+        Err(e) => return refuse(format!("not an operation: {e}")),
+    };
+    let argv = match j.op.argv() {
+        Ok(a) => a,
+        Err(e) => return refuse(e),
+    };
+    let (cmd, args) = argv.split_first().expect("an operation has a command");
     let o = Command::new(cmd)
         .args(args)
         .stdin(Stdio::null())
@@ -280,7 +307,6 @@ pub fn run_spooled(id: &str) -> Result<(), Error> {
         stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
     };
-    let out = dir.join(format!("{id}.out.json"));
     write_atomic(&out, &serde_json::to_vec(&r).expect("json")).map_err(|e| Error::io(&out, e))
 }
 
@@ -736,48 +762,30 @@ impl System for Linux {
             fs::set_permissions(&p, fs::Permissions::from_mode(0o644))
                 .map_err(|e| Error::io(&p, e))?;
         }
-        let d = dir.display().to_string();
-        // Under systemd the checks run as transient units, outside this
-        // service's sandbox (podman and unshare need what it forbids).
-        let wrap = |cmd: &str, args: &[&str]| host_run(cmd, args);
-        let result = match &spec.container {
+        // Under systemd the checks run outside this service's sandbox
+        // (podman and unshare need what it forbids), as an operation
+        // sparewall-run@ checks: only the renderer's own checks (#279).
+        let image = match &spec.container {
             Some(container) => match self.quadlet_image(container) {
-                Some(image) => {
-                    let vol = format!("{d}:{}:ro", spec.mount);
-                    let mut args = vec![
-                        // Bound images live in bootc's store.
-                        "--storage-opt=additionalimagestore=/usr/lib/bootc/storage",
-                        "run",
-                        "--rm",
-                        "--network=none",
-                        "--read-only",
-                        "--pull=never",
-                        "--security-opt",
-                        "label=disable",
-                        "-v",
-                        &vol,
-                        &image,
-                    ];
-                    args.extend(spec.command.iter().map(String::as_str));
-                    wrap("podman", &args).map(|_| ())
-                }
+                Some(image) => Some(image),
                 None => {
                     tracing::warn!(container, "no image for the config check; skipping it");
-                    Ok(())
+                    let _ = fs::remove_dir_all(&dir);
+                    return Ok(());
                 }
             },
-            None => {
-                // Host checker: point its paths at the scratch copy.
-                let args: Vec<String> = spec
-                    .command
-                    .iter()
-                    .skip(1)
-                    .map(|a| a.replace(&spec.mount, &d))
-                    .collect();
-                let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                wrap(&spec.command[0], &args).map(|_| ())
-            }
+            None => None,
         };
+        let check = CheckSpec {
+            overrides: Default::default(),
+            ..spec.clone()
+        };
+        let result = host_op(&HostOp::ConfigCheck {
+            spec: check,
+            dir: dir.display().to_string(),
+            image,
+        })
+        .map(|_| ());
         let _ = fs::remove_dir_all(&dir);
         result.map_err(|e| Error::Check(e.to_string()))
     }
@@ -902,7 +910,7 @@ impl System for Linux {
     fn set_admin_password(&mut self, hash: &str) -> Result<(), Error> {
         // usermod edits shadow as the account tools do, outside this
         // domain (sparewall-run@), so the policy grants no shadow access.
-        host_run("usermod", &["-p", hash, "admin"]).map(|_| ())
+        host_op(&HostOp::SetAdminPassword { hash: hash.into() }).map(|_| ())
     }
 
     fn set_hostname(&mut self, name: &str) -> Result<bool, Error> {
@@ -910,18 +918,21 @@ impl System for Linux {
         // reads and writes /etc/hostname outside this domain. Both must
         // match: a running name alone is lost at the next boot.
         if rustix::system::uname().nodename().to_bytes() == name.as_bytes()
-            && host_run("hostnamectl", &["hostname", "--static"])?.trim() == name
+            && host_op(&HostOp::Hostname)?.trim() == name
         {
             return Ok(false);
         }
-        host_run("hostnamectl", &["set-hostname", name]).map(|_| true)
+        host_op(&HostOp::SetHostname { name: name.into() }).map(|_| true)
     }
 
     fn calendar_check(&mut self, expr: &str) -> Result<(), String> {
         // Outside this domain, as the scheduler's own reading of it is.
-        host_run("systemd-analyze", &["calendar", "--iterations=1", expr])
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        host_op(&HostOp::CalendarNext {
+            expr: expr.into(),
+            base: None,
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     fn install_key(&mut self, file: &str, content: &[u8], group: &str) -> Result<(), Error> {
@@ -1055,6 +1066,51 @@ impl Linux {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// sparewall-run@ runs operations only: a command line, or an
+    /// operation whose arguments fail its checks, is refused with a result
+    /// saying so, and nothing runs (#279).
+    #[test]
+    fn the_run_unit_refuses_anything_but_a_checked_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let jobs = [
+            (
+                "1-0",
+                json!({"argv": ["touch", marker.display().to_string()]}),
+            ),
+            (
+                "1-1",
+                json!({"op": {"op": "set-hostname", "name": "x; touch /tmp/y"}}),
+            ),
+            (
+                "1-2",
+                json!({"op": {"op": "timer-create", "unit": "sparewall-x",
+                    "description": "x", "calendar": "daily",
+                    "command": ["touch", marker.display().to_string()]}}),
+            ),
+        ];
+        for (id, job) in jobs {
+            fs::write(
+                dir.path().join(format!("{id}.json")),
+                serde_json::to_vec(&job).unwrap(),
+            )
+            .unwrap();
+            assert!(run_spooled_in(dir.path(), id).is_err(), "{id}");
+            let r: SpoolResult = serde_json::from_slice(
+                &fs::read(dir.path().join(format!("{id}.out.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(r.code, -1, "{id}");
+            assert!(
+                r.stderr.starts_with("refused by sparewall-run"),
+                "{id}: {}",
+                r.stderr
+            );
+        }
+        assert!(!marker.exists(), "nothing ran");
+    }
 
     /// Only keys whose value changes are written (#215): writing the
     /// global IPv6 forwarding key resets every interface's.
