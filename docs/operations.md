@@ -821,6 +821,27 @@ either end of the packet; with any of them, a call looks at up to 5000
 hits and the next page goes on from there. Over the HTTP API:
 `org.sparewall.Diagnostics.Hits` and `FollowHits`.
 
+### The peer's diagnostics
+
+In a pair, each of these reads the peer's view as well, through the
+node you reached, so one management address shows both:
+
+```shell
+sparewall logs --node fw2 -u keepalived -f
+sparewall hits --node fw2 --pair 'wan->users'
+sparewall routes --node fw2
+sparewall ping --node fw2 192.0.2.1 --from lan
+```
+
+The call is checked against your role on the node you reached, then
+runs on the peer over the sync tunnel (the peer's listener serves the
+same read-only `org.sparewall.Diagnostics`). A follow streams through the
+tunnel and ends, with `PeerUnreachable`, if the tunnel does. Naming this
+node is the same as leaving `--node` out, and any other name is refused.
+Over the HTTP API, it is the methods' `node` parameter. A peer older than
+0.7.0 doesn't serve diagnostics: the call fails with an error that names
+the peer.
+
 ### Forwarding logs
 
 `logging.remote` sends the journal, rule hits included, to a collector

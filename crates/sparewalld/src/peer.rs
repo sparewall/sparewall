@@ -139,9 +139,16 @@ pub struct PeerInterface {
     changes: Changes,
 }
 
-/// The peer API, which the other node of a pair calls.
+/// The peer API, which the other node of a pair calls: `org.sparewall.Peer`,
+/// and the read-only diagnostics of this node, which the peer serves to its
+/// callers as this node's (#268).
 #[derive(zlink::Service)]
-pub struct PeerService(PeerInterface);
+pub struct PeerService {
+    #[zlink(state)]
+    diagnostics_state: crate::service::Shared,
+    peer: PeerInterface,
+    diagnostics: crate::service::DiagnosticsInterface,
+}
 
 impl PeerService {
     pub fn new(
@@ -151,13 +158,23 @@ impl PeerService {
         pair: Pair,
         changes: Changes,
     ) -> Self {
-        PeerService(PeerInterface {
-            core,
-            events,
-            sync,
-            pair,
-            changes,
-        })
+        PeerService {
+            diagnostics_state: crate::service::Shared::for_peer(
+                core.clone(),
+                events.clone(),
+                pair.clone(),
+                sync.clone(),
+                changes.clone(),
+            ),
+            peer: PeerInterface {
+                core,
+                events,
+                sync,
+                pair,
+                changes,
+            },
+            diagnostics: crate::service::DiagnosticsInterface,
+        }
     }
 }
 

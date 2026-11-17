@@ -17,6 +17,7 @@ mod motd;
 mod network;
 mod peer;
 mod reach;
+mod remote;
 mod rules;
 mod schedule;
 mod seed;

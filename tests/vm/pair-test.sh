@@ -295,6 +295,24 @@ ns guests python3 "$HERE/echo.py" udpserver &
 sleep 1
 vpn_setup
 
+log "the peer's diagnostics, through this node (#268)"
+# The master's and the backup's routes differ (the gateway addresses), so
+# fw2's read through fw1 must be fw2's own.
+routes() { jq -S 'map(del(.expires)) | sort_by(.destination, .table, .gateway)'; }
+own=$(at fw2 'sudo sparewall routes -4 -o json' | routes)
+through=$(at fw1 'sudo sparewall routes -4 -o json --node fw2' | routes)
+[ -n "$own" ] && [ "$own" = "$through" ] \
+    || fail "fw2's routes through fw1 differ from fw2's own: $(diff <(echo "$own") <(echo "$through") | head -20)"
+[ "$own" != "$(at fw1 'sudo sparewall routes -4 -o json' | routes)" ] \
+    || fail "fw1's routes are fw2's: the comparison shows nothing"
+# A stream, relayed as it comes: ping from fw2, through fw1.
+at fw1 'sudo sparewall ping --node fw2 -n 1 127.0.0.1' | grep -q '1 received' \
+    || fail "ping through fw1 from fw2 did not run"
+at fw1 'sudo sparewall logs --node fw2 -u sparewalld -n 5' | grep -q . \
+    || fail "fw2's logs through fw1 are empty"
+at fw1 'sudo sparewall routes --node fw9 2>&1' | grep -q 'no node "fw9" here' \
+    || fail "a node outside the pair was not refused"
+
 log "the LAN cannot reach the peer API, even with a permissive policy"
 # A client on users routes to the sync-tunnel addresses through fw1 (issue #3).
 ns users ip route replace 169.254.77.0/24 via 192.0.2.2

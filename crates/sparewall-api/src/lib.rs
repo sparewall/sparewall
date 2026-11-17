@@ -957,6 +957,8 @@ mod diagnostics {
         ToolReply,
     };
 
+    /// Each method takes `node`: this node's name or none for this
+    /// node, its peer's in a pair for the peer's, through this node (#268).
     #[zlink::proxy("org.sparewall.Diagnostics")]
     pub trait DiagnosticsProxy {
         /// Entries of Sparewall's units, newest first.
@@ -969,6 +971,7 @@ mod diagnostics {
             grep: Option<&str>,
             limit: Option<i64>,
             before: Option<&str>,
+            node: Option<&str>,
         ) -> zlink::Result<Result<LogsReply, FirewallError>>;
         /// New entries as they are logged.
         #[zlink(more, rename = "FollowLogs")]
@@ -977,6 +980,7 @@ mod diagnostics {
             units: Option<&[String]>,
             priority: Option<&str>,
             grep: Option<&str>,
+            node: Option<&str>,
         ) -> zlink::Result<
             impl futures_util::Stream<Item = zlink::Result<Result<LogReply, FirewallError>>>,
         >;
@@ -991,6 +995,7 @@ mod diagnostics {
             until: Option<&str>,
             limit: Option<i64>,
             before: Option<&str>,
+            node: Option<&str>,
         ) -> zlink::Result<Result<HitsReply, FirewallError>>;
         /// New hits as they are logged.
         #[zlink(more, rename = "FollowHits")]
@@ -1000,6 +1005,7 @@ mod diagnostics {
             pair: Option<&str>,
             address: Option<&str>,
             port: Option<i64>,
+            node: Option<&str>,
         ) -> zlink::Result<
             impl futures_util::Stream<Item = zlink::Result<Result<HitReply, FirewallError>>>,
         >;
@@ -1007,12 +1013,14 @@ mod diagnostics {
         async fn neighbours(
             &mut self,
             network: Option<&str>,
+            node: Option<&str>,
         ) -> zlink::Result<Result<NeighboursReply, FirewallError>>;
         /// Routes, of one network or all, of one family (`4`, `6`) or both.
         async fn routes(
             &mut self,
             network: Option<&str>,
             family: Option<&str>,
+            node: Option<&str>,
         ) -> zlink::Result<Result<RoutesReply, FirewallError>>;
         /// Ping a host from the node, from a network's address if named.
         #[zlink(more)]
@@ -1021,6 +1029,7 @@ mod diagnostics {
             host: &str,
             network: Option<&str>,
             count: Option<i64>,
+            node: Option<&str>,
         ) -> zlink::Result<
             impl futures_util::Stream<Item = zlink::Result<Result<ToolReply, FirewallError>>>,
         >;
@@ -1030,6 +1039,7 @@ mod diagnostics {
             &mut self,
             host: &str,
             network: Option<&str>,
+            node: Option<&str>,
         ) -> zlink::Result<
             impl futures_util::Stream<Item = zlink::Result<Result<ToolReply, FirewallError>>>,
         >;
@@ -1040,6 +1050,7 @@ mod diagnostics {
             name: &str,
             record: Option<&str>,
             server: Option<&str>,
+            node: Option<&str>,
         ) -> zlink::Result<
             impl futures_util::Stream<Item = zlink::Result<Result<ToolReply, FirewallError>>>,
         >;

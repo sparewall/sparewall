@@ -3768,6 +3768,12 @@
                       "null"
                     ]
                   },
+                  "node": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "pair": {
                     "type": [
                       "string",
@@ -3876,6 +3882,12 @@
                       "null"
                     ]
                   },
+                  "node": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "priority": {
                     "type": [
                       "string",
@@ -3979,6 +3991,12 @@
                     "format": "int64",
                     "type": [
                       "integer",
+                      "null"
+                    ]
+                  },
+                  "node": {
+                    "type": [
+                      "string",
                       "null"
                     ]
                   },
@@ -4091,6 +4109,12 @@
                       "null"
                     ]
                   },
+                  "node": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "priority": {
                     "type": [
                       "string",
@@ -4199,6 +4223,12 @@
                   "name": {
                     "type": "string"
                   },
+                  "node": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "record": {
                     "type": [
                       "string",
@@ -4305,6 +4335,12 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "node": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "type": "object"
@@ -4384,6 +4420,12 @@
                     "type": "string"
                   },
                   "network": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "node": {
                     "type": [
                       "string",
                       "null"
@@ -4489,6 +4531,12 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "node": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "type": "object"
@@ -4561,6 +4609,12 @@
                     "type": "string"
                   },
                   "network": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "node": {
                     "type": [
                       "string",
                       "null"
