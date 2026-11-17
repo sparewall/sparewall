@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
@@ -177,7 +177,9 @@ struct SpoolResult {
 /// and bootc need what the coordinator's sandbox forbids), which checks it
 /// again; elsewhere it runs directly.
 pub fn host_op(op: &crate::hostop::HostOp) -> Result<String, Error> {
-    let argv = op.argv().map_err(Error::Apply)?;
+    // Checked here too, so a bad operation fails before it is spooled;
+    // the run unit checks it again against its own directories.
+    let argv = op.argv(None).map_err(Error::Apply)?;
     let (cmd, args) = argv.split_first().expect("an operation has a command");
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let under_systemd = std::env::var_os("INVOCATION_ID").is_some()
@@ -267,10 +269,18 @@ pub fn creds_encrypt(name: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
 /// job that is not, or whose arguments fail its checks, is refused and
 /// logged, never run (#279).
 pub fn run_spooled(id: &str) -> Result<(), Error> {
-    run_spooled_in(std::path::Path::new(RUN_SPOOL), id)
+    run_spooled_in(
+        std::path::Path::new(RUN_SPOOL),
+        id,
+        &crate::hostop::Roots::from_env(),
+    )
 }
 
-fn run_spooled_in(dir: &std::path::Path, id: &str) -> Result<(), Error> {
+fn run_spooled_in(
+    dir: &std::path::Path,
+    id: &str,
+    roots: &crate::hostop::Roots,
+) -> Result<(), Error> {
     if !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
         return Err(Error::Validation(vec![format!("bad job id {id:?}")]));
     }
@@ -292,22 +302,80 @@ fn run_spooled_in(dir: &std::path::Path, id: &str) -> Result<(), Error> {
         Ok(j) => j,
         Err(e) => return refuse(format!("not an operation: {e}")),
     };
-    let argv = match j.op.argv() {
+    let mut argv = match j.op.argv(Some(roots)) {
         Ok(a) => a,
         Err(e) => return refuse(e),
     };
+    let private = match prepare(&j.op, id, roots, &mut argv) {
+        Ok(p) => p,
+        Err(e) => return refuse(e),
+    };
     let (cmd, args) = argv.split_first().expect("an operation has a command");
-    let o = Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| Error::Apply(format!("{cmd}: {e}")))?;
+    let o = Command::new(cmd).args(args).stdin(Stdio::null()).output();
+    if let Some(p) = private {
+        let _ = fs::remove_file(p);
+    }
+    let o = o.map_err(|e| Error::Apply(format!("{cmd}: {e}")))?;
     let r = SpoolResult {
         code: o.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
     };
     write_atomic(&out, &serde_json::to_vec(&r).expect("json")).map_err(|e| Error::io(&out, e))
+}
+
+/// What the run unit checks on disk before it runs an operation: that no
+/// path it uses goes through a symbolic link the coordinator could have
+/// planted, and, for lego, a private copy of the environment file (read
+/// without following a link) in place of the coordinator's, so it is not
+/// read again from a path the coordinator can change. Returns that copy.
+fn prepare(
+    op: &crate::hostop::HostOp,
+    id: &str,
+    roots: &crate::hostop::Roots,
+    argv: &mut [String],
+) -> Result<Option<PathBuf>, String> {
+    use crate::hostop::{HostOp, no_symlinks};
+    use std::os::unix::fs::OpenOptionsExt;
+    match op {
+        HostOp::ConfigCheck { dir, .. } => {
+            no_symlinks(Path::new(dir))?;
+            Ok(None)
+        }
+        HostOp::Lego { data, env_file, .. } => {
+            no_symlinks(Path::new(data))?;
+            no_symlinks(Path::new(env_file))?;
+            let mut f = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                .open(env_file)
+                .map_err(|e| format!("{env_file}: {e}"))?;
+            if !f.metadata().map_err(|e| e.to_string())?.is_file() {
+                return Err(format!("{env_file}: not a file"));
+            }
+            let mut env = Vec::new();
+            std::io::Read::read_to_end(&mut f, &mut env).map_err(|e| e.to_string())?;
+            let private = Path::new(&roots.private);
+            fs::create_dir_all(private).map_err(|e| format!("{}: {e}", private.display()))?;
+            fs::set_permissions(private, fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("{}: {e}", private.display()))?;
+            no_symlinks(private)?;
+            let copy = private.join(format!("{id}.env"));
+            let _ = fs::remove_file(&copy);
+            let mut out = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&copy)
+                .map_err(|e| format!("{}: {e}", copy.display()))?;
+            out.write_all(&env).map_err(|e| e.to_string())?;
+            for a in argv.iter_mut().filter(|a| *a == env_file) {
+                *a = copy.display().to_string();
+            }
+            Ok(Some(copy))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// What the live `inet sparewall` table holds.
@@ -1091,13 +1159,41 @@ mod tests {
                     "command": ["touch", marker.display().to_string()]}}),
             ),
         ];
+        // lego, with every argument right but its environment file a link
+        // to a file the coordinator should not have read as root.
+        let (state, run) = (dir.path().join("state"), dir.path().join("run"));
+        fs::create_dir_all(state.join("lego")).unwrap();
+        fs::create_dir_all(run.join("lego")).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", run.join("lego/.env-1")).unwrap();
+        let lego = crate::hostop::HostOp::Lego {
+            image: "ghcr.io/sparewall/lego:sha-1".into(),
+            data: state.join("lego").display().to_string(),
+            env_file: run.join("lego/.env-1").display().to_string(),
+            args: crate::hostop::lego_args(
+                "mgmt",
+                "https://acme.example/dir",
+                "rfc2136",
+                None,
+                &["fw.example.org".into()],
+            ),
+        };
+        let jobs: Vec<(&str, serde_json::Value)> = jobs
+            .into_iter()
+            .chain([("1-3", json!({ "op": lego }))])
+            .collect();
         for (id, job) in jobs {
             fs::write(
                 dir.path().join(format!("{id}.json")),
                 serde_json::to_vec(&job).unwrap(),
             )
             .unwrap();
-            assert!(run_spooled_in(dir.path(), id).is_err(), "{id}");
+            let roots = crate::hostop::Roots {
+                state: dir.path().join("state").display().to_string(),
+                runtime: dir.path().join("run").display().to_string(),
+                private: dir.path().join("private").display().to_string(),
+                lego_image: Some("ghcr.io/sparewall/lego:sha-1".into()),
+            };
+            assert!(run_spooled_in(dir.path(), id, &roots).is_err(), "{id}");
             let r: SpoolResult = serde_json::from_slice(
                 &fs::read(dir.path().join(format!("{id}.out.json"))).unwrap(),
             )
@@ -1108,6 +1204,9 @@ mod tests {
                 "{id}: {}",
                 r.stderr
             );
+            if id == "1-3" {
+                assert!(r.stderr.contains("a symbolic link"), "{}", r.stderr);
+            }
         }
         assert!(!marker.exists(), "nothing ran");
     }

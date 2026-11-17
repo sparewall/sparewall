@@ -48,8 +48,10 @@ pub enum HostOp {
     /// The next elapse of a calendar expression, after `base` (seconds)
     /// or now.
     CalendarNext { expr: String, base: Option<i64> },
-    /// lego in its image, with `data` ([`LEGO_DATA`]) at `/data` and the
-    /// variables in `env_file`, a file under [`LEGO_ENV_DIRS`].
+    /// lego in the image the node ships ([`lego_image`]), with `data` (the
+    /// state directory's `lego`) at `/data`, the variables in `env_file`
+    /// (under the runtime directory's `lego`, or `data`), and `args` that
+    /// [`lego_args`] makes: one order, no hooks or other options.
     Lego {
         image: String,
         data: String,
@@ -57,8 +59,9 @@ pub enum HostOp {
         args: Vec<String>,
     },
     /// A provider's config check (one the renderer makes, see
-    /// [`check_allowed`]) against the files in `dir`, under
-    /// [`CHECK_DIR`]; in `image` for a container check.
+    /// [`check_allowed`]) against the files in `dir`, under the runtime
+    /// directory's `check`; in `image`, the provider's own, for a
+    /// container check.
     ConfigCheck {
         spec: CheckSpec,
         dir: String,
@@ -82,19 +85,59 @@ pub enum UnitAction {
 
 /// The commands a timer may run.
 pub const TIMER_JOBS: &[&[&str]] = &[&["/usr/bin/sparewall", "backup", "--quiet"]];
-/// lego's data directory: the state directory's `lego`.
-pub const LEGO_DATA: &str = "/var/lib/sparewall/lego";
-/// Where lego's environment files are written: the runtime directory, or
-/// the data directory where there is none.
-pub const LEGO_ENV_DIRS: &[&str] = &["/run/sparewall/lego", LEGO_DATA];
-/// Where config checks put the files they check.
-pub const CHECK_DIR: &str = "/run/sparewall/check";
 /// bootc's store of logically bound images, where provider images live.
 const BOUND_STORE: &str = "/usr/lib/bootc/storage";
+/// Where the image ships the lego image reference, as a Quadlet `.image`
+/// unit that is also a logically bound image (read-only, in `/usr`).
+pub const LEGO_IMAGE_UNIT: &str = "/usr/share/containers/systemd/sparewall-lego.image";
+
+/// The directories paths in an operation must be under, as the run unit
+/// sees them (its own environment, not the spool's).
+#[derive(Debug, Clone)]
+pub struct Roots {
+    /// The coordinator's state directory (`SPAREWALL_STATE`).
+    pub state: String,
+    /// The coordinator's runtime directory.
+    pub runtime: String,
+    /// Root's alone, where the run unit copies what it reads for a job:
+    /// outside the coordinator's writable paths.
+    pub private: String,
+    /// The lego image, when not [`lego_image`]'s (tests).
+    pub lego_image: Option<String>,
+}
+
+impl Roots {
+    pub fn from_env() -> Roots {
+        Roots {
+            state: std::env::var("SPAREWALL_STATE")
+                .ok()
+                .filter(|s| s.starts_with('/'))
+                .unwrap_or_else(|| "/var/lib/sparewall".into()),
+            runtime: "/run/sparewall".into(),
+            private: "/run/sparewall-run".into(),
+            lego_image: None,
+        }
+    }
+
+    pub fn lego_data(&self) -> String {
+        format!("{}/lego", self.state)
+    }
+
+    fn lego_env_dirs(&self) -> [String; 2] {
+        [format!("{}/lego", self.runtime), self.lego_data()]
+    }
+
+    fn check_dir(&self) -> String {
+        format!("{}/check", self.runtime)
+    }
+}
 
 impl HostOp {
-    /// The command line, once every argument has been checked.
-    pub fn argv(&self) -> Result<Vec<String>, String> {
+    /// The command line, once every argument has been checked. `roots`
+    /// are the directories its paths must be under, and the lego image
+    /// must be the shipped one; `None` (no privilege boundary: run
+    /// directly, in development) checks the rest only.
+    pub fn argv(&self, roots: Option<&Roots>) -> Result<Vec<String>, String> {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         Ok(match self {
             HostOp::BootcStatus => v(&["bootc", "status", "--format=json"]),
@@ -197,19 +240,24 @@ impl HostOp {
                 args,
             } => {
                 image_ok(image)?;
-                if data != LEGO_DATA {
-                    return Err(format!("lego's data is {LEGO_DATA}, not {data:?}"));
-                }
-                if !LEGO_ENV_DIRS
-                    .iter()
-                    .any(|d| path_under(d, env_file).is_ok())
-                {
-                    return Err(format!("not a lego environment file: {env_file:?}"));
-                }
-                // lego's own options, inside its container.
-                for a in args {
-                    if a.len() > 4096 || a.chars().any(char::is_control) {
-                        return Err(format!("bad lego argument: {a:?}"));
+                lego_args_allowed(args)?;
+                if let Some(r) = roots {
+                    let shipped = match &r.lego_image {
+                        Some(i) => i.clone(),
+                        None => lego_image()?,
+                    };
+                    if *image != shipped {
+                        return Err(format!("lego runs in {shipped}, not {image}"));
+                    }
+                    if *data != r.lego_data() {
+                        return Err(format!("lego's data is {}, not {data:?}", r.lego_data()));
+                    }
+                    if !r
+                        .lego_env_dirs()
+                        .iter()
+                        .any(|d| path_under(d, env_file).is_ok())
+                    {
+                        return Err(format!("not a lego environment file: {env_file:?}"));
                     }
                 }
                 let mut a = vec!["podman".into()];
@@ -234,11 +282,14 @@ impl HostOp {
                 a
             }
             HostOp::ConfigCheck { spec, dir, image } => {
-                path_under(CHECK_DIR, dir)?;
+                if let Some(r) = roots {
+                    path_under(&r.check_dir(), dir)?;
+                }
                 check_allowed(spec)?;
                 match (&spec.container, image) {
-                    (Some(_), Some(image)) => {
+                    (Some(container), Some(image)) => {
                         image_ok(image)?;
+                        provider_image_ok(container, image)?;
                         let mut a = vec![
                             "podman".into(),
                             format!("--storage-opt=additionalimagestore={BOUND_STORE}"),
@@ -303,6 +354,140 @@ pub fn check_allowed(spec: &CheckSpec) -> Result<(), String> {
         return Ok(());
     }
     Err(format!("not a known config check: {:?}", spec.command))
+}
+
+/// lego's command line for one order: the single definition the
+/// coordinator builds it with and the run unit checks it against.
+pub fn lego_args(
+    name: &str,
+    server: &str,
+    provider: &str,
+    email: Option<&str>,
+    domains: &[String],
+) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "--log.format",
+        "text",
+        "run",
+        "--path",
+        "/data",
+        "--accept-tos",
+        "--no-random-sleep",
+        "--renew-force",
+        "--force-cert-domains",
+        "--server",
+        server,
+        "--dns",
+        provider,
+        "--cert.name",
+        name,
+    ]
+    .map(String::from)
+    .to_vec();
+    if let Some(e) = email {
+        a.extend(["--email".into(), e.to_string()]);
+    }
+    for d in domains {
+        a.extend(["--domains".into(), d.clone()]);
+    }
+    a
+}
+
+/// Whether `args` are what [`lego_args`] makes for some checked values:
+/// they are read back, each value checked, and rebuilt to compare, so no
+/// other option (a hook that runs a command, say) gets through.
+fn lego_args_allowed(args: &[String]) -> Result<(), String> {
+    let refuse = || Err(format!("not a lego order: {args:?}"));
+    let value = |a: &str| {
+        !a.is_empty()
+            && a.len() <= 1024
+            && !a.starts_with('-')
+            && !a.chars().any(|c| c.is_control() || c.is_whitespace())
+    };
+    let get = |flag: &str| -> Vec<&str> {
+        args.windows(2)
+            .filter(|w| w[0] == flag)
+            .map(|w| w[1].as_str())
+            .collect()
+    };
+    let one = |flag: &str| match get(flag)[..] {
+        [v] if value(v) => Some(v),
+        _ => None,
+    };
+    let (Some(server), Some(provider), Some(name)) =
+        (one("--server"), one("--dns"), one("--cert.name"))
+    else {
+        return refuse();
+    };
+    let email = match get("--email")[..] {
+        [] => None,
+        [e] if value(e) => Some(e),
+        _ => return refuse(),
+    };
+    let domains: Vec<String> = get("--domains").into_iter().map(String::from).collect();
+    let ok = (server.starts_with("https://") || server.starts_with("http://"))
+        && provider
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c))
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+        && !domains.is_empty()
+        && domains.iter().all(|d| {
+            let host = d.strip_prefix("*.").unwrap_or(d);
+            value(d) && hostname_ok(host).is_ok()
+        })
+        && lego_args(name, server, provider, email, &domains) == args;
+    if ok { Ok(()) } else { refuse() }
+}
+
+/// The lego image the node ships: `SPAREWALL_LEGO_IMAGE` (development),
+/// else the `Image=` of [`LEGO_IMAGE_UNIT`].
+pub fn lego_image() -> Result<String, String> {
+    if let Ok(image) = std::env::var("SPAREWALL_LEGO_IMAGE") {
+        return Ok(image);
+    }
+    let unit =
+        std::fs::read_to_string(LEGO_IMAGE_UNIT).map_err(|e| format!("{LEGO_IMAGE_UNIT}: {e}"))?;
+    unit.lines()
+        .find_map(|l| l.trim().strip_prefix("Image="))
+        .map(|i| i.trim().to_string())
+        .ok_or_else(|| format!("{LEGO_IMAGE_UNIT} names no image"))
+}
+
+/// A provider's container check runs in that provider's image, nothing
+/// else in the image store.
+fn provider_image_ok(container: &str, image: &str) -> Result<(), String> {
+    let repo = container
+        .strip_prefix("sparewall-")
+        .map(|p| format!("ghcr.io/sparewall/{p}"))
+        .unwrap_or_default();
+    let ok = image
+        .strip_prefix(&repo)
+        .is_some_and(|rest| rest.starts_with(':') || rest.starts_with('@'));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("{container} is checked in {repo}, not {image}"))
+    }
+}
+
+/// That no component of `p`, an absolute path, is a symbolic link, and
+/// that it exists: the run unit uses the path as root, and a link the
+/// coordinator planted could point it anywhere.
+pub fn no_symlinks(p: &std::path::Path) -> Result<(), String> {
+    if !p.is_absolute() {
+        return Err(format!("{}: not absolute", p.display()));
+    }
+    let mut at = std::path::PathBuf::from("/");
+    for c in p.components().skip(1) {
+        at.push(c);
+        let m = std::fs::symlink_metadata(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+        if m.file_type().is_symlink() {
+            return Err(format!("{}: a symbolic link", at.display()));
+        }
+    }
+    Ok(())
 }
 
 /// An image reference: registry/path[:tag][@digest], nothing that could be
@@ -400,8 +585,17 @@ fn hostname_ok(n: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn roots() -> Roots {
+        Roots {
+            state: "/var/lib/sparewall".into(),
+            runtime: "/run/sparewall".into(),
+            private: "/run/sparewall-run".into(),
+            lego_image: Some("ghcr.io/sparewall/lego:sha-1".into()),
+        }
+    }
+
     fn refused(op: HostOp) -> String {
-        op.argv().expect_err("refused")
+        op.argv(Some(&roots())).expect_err("refused")
     }
 
     #[test]
@@ -411,7 +605,7 @@ mod tests {
             download_only: true,
         };
         assert_eq!(
-            op.argv().unwrap(),
+            op.argv(Some(&roots())).unwrap(),
             [
                 "bootc",
                 "switch",
@@ -424,7 +618,7 @@ mod tests {
             image: None,
             download_only: false,
         };
-        assert_eq!(op.argv().unwrap(), ["bootc", "upgrade"]);
+        assert_eq!(op.argv(Some(&roots())).unwrap(), ["bootc", "upgrade"]);
         refused(HostOp::BootcStage {
             image: Some("--transport=dir".into()),
             download_only: false,
@@ -443,7 +637,7 @@ mod tests {
             calendar: "daily".into(),
             command: TIMER_JOBS[0].iter().map(|s| s.to_string()).collect(),
         };
-        assert!(ok.argv().unwrap().ends_with(&[
+        assert!(ok.argv(Some(&roots())).unwrap().ends_with(&[
             "/usr/bin/sparewall".to_string(),
             "backup".into(),
             "--quiet".into()
@@ -474,7 +668,7 @@ mod tests {
             expr: "Sun 03:00".into(),
             base: Some(10),
         }
-        .argv()
+        .argv(Some(&roots()))
         .unwrap();
         assert_eq!(
             a,
@@ -493,22 +687,33 @@ mod tests {
         });
     }
 
+    fn order() -> Vec<String> {
+        lego_args(
+            "mgmt",
+            "https://acme.example/dir",
+            "gcloud",
+            Some("ops@example.org"),
+            &["fw.example.org".into(), "*.lan.example.org".into()],
+        )
+    }
+
     #[test]
     fn lego_mounts_only_its_own_data() {
+        const DATA: &str = "/var/lib/sparewall/lego";
         let op = |data: &str, env: &str| HostOp::Lego {
             image: "ghcr.io/sparewall/lego:sha-1".into(),
             data: data.into(),
             env_file: env.into(),
-            args: vec!["--accept-tos".into(), "--email=a@b.c".into(), "run".into()],
+            args: order(),
         };
-        let a = op(LEGO_DATA, "/run/sparewall/lego/.env-00ff")
-            .argv()
+        let a = op(DATA, "/run/sparewall/lego/.env-00ff")
+            .argv(Some(&roots()))
             .unwrap();
-        assert!(a.contains(&format!("{LEGO_DATA}:/data:Z")));
-        op(LEGO_DATA, &format!("{LEGO_DATA}/.env-00ff"))
-            .argv()
+        assert!(a.contains(&format!("{DATA}:/data:Z")));
+        op(DATA, &format!("{DATA}/.env-00ff"))
+            .argv(Some(&roots()))
             .unwrap();
-        for data in ["/etc", "/var/lib/sparewall", &format!("{LEGO_DATA}/../x")] {
+        for data in ["/etc", "/var/lib/sparewall", &format!("{DATA}/../x")] {
             refused(op(data, "/run/sparewall/lego/.env-1"));
         }
         for env in [
@@ -517,29 +722,99 @@ mod tests {
             "/run/sparewall/lego/../x",
             "/run/sparewall/lego/x:/etc",
         ] {
-            refused(op(LEGO_DATA, env));
+            refused(op(DATA, env));
         }
+        // Another state directory moves both with it.
+        let other = Roots {
+            state: "/srv/sw".into(),
+            ..roots()
+        };
+        op("/srv/sw/lego", "/srv/sw/lego/.env-1")
+            .argv(Some(&other))
+            .unwrap();
+        // Only the shipped image: a provider image with no entrypoint
+        // would run the arguments as its command.
+        let mut kea = op(DATA, "/run/sparewall/lego/.env-1");
+        if let HostOp::Lego { image, .. } = &mut kea {
+            *image = "ghcr.io/sparewall/kea:sha-1".into();
+        }
+        assert!(refused(kea).contains("lego runs in"));
+    }
+
+    /// lego's arguments are one order as lego_args makes it: no other
+    /// option, and no value that is one.
+    #[test]
+    fn lego_takes_one_order_and_nothing_else() {
+        let op = |args: Vec<String>| HostOp::Lego {
+            image: "ghcr.io/sparewall/lego:sha-1".into(),
+            data: "/var/lib/sparewall/lego".into(),
+            env_file: "/run/sparewall/lego/.env-1".into(),
+            args,
+        };
+        op(order()).argv(Some(&roots())).unwrap();
+        let mut hook = order();
+        hook.extend(["--run-hook".into(), "sh -c id".into()]);
+        refused(op(hook));
+        let mut hook = order();
+        hook.push("--run-hook=id".into());
+        refused(op(hook));
+        let shell: Vec<String> = ["/bin/sh", "-c", "id"].map(String::from).to_vec();
+        refused(op(shell));
+        let as_option = lego_args(
+            "mgmt",
+            "https://acme.example/dir",
+            "--run-hook=id",
+            None,
+            &["fw.example.org".into()],
+        );
+        refused(op(as_option));
+        let spaced = lego_args(
+            "mgmt",
+            "https://acme.example/dir",
+            "gcloud",
+            None,
+            &["fw.example.org x".into()],
+        );
+        refused(op(spaced));
+        let no_domains = lego_args("mgmt", "https://acme.example/dir", "gcloud", None, &[]);
+        refused(op(no_domains));
+    }
+
+    /// No component of a path the run unit uses may be a link.
+    #[test]
+    fn symbolic_links_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("f"), "x").unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+        assert!(no_symlinks(&real.join("f")).is_ok());
+        assert!(no_symlinks(&dir.path().join("link").join("f")).is_err());
+        assert!(no_symlinks(&dir.path().join("link")).is_err());
+        assert!(no_symlinks(&dir.path().join("missing")).is_err());
     }
 
     #[test]
     fn only_the_renderers_config_checks() {
-        let dir = format!("{CHECK_DIR}/1-0");
+        let dir = "/run/sparewall/check/1-0".to_string();
         for spec in [
             kea::check_spec(),
             unbound::check_spec(),
             chrony::check_spec(),
             keepalived::check_spec(&["eth0".into(), "wan.10".into()]),
         ] {
-            let image = spec
-                .container
-                .as_ref()
-                .map(|_| "ghcr.io/sparewall/kea:sha-1".to_string());
+            let image = spec.container.as_ref().map(|c| {
+                format!(
+                    "ghcr.io/sparewall/{}:sha-1",
+                    c.strip_prefix("sparewall-").unwrap()
+                )
+            });
             let op = HostOp::ConfigCheck {
                 spec: spec.clone(),
                 dir: dir.clone(),
                 image,
             };
-            let a = op.argv().unwrap();
+            let a = op.argv(Some(&roots())).unwrap();
             if spec.container.is_none() {
                 assert!(a.iter().any(|x| x.contains(&dir)), "{a:?}");
             }
@@ -554,6 +829,15 @@ mod tests {
         let mut evil = kea::check_spec();
         evil.command.push("--extra".into());
         assert!(check_allowed(&evil).is_err());
+        // Kea's check in another image.
+        assert!(
+            refused(HostOp::ConfigCheck {
+                spec: kea::check_spec(),
+                dir: dir.clone(),
+                image: Some("ghcr.io/sparewall/lego:sha-1".into()),
+            })
+            .contains("checked in ghcr.io/sparewall/kea")
+        );
         // Outside the check directory.
         refused(HostOp::ConfigCheck {
             spec: chrony::check_spec(),
@@ -573,7 +857,7 @@ mod tests {
             HostOp::SetHostname {
                 name: "fw1.example.net".into()
             }
-            .argv()
+            .argv(Some(&roots()))
             .unwrap(),
             ["hostnamectl", "set-hostname", "fw1.example.net"]
         );

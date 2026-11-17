@@ -166,13 +166,21 @@ Where the implementation departs from, or settles open questions in,
   The coordinator spools an operation for it, not a command line
   (`sparewall_core::hostop::HostOp`, #279): bootc status, check, stage and
   apply; `skopeo inspect`; a reboot; keepalived's stop, start and state;
-  `sparewall-*` timers that run a known job; a calendar check; lego in its
-  image with only its own data mounted; the renderer's own config checks
-  (keepalived's rebuilt from its interface names), against files under
-  `/run/sparewall/check`; the admin password hash; the hostname. The unit
-  builds the command from the operation after checking its arguments, and
-  refuses and logs anything else, so a compromised coordinator gets these
-  operations as root and nothing more.
+  `sparewall-*` timers that run a known job; a calendar check; one lego
+  order (its arguments rebuilt from checked values, so no hook or other
+  option), in the image `/usr` ships, with only the state directory's
+  `lego` mounted; the renderer's own config checks (keepalived's rebuilt
+  from its interface names), in the provider's own image, against files
+  under `/run/sparewall/check`; the admin password hash; the hostname. The
+  unit builds the command from the operation after checking its arguments
+  against its own directories (`SPAREWALL_STATE`, as the coordinator's),
+  refuses any path through a symbolic link, and reads lego's environment
+  file without following one into a copy in `/run/sparewall-run`, which
+  the coordinator cannot write. Anything else is refused and logged, so a
+  compromised coordinator gets these operations as root and nothing more.
+  What remains: it could swap a checked directory for a link between the
+  check and podman's mount (lego's data, mounted `:Z`); lego then runs
+  only its order there.
 - **Bound images** are reached with
   `--storage-opt=additionalimagestore=/usr/lib/bootc/storage` per podman
   invocation (Quadlet `GlobalArgs=`): a global storage setting breaks

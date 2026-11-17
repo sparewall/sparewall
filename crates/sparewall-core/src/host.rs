@@ -298,10 +298,6 @@ pub trait Lego: Send + Sync {
     fn run(&self, data: &Path, env_file: &Path, args: &[String]) -> Result<(), String>;
 }
 
-/// Where the image ships the lego image reference, as a Quadlet `.image`
-/// unit that is also a logically bound image.
-pub const LEGO_IMAGE_UNIT: &str = "/usr/share/containers/systemd/sparewall-lego.image";
-
 /// lego in its provider image, run by podman outside the coordinator's
 /// sandbox.
 pub struct LegoContainer {
@@ -311,17 +307,7 @@ pub struct LegoContainer {
 impl LegoContainer {
     /// The image the node ships (`SPAREWALL_LEGO_IMAGE` overrides it).
     pub fn shipped() -> Result<LegoContainer, String> {
-        if let Ok(image) = std::env::var("SPAREWALL_LEGO_IMAGE") {
-            return Ok(LegoContainer { image });
-        }
-        let unit = std::fs::read_to_string(LEGO_IMAGE_UNIT)
-            .map_err(|e| format!("{LEGO_IMAGE_UNIT}: {e}"))?;
-        unit.lines()
-            .find_map(|l| l.trim().strip_prefix("Image="))
-            .map(|i| LegoContainer {
-                image: i.trim().to_string(),
-            })
-            .ok_or_else(|| format!("{LEGO_IMAGE_UNIT} names no image"))
+        crate::hostop::lego_image().map(|image| LegoContainer { image })
     }
 }
 
