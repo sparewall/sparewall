@@ -12,6 +12,37 @@ management (and in a pair, sync) on networks of their own, is the
 
 > Sparewall is pre-release software. Expect rough edges.
 
+## Requirements
+
+| | Minimum | Recommended |
+| --- | --- | --- |
+| CPU | x86\_64, 2 cores | x86\_64, 2 cores or more |
+| Memory | 2 GiB | 4 GiB |
+| Disk | 16 GB | 32 GB |
+| Network ports | one, as a VLAN trunk | two or more |
+
+- **CPU:** the image is built for x86\_64 only. The `sparewall` CLI
+  also runs on Linux arm64 and macOS, but a node can't.
+- **Memory:** a node uses about 0.6 to 0.9 GB, including the kernel's
+  caches. The pair test suites pass with 1.5 GiB per node, but that
+  leaves little room. The local Prometheus (`metrics.mode: local`) is
+  capped at 512 MB and uses about 50 to 150 MB.
+- **Disk:** a node uses about 5 to 7 GB. Of that, about 3 GB holds two
+  deployments of the OS, the running one and the one to roll back to.
+  An upgrade downloads the next one before the oldest is removed. The
+  rest is the container images (0.25 to 0.8 GB), the journal, and the
+  local Prometheus's data, up to `metrics.retention_size` (1 GB by
+  default).
+- **Network ports:** any NIC the Fedora kernel supports. The layouts
+  are one port carrying every network as tagged VLANs; two ports, WAN
+  and LAN, with no VLANs; and LACP or active-backup bonds. A pair needs
+  a link between its nodes for sync, either a network of its own or the
+  LAN.
+- **TPM:** optional and recommended. Secrets are sealed to a TPM2 where
+  there is one, and otherwise to a key on the disk.
+- **Platforms:** physical machines, or VMs. The test suites run on
+  QEMU/KVM with virtio NICs; give a libvirt VM a virtual TPM.
+
 ## 1. Get an image
 
 Images are published to `ghcr.io/sparewall/sparewall` with `testing` and
