@@ -15,12 +15,13 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
@@ -424,7 +425,55 @@ pub async fn serve(
     web: PathBuf,
 ) {
     let web = Arc::new(web);
+    accept_loop(listener, tls, Limits::DEFAULT, move |peer| {
+        let (core, events, web) = (core.clone(), events.clone(), web.clone());
+        hyper::service::service_fn(move |req| {
+            handle(req, peer, core.clone(), events.clone(), web.clone())
+        })
+    })
+    .await
+}
+
+/// What one HTTPS client may hold (#282).
+#[derive(Clone, Copy)]
+struct Limits {
+    /// Open connections at most. Past it, new ones wait in the listen
+    /// backlog until one closes, rather than each taking a task and a
+    /// descriptor.
+    connections: usize,
+    /// How long a client has to finish the TLS handshake.
+    handshake: Duration,
+    /// How long a client has to send a request's headers, the first or
+    /// the next on a kept-alive connection; hyper closes it after.
+    header_read: Duration,
+}
+
+impl Limits {
+    /// A management port, not a web server.
+    const DEFAULT: Limits = Limits {
+        connections: 256,
+        handshake: Duration::from_secs(10),
+        header_read: Duration::from_secs(15),
+    };
+}
+
+/// Accept TLS connections within `limits`, serving each with the service
+/// `make` returns for its peer.
+async fn accept_loop<M, S, B>(listener: TcpListener, tls: Arc<Tls>, limits: Limits, make: M)
+where
+    M: Fn(SocketAddr) -> S,
+    S: hyper::service::Service<Request<Incoming>, Response = Response<B>> + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    B: hyper::body::Body + Send + 'static,
+    B::Data: Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let slots = Arc::new(tokio::sync::Semaphore::new(limits.connections));
     loop {
+        let Ok(slot) = slots.clone().acquire_owned().await else {
+            return;
+        };
         let (tcp, peer) = match listener.accept().await {
             Ok(x) => x,
             Err(e) => {
@@ -433,23 +482,16 @@ pub async fn serve(
             }
         };
         let acceptor = tls.acceptor();
-        let core = core.clone();
-        let events = events.clone();
-        let web = web.clone();
+        let svc = make(peer);
         tokio::spawn(async move {
-            let tls = match tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                acceptor.accept(tcp),
-            )
-            .await
-            {
+            let _slot = slot;
+            let tls = match tokio::time::timeout(limits.handshake, acceptor.accept(tcp)).await {
                 Ok(Ok(t)) => t,
                 _ => return,
             };
-            let svc = hyper::service::service_fn(move |req| {
-                handle(req, peer, core.clone(), events.clone(), web.clone())
-            });
             let _ = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(limits.header_read)
                 .serve_connection(TokioIo::new(tls), svc)
                 .await;
         });
@@ -515,6 +557,95 @@ mod tests {
         drop_hop_by_hop(&mut h);
         assert_eq!(h.len(), 1, "{h:?}");
         assert!(h.contains_key("cookie"));
+    }
+
+    /// A listener with `limits`, answering 200 to everything, and a TLS
+    /// client that trusts its certificate.
+    async fn limited(limits: Limits) -> (SocketAddr, tokio_rustls::TlsConnector) {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = self_signed(dir.path(), "fw1").unwrap();
+        let tls = Arc::new(Tls::new(&cert).unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, tls, limits, |_| {
+            hyper::service::service_fn(|_req: Request<Incoming>| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"ok"))))
+            })
+        }));
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.cert_der.clone().into()).unwrap();
+        let client = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        (addr, tokio_rustls::TlsConnector::from(Arc::new(client)))
+    }
+
+    async fn connect(
+        addr: SocketAddr,
+        tls: &tokio_rustls::TlsConnector,
+    ) -> std::io::Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>> {
+        let tcp = tokio::net::TcpStream::connect(addr).await?;
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        tls.connect(name, tcp).await
+    }
+
+    /// A client that stops partway through its headers is cut off (#282).
+    #[tokio::test]
+    async fn a_slow_client_is_cut_off_reading_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (addr, tls) = limited(Limits {
+            header_read: Duration::from_millis(300),
+            ..Limits::DEFAULT
+        })
+        .await;
+        let mut c = connect(addr, &tls).await.unwrap();
+        c.write_all(b"GET /livez HTTP/1.1\r\nhost: fw1\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(5), c.read_to_end(&mut buf)).await;
+        assert!(read.is_ok(), "the server closed the connection");
+        assert!(!String::from_utf8_lossy(&buf).contains("200"), "no reply");
+
+        // A whole request in time is still served.
+        let mut c = connect(addr, &tls).await.unwrap();
+        c.write_all(b"GET /livez HTTP/1.1\r\nhost: fw1\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        c.read_to_end(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 200"));
+    }
+
+    /// Past the connection limit, a new client waits until one closes
+    /// (#282).
+    #[tokio::test]
+    async fn connections_past_the_limit_wait() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (addr, tls) = limited(Limits {
+            connections: 1,
+            ..Limits::DEFAULT
+        })
+        .await;
+        let first = connect(addr, &tls).await.unwrap();
+        let second = tokio::time::timeout(Duration::from_millis(500), connect(addr, &tls)).await;
+        assert!(second.is_err(), "the second handshake waits for a slot");
+
+        drop(first);
+        let mut c = tokio::time::timeout(Duration::from_secs(5), connect(addr, &tls))
+            .await
+            .expect("a slot frees when the first closes")
+            .unwrap();
+        c.write_all(b"GET /livez HTTP/1.1\r\nhost: fw1\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        c.read_to_end(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 200"));
     }
 
     #[tokio::test]

@@ -74,6 +74,8 @@ pub struct TokenInfo {
 }
 
 const PREFIX: &str = "swt_";
+/// How often, at most, a token's `last_used` is saved.
+const LAST_USED_EVERY_S: i64 = 60;
 /// Names of session tokens, which API tokens cannot take.
 pub const SESSION_PREFIX: &str = "session-";
 
@@ -231,9 +233,19 @@ impl<S: System> Coordinator<S> {
         if t.expires.is_some_and(|e| e <= now.as_second()) {
             return Ok(None);
         }
+        // Saved at most once a minute: a scraper presents its token on
+        // every request, and each save is a synced write under the
+        // coordinator's lock. The record returned has the current time.
+        let stale = t
+            .last_used
+            .as_deref()
+            .and_then(|s| s.parse::<jiff::Timestamp>().ok())
+            .is_none_or(|u| now.as_second() - u.as_second() >= LAST_USED_EVERY_S);
         t.last_used = Some(now.to_string());
         let t = t.clone();
-        self.save_tokens(&all)?;
+        if stale {
+            self.save_tokens(&all)?;
+        }
         Ok(Some(t))
     }
 }

@@ -1818,6 +1818,38 @@ fn tokens_are_looked_up_by_hash() {
     assert!(current(&root, &info.hash).unwrap().is_none());
 }
 
+/// A token's `last_used` is saved at most once a minute: a scraper
+/// presents it on every request (#282).
+#[test]
+fn token_use_saves_last_used_at_most_once_a_minute() {
+    use sparewall_core::tokens::Role;
+    let mut t = setup();
+    let (tok, _) = t.c.token_create("scrape", Role::Monitor, None).unwrap();
+    let path = t.c.store().root().join("tokens.json");
+    let first = t.c.token_use(&tok).unwrap().unwrap();
+    assert!(first.last_used.is_some());
+    let saved = std::fs::read(&path).unwrap();
+    for _ in 0..5 {
+        let again = t.c.token_use(&tok).unwrap().unwrap();
+        assert!(again.last_used.is_some(), "the reply has the current time");
+    }
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        saved,
+        "no save within the minute"
+    );
+
+    // Two minutes ago: the next use saves the current time.
+    let mut all: Vec<Value> = serde_json::from_slice(&saved).unwrap();
+    let old = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(120);
+    all[0]["last_used"] = json!(old.to_string());
+    std::fs::write(&path, serde_json::to_vec(&all).unwrap()).unwrap();
+    t.c.token_use(&tok).unwrap().unwrap();
+    let now: Vec<Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let used: jiff::Timestamp = now[0]["last_used"].as_str().unwrap().parse().unwrap();
+    assert!(used > old + jiff::SignedDuration::from_secs(60));
+}
+
 /// Only an admin may turn the anti-lockout rule off; anyone may turn it
 /// back on, and root (no role) may do either.
 #[test]
