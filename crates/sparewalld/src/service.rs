@@ -2,7 +2,6 @@
 
 // zlink 0.9 deprecates the `service` macro, for `interface` and
 // `derive(Service)`: moving to them is #255.
-#![allow(deprecated)]
 
 use std::sync::{Arc, Mutex};
 
@@ -26,7 +25,7 @@ use tokio::sync::{Notify, broadcast};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use zlink::connection::socket::FetchPeerCredentials;
-use zlink::{Reply, service};
+use zlink::{Reply, interface};
 
 use crate::access::{Principal, Session};
 use crate::author;
@@ -66,11 +65,12 @@ pub fn lookup_booted_image() {
     tracing::warn!("cannot read the booted image from bootc status");
 }
 
-/// The Varlink service. Coordinator calls run on the blocking pool, since
-/// they shell out to nft and networkctl. Each connection is served by its
-/// own clone (`varlink::serve`), so calls from different clients overlap.
+/// What the interfaces of the Varlink service share. Coordinator calls run
+/// on the blocking pool, since they shell out to nft and networkctl. Each
+/// connection is served by its own clone of the service
+/// (`varlink::serve`), so calls from different clients overlap.
 #[derive(Clone)]
-pub struct Firewall {
+pub struct Shared {
     core: Core,
     events: broadcast::Sender<Value>,
     pair: Pair,
@@ -89,15 +89,15 @@ pub struct Firewall {
 /// (an upgrade the backup forwards takes it on the master).
 pub type Changes = Arc<tokio::sync::Mutex<()>>;
 
-impl Firewall {
-    pub fn new(
+impl Shared {
+    fn new(
         core: Core,
         events: broadcast::Sender<Value>,
         pair: Pair,
         sync: Arc<Notify>,
         changes: Changes,
     ) -> Self {
-        Firewall {
+        Shared {
             core,
             events,
             pair,
@@ -105,14 +105,6 @@ impl Firewall {
             changes,
             session: None,
             logins: Logins::default(),
-        }
-    }
-
-    /// This service for one connection of the restricted socket.
-    pub fn restricted(&self, session: Session) -> Firewall {
-        Firewall {
-            session: Some(session),
-            ..self.clone()
         }
     }
 
@@ -384,21 +376,72 @@ fn opts(
     }
 }
 
-#[service(
+/// The Varlink service: its interfaces, and the state they share.
+#[derive(Clone, zlink::Service)]
+#[zlink(
     vendor = "Sparewall",
     product = "sparewalld",
     version = sparewall_core::VERSION,
     url = "https://sparewall.org"
 )]
-impl<Sock> Firewall
+pub struct Firewall {
+    #[zlink(state)]
+    shared: Shared,
+    firewall: FirewallInterface,
+    secrets: SecretsInterface,
+    upgrade: UpgradeInterface,
+    cluster: ClusterInterface,
+    auth: AuthInterface,
+    metrics: MetricsInterface,
+    diagnostics: DiagnosticsInterface,
+}
+
+impl Firewall {
+    pub fn new(
+        core: Core,
+        events: broadcast::Sender<Value>,
+        pair: Pair,
+        sync: Arc<Notify>,
+        changes: Changes,
+    ) -> Self {
+        Firewall {
+            shared: Shared::new(core, events, pair, sync, changes),
+            firewall: FirewallInterface,
+            secrets: SecretsInterface,
+            upgrade: UpgradeInterface,
+            cluster: ClusterInterface,
+            auth: AuthInterface,
+            metrics: MetricsInterface,
+            diagnostics: DiagnosticsInterface,
+        }
+    }
+
+    /// This service for one connection of the restricted socket.
+    pub fn restricted(&self, session: Session) -> Firewall {
+        let mut f = self.clone();
+        f.shared.session = Some(session);
+        f
+    }
+}
+
+/// `org.sparewall.Firewall`.
+#[derive(Clone, Default)]
+pub struct FirewallInterface;
+
+#[interface("org.sparewall.Firewall")]
+impl<Sock> FirewallInterface
 where
     Sock::ReadHalf: FetchPeerCredentials,
 {
     /// Check a document without applying it: errors (as ValidationFailed,
     /// each naming its path) or warnings.
-    #[zlink(interface = "org.sparewall.Firewall", types = [sparewall_api::Generation, HealthCheck])]
-    async fn validate(&mut self, config: Value) -> Result<ValidateReply, FirewallError> {
-        let warnings = with_core(&self.core, &self.events, move |c| c.validate(config)).await?;
+    #[zlink(types = [sparewall_api::Generation, HealthCheck])]
+    async fn validate(
+        &mut self,
+        config: Value,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<ValidateReply, FirewallError> {
+        let warnings = with_core(&fw.core, &fw.events, move |c| c.validate(config)).await?;
         Ok(ValidateReply { warnings })
     }
 
@@ -415,19 +458,20 @@ where
         dry_run: Option<bool>,
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<ApplyReply, FirewallError> {
-        let _change = self.changes.lock().await;
-        let reachable = self.gate(allow_diverge, dry_run)?;
+        let _change = fw.changes.lock().await;
+        let reachable = fw.gate(allow_diverge, dry_run)?;
         let o = opts(
             base,
             confirm_seconds,
             dry_run,
-            self.author(conn).await,
+            fw.author(conn).await,
             reachable,
-            self.role(),
+            fw.role(),
         );
-        let r = with_core(&self.core, &self.events, move |c| c.apply(config, &o)).await;
-        self.finish(r, confirm_seconds).await
+        let r = with_core(&fw.core, &fw.events, move |c| c.apply(config, &o)).await;
+        fw.finish(r, confirm_seconds).await
     }
 
     /// Change the configuration with a JSON merge patch (RFC 7396) on
@@ -440,19 +484,20 @@ where
         dry_run: Option<bool>,
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<ApplyReply, FirewallError> {
-        let _change = self.changes.lock().await;
-        let reachable = self.gate(allow_diverge, dry_run)?;
+        let _change = fw.changes.lock().await;
+        let reachable = fw.gate(allow_diverge, dry_run)?;
         let o = opts(
             base,
             confirm_seconds,
             dry_run,
-            self.author(conn).await,
+            fw.author(conn).await,
             reachable,
-            self.role(),
+            fw.role(),
         );
-        let r = with_core(&self.core, &self.events, move |c| c.merge(&patch, &o)).await;
-        self.finish(r, confirm_seconds).await
+        let r = with_core(&fw.core, &fw.events, move |c| c.merge(&patch, &o)).await;
+        fw.finish(r, confirm_seconds).await
     }
 
     /// Change the configuration with a JSON patch (RFC 6902) on generation
@@ -465,30 +510,32 @@ where
         dry_run: Option<bool>,
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<ApplyReply, FirewallError> {
-        let _change = self.changes.lock().await;
-        let reachable = self.gate(allow_diverge, dry_run)?;
+        let _change = fw.changes.lock().await;
+        let reachable = fw.gate(allow_diverge, dry_run)?;
         let o = opts(
             base,
             confirm_seconds,
             dry_run,
-            self.author(conn).await,
+            fw.author(conn).await,
             reachable,
-            self.role(),
+            fw.role(),
         );
-        let r = with_core(&self.core, &self.events, move |c| c.patch(&ops, &o)).await;
-        self.finish(r, confirm_seconds).await
+        let r = with_core(&fw.core, &fw.events, move |c| c.patch(&ops, &o)).await;
+        fw.finish(r, confirm_seconds).await
     }
 
     /// Keep generation `id`, which waits for confirmation.
-    async fn confirm(&mut self, id: i64) -> Result<Empty, FirewallError> {
-        let _change = self.changes.lock().await;
-        with_core(&self.core, &self.events, move |c| {
-            c.confirm(id.max(0) as u64)
-        })
-        .await?;
+    async fn confirm(
+        &mut self,
+        id: i64,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<Empty, FirewallError> {
+        let _change = fw.changes.lock().await;
+        with_core(&fw.core, &fw.events, move |c| c.confirm(id.max(0) as u64)).await?;
         // A confirmed generation goes to the peer.
-        self.sync.notify_one();
+        fw.sync.notify_one();
         Ok(Empty {})
     }
 
@@ -499,30 +546,35 @@ where
         id: Option<i64>,
         allow_diverge: Option<bool>,
         #[zlink(connection)] conn: &mut Connection<Sock>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<GenerationReply, FirewallError> {
-        let _change = self.changes.lock().await;
+        let _change = fw.changes.lock().await;
         let target = id.map(|i| i.max(0) as u64);
         // Evaluated now, applied below only if the rollback reaches the peer.
-        let gate = self.gate(allow_diverge, None);
-        let author = self.author(conn).await;
-        let role = self.role();
-        let (g, staged) = with_core_raw(&self.core, &self.events, move |c| {
+        let gate = fw.gate(allow_diverge, None);
+        let author = fw.author(conn).await;
+        let role = fw.role();
+        let (g, staged) = with_core_raw(&fw.core, &fw.events, move |c| {
             gated_rollback(c, target, &author, gate, role)
         })
         .await
         .map_err(to_api_error)??;
         if staged {
-            self.run_staged(g.id, None).await?;
+            fw.run_staged(g.id, None).await?;
         }
-        self.sync.notify_one();
+        fw.sync.notify_one();
         Ok(GenerationReply {
             generation: api_generation(&g, true),
         })
     }
 
     /// A generation's document and record (default: the active one).
-    async fn get_config(&mut self, id: Option<i64>) -> Result<ConfigReply, FirewallError> {
-        with_core(&self.core, &self.events, move |c| {
+    async fn get_config(
+        &mut self,
+        id: Option<i64>,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<ConfigReply, FirewallError> {
+        with_core(&fw.core, &fw.events, move |c| {
             let id = match id {
                 Some(i) => i.max(0) as u64,
                 None => c.active()?,
@@ -537,8 +589,12 @@ where
     }
 
     /// A generation's document alone (default: the active one).
-    async fn export(&mut self, id: Option<i64>) -> Result<ExportReply, FirewallError> {
-        with_core(&self.core, &self.events, move |c| {
+    async fn export(
+        &mut self,
+        id: Option<i64>,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<ExportReply, FirewallError> {
+        with_core(&fw.core, &fw.events, move |c| {
             let id = match id {
                 Some(i) => i.max(0) as u64,
                 None => c.active()?,
@@ -551,8 +607,12 @@ where
     }
 
     /// Generations, newest first, up to `limit`.
-    async fn history(&mut self, limit: Option<i64>) -> Result<HistoryReply, FirewallError> {
-        with_core(&self.core, &self.events, move |c| {
+    async fn history(
+        &mut self,
+        limit: Option<i64>,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<HistoryReply, FirewallError> {
+        with_core(&fw.core, &fw.events, move |c| {
             let gens = c.history(limit.map(|l| l.max(0) as usize))?;
             Ok(HistoryReply {
                 generations: gens
@@ -566,9 +626,13 @@ where
 
     /// In a pair, make both nodes run the configuration of `from_node`: this
     /// node (push it to the peer) or the peer (take the peer's).
-    async fn sync(&mut self, from_node: String) -> Result<GenerationReply, FirewallError> {
-        let _change = self.changes.lock().await;
-        let (node, peer) = with_core(&self.core, &self.events, |c| {
+    async fn sync(
+        &mut self,
+        from_node: String,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<GenerationReply, FirewallError> {
+        let _change = fw.changes.lock().await;
+        let (node, peer) = with_core(&fw.core, &fw.events, |c| {
             let doc = c.active_document()?;
             Ok((
                 c.node().to_string(),
@@ -582,9 +646,9 @@ where
             });
         };
         let result = if from_node == peer {
-            crate::peer::take_from_peer(&self.core, &self.events).await
+            crate::peer::take_from_peer(&fw.core, &fw.events).await
         } else if from_node == node {
-            crate::peer::give_to_peer(&self.core, &self.events).await
+            crate::peer::give_to_peer(&fw.core, &fw.events).await
         } else {
             return Err(FirewallError::NotSupported {
                 message: format!("{from_node} is neither {node} nor its peer {peer}"),
@@ -597,21 +661,25 @@ where
                 FirewallError::ApplyFailed { message: e }
             }
         })?;
-        self.sync.notify_one();
+        fw.sync.notify_one();
         Ok(GenerationReply {
             generation: api_generation(&g, true),
         })
     }
 
     /// This node's health level and VRRP role; with `verbose`, each check.
-    async fn health(&mut self, verbose: Option<bool>) -> Result<HealthReply, FirewallError> {
-        let vrrp = self
+    async fn health(
+        &mut self,
+        verbose: Option<bool>,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<HealthReply, FirewallError> {
+        let vrrp = fw
             .pair
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .role
             .clone();
-        let (h, role) = with_core(&self.core, &self.events, move |c| {
+        let (h, role) = with_core(&fw.core, &fw.events, move |c| {
             let role = match vrrp {
                 Some(r) => r,
                 None => role_of(c)?,
@@ -641,23 +709,30 @@ where
         &mut self,
         name: String,
         #[zlink(connection)] conn: &mut Connection<Sock>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<Empty, FirewallError> {
-        let by = self.author(conn).await;
-        crate::selinux::acknowledge(&self.core, &self.events, name, by).await?;
+        let by = fw.author(conn).await;
+        crate::selinux::acknowledge(&fw.core, &fw.events, name, by).await?;
         Ok(Empty {})
     }
 
     /// The node's state: generations and hashes, pair sync, links, VRRP,
     /// connection tracking, the certificate it serves, and health.
-    async fn status(&mut self) -> Result<StatusReply, FirewallError> {
-        let pair = self.pair.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        with_core(&self.core, &self.events, move |c| status(c, &pair)).await
+    async fn status(
+        &mut self,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<StatusReply, FirewallError> {
+        let pair = fw.pair.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        with_core(&fw.core, &fw.events, move |c| status(c, &pair)).await
     }
 
     /// Write a backup bundle now, and send it to `backup.repository` if one
     /// is set.
-    async fn backup(&mut self) -> Result<BackupReply, FirewallError> {
-        crate::backup::run(&self.core, &self.events, &self.pair).await
+    async fn backup(
+        &mut self,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<BackupReply, FirewallError> {
+        crate::backup::run(&fw.core, &fw.events, &fw.pair).await
     }
 
     /// Events as they happen: applied and rolled-back generations, peer
@@ -668,8 +743,9 @@ where
     async fn subscribe(
         &mut self,
         more: bool,
+        #[zlink(state)] fw: &mut Shared,
     ) -> impl Stream<Item = Reply<EventReply>> + Unpin + 'static {
-        let rx = self.events.subscribe();
+        let rx = fw.events.subscribe();
         let hello = Reply::new(Some(EventReply {
             event: json!({"type": "subscribed"}),
         }))
@@ -693,23 +769,35 @@ where
         instance: Option<String>,
         peer: String,
         port: Option<i64>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<VpnConfigReply, FirewallError> {
         let port = port.map(|p| u16::try_from(p).unwrap_or(0));
-        let config = with_core(&self.core, &self.events, move |c| {
+        let config = with_core(&fw.core, &fw.events, move |c| {
             c.vpn_client_config(instance.as_deref(), &peer, port)
         })
         .await?;
         Ok(VpnConfigReply { config })
     }
+}
 
+/// `org.sparewall.Secrets`.
+#[derive(Clone, Default)]
+pub struct SecretsInterface;
+
+#[interface("org.sparewall.Secrets")]
+impl<Sock> SecretsInterface
+where
+    Sock::ReadHalf: FetchPeerCredentials,
+{
     /// Store a secret (a cluster secret unless `cluster` is false). Values
     /// can never be read back.
-    #[zlink(interface = "org.sparewall.Secrets", types = [SecretInfo], rename = "Set")]
+    #[zlink(types = [SecretInfo], rename = "Set")]
     async fn secret_set(
         &mut self,
         name: String,
         value: String,
         cluster: Option<bool>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<SecretSetReply, FirewallError> {
         let class = if cluster.unwrap_or(true) {
             SecretClass::Cluster
@@ -721,7 +809,7 @@ where
                 message: "users are set with sparewall user".into(),
             });
         }
-        let info = with_core(&self.core, &self.events, move |c| {
+        let info = with_core(&fw.core, &fw.events, move |c| {
             let admin_password = name == ADMIN_PASSWORD;
             if admin_password {
                 if !sparewall_config::identity::password_hash_ok(&value) {
@@ -746,7 +834,7 @@ where
             Ok(info)
         })
         .await?;
-        self.sync.notify_one();
+        fw.sync.notify_one();
         Ok(SecretSetReply {
             secret: api_secret(&info),
         })
@@ -754,22 +842,84 @@ where
 
     /// Secrets' names, classes and versions, never their values.
     #[zlink(rename = "List")]
-    async fn secret_list(&mut self) -> Result<SecretListReply, FirewallError> {
-        let list = with_core(&self.core, &self.events, |c| c.secret_list()).await?;
+    async fn secret_list(
+        &mut self,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<SecretListReply, FirewallError> {
+        let list = with_core(&fw.core, &fw.events, |c| c.secret_list()).await?;
         Ok(SecretListReply {
             secrets: list.iter().map(api_secret).collect(),
         })
     }
 
+    /// Whether `password` is the stored backup password, and whether it
+    /// opens the newest bundle on the node (#142). Nothing derived from
+    /// the stored secret is returned; a wrong one is answered slowly.
+    #[zlink(rename = "CheckBackupPassword")]
+    async fn check_backup_password(
+        &mut self,
+        password: String,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<CheckBackupPasswordReply, FirewallError> {
+        let r = with_core(&fw.core, &fw.events, move |c| {
+            Ok(crate::backup::check_password(c, password.as_bytes()))
+        })
+        .await?;
+        // Not a fast guessing oracle: a password that is not the stored
+        // one costs a second.
+        if !r.matches_stored {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        Ok(r)
+    }
+
+    /// Delete a secret on this node.
+    #[zlink(rename = "Delete")]
+    async fn secret_delete(
+        &mut self,
+        name: String,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<Empty, FirewallError> {
+        if name.starts_with(USER_PREFIX) {
+            return Err(FirewallError::NotSupported {
+                message: "users are removed with sparewall user remove".into(),
+            });
+        }
+        // A deletion would neither reach the peer nor lock the account.
+        if name == ADMIN_PASSWORD {
+            return Err(FirewallError::NotSupported {
+                message: format!("{ADMIN_PASSWORD} is removed with sparewall passwd --lock"),
+            });
+        }
+        let existed = with_core(&fw.core, &fw.events, move |c| c.secret_delete(&name)).await?;
+        if !existed {
+            return Err(FirewallError::NotSupported {
+                message: "no such secret".into(),
+            });
+        }
+        Ok(Empty {})
+    }
+}
+
+/// `org.sparewall.Upgrade`.
+#[derive(Clone, Default)]
+pub struct UpgradeInterface;
+
+#[interface("org.sparewall.Upgrade")]
+impl<Sock> UpgradeInterface
+where
+    Sock::ReadHalf: FetchPeerCredentials,
+{
     /// Whether a newer image is available on the channel (or `image`, a full
     /// reference).
-    #[zlink(interface = "org.sparewall.Upgrade", rename = "Check")]
+    #[zlink(rename = "Check")]
     async fn upgrade_check(
         &mut self,
         channel: Option<String>,
         image: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<UpgradeCheckReply, FirewallError> {
-        let updates = with_core(&self.core, &self.events, |c| {
+        let updates = with_core(&fw.core, &fw.events, |c| {
             Ok(c.active_document()?.and_then(|d| d.updates))
         })
         .await?;
@@ -842,12 +992,13 @@ where
         channel: Option<String>,
         image: Option<String>,
         allow_downgrade: Option<bool>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<UpgradeStartReply, FirewallError> {
-        let _change = self.changes.lock().await;
+        let _change = fw.changes.lock().await;
         let plan = crate::upgrade::start(
-            &self.core,
-            &self.events,
-            &self.pair,
+            &fw.core,
+            &fw.events,
+            &fw.pair,
             channel,
             image,
             allow_downgrade.unwrap_or(false),
@@ -857,33 +1008,57 @@ where
         .map_err(|message| FirewallError::ApplyFailed { message })?;
         // An upgrade started by hand lifts a failed scheduled one's block
         // (#84): someone is looking.
-        let _ =
-            crate::schedule::unblock(&self.core, &self.events, "an upgrade started by hand").await;
+        let _ = crate::schedule::unblock(&fw.core, &fw.events, "an upgrade started by hand").await;
         Ok(UpgradeStartReply { plan })
     }
+}
 
+/// `org.sparewall.Cluster`.
+#[derive(Clone, Default)]
+pub struct ClusterInterface;
+
+#[interface("org.sparewall.Cluster")]
+impl<Sock> ClusterInterface
+where
+    Sock::ReadHalf: FetchPeerCredentials,
+{
     /// Move a pair's gateway addresses to `to` (default: the node with the
     /// higher VRRP priority). Returns when the move is done, or why it did
     /// not happen.
-    #[zlink(interface = "org.sparewall.Cluster", rename = "Failover")]
-    async fn failover(&mut self, to: Option<String>) -> Result<FailoverReply, FirewallError> {
-        crate::failover::failover(&self.core, &self.events, &self.pair, to.as_deref())
+    #[zlink(rename = "Failover")]
+    async fn failover(
+        &mut self,
+        to: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<FailoverReply, FirewallError> {
+        crate::failover::failover(&fw.core, &fw.events, &fw.pair, to.as_deref())
             .await
             .map_err(|message| FirewallError::ApplyFailed { message })
     }
+}
 
+/// `org.sparewall.Auth`.
+#[derive(Clone, Default)]
+pub struct AuthInterface;
+
+#[interface("org.sparewall.Auth")]
+impl<Sock> AuthInterface
+where
+    Sock::ReadHalf: FetchPeerCredentials,
+{
     /// Create an API token with `role`, expiring after `expires_days` if
     /// given. The token is shown once.
-    #[zlink(interface = "org.sparewall.Auth", types = [TokenInfo])]
+    #[zlink(types = [TokenInfo])]
     async fn create_token(
         &mut self,
         name: String,
         role: String,
         expires_days: Option<i64>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<TokenCreateReply, FirewallError> {
         let role = parse_role(&role)?;
         let ttl = expires_days.map(|d| d.clamp(1, 3650) as u32);
-        let (token, info) = with_core(&self.core, &self.events, move |c| {
+        let (token, info) = with_core(&fw.core, &fw.events, move |c| {
             c.token_create(&name, role, ttl)
         })
         .await?;
@@ -895,13 +1070,17 @@ where
 
     /// Bind this connection to a token (an API token or a session's): later
     /// calls act with its role. Needed first on the restricted socket.
-    async fn bind(&mut self, token: String) -> Result<BindReply, FirewallError> {
-        let Some(session) = self.session.clone() else {
+    async fn bind(
+        &mut self,
+        token: String,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<BindReply, FirewallError> {
+        let Some(session) = fw.session.clone() else {
             return Err(FirewallError::NotSupported {
                 message: "the root-only socket needs no token".into(),
             });
         };
-        let found = with_core(&self.core, &self.events, move |c| c.token_use(&token)).await?;
+        let found = with_core(&fw.core, &fw.events, move |c| c.token_use(&token)).await?;
         let mut s = session.lock().unwrap_or_else(|p| p.into_inner());
         let Some(t) = found else {
             *s = None;
@@ -925,25 +1104,30 @@ where
 
     /// Check a user's password and open a session of 12 hours; the
     /// connection is bound to it. Failed logins are rate-limited per user.
-    async fn login(&mut self, user: String, password: String) -> Result<LoginReply, FirewallError> {
+    async fn login(
+        &mut self,
+        user: String,
+        password: String,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<LoginReply, FirewallError> {
         let refused = |reason: &str| FirewallError::PermissionDenied {
             role: "none".into(),
             reason: Some(reason.into()),
         };
         let name = user.clone();
-        let exists = with_core(&self.core, &self.events, move |c| c.user_exists(&name)).await?;
-        if !self.logins.attempt(&user, exists) {
+        let exists = with_core(&fw.core, &fw.events, move |c| c.user_exists(&name)).await?;
+        if !fw.logins.attempt(&user, exists) {
             return Err(refused("too many failed logins; try again later"));
         }
         let name = user.clone();
-        let found = with_core(&self.core, &self.events, move |c| c.login(&name, &password)).await?;
+        let found = with_core(&fw.core, &fw.events, move |c| c.login(&name, &password)).await?;
         let Some((token, t)) = found else {
             // Slows guessing on one connection; others are not held up.
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             return Err(refused("wrong user name or password"));
         };
-        self.logins.succeeded(&user);
-        if let Some(s) = &self.session {
+        fw.logins.succeeded(&user);
+        if let Some(s) = &fw.session {
             *s.lock().unwrap_or_else(|p| p.into_inner()) = Some(Principal::of(&t));
         }
         Ok(LoginReply {
@@ -955,20 +1139,17 @@ where
     }
 
     /// End the session this connection is bound to.
-    async fn logout(&mut self) -> Result<Empty, FirewallError> {
-        let Some(p) = self.principal().filter(|p| p.user.is_some()) else {
+    async fn logout(&mut self, #[zlink(state)] fw: &mut Shared) -> Result<Empty, FirewallError> {
+        let Some(p) = fw.principal().filter(|p| p.user.is_some()) else {
             return Err(FirewallError::NotSupported {
                 message: "this connection is not bound to a session".into(),
             });
         };
-        if let Some(s) = &self.session {
+        if let Some(s) = &fw.session {
             *s.lock().unwrap_or_else(|p| p.into_inner()) = None;
         }
         let hash = p.hash.clone();
-        with_core(&self.core, &self.events, move |c| {
-            c.token_revoke_hash(&hash)
-        })
-        .await?;
+        with_core(&fw.core, &fw.events, move |c| c.token_revoke_hash(&hash)).await?;
         tracing::info!(user = p.describe(), "logged out");
         Ok(Empty {})
     }
@@ -981,19 +1162,23 @@ where
         name: String,
         role: String,
         password_hash: String,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<Empty, FirewallError> {
         let role = parse_role(&role)?;
-        with_core(&self.core, &self.events, move |c| {
+        with_core(&fw.core, &fw.events, move |c| {
             c.user_set(&name, role, &password_hash)
         })
         .await?;
-        self.sync.notify_one();
+        fw.sync.notify_one();
         Ok(Empty {})
     }
 
     /// Users and their roles, `admin` first.
-    async fn list_users(&mut self) -> Result<UserListReply, FirewallError> {
-        let users = with_core(&self.core, &self.events, |c| c.users()).await?;
+    async fn list_users(
+        &mut self,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<UserListReply, FirewallError> {
+        let users = with_core(&fw.core, &fw.events, |c| c.users()).await?;
         Ok(UserListReply {
             users: users
                 .into_iter()
@@ -1008,20 +1193,27 @@ where
     }
 
     /// Remove a user and end its sessions.
-    async fn remove_user(&mut self, name: String) -> Result<Empty, FirewallError> {
-        let existed = with_core(&self.core, &self.events, move |c| c.user_remove(&name)).await?;
+    async fn remove_user(
+        &mut self,
+        name: String,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<Empty, FirewallError> {
+        let existed = with_core(&fw.core, &fw.events, move |c| c.user_remove(&name)).await?;
         if !existed {
             return Err(FirewallError::NotSupported {
                 message: "no such user".into(),
             });
         }
-        self.sync.notify_one();
+        fw.sync.notify_one();
         Ok(Empty {})
     }
 
     /// API tokens (never their values).
-    async fn list_tokens(&mut self) -> Result<TokenListReply, FirewallError> {
-        let t = with_core(&self.core, &self.events, |c| c.tokens()).await?;
+    async fn list_tokens(
+        &mut self,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<TokenListReply, FirewallError> {
+        let t = with_core(&fw.core, &fw.events, |c| c.tokens()).await?;
         Ok(TokenListReply {
             // Sessions are the users'.
             tokens: t
@@ -1033,8 +1225,12 @@ where
     }
 
     /// Revoke an API token at once.
-    async fn revoke_token(&mut self, name: String) -> Result<Empty, FirewallError> {
-        let existed = with_core(&self.core, &self.events, move |c| c.token_revoke(&name)).await?;
+    async fn revoke_token(
+        &mut self,
+        name: String,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> Result<Empty, FirewallError> {
+        let existed = with_core(&fw.core, &fw.events, move |c| c.token_revoke(&name)).await?;
         if !existed {
             return Err(FirewallError::NotSupported {
                 message: "no such token".into(),
@@ -1042,60 +1238,28 @@ where
         }
         Ok(Empty {})
     }
+}
 
-    /// Whether `password` is the stored backup password, and whether it
-    /// opens the newest bundle on the node (#142). Nothing derived from
-    /// the stored secret is returned; a wrong one is answered slowly.
-    #[zlink(interface = "org.sparewall.Secrets", rename = "CheckBackupPassword")]
-    async fn check_backup_password(
-        &mut self,
-        password: String,
-    ) -> Result<CheckBackupPasswordReply, FirewallError> {
-        let r = with_core(&self.core, &self.events, move |c| {
-            Ok(crate::backup::check_password(c, password.as_bytes()))
-        })
-        .await?;
-        // Not a fast guessing oracle: a password that is not the stored
-        // one costs a second.
-        if !r.matches_stored {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-        Ok(r)
-    }
+/// `org.sparewall.Metrics`.
+#[derive(Clone, Default)]
+pub struct MetricsInterface;
 
-    /// Delete a secret on this node.
-    #[zlink(interface = "org.sparewall.Secrets", rename = "Delete")]
-    async fn secret_delete(&mut self, name: String) -> Result<Empty, FirewallError> {
-        if name.starts_with(USER_PREFIX) {
-            return Err(FirewallError::NotSupported {
-                message: "users are removed with sparewall user remove".into(),
-            });
-        }
-        // A deletion would neither reach the peer nor lock the account.
-        if name == ADMIN_PASSWORD {
-            return Err(FirewallError::NotSupported {
-                message: format!("{ADMIN_PASSWORD} is removed with sparewall passwd --lock"),
-            });
-        }
-        let existed = with_core(&self.core, &self.events, move |c| c.secret_delete(&name)).await?;
-        if !existed {
-            return Err(FirewallError::NotSupported {
-                message: "no such secret".into(),
-            });
-        }
-        Ok(Empty {})
-    }
-
+#[interface("org.sparewall.Metrics")]
+impl<Sock> MetricsInterface
+where
+    Sock::ReadHalf: FetchPeerCredentials,
+{
     /// Evaluate a PromQL expression at `time` (RFC 3339 or Unix seconds;
     /// default now) over this node's history, kept with `metrics.mode:
     /// local`.
-    #[zlink(interface = "org.sparewall.Metrics", rename = "Query")]
+    #[zlink(rename = "Query")]
     async fn metrics_query(
         &mut self,
         query: String,
         time: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<QueryReply, FirewallError> {
-        self.history_kept().await?;
+        fw.history_kept().await?;
         let mut p = vec![("query", query.as_str())];
         if let Some(t) = &time {
             p.push(("time", t));
@@ -1106,15 +1270,16 @@ where
     /// Evaluate a PromQL expression from `start` to `end` (RFC 3339 or Unix
     /// seconds), every `step` (a duration such as `1m`, or seconds), over
     /// this node's history.
-    #[zlink(interface = "org.sparewall.Metrics", rename = "QueryRange")]
+    #[zlink(rename = "QueryRange")]
     async fn metrics_query_range(
         &mut self,
         query: String,
         start: String,
         end: String,
         step: String,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<QueryReply, FirewallError> {
-        self.history_kept().await?;
+        fw.history_kept().await?;
         let p = [
             ("query", query.as_str()),
             ("start", &start),
@@ -1123,12 +1288,22 @@ where
         ];
         crate::history::query("/api/v1/query_range", &p).await
     }
+}
 
+/// `org.sparewall.Diagnostics`.
+#[derive(Clone, Default)]
+pub struct DiagnosticsInterface;
+
+#[interface("org.sparewall.Diagnostics")]
+impl<Sock> DiagnosticsInterface
+where
+    Sock::ReadHalf: FetchPeerCredentials,
+{
     /// Entries of Sparewall's units (and `selinux`, the denials of the
     /// coordinator's domain), newest first. `before`, a reply's `older`
     /// as it is, pages back; `priority` keeps that one and worse; `grep`
     /// matches the message's text, in any case.
-    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Logs", types = [LogEntry])]
+    #[zlink(rename = "Logs", types = [LogEntry])]
     #[allow(clippy::too_many_arguments)]
     async fn diagnostics_logs(
         &mut self,
@@ -1147,7 +1322,7 @@ where
     /// New entries of Sparewall's units as they are logged, filtered as
     /// `Logs` is, until the caller goes.
     /// [Requires 'more' flag]
-    #[zlink(interface = "org.sparewall.Diagnostics", rename = "FollowLogs", more)]
+    #[zlink(rename = "FollowLogs", more)]
     async fn diagnostics_follow_logs(
         &mut self,
         more: bool,
@@ -1186,7 +1361,7 @@ where
     /// `guests->users:default`, `forward:web`), a zone `pair`, an
     /// `address` or prefix at either end, a `port` at either end. `before`,
     /// a reply's `older` as it is, pages back.
-    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Hits", types = [RuleHit])]
+    #[zlink(rename = "Hits", types = [RuleHit])]
     #[allow(clippy::too_many_arguments)]
     async fn diagnostics_hits(
         &mut self,
@@ -1206,7 +1381,7 @@ where
     /// New hits as they are logged, filtered as `Hits` is, until the
     /// caller goes.
     /// [Requires 'more' flag]
-    #[zlink(interface = "org.sparewall.Diagnostics", rename = "FollowHits", more)]
+    #[zlink(rename = "FollowHits", more)]
     async fn diagnostics_follow_hits(
         &mut self,
         more: bool,
@@ -1241,12 +1416,13 @@ where
 
     /// The neighbour table (ARP and NDP), of one network or all, each
     /// entry with the network its interface carries.
-    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Neighbours", types = [Neighbour])]
+    #[zlink(rename = "Neighbours", types = [Neighbour])]
     async fn diagnostics_neighbours(
         &mut self,
         network: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<NeighboursReply, FirewallError> {
-        let (map, keep) = self.network_filter(network.as_deref()).await?;
+        let (map, keep) = fw.network_filter(network.as_deref()).await?;
         let mut out = Vec::new();
         for fam in ["4", "6"] {
             let j = crate::network::ip_json(&[&format!("-{fam}"), "neigh", "show"]).await?;
@@ -1264,14 +1440,15 @@ where
     /// Routes from every table but the local one, of one network or all,
     /// of one family (`4`, `6`) or both, each with the network its
     /// interface carries.
-    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Routes", types = [Route])]
+    #[zlink(rename = "Routes", types = [Route])]
     async fn diagnostics_routes(
         &mut self,
         network: Option<String>,
         family: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<RoutesReply, FirewallError> {
         let fams = crate::network::families(family.as_deref())?;
-        let (map, keep) = self.network_filter(network.as_deref()).await?;
+        let (map, keep) = fw.network_filter(network.as_deref()).await?;
         let mut out = Vec::new();
         for fam in fams {
             let j = crate::network::ip_json(&[&format!("-{fam}"), "route", "show", "table", "all"])
@@ -1291,17 +1468,18 @@ where
     /// named, `count` times (default 4, at most 10). With `more`, each
     /// line as it comes, then the exit status.
     /// [Supports 'more' flag]
-    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Ping", more)]
+    #[zlink(rename = "Ping", more)]
     async fn diagnostics_ping(
         &mut self,
         more: bool,
         host: String,
         network: Option<String>,
         count: Option<i64>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> impl Stream<Item = Result<Reply<ToolReply>, FirewallError>> + Unpin + 'static {
         let run = match crate::tools::Target::parse(&host, "host") {
             Err(e) => Err(e),
-            Ok(t) => match self.tool_source(network.as_deref(), &t).await {
+            Ok(t) => match fw.tool_source(network.as_deref(), &t).await {
                 Err(e) => Err(e),
                 Ok(src) => crate::tools::ping_args(&t, src.as_ref(), count)
                     .and_then(|a| crate::tools::run("ping", a, crate::tools::PING_LIMIT)),
@@ -1313,16 +1491,17 @@ where
     /// Trace the route to `host` from the node, from its own address on
     /// `network` if named: numeric, one probe a hop, at most 20 hops.
     /// [Supports 'more' flag]
-    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Traceroute", more)]
+    #[zlink(rename = "Traceroute", more)]
     async fn diagnostics_traceroute(
         &mut self,
         more: bool,
         host: String,
         network: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> impl Stream<Item = Result<Reply<ToolReply>, FirewallError>> + Unpin + 'static {
         let run = match crate::tools::Target::parse(&host, "host") {
             Err(e) => Err(e),
-            Ok(t) => match self.tool_source(network.as_deref(), &t).await {
+            Ok(t) => match fw.tool_source(network.as_deref(), &t).await {
                 Err(e) => Err(e),
                 Ok(src) => crate::tools::run(
                     "traceroute",
@@ -1337,7 +1516,7 @@ where
     /// Look `name` up from the node: a `record` type (default A; an
     /// address in reverse), through `server` or the node's own resolver.
     /// [Supports 'more' flag]
-    #[zlink(interface = "org.sparewall.Diagnostics", rename = "Lookup", more)]
+    #[zlink(rename = "Lookup", more)]
     async fn diagnostics_lookup(
         &mut self,
         more: bool,
@@ -1352,7 +1531,7 @@ where
     }
 }
 
-impl Firewall {
+impl Shared {
     /// Where a tool's run leaves from, for `network`.
     async fn tool_source(
         &self,

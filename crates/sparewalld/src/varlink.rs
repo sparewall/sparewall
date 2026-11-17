@@ -42,8 +42,6 @@ where
 }
 
 #[cfg(test)]
-// zlink 0.9 deprecates the `service` macro (#255).
-#[allow(deprecated)]
 mod tests {
     use std::time::Duration;
 
@@ -66,14 +64,7 @@ mod tests {
     #[derive(Clone)]
     struct Slow;
 
-    #[zlink::service(
-        interface = "org.sparewall.Test",
-        vendor = "Sparewall",
-        product = "test",
-        version = "0",
-        url = "https://sparewall.org",
-        types = [Done]
-    )]
+    #[zlink::interface("org.sparewall.Test", types = [Done])]
     impl Slow {
         async fn wait(&self) -> Done {
             tokio::time::sleep(Duration::from_secs(30)).await;
@@ -83,6 +74,15 @@ mod tests {
             Done { ok: true }
         }
     }
+
+    #[derive(Clone, zlink::Service)]
+    #[zlink(
+        vendor = "Sparewall",
+        product = "test",
+        version = "0",
+        url = "https://sparewall.org"
+    )]
+    struct SlowService(Slow);
 
     #[zlink::proxy("org.sparewall.Test")]
     trait TestProxy {
@@ -96,7 +96,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sock");
         let listener = UnixListener::bind(&path).unwrap();
-        let server = serve(listener, || Slow);
+        let server = serve(listener, || SlowService(Slow));
         let clients = async {
             let mut a = zlink::tokio::unix::connect(&path).await.unwrap();
             let mut b = zlink::tokio::unix::connect(&path).await.unwrap();
@@ -130,7 +130,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sock");
         let listener = UnixListener::bind(&path).unwrap();
-        let server = serve(listener, || Slow);
+        let server = serve(listener, || SlowService(Slow));
         let clients = async {
             let mut c = zlink::tokio::unix::connect(&path).await.unwrap();
             for parameters in [Some(serde_json::json!({})), None] {

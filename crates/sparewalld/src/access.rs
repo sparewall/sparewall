@@ -389,6 +389,10 @@ mod tests {
 
     #[derive(Debug, Serialize, Deserialize)]
     struct Info {
+        vendor: String,
+        product: String,
+        version: String,
+        url: String,
         interfaces: Vec<String>,
     }
 
@@ -631,6 +635,70 @@ mod tests {
         assert!(l.attempt("admin", true));
         assert!(l.attempt("alice", true));
         assert!(l.attempt("mallory", false));
+    }
+
+    /// A method the role table doesn't name, as a client could call it.
+    #[zlink::proxy("org.sparewall.Firewall")]
+    trait Unlisted {
+        async fn not_a_method(&mut self) -> zlink::Result<Result<(), FirewallError>>;
+    }
+
+    /// `GetInfo` says what the coordinator is and serves, its interfaces
+    /// in their order (#255), and the restricted socket refuses a method
+    /// that the role table doesn't name, before the service sees it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_service_describes_itself_and_the_guard_refuses_the_unlisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, f) = firewall(dir.path());
+        let admin = {
+            let mut c = core.lock().unwrap();
+            c.token_create("adm", Role::Admin, None).unwrap().0
+        };
+        let server = serve(dir.path(), f);
+        let test = async {
+            let mut c = connect(dir.path(), "root.sock").await;
+            let info = c.get_info().await.unwrap().unwrap();
+            assert_eq!(
+                (
+                    info.vendor.as_str(),
+                    info.product.as_str(),
+                    info.version.as_str(),
+                    info.url.as_str()
+                ),
+                (
+                    "Sparewall",
+                    "sparewalld",
+                    sparewall_core::VERSION,
+                    "https://sparewall.org"
+                )
+            );
+            assert_eq!(
+                info.interfaces,
+                [
+                    "org.sparewall.Firewall",
+                    "org.sparewall.Secrets",
+                    "org.sparewall.Upgrade",
+                    "org.sparewall.Cluster",
+                    "org.sparewall.Auth",
+                    "org.sparewall.Metrics",
+                    "org.sparewall.Diagnostics",
+                    "org.varlink.service",
+                ]
+            );
+            let mut api = connect(dir.path(), "api.sock").await;
+            api.bind(&admin).await.unwrap().unwrap();
+            match api.not_a_method().await.unwrap().unwrap_err() {
+                FirewallError::PermissionDenied { reason, .. } => assert_eq!(
+                    reason.as_deref(),
+                    Some("org.sparewall.Firewall.NotAMethod is not available on this socket")
+                ),
+                e => panic!("not a refusal: {e}"),
+            }
+        };
+        tokio::select! {
+            () = server => unreachable!(),
+            () = test => {}
+        }
     }
 
     /// Every method the coordinator serves has an entry in the table, so
