@@ -17,9 +17,11 @@ set -euo pipefail
 IMAGE=${1:?usage: installers.sh IMAGE VERSION OUTDIR}
 VERSION=${2:?usage: installers.sh IMAGE VERSION OUTDIR}
 OUT=${3:?usage: installers.sh IMAGE VERSION OUTDIR}
-BIB=${BIB:-quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b}
 LIMIT=$((2 * 1024 * 1024 * 1024 - 1))
 HERE=$(cd "$(dirname "$0")" && pwd)
+# The builder, pinned by digest in bib/Containerfile (Dependabot updates it).
+BIB=${BIB:-$(sed -n 's/^FROM //p' "$HERE/bib/Containerfile")}
+[[ $BIB == *@sha256:* ]] || { echo "installers.sh: no pinned builder in $HERE/bib/Containerfile" >&2; exit 1; }
 mkdir -p "$OUT/build"
 OUT=$(cd "$OUT" && pwd)
 

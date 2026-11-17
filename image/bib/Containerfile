@@ -1,0 +1,6 @@
+# The bootc-image-builder that image/installers.sh makes the installer ISO
+# and disk images with. Never built: this file only pins the image, by
+# digest, where Dependabot's docker updates can see it (.github/dependabot.yml).
+# Its sources are in github.com/osbuild/image-builder; the image is still
+# published here.
+FROM quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b

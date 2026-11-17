@@ -81,6 +81,8 @@ jobs:
         run: tests/ci/release-tags.sh
       - name: Homebrew formula
         run: tests/ci/homebrew-formula.sh
+      - name: Image SBOM additions
+        run: tests/ci/sbom-source-builds.sh
 
   macos-cli:
     # The CLI is released for macOS too (image.yml, cli-macos): it must

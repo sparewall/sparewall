@@ -687,7 +687,7 @@ Each role has one built provider, so the contract is narrower than the full inte
 
 ### Defaults in detail
 
-- **Kea:** ISC's official open-source images for `kea-dhcp4`. Start on 3.0 LTS; move to 3.2 if 3.0's interface handling falls short on VLAN-heavy hosts, since 3.2 adds `interface-redetect` and refactored interface code. Since 3.0 the DHCP daemons serve their control API directly, and 3.2 removed the Control Agent. The coordinator drives Kea over its control socket (`config-test`, `config-set`, lease and HA status).
+- **Kea:** ISC's official open-source images for `kea-dhcp4`. Start on 3.0 LTS; move to 3.2 if 3.0's interface handling falls short on VLAN-heavy hosts, since 3.2 adds `interface-redetect` and refactored interface code. Since 3.0 the DHCP daemons serve their control API directly, and 3.2 removed the Control Agent. The coordinator drives Kea over its control socket (`config-test`, `config-set`, lease and HA status). *As built:* Kea 3.2 from Fedora's packages, in Sparewall's own provider image (`image/providers/kea`), since ISC publishes no 3.2 images; see [implementation notes](implementation-notes.md). The milestone and risk tables below keep the original plan.
 - **Unbound:** a recursive resolver bound to the gateway addresses of the networks it serves; the whole service can be turned off for sites with their own DNS. systemd-resolved remains the host's own stub resolver and never serves the LAN.
 - **Time:** chrony runs on the host as both client and LAN time server; systemd-timesyncd cannot serve time.
 

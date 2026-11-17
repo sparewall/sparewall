@@ -41,13 +41,21 @@ Where the implementation departs from, or settles open questions in,
   may order after it, which a unit test checks. `sparewall-httpd` was
   ordered after sparewalld until 0.3.0, so a restart of sparewalld with
   `management.web` on waited for it and timed out, over and over (#164).
+- **The image's binaries are built by Fedora's Rust** (1.99 in Fedora
+  45), from the image's own build stage, not the toolchain CI pins
+  (`rust-toolchain.toml`, 1.98), which runs the unit tests and clippy.
+  Fedora's is never older, and the VM suites test the binaries it
+  builds. `rust-version` is the pinned toolchain's: nothing older is
+  built or tested.
 - **The containers signature policy defaults to `reject`.** bootc's
   `--enforce-container-sigpolicy`, which upgrades use, refuses a policy
   whose default accepts anything. `ghcr.io/sparewall` requires the
   project's signature and local transports are open.
 - **ulogd2 is built from source** in an image stage (Fedora 45 does not
   package it), with libnetfilter_log 1.0.2 linked statically because
-  Fedora has 1.0.1. node_exporter comes from Fedora's `node-exporter`
+  Fedora has 1.0.1. syft cannot see either, so the image SBOM gets them
+  from the Containerfile's `ARG`s (`.github/sbom-source-builds.sh`); their
+  advisories are watched by hand (releasing.md). node_exporter comes from Fedora's `node-exporter`
   package; it listens on localhost only, and sparewalld appends its
   metrics to `/metrics`.
 - **The coordinator has its own enforcing SELinux domain,
@@ -169,7 +177,12 @@ Where the implementation departs from, or settles open questions in,
   `bootc install`.
 - **Admin SSH keys** are written to `~admin/.ssh/authorized_keys`: with
   SELinux enforcing, sshd cannot read keys under `/var/lib`. The `admin`
-  account has passwordless sudo; root cannot log in over SSH.
+  account has passwordless sudo; root cannot log in over SSH. That is
+  deliberate, and stays after roles are enforced per call (#11): `admin`
+  is the break-glass account, an admin key already reaches root through
+  the API (upgrades, captures, the configuration itself), and a sudo
+  password would only add a secret to lose at the moment the node needs
+  repairing.
 - **The admin password is a cluster secret holding a crypt(3) hash**
   (`admin-password`, #89): `sparewall passwd` hashes on the client
   (SHA-512 crypt with a 16-character salt, the longest crypt(3) keeps),
