@@ -1988,6 +1988,7 @@ fn mixed_address_lists_render_a_line_per_match() {
                 "ops": {"type": "ipv4", "elements": ["192.168.1.12"]},
                 "nas": {"type": "ipv4", "elements": ["198.51.100.20"]},
                 "partners": {"type": "ipv4", "elements": ["203.0.113.0/24"]},
+                "outside": {"type": "ipv4", "elements": ["198.51.100.11"]},
             },
             "policy": {"lan->wan": {"rules": {
                 "mixed": {"order": 100, "proto": "tcp", "dport": 22,
@@ -1995,7 +1996,8 @@ fn mixed_address_lists_render_a_line_per_match() {
                     "dst": ["@nas", "198.51.100.21"], "action": "accept"},
             }}},
             "forwards": {"web": {"proto": "tcp", "dport": 443, "to": "192.168.1.20",
-                "src": ["198.51.100.0/24", "@partners"]}},
+                "src": ["198.51.100.0/24", "@partners"],
+                "dst": ["198.51.100.10", "@outside"]}},
         }),
     );
     let doc = sparewall_config::from_value(v).unwrap();
@@ -2025,14 +2027,26 @@ fn mixed_address_lists_render_a_line_per_match() {
         .into_iter()
         .filter(|l| l.contains("dnat ip to"))
         .collect();
-    assert_eq!(web.len(), 2, "{web:#?}");
-    assert!(
-        web[0].contains("ip saddr 198.51.100.0/24 tcp dport 443"),
-        "{web:#?}"
-    );
-    assert!(
-        web[1].contains("ip saddr @partners tcp dport 443"),
-        "{web:#?}"
+    let pairs: Vec<String> = ["198.51.100.0/24", "@partners"]
+        .iter()
+        .flat_map(|s| {
+            ["198.51.100.10", "@outside"]
+                .iter()
+                .map(move |d| format!("ip saddr {s} ip daddr {d} tcp dport 443 "))
+        })
+        .collect();
+    assert_eq!(web.len(), pairs.len(), "{web:#?}");
+    for (l, p) in web.iter().zip(&pairs) {
+        assert!(l.contains(p.as_str()), "{l} lacks {p}");
+    }
+    let not_here = lines("forward:web:not-here");
+    assert_eq!(
+        not_here,
+        [
+            "ip daddr 198.51.100.10 tcp dport 443 counter reject with tcp reset comment \"forward:web:not-here\"",
+            "ip daddr @outside tcp dport 443 counter reject with tcp reset comment \"forward:web:not-here\"",
+        ],
+        "{script}"
     );
     let lockout = lines("anti-lockout");
     assert_eq!(lockout.len(), 2, "{lockout:#?}");

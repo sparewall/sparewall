@@ -1560,6 +1560,33 @@ impl Validator<'_> {
                 "expected e.g. 10/second or 100/minute burst 20",
             );
         }
+        // nft matches an @object apart from the literals (#259), so such a
+        // rule is several lines, and a limit would apply to each of them
+        // rather than to the rule.
+        if r.limit.is_some() {
+            // The matches one family's addresses make: one for the
+            // literals, one per object.
+            let matches = |items: &[String]| {
+                let objects = items.iter().filter(|i| i.starts_with('@')).count();
+                objects + usize::from(objects < items.len())
+            };
+            let split = |m: &Option<Match>| m.as_ref().map(|m| self.doc.split_families(m));
+            let (src, dst) = (split(&r.src), split(&r.dst));
+            let lines = |six: bool| {
+                let of = |s: &Option<(Vec<String>, Vec<String>)>| {
+                    s.as_ref()
+                        .map_or(1, |(v4, v6)| matches(if six { v6 } else { v4 }))
+                };
+                of(&src) * of(&dst)
+            };
+            if lines(false) > 1 || lines(true) > 1 {
+                self.err(
+                    format!("{rp}.limit"),
+                    "with @objects among one family's addresses, the rule is matched by several \
+                     lines, each with a limit of its own: put the addresses in one object",
+                );
+            }
+        }
     }
 
     fn forwards(&mut self) {

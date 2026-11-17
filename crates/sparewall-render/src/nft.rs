@@ -139,7 +139,8 @@ impl Script {
 /// of its source and destination matches ([`addr_groups`], #259).
 /// Splitting doesn't change what matches: every line has the rule's
 /// verdict, a packet is of one family, and one that matches a line ends
-/// there. Only a `limit` differs: each line has a limiter of its own.
+/// there. A `limit` would be each line's, so validation refuses one on a
+/// rule that needs more than a line per family.
 fn rule_lines(doc: &Document, pair: &str, name: &str, r: &Rule) -> Vec<String> {
     if r.src.is_none() && r.dst.is_none() {
         return vec![rule_line(doc, pair, name, r, None, None)];
