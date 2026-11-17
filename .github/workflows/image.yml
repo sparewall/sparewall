@@ -2,9 +2,10 @@ name: Image
 
 # Build the bootc image, boot it in a VM, and (on main, release branches
 # and tags) publish it as sha-<commit>, signed, with an SBOM attached
-# (design: "Build, sign, publish"). Only main's builds move `testing`: a
-# release branch (release/X.Y, docs/releasing.md) holds backports to an
-# older series.
+# (design: "Build, sign, publish"). Only main's builds move `testing`,
+# and only once every suite has passed (the testing job): a release
+# branch (release/X.Y, docs/releasing.md) holds backports to an older
+# series.
 
 on:
   push:
@@ -176,8 +177,6 @@ jobs:
             ref="$repo:sha-$short${REBUILD:+-r$REBUILD}"
             if [ "$PUSH" = true ]; then
               podman push --digestfile "$p.digest" "$repo:ci" "docker://$ref"
-              [ -n "$REBUILD" ] || [ "$GITHUB_REF" != refs/heads/main ] \
-                || podman push "$repo:ci" "docker://$repo:testing"
               .github/sign-image.sh "$repo@$(cat "$p.digest")"
             else
               # Pull requests boot with the provider images they build,
@@ -334,7 +333,7 @@ jobs:
           path: logs/
           if-no-files-found: ignore
 
-      - name: Push to testing
+      - name: Publish sha-<commit>
         if: github.event_name != 'pull_request' && matrix.suite == 'main'
         id: push
         env:
@@ -348,11 +347,9 @@ jobs:
             v=$(.github/version.sh)
             sudo podman push --digestfile digest "$LOCAL" "docker://$IMAGE:${v/+/_}"
           else
+            # testing moves later, once every suite has passed (the
+            # testing job below).
             sudo podman push --digestfile digest "$LOCAL" "docker://$IMAGE:sha-$short"
-            # testing is main's newest build.
-            if [ "$GITHUB_REF" = refs/heads/main ]; then
-              sudo podman push "$LOCAL" "docker://$IMAGE:testing"
-            fi
           fi
           echo "digest=$(cat digest)" >> "$GITHUB_OUTPUT"
 
@@ -388,6 +385,70 @@ jobs:
           cosign verify-attestation --key cosign.pub --insecure-ignore-tlog=true \
             --type spdxjson "$ref" > /dev/null
           echo "Published and verified $ref" >> "$GITHUB_STEP_SUMMARY"
+
+  testing:
+    # testing is main's newest build that passed every suite: the main
+    # leg publishes and signs sha-<commit>, and only once every leg of
+    # image (pair faults, two NICs, installer, upgrades) has passed does
+    # that same manifest, by digest, become testing. Provider images
+    # follow with it.
+    name: move testing
+    needs: [providers, image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: promote-testing
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # to tell whether testing is already newer
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Move testing
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends skopeo
+          echo "$TOKEN" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
+          short=$(git rev-parse --short=12 HEAD)
+          # Runs can finish out of order: testing only moves forward, to a
+          # commit that contains the one it has. Only an absent tag is
+          # moved without that proof; one whose revision is missing or not
+          # on main's history is left alone.
+          if info=$(skopeo inspect --no-tags "docker://$IMAGE:testing" 2>err); then
+            have=$(jq -r '.Labels["org.opencontainers.image.revision"] // ""' <<<"$info")
+            if [ -z "$have" ] || ! git cat-file -e "$have^{commit}" 2>/dev/null; then
+              echo "::warning::testing has revision '${have:-none}', not on main: left alone"
+              echo "testing has revision '${have:-none}', not on main: left alone" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$have" HEAD; then
+              echo "testing has ${have:0:12}, newer than ${short}: left alone" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          elif grep -qiE 'manifest unknown|not found' err; then
+            echo "no testing tag yet: creating it" >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat err >&2
+            echo "::error::cannot read $IMAGE:testing"
+            exit 1
+          fi
+          for repo in "$IMAGE" ghcr.io/sparewall/{kea,unbound,lego,prometheus}; do
+            built="$repo:sha-$short"
+            digest=$(skopeo inspect --no-tags "docker://$built" | jq -r .Digest)
+            [[ $digest == sha256:* ]] || { echo "::error::no digest for $built"; exit 1; }
+            cosign verify --key cosign.pub --new-bundle-format=false "$repo@$digest" > /dev/null
+            skopeo copy --all --preserve-digests "docker://$repo@$digest" "docker://$repo:testing"
+            cosign verify --key cosign.pub --new-bundle-format=false "$repo:testing" > /dev/null
+            echo "$built ($digest) is now $repo:testing" >> "$GITHUB_STEP_SUMMARY"
+          done
+          .github/check-sigpolicy.sh "$IMAGE:testing"
 
   cli-macos:
     # The CLI for macOS, Apple silicon and Intel, packaged as the release

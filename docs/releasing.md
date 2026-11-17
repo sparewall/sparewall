@@ -42,7 +42,7 @@ backport to an older series is one on its release branch (see
 3. The image workflow runs again for the tag: it rebuilds the image, runs
    every VM suite, including upgrades to it from earlier releases
    (`tests/vm/upgrade-test.sh`, from the releases
-   `.github/upgrade-from.sh` names, see [operations](operations.md#upgrades)), publishes the image as `sha-<commit>` (only `main`'s own builds move `testing`),
+   `.github/upgrade-from.sh` names, see [operations](operations.md#upgrades)), publishes the image as `sha-<commit>` (only `main`'s own builds move `testing`, and only once every suite has passed),
    then the **release assets** job drafts a GitHub release with:
    - `sparewall-VERSION-x86_64.iso`: the unattended installer (to the
      first fixed disk, if it is blank);
