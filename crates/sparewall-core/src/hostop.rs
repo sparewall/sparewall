@@ -264,24 +264,22 @@ impl HostOp {
                 if std::path::Path::new(BOUND_STORE).is_dir() {
                     a.push(format!("--storage-opt=additionalimagestore={BOUND_STORE}"));
                 }
-                // No relabelling (:Z): podman mounts `data` by path, after
-                // the run unit's check, and relabelling whatever a swapped
-                // link pointed at could break the host.
+                // Confined (container_t), with its data relabelled for it.
+                // The run unit mounts a private copy in place of `data`,
+                // so nothing the coordinator can swap is relabelled.
                 a.extend(
                     [
                         "run",
                         "--rm",
                         "--pull=never",
                         "--network=host",
-                        "--security-opt",
-                        "label=disable",
                         "--env-file",
                     ]
                     .map(String::from),
                 );
                 a.push(env_file.clone());
                 a.push("-v".into());
-                a.push(format!("{data}:/data"));
+                a.push(lego_mount(data));
                 a.push(image.clone());
                 a.extend(args.iter().cloned());
                 a
@@ -364,6 +362,12 @@ pub fn check_allowed(spec: &CheckSpec) -> Result<(), String> {
         return Ok(());
     }
     Err(format!("not a known config check: {:?}", spec.command))
+}
+
+/// The `-v` argument that mounts `dir` as lego's data, relabelled for its
+/// container.
+pub fn lego_mount(dir: &str) -> String {
+    format!("{dir}:/data:Z")
 }
 
 /// lego's command line for one order: the single definition the
@@ -735,8 +739,11 @@ mod tests {
         let a = op(DATA, "/run/sparewall/lego/.env-00ff")
             .argv(Some(&roots()))
             .unwrap();
-        assert!(a.contains(&format!("{DATA}:/data")));
-        assert!(a.contains(&"label=disable".to_string()));
+        assert!(a.contains(&lego_mount(DATA)));
+        assert!(
+            !a.iter().any(|x| x.starts_with("label=")),
+            "confined: {a:?}"
+        );
         op(DATA, &format!("{DATA}/.env-00ff"))
             .argv(Some(&roots()))
             .unwrap();

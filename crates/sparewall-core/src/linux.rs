@@ -306,84 +306,230 @@ fn run_spooled_in(
         Ok(a) => a,
         Err(e) => return refuse(e),
     };
-    let private = match prepare(&j.op, id, roots, &mut argv) {
+    let prepared = match prepare(&j.op, id, roots, &mut argv) {
         Ok(p) => p,
-        Err(e) => return refuse(e),
+        Err(e) => {
+            return refuse(e);
+        }
     };
     let (cmd, args) = argv.split_first().expect("an operation has a command");
     let o = Command::new(cmd).args(args).stdin(Stdio::null()).output();
-    if let Some(p) = private {
-        let _ = fs::remove_file(p);
-    }
+    let finished = prepared.finish();
     let o = o.map_err(|e| Error::Apply(format!("{cmd}: {e}")))?;
-    let r = SpoolResult {
+    let mut r = SpoolResult {
         code: o.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
     };
+    if let Err(e) = finished {
+        r.code = if r.code == 0 { -1 } else { r.code };
+        r.stderr.push_str(&format!("\nsparewall-run: {e}"));
+    }
     write_atomic(&out, &serde_json::to_vec(&r).expect("json")).map_err(|e| Error::io(&out, e))
 }
 
-/// What the run unit checks on disk before it runs an operation: that no
-/// path it uses goes through a symbolic link the coordinator could have
-/// planted, and, for lego, a private copy of the environment file in
-/// place of the coordinator's. The file is read through a descriptor
-/// opened with no link anywhere in its path (openat2), and the copy is
-/// made under a descriptor of the private directory, which the
-/// coordinator cannot write. Returns that copy.
+/// What [`prepare`] set up for one job, finished after it runs.
+#[derive(Default)]
+struct Prepared {
+    /// Files and directories of the run unit's own, removed after.
+    private: Vec<PathBuf>,
+    /// lego's private data, copied back to the coordinator's after.
+    lego: Option<(PathBuf, String)>,
+}
+
+impl Prepared {
+    /// Copy lego's results back, and remove what was private to the job.
+    fn finish(self) -> Result<(), String> {
+        let back = match &self.lego {
+            Some((copy, data)) => (|| {
+                let from = crate::hostop::open_no_symlinks(copy, DIR_FLAGS)?;
+                let to = crate::hostop::open_no_symlinks(Path::new(data), DIR_FLAGS)?;
+                copy_tree(&from, &to, &mut COPY_BUDGET.clone(), 0)
+                    .map_err(|e| format!("copying lego's data back: {e}"))
+            })(),
+            None => Ok(()),
+        };
+        for p in self.private.iter().rev() {
+            let _ = fs::remove_dir_all(p).or_else(|_| fs::remove_file(p));
+        }
+        back
+    }
+}
+
+const DIR_FLAGS: rustix::fs::OFlags =
+    rustix::fs::OFlags::RDONLY.union(rustix::fs::OFlags::DIRECTORY);
+/// The most lego's data may hold, copied either way (accounts and
+/// certificates: kilobytes).
+const COPY_BUDGET: u64 = 64 << 20;
+
+/// What the run unit checks and sets up on disk before it runs an
+/// operation, so that no path it uses can be redirected by a symbolic link
+/// the coordinator plants, even mid-check: paths are opened with openat2
+/// and `RESOLVE_NO_SYMLINKS`, and below that only relative to descriptors.
 ///
-/// The directories podman mounts (a check's files, lego's data) are
-/// checked the same way, but podman then mounts them by path: a
-/// coordinator that swaps one for a link in between gets that mount
-/// instead (read-only for a check; for lego's data, lego alone writes
-/// there, and nothing is relabelled). implementation-notes.md says so.
+/// - A config check's directory is checked so; podman mounts it read-only
+///   and unlabelled, for the provider's checker alone.
+/// - lego's environment file is read through such a descriptor into a
+///   copy in the private directory (root's alone: the coordinator cannot
+///   write it), and its data is copied there too, regular files only.
+///   lego, confined, works on that copy, relabelled for its container, and
+///   [`Prepared::finish`] copies it back. So nothing podman mounts or
+///   relabels is a path the coordinator can change.
 fn prepare(
     op: &crate::hostop::HostOp,
     id: &str,
     roots: &crate::hostop::Roots,
     argv: &mut [String],
-) -> Result<Option<PathBuf>, String> {
-    use crate::hostop::{HostOp, no_symlinks, open_no_symlinks};
+) -> Result<Prepared, String> {
+    use crate::hostop::{HostOp, lego_mount, no_symlinks, open_no_symlinks};
     use rustix::fs::{Mode, OFlags};
     match op {
         HostOp::ConfigCheck { dir, .. } => {
             no_symlinks(Path::new(dir))?;
-            Ok(None)
+            Ok(Prepared::default())
         }
         HostOp::Lego { data, env_file, .. } => {
-            no_symlinks(Path::new(data))?;
+            let mut prepared = Prepared::default();
+            let private = Path::new(&roots.private);
+            fs::create_dir_all(private).map_err(|e| format!("{}: {e}", private.display()))?;
+            let pfd = open_no_symlinks(private, DIR_FLAGS)?;
+            rustix::fs::fchmod(&pfd, Mode::from_raw_mode(0o700))
+                .map_err(|e| format!("{}: {e}", private.display()))?;
+
+            // The environment file.
             let fd = open_no_symlinks(Path::new(env_file), OFlags::RDONLY | OFlags::NOFOLLOW)?;
             let mut f = fs::File::from(fd);
             if !f.metadata().map_err(|e| e.to_string())?.is_file() {
                 return Err(format!("{env_file}: not a file"));
             }
             let mut env = Vec::new();
-            std::io::Read::read_to_end(&mut f, &mut env).map_err(|e| e.to_string())?;
-            let private = Path::new(&roots.private);
-            fs::create_dir_all(private).map_err(|e| format!("{}: {e}", private.display()))?;
-            let dirfd = open_no_symlinks(private, OFlags::RDONLY | OFlags::DIRECTORY)?;
-            rustix::fs::fchmod(&dirfd, Mode::from_raw_mode(0o700))
-                .map_err(|e| format!("{}: {e}", private.display()))?;
-            let name = format!("{id}.env");
-            let _ = rustix::fs::unlinkat(&dirfd, name.as_str(), rustix::fs::AtFlags::empty());
-            let out = rustix::fs::openat(
-                &dirfd,
-                name.as_str(),
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o600),
-            )
-            .map_err(|e| format!("{}/{name}: {e}", private.display()))?;
-            fs::File::from(out)
-                .write_all(&env)
+            std::io::Read::read_to_end(&mut std::io::Read::take(&mut f, 1 << 20), &mut env)
                 .map_err(|e| e.to_string())?;
-            let copy = private.join(name);
+            let name = format!("{id}.env");
+            write_new_at(&pfd, &name, &env, 0o600)?;
+            let copy = private.join(&name);
+            prepared.private.push(copy.clone());
             for a in argv.iter_mut().filter(|a| *a == env_file) {
                 *a = copy.display().to_string();
             }
-            Ok(Some(copy))
+
+            // The data.
+            let name = format!("{id}-lego");
+            let _ = fs::remove_dir_all(private.join(&name));
+            rustix::fs::mkdirat(&pfd, name.as_str(), Mode::from_raw_mode(0o700))
+                .map_err(|e| format!("{}/{name}: {e}", private.display()))?;
+            let copy = private.join(&name);
+            prepared.private.push(copy.clone());
+            let to = rustix::fs::openat(
+                &pfd,
+                name.as_str(),
+                DIR_FLAGS | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| format!("{}: {e}", copy.display()))?;
+            let from = open_no_symlinks(Path::new(data), DIR_FLAGS)?;
+            copy_tree(&from, &to, &mut COPY_BUDGET.clone(), 0)
+                .map_err(|e| format!("copying lego's data: {e}"))?;
+            let mount = lego_mount(data);
+            for a in argv.iter_mut().filter(|a| **a == mount) {
+                *a = lego_mount(&copy.display().to_string());
+            }
+            prepared.lego = Some((copy, data.clone()));
+            Ok(prepared)
         }
-        _ => Ok(None),
+        _ => Ok(Prepared::default()),
     }
+}
+
+/// Write a new file `name` under the directory `dir`, replacing one there
+/// (never following a link): under a temporary name, then renamed.
+fn write_new_at(
+    dir: &impl std::os::fd::AsFd,
+    name: &str,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<(), String> {
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    let tmp = format!(".{name}.sparewall-run");
+    let _ = rustix::fs::unlinkat(dir, tmp.as_str(), AtFlags::empty());
+    let fd = rustix::fs::openat(
+        dir,
+        tmp.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(mode),
+    )
+    .map_err(|e| format!("{name}: {e}"))?;
+    fs::File::from(fd)
+        .write_all(bytes)
+        .map_err(|e| format!("{name}: {e}"))?;
+    rustix::fs::renameat(dir, tmp.as_str(), dir, name).map_err(|e| format!("{name}: {e}"))
+}
+
+/// Copy the directory `from` into `to`, both descriptors: regular files
+/// and directories only (links and anything else are skipped), nothing
+/// followed, at most `budget` bytes and eight levels deep. Files keep
+/// their owner's permission bits only; directories are created 0700.
+fn copy_tree(
+    from: &impl std::os::fd::AsFd,
+    to: &impl std::os::fd::AsFd,
+    budget: &mut u64,
+    depth: u32,
+) -> Result<(), String> {
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+    if depth > 8 {
+        return Err("too deep".into());
+    }
+    let dir = rustix::fs::Dir::read_from(from).map_err(|e| e.to_string())?;
+    for entry in dir {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "." || name == ".." || name.ends_with(".sparewall-run") {
+            continue;
+        }
+        let st = rustix::fs::statat(from, name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| format!("{name}: {e}"))?;
+        match FileType::from_raw_mode(st.st_mode) {
+            FileType::Directory => {
+                match rustix::fs::mkdirat(to, name.as_str(), Mode::from_raw_mode(0o700)) {
+                    Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                    Err(e) => return Err(format!("{name}: {e}")),
+                }
+                let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+                let sub_from = rustix::fs::openat(from, name.as_str(), flags, Mode::empty())
+                    .map_err(|e| format!("{name}: {e}"))?;
+                let sub_to = rustix::fs::openat(to, name.as_str(), flags, Mode::empty())
+                    .map_err(|e| format!("{name}: {e}"))?;
+                copy_tree(&sub_from, &sub_to, budget, depth + 1)
+                    .map_err(|e| format!("{name}/{e}"))?;
+            }
+            FileType::RegularFile => {
+                let fd = rustix::fs::openat(
+                    from,
+                    name.as_str(),
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|e| format!("{name}: {e}"))?;
+                let mut f = fs::File::from(fd);
+                if !f.metadata().map_err(|e| e.to_string())?.is_file() {
+                    continue;
+                }
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(&mut f, *budget + 1),
+                    &mut bytes,
+                )
+                .map_err(|e| format!("{name}: {e}"))?;
+                if bytes.len() as u64 > *budget {
+                    return Err("more data than lego keeps".into());
+                }
+                *budget -= bytes.len() as u64;
+                write_new_at(to, &name, &bytes, (st.st_mode & 0o700) | 0o600)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// What the live `inet sparewall` table holds.
@@ -1143,6 +1289,120 @@ impl Linux {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The run unit copies lego's data through descriptors: links and
+    /// anything but regular files are skipped on the way in, and on the
+    /// way back a link where a directory belongs is refused and a link
+    /// where a file belongs is replaced, never written through.
+    #[test]
+    fn lego_data_is_copied_without_following_links() {
+        use std::os::unix::fs::symlink;
+        let t = tempfile::tempdir().unwrap();
+        let (src, dst, outside) = (
+            t.path().join("src"),
+            t.path().join("dst"),
+            t.path().join("outside"),
+        );
+        for d in [&src, &dst, &outside] {
+            fs::create_dir(d).unwrap();
+        }
+        fs::create_dir(src.join("certificates")).unwrap();
+        fs::write(src.join("certificates/mgmt.crt"), "cert").unwrap();
+        fs::write(src.join("ca.pem"), "ca").unwrap();
+        symlink("/etc/hostname", src.join("leak")).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            src.join("fifo").as_path(),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        fs::write(outside.join("victim"), "untouched").unwrap();
+        symlink(outside.join("victim"), dst.join("ca.pem")).unwrap();
+
+        let open = |p: &Path| crate::hostop::open_no_symlinks(p, DIR_FLAGS).unwrap();
+        copy_tree(&open(&src), &open(&dst), &mut COPY_BUDGET.clone(), 0).unwrap();
+        assert_eq!(
+            fs::read_to_string(dst.join("certificates/mgmt.crt")).unwrap(),
+            "cert"
+        );
+        assert_eq!(fs::read_to_string(dst.join("ca.pem")).unwrap(), "ca");
+        assert!(
+            !fs::symlink_metadata(dst.join("ca.pem"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("victim")).unwrap(),
+            "untouched"
+        );
+        assert!(!dst.join("leak").exists() && !dst.join("fifo").exists());
+
+        // A link where a directory belongs.
+        let dst2 = t.path().join("dst2");
+        fs::create_dir(&dst2).unwrap();
+        symlink(&outside, dst2.join("certificates")).unwrap();
+        assert!(copy_tree(&open(&src), &open(&dst2), &mut COPY_BUDGET.clone(), 0).is_err());
+        assert!(!outside.join("mgmt.crt").exists());
+
+        // Too much.
+        assert!(copy_tree(&open(&src), &open(&dst), &mut 3, 0).is_err());
+    }
+
+    /// lego's mount and environment file become the run unit's private
+    /// copies, and what lego leaves there is copied back after.
+    #[test]
+    fn lego_runs_on_a_private_copy() {
+        let t = tempfile::tempdir().unwrap();
+        let roots = crate::hostop::Roots {
+            state: t.path().join("state").display().to_string(),
+            runtime: t.path().join("run").display().to_string(),
+            private: t.path().join("private").display().to_string(),
+            lego_image: Some("ghcr.io/sparewall/lego:sha-1".into()),
+        };
+        let data = roots.lego_data();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(Path::new(&data).join("ca.pem"), "ca").unwrap();
+        let env_file = format!("{}/lego/.env-1", roots.runtime);
+        fs::create_dir_all(Path::new(&env_file).parent().unwrap()).unwrap();
+        fs::write(&env_file, "SECRET=1\n").unwrap();
+        let op = crate::hostop::HostOp::Lego {
+            image: "ghcr.io/sparewall/lego:sha-1".into(),
+            data: data.clone(),
+            env_file: env_file.clone(),
+            args: crate::hostop::lego_args(
+                "mgmt",
+                "https://acme.example/dir",
+                "rfc2136",
+                None,
+                &["fw.example.org".into()],
+            ),
+        };
+        let mut argv = op.argv(Some(&roots)).unwrap();
+        let prepared = prepare(&op, "7-1", &roots, &mut argv).unwrap();
+        let copy = Path::new(&roots.private).join("7-1-lego");
+        assert!(argv.contains(&crate::hostop::lego_mount(&copy.display().to_string())));
+        assert!(!argv.contains(&crate::hostop::lego_mount(&data)));
+        let env_copy = Path::new(&roots.private).join("7-1.env");
+        assert!(argv.contains(&env_copy.display().to_string()));
+        assert_eq!(fs::read_to_string(&env_copy).unwrap(), "SECRET=1\n");
+        assert_eq!(fs::read_to_string(copy.join("ca.pem")).unwrap(), "ca");
+
+        // lego's work, in the copy.
+        fs::create_dir(copy.join("certificates")).unwrap();
+        fs::write(copy.join("certificates/mgmt.crt"), "new").unwrap();
+        prepared.finish().unwrap();
+        assert_eq!(
+            fs::read_to_string(Path::new(&data).join("certificates/mgmt.crt")).unwrap(),
+            "new"
+        );
+        assert!(
+            !copy.exists() && !env_copy.exists(),
+            "private copies removed"
+        );
+    }
 
     /// sparewall-run@ runs operations only: a command line, or an
     /// operation whose arguments fail its checks, is refused with a result
