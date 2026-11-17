@@ -418,13 +418,26 @@ jobs:
           echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
           short=$(git rev-parse --short=12 HEAD)
           # Runs can finish out of order: testing only moves forward, to a
-          # commit that contains the one it has.
-          have=$(skopeo inspect --no-tags "docker://$IMAGE:testing" 2>/dev/null \
-            | jq -r '.Labels["org.opencontainers.image.revision"] // ""') || have=
-          if [ -n "$have" ] && git cat-file -e "$have^{commit}" 2>/dev/null \
-              && ! git merge-base --is-ancestor "$have" HEAD; then
-            echo "testing has ${have:0:12}, newer than ${short}: left alone" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+          # commit that contains the one it has. Only an absent tag is
+          # moved without that proof; one whose revision is missing or not
+          # on main's history is left alone.
+          if info=$(skopeo inspect --no-tags "docker://$IMAGE:testing" 2>err); then
+            have=$(jq -r '.Labels["org.opencontainers.image.revision"] // ""' <<<"$info")
+            if [ -z "$have" ] || ! git cat-file -e "$have^{commit}" 2>/dev/null; then
+              echo "::warning::testing has revision '${have:-none}', not on main: left alone"
+              echo "testing has revision '${have:-none}', not on main: left alone" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$have" HEAD; then
+              echo "testing has ${have:0:12}, newer than ${short}: left alone" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          elif grep -qiE 'manifest unknown|not found' err; then
+            echo "no testing tag yet: creating it" >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat err >&2
+            echo "::error::cannot read $IMAGE:testing"
+            exit 1
           fi
           for repo in "$IMAGE" ghcr.io/sparewall/{kea,unbound,lego,prometheus}; do
             built="$repo:sha-$short"
