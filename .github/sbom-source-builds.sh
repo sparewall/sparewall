@@ -23,7 +23,7 @@ ulogd_v=$(arg ULOGD_VERSION) ulogd_sum=$(arg ULOGD_SHA256)
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 jq --arg nv "$nflog_v" --arg ns "$nflog_sum" --arg uv "$ulogd_v" --arg us "$ulogd_sum" '
-  def pkg($name; $v; $sum; $url):
+  def pkg($name; $v; $sum; $url; $license):
     # SPDX IDs allow letters, digits, "." and "-" only.
     { name: $name,
       SPDXID: "SPDXRef-Package-source-\($name | gsub("[^A-Za-z0-9.-]"; "-"))",
@@ -32,10 +32,11 @@ jq --arg nv "$nflog_v" --arg ns "$nflog_sum" --arg uv "$ulogd_v" --arg us "$ulog
       downloadLocation: $url,
       filesAnalyzed: false,
       checksums: [{algorithm: "SHA256", checksumValue: $sum}],
-      # COPYING is the GPL version 2; whether the sources say "only" or
-      # "or later" is not asserted here (distributions disagree).
-      licenseConcluded: "NOASSERTION",
-      licenseDeclared: "NOASSERTION",
+      # As the main source file states it (src/ulogd.c: version 2 only;
+      # src/libnetfilter_log.c: version 2 or later). COPYING is the GPL
+      # version 2 in both.
+      licenseConcluded: $license,
+      licenseDeclared: $license,
       copyrightText: "NOASSERTION",
       comment: "Built from source in image/Containerfile (the ulogd stage); the checksum is of the source archive. Its COPYING, the GNU GPL version 2, ships in /usr/share/licenses.",
       externalRefs: [{referenceCategory: "PACKAGE-MANAGER", referenceType: "purl",
@@ -43,8 +44,10 @@ jq --arg nv "$nflog_v" --arg ns "$nflog_sum" --arg uv "$ulogd_v" --arg us "$ulog
   (.documentDescribes // [] | .[0]) as $root
   | ($root // ([.relationships[]? | select(.relationshipType == "DESCRIBES") | .relatedSpdxElement][0])) as $top
   | [pkg("libnetfilter_log"; $nv; $ns;
-        "https://netfilter.org/pub/libnetfilter_log/libnetfilter_log-\($nv).tar.bz2"),
-     pkg("ulogd"; $uv; $us; "https://netfilter.org/pub/ulogd/ulogd-\($uv).tar.xz")] as $new
+        "https://netfilter.org/pub/libnetfilter_log/libnetfilter_log-\($nv).tar.bz2";
+        "GPL-2.0-or-later"),
+     pkg("ulogd"; $uv; $us; "https://netfilter.org/pub/ulogd/ulogd-\($uv).tar.xz";
+        "GPL-2.0-only")] as $new
   | .packages = ([.packages[]? | select(.SPDXID | startswith("SPDXRef-Package-source-") | not)] + $new)
   | .relationships = ([.relationships[]? | select(.relatedSpdxElement | startswith("SPDXRef-Package-source-") | not)]
       + (if $top then [$new[] | {spdxElementId: $top, relationshipType: "CONTAINS", relatedSpdxElement: .SPDXID}] else [] end)
