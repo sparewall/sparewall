@@ -328,7 +328,9 @@ fn run_spooled_in(
     write_atomic(&out, &serde_json::to_vec(&r).expect("json")).map_err(|e| Error::io(&out, e))
 }
 
-/// What [`prepare`] set up for one job, finished after it runs.
+/// What [`prepare`] set up for one job, finished after it runs. What is
+/// private to the job is removed when this is dropped, so also when
+/// `prepare` fails partway or the job's command cannot be run.
 #[derive(Default)]
 struct Prepared {
     /// Files and directories of the run unit's own, removed after.
@@ -338,21 +340,26 @@ struct Prepared {
 }
 
 impl Prepared {
-    /// Copy lego's results back, and remove what was private to the job.
-    fn finish(self) -> Result<(), String> {
-        let back = match &self.lego {
-            Some((copy, data)) => (|| {
-                let from = crate::hostop::open_no_symlinks(copy, DIR_FLAGS)?;
-                let to = crate::hostop::open_no_symlinks(Path::new(data), DIR_FLAGS)?;
+    /// Copy lego's results back; dropping `self` then removes what was
+    /// private to the job.
+    fn finish(mut self) -> Result<(), String> {
+        match self.lego.take() {
+            Some((copy, data)) => {
+                let from = crate::hostop::open_no_symlinks(&copy, DIR_FLAGS)?;
+                let to = crate::hostop::open_no_symlinks(Path::new(&data), DIR_FLAGS)?;
                 copy_tree(&from, &to, &mut COPY_BUDGET.clone(), 0)
                     .map_err(|e| format!("copying lego's data back: {e}"))
-            })(),
+            }
             None => Ok(()),
-        };
+        }
+    }
+}
+
+impl Drop for Prepared {
+    fn drop(&mut self) {
         for p in self.private.iter().rev() {
             let _ = fs::remove_dir_all(p).or_else(|_| fs::remove_file(p));
         }
-        back
     }
 }
 
@@ -406,20 +413,20 @@ fn prepare(
             std::io::Read::read_to_end(&mut std::io::Read::take(&mut f, 1 << 20), &mut env)
                 .map_err(|e| e.to_string())?;
             let name = format!("{id}.env");
-            write_new_at(&pfd, &name, &env, 0o600)?;
             let copy = private.join(&name);
             prepared.private.push(copy.clone());
+            write_new_at(&pfd, &name, &env, 0o600)?;
             for a in argv.iter_mut().filter(|a| *a == env_file) {
                 *a = copy.display().to_string();
             }
 
             // The data.
             let name = format!("{id}-lego");
-            let _ = fs::remove_dir_all(private.join(&name));
-            rustix::fs::mkdirat(&pfd, name.as_str(), Mode::from_raw_mode(0o700))
-                .map_err(|e| format!("{}/{name}: {e}", private.display()))?;
             let copy = private.join(&name);
+            let _ = fs::remove_dir_all(&copy);
             prepared.private.push(copy.clone());
+            rustix::fs::mkdirat(&pfd, name.as_str(), Mode::from_raw_mode(0o700))
+                .map_err(|e| format!("{}: {e}", copy.display()))?;
             let to = rustix::fs::openat(
                 &pfd,
                 name.as_str(),
@@ -447,7 +454,7 @@ fn write_new_at(
     dir: &impl std::os::fd::AsFd,
     name: &str,
     bytes: &[u8],
-    mode: u32,
+    mode: rustix::fs::RawMode,
 ) -> Result<(), String> {
     use rustix::fs::{AtFlags, Mode, OFlags};
     let tmp = format!(".{name}.sparewall-run");
@@ -459,10 +466,16 @@ fn write_new_at(
         Mode::from_raw_mode(mode),
     )
     .map_err(|e| format!("{name}: {e}"))?;
-    fs::File::from(fd)
+    let written = fs::File::from(fd)
         .write_all(bytes)
-        .map_err(|e| format!("{name}: {e}"))?;
-    rustix::fs::renameat(dir, tmp.as_str(), dir, name).map_err(|e| format!("{name}: {e}"))
+        .map_err(|e| format!("{name}: {e}"))
+        .and_then(|()| {
+            rustix::fs::renameat(dir, tmp.as_str(), dir, name).map_err(|e| format!("{name}: {e}"))
+        });
+    if written.is_err() {
+        let _ = rustix::fs::unlinkat(dir, tmp.as_str(), AtFlags::empty());
+    }
+    written
 }
 
 /// Copy the directory `from` into `to`, both descriptors: regular files
@@ -1401,6 +1414,18 @@ mod tests {
         assert!(
             !copy.exists() && !env_copy.exists(),
             "private copies removed"
+        );
+
+        // When copying the data fails partway, the environment copy and
+        // what was copied are removed all the same.
+        let deep = (0..10).fold(Path::new(&data).join("deep"), |p, i| p.join(i.to_string()));
+        fs::create_dir_all(&deep).unwrap();
+        let mut argv = op.argv(Some(&roots)).unwrap();
+        assert!(prepare(&op, "7-2", &roots, &mut argv).is_err());
+        assert_eq!(
+            fs::read_dir(&roots.private).unwrap().count(),
+            0,
+            "nothing left in the private directory"
         );
     }
 
