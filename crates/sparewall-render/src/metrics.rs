@@ -65,17 +65,24 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
             subsystem: Subsystem::Metrics,
             reload: true,
             management: true,
-            check: Some(CheckSpec {
-                container: Some(CONTAINER.into()),
-                mount: "/etc/prometheus".into(),
-                command: vec![
-                    "promtool".into(),
-                    "check".into(),
-                    "config".into(),
-                    format!("/etc/prometheus/{CONF}"),
-                ],
-                overrides: Default::default(),
-            }),
+            check: Some(check_spec()),
         },
     );
+}
+
+/// Prometheus's config check (`promtool`), in its container, with the
+/// files at `/etc/prometheus`. `sparewall-run@` accepts this check and no
+/// other for Prometheus (#279).
+pub fn check_spec() -> CheckSpec {
+    CheckSpec {
+        container: Some(CONTAINER.into()),
+        mount: "/etc/prometheus".into(),
+        command: vec![
+            "promtool".into(),
+            "check".into(),
+            "config".into(),
+            format!("/etc/prometheus/{CONF}"),
+        ],
+        overrides: Default::default(),
+    }
 }

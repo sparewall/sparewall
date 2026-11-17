@@ -9,7 +9,7 @@
 //! command as root.
 
 use serde::{Deserialize, Serialize};
-use sparewall_render::{CheckSpec, chrony, kea, keepalived, unbound};
+use sparewall_render::{CheckSpec, chrony, kea, keepalived, metrics, unbound};
 
 /// An operation for `sparewall-run@`, with its arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -331,13 +331,18 @@ impl HostOp {
 }
 
 /// Whether `spec` is one of the config checks the renderer makes: Kea's,
-/// Unbound's and chrony's exactly, or keepalived's for some valid
-/// interface names.
+/// Unbound's, Prometheus's and chrony's exactly, or keepalived's for some
+/// valid interface names. A test checks that every check the renderer
+/// makes for the examples is one of these.
 pub fn check_allowed(spec: &CheckSpec) -> Result<(), String> {
     let same = |want: CheckSpec| {
         want.container == spec.container && want.mount == spec.mount && want.command == spec.command
     };
-    if same(kea::check_spec()) || same(unbound::check_spec()) || same(chrony::check_spec()) {
+    if same(kea::check_spec())
+        || same(unbound::check_spec())
+        || same(metrics::check_spec())
+        || same(chrony::check_spec())
+    {
         return Ok(());
     }
     // keepalived's: rebuilt from the links its script names.
@@ -800,6 +805,7 @@ mod tests {
         for spec in [
             kea::check_spec(),
             unbound::check_spec(),
+            metrics::check_spec(),
             chrony::check_spec(),
             keepalived::check_spec(&["eth0".into(), "wan.10".into()]),
         ] {
@@ -844,6 +850,38 @@ mod tests {
             dir: "/etc".into(),
             image: None,
         });
+    }
+
+    /// Every config check the renderer makes, for every example (with
+    /// local metrics too, which adds Prometheus's), is one the run unit
+    /// accepts: a new check must be added to check_allowed.
+    #[test]
+    fn the_run_unit_accepts_every_check_the_renderer_makes() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
+        let mut providers = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            for text in [text.clone(), format!("{text}\nmetrics:\n  mode: local\n")] {
+                let doc = sparewall_config::parse(&text, sparewall_config::Format::Yaml).unwrap();
+                for node in ["fw1", "fw2"] {
+                    let Ok(r) = sparewall_render::render(&doc, node) else {
+                        continue;
+                    };
+                    for svc in r.meta.services.values() {
+                        if let Some(spec) = &svc.check {
+                            check_allowed(spec).unwrap_or_else(|e| panic!("{}: {e}", svc.provider));
+                            providers.insert(svc.provider.clone());
+                        }
+                    }
+                }
+            }
+        }
+        for p in ["kea", "unbound", "prometheus", "chrony", "keepalived"] {
+            assert!(
+                providers.contains(p),
+                "no example renders {p}'s check: {providers:?}"
+            );
+        }
     }
 
     #[test]
