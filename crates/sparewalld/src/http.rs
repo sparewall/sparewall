@@ -170,6 +170,12 @@ fn reply(status: u16, body: Value) -> Response<Body> {
 }
 
 /// Paths the coordinator answers itself; the rest are `sparewall-httpd`'s.
+/// Whether a request is refused for want of a connection: on the health
+/// reserve (every other slot taken), only the health endpoints are served.
+fn turned_away(path: &str, health_only: bool) -> bool {
+    health_only && !health_path(path)
+}
+
 fn health_path(path: &str) -> bool {
     matches!(path, "/livez" | "/readyz" | "/healthz" | "/metrics")
         || path.starts_with("/readyz/")
@@ -282,8 +288,15 @@ async fn handle(
     core: Core,
     events: broadcast::Sender<Value>,
     web: Arc<PathBuf>,
+    health_only: bool,
 ) -> Result<Response<Body>, Infallible> {
     let path = req.uri().path().trim_end_matches('/').to_string();
+    if turned_away(&path, health_only) {
+        return Ok(reply(
+            503,
+            json!({"error": "too many connections; try again shortly"}),
+        ));
+    }
     if !health_path(&path) {
         return Ok(proxy(req, peer, &web).await);
     }
@@ -425,10 +438,17 @@ pub async fn serve(
     web: PathBuf,
 ) {
     let web = Arc::new(web);
-    accept_loop(listener, tls, Limits::DEFAULT, move |peer| {
+    accept_loop(listener, tls, Limits::DEFAULT, move |peer, health_only| {
         let (core, events, web) = (core.clone(), events.clone(), web.clone());
         hyper::service::service_fn(move |req| {
-            handle(req, peer, core.clone(), events.clone(), web.clone())
+            handle(
+                req,
+                peer,
+                core.clone(),
+                events.clone(),
+                web.clone(),
+                health_only,
+            )
         })
     })
     .await
@@ -441,6 +461,10 @@ struct Limits {
     /// backlog until one closes, rather than each taking a task and a
     /// descriptor.
     connections: usize,
+    /// More connections, used only when those are all taken (by
+    /// long-lived streams, say), that serve the health endpoints only: a
+    /// probe still gets an answer.
+    health_reserve: usize,
     /// How long a client has to finish the TLS handshake.
     handshake: Duration,
     /// How long a client has to send a request's headers, the first or
@@ -452,16 +476,17 @@ impl Limits {
     /// A management port, not a web server.
     const DEFAULT: Limits = Limits {
         connections: 256,
+        health_reserve: 16,
         handshake: Duration::from_secs(10),
         header_read: Duration::from_secs(15),
     };
 }
 
 /// Accept TLS connections within `limits`, serving each with the service
-/// `make` returns for its peer.
+/// `make` returns for its peer, and whether it holds a health-only slot.
 async fn accept_loop<M, S, B>(listener: TcpListener, tls: Arc<Tls>, limits: Limits, make: M)
 where
-    M: Fn(SocketAddr) -> S,
+    M: Fn(SocketAddr, bool) -> S,
     S: hyper::service::Service<Request<Incoming>, Response = Response<B>> + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -470,9 +495,21 @@ where
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let slots = Arc::new(tokio::sync::Semaphore::new(limits.connections));
+    let reserve = Arc::new(tokio::sync::Semaphore::new(limits.health_reserve));
     loop {
-        let Ok(slot) = slots.clone().acquire_owned().await else {
-            return;
+        let (slot, health_only) = match slots.clone().try_acquire_owned() {
+            Ok(s) => (s, false),
+            Err(_) => tokio::select! {
+                biased;
+                s = slots.clone().acquire_owned() => match s {
+                    Ok(s) => (s, false),
+                    Err(_) => return,
+                },
+                s = reserve.clone().acquire_owned() => match s {
+                    Ok(s) => (s, true),
+                    Err(_) => return,
+                },
+            },
         };
         let (tcp, peer) = match listener.accept().await {
             Ok(x) => x,
@@ -482,7 +519,7 @@ where
             }
         };
         let acceptor = tls.acceptor();
-        let svc = make(peer);
+        let svc = make(peer, health_only);
         tokio::spawn(async move {
             let _slot = slot;
             let tls = match tokio::time::timeout(limits.handshake, acceptor.accept(tcp)).await {
@@ -567,9 +604,10 @@ mod tests {
         let tls = Arc::new(Tls::new(&cert).unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(accept_loop(listener, tls, limits, |_| {
-            hyper::service::service_fn(|_req: Request<Incoming>| async {
-                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"ok"))))
+        tokio::spawn(accept_loop(listener, tls, limits, |_, health_only| {
+            hyper::service::service_fn(move |_req: Request<Incoming>| async move {
+                let body = if health_only { "health only" } else { "ok" };
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
             })
         }));
         let mut roots = rustls::RootCertStore::empty();
@@ -628,13 +666,27 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (addr, tls) = limited(Limits {
             connections: 1,
+            health_reserve: 1,
             ..Limits::DEFAULT
         })
         .await;
         let first = connect(addr, &tls).await.unwrap();
-        let second = tokio::time::timeout(Duration::from_millis(500), connect(addr, &tls)).await;
-        assert!(second.is_err(), "the second handshake waits for a slot");
+        // The reserve: served, but for health checks only.
+        let mut second = connect(addr, &tls).await.unwrap();
+        second
+            .write_all(b"GET /livez HTTP/1.1\r\nhost: fw1\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        second.read_to_end(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf).ends_with("health only"));
+        // Its slot frees once it closes; hold it again for the next check.
+        let reserved = connect(addr, &tls).await.unwrap();
+        let third = tokio::time::timeout(Duration::from_millis(500), connect(addr, &tls)).await;
+        assert!(third.is_err(), "the third handshake waits for a slot");
 
+        // The reserve stays held: the next connection gets the main slot
+        // once the first closes.
         drop(first);
         let mut c = tokio::time::timeout(Duration::from_secs(5), connect(addr, &tls))
             .await
@@ -645,7 +697,25 @@ mod tests {
             .unwrap();
         let mut buf = Vec::new();
         c.read_to_end(&mut buf).await.unwrap();
-        assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 200"));
+        let text = String::from_utf8_lossy(&buf);
+        assert!(
+            text.starts_with("HTTP/1.1 200") && text.ends_with("ok"),
+            "{text}"
+        );
+        drop(reserved);
+    }
+
+    /// On the health reserve, everything but the health endpoints is
+    /// turned away (#282).
+    #[test]
+    fn a_health_only_connection_serves_health_only() {
+        for p in ["/livez", "/readyz", "/readyz/nft", "/metrics"] {
+            assert!(!turned_away(p, true), "{p}");
+        }
+        for p in ["/", "/call/org.sparewall.Firewall.Status", "/ui/index.html"] {
+            assert!(turned_away(p, true), "{p}");
+            assert!(!turned_away(p, false), "{p}");
+        }
     }
 
     #[tokio::test]
