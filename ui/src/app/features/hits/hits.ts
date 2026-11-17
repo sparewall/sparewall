@@ -11,6 +11,7 @@ import { ActivatedRoute } from '@angular/router';
 
 import { ApiClient, CallFailed } from '../../api/api-client';
 import { Schemas } from '../../api/api.model';
+import { NodeSwitch } from '../../shared/node-switch';
 import { KEEP, SINCE } from '../logs/logs';
 
 export type RuleHit = Schemas['org.sparewall.Diagnostics.RuleHit'];
@@ -27,11 +28,13 @@ export type RuleHit = Schemas['org.sparewall.Diagnostics.RuleHit'];
     MatInputModule,
     MatSelectModule,
     MatSlideToggleModule,
+    NodeSwitch,
   ],
   template: `
     <div class="page-header">
       <h1>Logged traffic</h1>
       <span class="subtitle">Hits of rules with logging on, newest first</span>
+      <app-node-switch [node]="node()" (nodeChange)="node.set($event); load()" />
     </div>
     <form class="filters" (ngSubmit)="load()">
       <mat-form-field subscriptSizing="dynamic">
@@ -184,6 +187,8 @@ export class Hits implements OnInit {
   protected port: number | null = null;
   protected since = '-1h';
 
+  /** The pair's other node, when reading it through this one (#268). */
+  protected readonly node = signal<string | null>(null);
   protected readonly hits = signal<RuleHit[]>([]);
   protected readonly older = signal<string | null>(null);
   protected readonly loading = signal(false);
@@ -209,6 +214,7 @@ export class Hits implements OnInit {
       pair: this.pair.trim() || null,
       address: this.address.trim() || null,
       port: this.port ?? null,
+      node: this.node(),
     };
   }
 

@@ -118,6 +118,8 @@ export class ToolsPanel {
 
   /** The networks to leave from. */
   readonly networks = input<string[]>([]);
+  /** The pair's other node, to run the tool on through this one (#268). */
+  readonly node = input<string | null>(null);
 
   protected readonly records = RECORDS;
   protected tool: Tool = 'ping';
@@ -140,21 +142,22 @@ export class ToolsPanel {
   /** The call for the form as it is. */
   call(): { method: string; params: Record<string, unknown> } {
     const t = this.target.trim();
+    const node = this.node();
     switch (this.tool) {
       case 'ping':
         return {
           method: 'org.sparewall.Diagnostics.Ping',
-          params: { host: t, network: this.from || null, count: this.count || null },
+          params: { host: t, network: this.from || null, count: this.count || null, node },
         };
       case 'traceroute':
         return {
           method: 'org.sparewall.Diagnostics.Traceroute',
-          params: { host: t, network: this.from || null },
+          params: { host: t, network: this.from || null, node },
         };
       case 'lookup':
         return {
           method: 'org.sparewall.Diagnostics.Lookup',
-          params: { name: t, record: this.record, server: this.server.trim() || null },
+          params: { name: t, record: this.record, server: this.server.trim() || null, node },
         };
     }
   }
