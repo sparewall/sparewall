@@ -14,9 +14,11 @@ fn reexec(name: &str) -> bool {
     let ok = Command::new("unshare")
         .args(["-rn", "true"])
         .status()
-        .is_ok_and(|s| s.success());
+        .is_ok_and(|s| s.success())
+        // The test sets up its links with ip.
+        && Command::new("ip").arg("-V").output().is_ok();
     if !ok || bin("sparewalld").is_none() {
-        eprintln!("skipping {name}: no unprivileged namespaces, or sparewalld not built");
+        eprintln!("skipping {name}: no unprivileged namespaces or ip, or sparewalld not built");
         return true;
     }
     let out = Command::new("unshare")

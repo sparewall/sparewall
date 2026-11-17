@@ -141,6 +141,22 @@ Until 1.0, only the newest series gets patch releases: once 0.7.0 is
 out, nodes on `stable` move to it, and a 0.6.x after that only reaches
 nodes that stay on 0.6 by choice.
 
+## What the automatic updates don't cover
+
+Dependabot proposes updates for the Rust crates, the GitHub Actions and
+the bootc-image-builder digest (`image/bib/Containerfile`), weekly. The
+Fedora base images float on purpose: the monthly rebuild tracks them,
+and Fedora's own security advisories decide when one is needed.
+
+Two packages are neither: ulogd and libnetfilter_log are built from
+source in `image/Containerfile` (Fedora 45 doesn't package ulogd, and has
+too old a libnetfilter_log). Their advisories are watched by hand.
+Before a release, check netfilter.org and the CVE lists for both. A fix
+means updating the version and checksum `ARG`s, and it ships in a
+release, not a rebuild, since a rebuild builds the same source. Both are
+in the image's SBOM (`.github/sbom-source-builds.sh`), and their license
+texts are in `/usr/share/licenses`.
+
 ## A demo node
 
 To try a build by hand before tagging it (the web UI especially),

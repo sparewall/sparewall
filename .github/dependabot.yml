@@ -8,3 +8,8 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule: { interval: weekly }
+  # bootc-image-builder, pinned by digest in image/bib/Containerfile. The
+  # Fedora base images float on purpose: the monthly rebuild tracks them.
+  - package-ecosystem: docker
+    directory: "/image/bib"
+    schedule: { interval: weekly }
