@@ -222,6 +222,15 @@ other path to `sparewall-httpd`, a sandboxed service that runs only
 while `management.web` is on and holds no authority of its own: each
 call is made with the caller's token or session, under that role.
 
+The port is for management, not a public web server. It serves at most
+256 connections at once. Past that, 16 more are kept for the health
+endpoints alone (anything else gets 503), so probes are answered even
+while long-lived streams hold the rest; beyond those, a new connection
+waits until another closes. A client has 10 s to finish the TLS handshake and 15 s to send
+each request's headers. `sparewall token list` shows a token's last use
+to the minute: it is saved at most once a minute, so a scraper's
+requests don't each write to disk.
+
 Scripts call the API with a token:
 
 ```shell
