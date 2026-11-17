@@ -59,8 +59,8 @@ RUN npm run api:check \
 # ---------------------------------------------------------------------------
 # ulogd2 for rule logging; Fedora no longer packages it. ulogd needs
 # libnetfilter_log >= 1.0.2 and Fedora 45 has 1.0.1, so that is built too,
-# statically, and linked into the NFLOG plugin only. Both are GPL-2.0-only:
-# their license texts ship in /usr/share/licenses, and syft cannot see
+# statically, and linked into the NFLOG plugin only. Both are under the GNU
+# GPL version 2: their license texts ship in /usr/share/licenses, and syft cannot see
 # them, so .github/sbom-source-builds.sh adds them to the SBOM from these
 # ARGs. Their advisories are watched by hand (docs/releasing.md).
 FROM quay.io/fedora/fedora:45 AS ulogd

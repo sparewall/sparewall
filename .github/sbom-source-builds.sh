@@ -24,19 +24,22 @@ tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 jq --arg nv "$nflog_v" --arg ns "$nflog_sum" --arg uv "$ulogd_v" --arg us "$ulogd_sum" '
   def pkg($name; $v; $sum; $url):
+    # SPDX IDs allow letters, digits, "." and "-" only.
     { name: $name,
-      SPDXID: "SPDXRef-Package-source-\($name)",
+      SPDXID: "SPDXRef-Package-source-\($name | gsub("[^A-Za-z0-9.-]"; "-"))",
       versionInfo: $v,
       supplier: "Organization: netfilter.org",
       downloadLocation: $url,
       filesAnalyzed: false,
       checksums: [{algorithm: "SHA256", checksumValue: $sum}],
-      licenseConcluded: "GPL-2.0-only",
-      licenseDeclared: "GPL-2.0-only",
+      # COPYING is the GPL version 2; whether the sources say "only" or
+      # "or later" is not asserted here (distributions disagree).
+      licenseConcluded: "NOASSERTION",
+      licenseDeclared: "NOASSERTION",
       copyrightText: "NOASSERTION",
-      comment: "Built from source in image/Containerfile (the ulogd stage); the checksum is of the source archive.",
+      comment: "Built from source in image/Containerfile (the ulogd stage); the checksum is of the source archive. Its COPYING, the GNU GPL version 2, ships in /usr/share/licenses.",
       externalRefs: [{referenceCategory: "PACKAGE-MANAGER", referenceType: "purl",
-        referenceLocator: "pkg:generic/netfilter/\($name)@\($v)?download_url=\($url)"}] };
+        referenceLocator: "pkg:generic/netfilter/\($name)@\($v)?download_url=\($url | @uri)"}] };
   (.documentDescribes // [] | .[0]) as $root
   | ($root // ([.relationships[]? | select(.relationshipType == "DESCRIBES") | .relatedSpdxElement][0])) as $top
   | [pkg("libnetfilter_log"; $nv; $ns;
@@ -46,6 +49,6 @@ jq --arg nv "$nflog_v" --arg ns "$nflog_sum" --arg uv "$ulogd_v" --arg us "$ulog
   | .relationships = ([.relationships[]? | select(.relatedSpdxElement | startswith("SPDXRef-Package-source-") | not)]
       + (if $top then [$new[] | {spdxElementId: $top, relationshipType: "CONTAINS", relatedSpdxElement: .SPDXID}] else [] end)
       + [{spdxElementId: "SPDXRef-Package-source-ulogd", relationshipType: "STATIC_LINK",
-          relatedSpdxElement: "SPDXRef-Package-source-libnetfilter_log"}])
+          relatedSpdxElement: "SPDXRef-Package-source-libnetfilter-log"}])
 ' "$sbom" > "$tmp"
 cat "$tmp" > "$sbom"

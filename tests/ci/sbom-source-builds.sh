@@ -27,8 +27,15 @@ q() { jq -r "$1" "$tmp/sbom.json"; }
     || fail "ulogd's version"
 [ "$(q '.packages[] | select(.name == "libnetfilter_log") | .checksums[0].checksumValue')" = "$(v NFLOG_SHA256)" ] \
     || fail "libnetfilter_log's checksum"
-[ "$(q '[.packages[] | select(.licenseDeclared == "GPL-2.0-only")] | length')" = 2 ] \
+[ "$(q '[.packages[] | select(.licenseDeclared == "NOASSERTION")] | length')" = 2 ] \
     || fail "licenses"
+# SPDX 2.3: IDs of letters, digits, "." and "-"; purl qualifier values
+# percent-encoded.
+[ "$(q '[.packages[].SPDXID | select(test("^SPDXRef-[A-Za-z0-9.-]+$") | not)] | length')" = 0 ] \
+    || fail "an SPDX ID with characters SPDX does not allow"
+q '.packages[] | select(.name == "ulogd") | .externalRefs[0].referenceLocator' \
+    | grep -qx 'pkg:generic/netfilter/ulogd@[^?]*?download_url=https%3A%2F%2Fnetfilter.org%2Fpub%2Fulogd%2Fulogd-[0-9.]*.tar.xz' \
+    || fail "the purl's download_url is not percent-encoded"
 [ "$(q '[.relationships[] | select(.spdxElementId == "SPDXRef-DocumentRoot-Image-x" and .relationshipType == "CONTAINS")] | length')" = 2 ] \
     || fail "the image contains both"
 [ "$(q '[.relationships[] | select(.relationshipType == "STATIC_LINK")] | length')" = 1 ] \
