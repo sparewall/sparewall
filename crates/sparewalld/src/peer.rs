@@ -8,7 +8,6 @@
 
 // zlink 0.9 deprecates the `service` macro, for `interface` and
 // `derive(Service)`: moving to them is #255.
-#![allow(deprecated)]
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -29,7 +28,7 @@ use tokio::net::{TcpListener, TcpSocket};
 use tokio::sync::{Notify, broadcast};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
-use zlink::{Connection, Reply, service};
+use zlink::{Connection, Reply, interface};
 
 use crate::service::{Changes, Core, with_core_raw};
 
@@ -131,13 +130,18 @@ pub fn tunnel_addrs(
     Some((IpAddr::V4(own), IpAddr::V4(other), peer.to_string()))
 }
 
-pub struct PeerService {
+/// The peer API's one interface, `org.sparewall.Peer`.
+pub struct PeerInterface {
     core: Core,
     events: broadcast::Sender<Value>,
     sync: Arc<Notify>,
     pair: Pair,
     changes: Changes,
 }
+
+/// The peer API, which the other node of a pair calls.
+#[derive(zlink::Service)]
+pub struct PeerService(PeerInterface);
 
 impl PeerService {
     pub fn new(
@@ -147,18 +151,18 @@ impl PeerService {
         pair: Pair,
         changes: Changes,
     ) -> Self {
-        PeerService {
+        PeerService(PeerInterface {
             core,
             events,
             sync,
             pair,
             changes,
-        }
+        })
     }
 }
 
-#[service(interface = "org.sparewall.Peer", types = [PeerGeneration, LineageEntry, LinkDecisionReply, NetworkReach, PeerSecret, DelegatedPrefix])]
-impl PeerService {
+#[interface("org.sparewall.Peer", types = [PeerGeneration, LineageEntry, LinkDecisionReply, NetworkReach, PeerSecret, DelegatedPrefix])]
+impl PeerInterface {
     async fn hello(&mut self, node: String, protocol: i64) -> Result<HelloReply, PeerError> {
         let (role, reach, delegated) = {
             let p = self.pair.lock().unwrap_or_else(|p| p.into_inner());
