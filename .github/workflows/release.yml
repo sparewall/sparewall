@@ -46,7 +46,13 @@ jobs:
           sudo apt-get update && sudo apt-get install -y --no-install-recommends skopeo
           echo "$TOKEN" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
           echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
-          src="$IMAGE:sha-$(git rev-parse --short=12 HEAD)"
+          # Resolve the build's tag to a digest once: the signature check
+          # and every copy below use that digest, so a tag moved in between
+          # cannot publish a manifest whose signature was never checked.
+          built="$IMAGE:sha-$(git rev-parse --short=12 HEAD)"
+          digest=$(skopeo inspect --no-tags "docker://$built" | jq -r .Digest)
+          [[ $digest == sha256:* ]] || { echo "::error::no digest for $built"; exit 1; }
+          src="$IMAGE@$digest"
           cosign verify --key cosign.pub --new-bundle-format=false "$src" > /dev/null
           # The same manifest under new tags: its signature and SBOM,
           # attached by digest, carry over.
@@ -67,7 +73,7 @@ jobs:
             skopeo copy --all --preserve-digests "docker://$src" "docker://$IMAGE:$t"
             cosign verify --key cosign.pub --new-bundle-format=false "$IMAGE:$t" > /dev/null
             .github/check-sigpolicy.sh "$IMAGE:$t"
-            echo "$src is now $IMAGE:$t" >> "$GITHUB_STEP_SUMMARY"
+            echo "$built ($digest) is now $IMAGE:$t" >> "$GITHUB_STEP_SUMMARY"
           done
 
       # GitHub marks the release published last as "Latest", which a

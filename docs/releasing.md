@@ -65,6 +65,11 @@ backport to an older series is one on its release branch (see
 4. Review the draft, edit its notes, and publish it. Publishing runs the
    release workflow: it tags the tested image `VERSION` and, unless it is a
    prerelease, `stable`, so nodes following the stable channel see it.
+   It looks up the build's `sha-<commit>` tag once, then checks the
+   signature on that digest and copies the digest, not the tag, so a
+   moved tag can't publish an image whose signature wasn't checked. A
+   rebuild's promotion does the same, and the release-assets job checks
+   the digest it pulled before building the media.
    `stable` only moves forward: a backport published after a newer
    release leaves it, the Homebrew tap and GitHub's "Latest" release with
    the newer one.

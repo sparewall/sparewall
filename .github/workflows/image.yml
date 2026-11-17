@@ -567,12 +567,18 @@ jobs:
           echo "$TOKEN" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
           echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
           ref="$IMAGE:sha-$(git rev-parse --short=12 HEAD)"
-          cosign verify --key cosign.pub --new-bundle-format=false "$ref" > /dev/null
+          # Pull first, then check the signature on the digest that was
+          # pulled: checking the tag and then pulling it would look it up
+          # twice. The local tag (what the installers are built from, and
+          # what installed nodes track) is that verified image.
           sudo podman pull "$ref"
+          digest=$(sudo podman image inspect "$ref" --format '{{.Digest}}')
+          [[ $digest == sha256:* ]] || { echo "::error::no digest for $ref"; exit 1; }
+          cosign verify --key cosign.pub --new-bundle-format=false "$IMAGE@$digest" > /dev/null
           [ "$(sudo podman run --rm --entrypoint sparewall "$ref" --version)" = "sparewall ${GITHUB_REF_NAME#v}" ] \
             || { echo "$ref does not report version ${GITHUB_REF_NAME#v}" >&2; exit 1; }
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "digest=$(sudo podman image inspect "$ref" --format '{{.Digest}}')" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Installer and disk images
         run: image/installers.sh "${{ steps.image.outputs.ref }}" "${GITHUB_REF_NAME#v}" assets
@@ -736,9 +742,13 @@ jobs:
           echo "$TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
           v=$(.github/version.sh)
           release=${v%%+*}
-          src="$IMAGE:${v/+/_}"
+          # Resolved once: the signature check and the copies use the
+          # digest, not the tag (as release.yml does).
+          built="$IMAGE:${v/+/_}"
+          digest=$(skopeo inspect --no-tags "docker://$built" | jq -r .Digest)
+          [[ $digest == sha256:* ]] || { echo "::error::no digest for $built"; exit 1; }
+          src="$IMAGE@$digest"
           cosign verify --key cosign.pub --new-bundle-format=false "$src" > /dev/null
-          digest=$(skopeo inspect --no-tags "docker://$src" | jq -r .Digest)
           # stable moves only while it is this release (or an earlier
           # rebuild of it) and this is still the newest release: a newer
           # one keeps it. Read under the promote-stable lock, which
@@ -755,7 +765,7 @@ jobs:
             skopeo copy --all --preserve-digests "docker://$src" "docker://$IMAGE:$t"
             cosign verify --key cosign.pub --new-bundle-format=false "$IMAGE:$t" > /dev/null
             .github/check-sigpolicy.sh "$IMAGE:$t"
-            echo "$src ($digest) is now $IMAGE:$t" >> "$GITHUB_STEP_SUMMARY"
+            echo "$built ($digest) is now $IMAGE:$t" >> "$GITHUB_STEP_SUMMARY"
           done
           # Say so in the release's notes, under one heading, oldest first.
           gh release view "$GITHUB_REF_NAME" --json body --jq .body > notes.md
