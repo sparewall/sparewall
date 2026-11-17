@@ -264,19 +264,24 @@ impl HostOp {
                 if std::path::Path::new(BOUND_STORE).is_dir() {
                     a.push(format!("--storage-opt=additionalimagestore={BOUND_STORE}"));
                 }
+                // No relabelling (:Z): podman mounts `data` by path, after
+                // the run unit's check, and relabelling whatever a swapped
+                // link pointed at could break the host.
                 a.extend(
                     [
                         "run",
                         "--rm",
                         "--pull=never",
                         "--network=host",
+                        "--security-opt",
+                        "label=disable",
                         "--env-file",
                     ]
                     .map(String::from),
                 );
                 a.push(env_file.clone());
                 a.push("-v".into());
-                a.push(format!("{data}:/data:Z"));
+                a.push(format!("{data}:/data"));
                 a.push(image.clone());
                 a.extend(args.iter().cloned());
                 a
@@ -477,22 +482,38 @@ fn provider_image_ok(container: &str, image: &str) -> Result<(), String> {
     }
 }
 
-/// That no component of `p`, an absolute path, is a symbolic link, and
-/// that it exists: the run unit uses the path as root, and a link the
-/// coordinator planted could point it anywhere.
-pub fn no_symlinks(p: &std::path::Path) -> Result<(), String> {
+/// Open `p`, an absolute path, refusing a symbolic link in any of its
+/// components: the kernel resolves it once, under `RESOLVE_NO_SYMLINKS`
+/// (openat2), so a link the coordinator plants, even mid-open, is never
+/// followed. `flags` are added to `O_CLOEXEC` (`O_RDONLY` when empty).
+pub fn open_no_symlinks(
+    p: &std::path::Path,
+    flags: rustix::fs::OFlags,
+) -> Result<std::os::fd::OwnedFd, String> {
+    use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
     if !p.is_absolute() {
         return Err(format!("{}: not absolute", p.display()));
     }
-    let mut at = std::path::PathBuf::from("/");
-    for c in p.components().skip(1) {
-        at.push(c);
-        let m = std::fs::symlink_metadata(&at).map_err(|e| format!("{}: {e}", at.display()))?;
-        if m.file_type().is_symlink() {
-            return Err(format!("{}: a symbolic link", at.display()));
+    openat2(
+        CWD,
+        p,
+        flags | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::NO_SYMLINKS,
+    )
+    .map_err(|e| {
+        if e == rustix::io::Errno::LOOP {
+            format!("{}: through a symbolic link", p.display())
+        } else {
+            format!("{}: {e}", p.display())
         }
-    }
-    Ok(())
+    })
+}
+
+/// That `p` exists and no component of it is a symbolic link, at the
+/// moment of the check (see [`open_no_symlinks`]).
+pub fn no_symlinks(p: &std::path::Path) -> Result<(), String> {
+    open_no_symlinks(p, rustix::fs::OFlags::PATH).map(|_| ())
 }
 
 /// An image reference: registry/path[:tag][@digest], nothing that could be
@@ -714,7 +735,8 @@ mod tests {
         let a = op(DATA, "/run/sparewall/lego/.env-00ff")
             .argv(Some(&roots()))
             .unwrap();
-        assert!(a.contains(&format!("{DATA}:/data:Z")));
+        assert!(a.contains(&format!("{DATA}:/data")));
+        assert!(a.contains(&"label=disable".to_string()));
         op(DATA, &format!("{DATA}/.env-00ff"))
             .argv(Some(&roots()))
             .unwrap();
@@ -795,6 +817,12 @@ mod tests {
         std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
         assert!(no_symlinks(&real.join("f")).is_ok());
         assert!(no_symlinks(&dir.path().join("link").join("f")).is_err());
+        let e = open_no_symlinks(
+            &dir.path().join("link").join("f"),
+            rustix::fs::OFlags::RDONLY,
+        )
+        .unwrap_err();
+        assert!(e.contains("through a symbolic link"), "{e}");
         assert!(no_symlinks(&dir.path().join("link")).is_err());
         assert!(no_symlinks(&dir.path().join("missing")).is_err());
     }

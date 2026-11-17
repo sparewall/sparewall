@@ -326,17 +326,25 @@ fn run_spooled_in(
 
 /// What the run unit checks on disk before it runs an operation: that no
 /// path it uses goes through a symbolic link the coordinator could have
-/// planted, and, for lego, a private copy of the environment file (read
-/// without following a link) in place of the coordinator's, so it is not
-/// read again from a path the coordinator can change. Returns that copy.
+/// planted, and, for lego, a private copy of the environment file in
+/// place of the coordinator's. The file is read through a descriptor
+/// opened with no link anywhere in its path (openat2), and the copy is
+/// made under a descriptor of the private directory, which the
+/// coordinator cannot write. Returns that copy.
+///
+/// The directories podman mounts (a check's files, lego's data) are
+/// checked the same way, but podman then mounts them by path: a
+/// coordinator that swaps one for a link in between gets that mount
+/// instead (read-only for a check; for lego's data, lego alone writes
+/// there, and nothing is relabelled). implementation-notes.md says so.
 fn prepare(
     op: &crate::hostop::HostOp,
     id: &str,
     roots: &crate::hostop::Roots,
     argv: &mut [String],
 ) -> Result<Option<PathBuf>, String> {
-    use crate::hostop::{HostOp, no_symlinks};
-    use std::os::unix::fs::OpenOptionsExt;
+    use crate::hostop::{HostOp, no_symlinks, open_no_symlinks};
+    use rustix::fs::{Mode, OFlags};
     match op {
         HostOp::ConfigCheck { dir, .. } => {
             no_symlinks(Path::new(dir))?;
@@ -344,12 +352,8 @@ fn prepare(
         }
         HostOp::Lego { data, env_file, .. } => {
             no_symlinks(Path::new(data))?;
-            no_symlinks(Path::new(env_file))?;
-            let mut f = fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-                .open(env_file)
-                .map_err(|e| format!("{env_file}: {e}"))?;
+            let fd = open_no_symlinks(Path::new(env_file), OFlags::RDONLY | OFlags::NOFOLLOW)?;
+            let mut f = fs::File::from(fd);
             if !f.metadata().map_err(|e| e.to_string())?.is_file() {
                 return Err(format!("{env_file}: not a file"));
             }
@@ -357,18 +361,22 @@ fn prepare(
             std::io::Read::read_to_end(&mut f, &mut env).map_err(|e| e.to_string())?;
             let private = Path::new(&roots.private);
             fs::create_dir_all(private).map_err(|e| format!("{}: {e}", private.display()))?;
-            fs::set_permissions(private, fs::Permissions::from_mode(0o700))
+            let dirfd = open_no_symlinks(private, OFlags::RDONLY | OFlags::DIRECTORY)?;
+            rustix::fs::fchmod(&dirfd, Mode::from_raw_mode(0o700))
                 .map_err(|e| format!("{}: {e}", private.display()))?;
-            no_symlinks(private)?;
-            let copy = private.join(format!("{id}.env"));
-            let _ = fs::remove_file(&copy);
-            let mut out = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&copy)
-                .map_err(|e| format!("{}: {e}", copy.display()))?;
-            out.write_all(&env).map_err(|e| e.to_string())?;
+            let name = format!("{id}.env");
+            let _ = rustix::fs::unlinkat(&dirfd, name.as_str(), rustix::fs::AtFlags::empty());
+            let out = rustix::fs::openat(
+                &dirfd,
+                name.as_str(),
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|e| format!("{}/{name}: {e}", private.display()))?;
+            fs::File::from(out)
+                .write_all(&env)
+                .map_err(|e| e.to_string())?;
+            let copy = private.join(name);
             for a in argv.iter_mut().filter(|a| *a == env_file) {
                 *a = copy.display().to_string();
             }

@@ -174,13 +174,19 @@ Where the implementation departs from, or settles open questions in,
   under `/run/sparewall/check`; the admin password hash; the hostname. The
   unit builds the command from the operation after checking its arguments
   against its own directories (`SPAREWALL_STATE`, as the coordinator's),
-  refuses any path through a symbolic link, and reads lego's environment
-  file without following one into a copy in `/run/sparewall-run`, which
-  the coordinator cannot write. Anything else is refused and logged, so a
-  compromised coordinator gets these operations as root and nothing more.
-  What remains: it could swap a checked directory for a link between the
-  check and podman's mount (lego's data, mounted `:Z`); lego then runs
-  only its order there.
+  refuses any path through a symbolic link (openat2 with
+  `RESOLVE_NO_SYMLINKS`, so the check and the open are one step), and
+  reads lego's environment file through such a descriptor into a copy in
+  `/run/sparewall-run`, which the coordinator cannot write. Anything else
+  is refused and logged, so a compromised coordinator gets these
+  operations as root and nothing more. What remains: podman mounts a
+  check's directory and lego's data by path, after the check, so a
+  coordinator that swaps one for a link in between gets that mount
+  instead: read-only for a check, which only runs the provider's checker;
+  writable for lego's data, where lego alone writes its `accounts` and
+  `certificates`, for its one order. Neither is relabelled (both run with
+  `label=disable`), since relabelling whatever a link pointed at could
+  break the host.
 - **Bound images** are reached with
   `--storage-opt=additionalimagestore=/usr/lib/bootc/storage` per podman
   invocation (Quadlet `GlobalArgs=`): a global storage setting breaks
