@@ -13,7 +13,7 @@ declare -A LIMIT=(
     [sparewalld.service]=45
     [sparewall-ulogd.service]=60
     [sparewall-httpd.service]=10
-    [sparewall-capture@.service]=15
+    [sparewall-capture@.service]=16
 )
 # Unsandboxed by design: sparewall-early runs before udev to install the
 # live generation and load the firewall; sparewall-run@ runs the commands

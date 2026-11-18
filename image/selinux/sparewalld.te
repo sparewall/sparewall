@@ -389,8 +389,6 @@ type sparewall_capture_t;
 type sparewall_capture_exec_t;
 init_daemon_domain(sparewall_capture_t, sparewall_capture_exec_t)
 init_nnp_daemon_domain(sparewall_capture_t)
-# Its first run is permissive, to see all it needs at once.
-permissive sparewall_capture_t;
 # /run/sparewall/capture.sock, which systemd listens on. systemd labels
 # a socket unit's sockets with the domain of the service it starts, so
 # the listening socket, and each connection it accepts, are this domain's.

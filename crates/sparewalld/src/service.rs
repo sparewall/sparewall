@@ -1819,20 +1819,16 @@ where
             Ok(f) => f,
             Err(e) => return fail(e),
         };
-        let map = doc
-            .as_ref()
-            .map(crate::network::iface_networks)
-            .unwrap_or_default();
-        let iface = match crate::network::ifaces_of(&map, doc.as_ref(), &network) {
-            Err(e) => return fail(e),
-            Ok(i) => match i.into_iter().next() {
-                Some(i) => i,
-                None => {
-                    return fail(FirewallError::ValidationFailed {
-                        errors: vec![format!("network: {network} has no interface on {own}")],
-                    });
-                }
-            },
+        // The network's own interface (its VLAN, or its port), where its
+        // traffic is: not the VIP's or the IPv6 gateway's macvlans, which
+        // see only what is sent to their own addresses.
+        let iface = match doc.as_ref().and_then(|d| d.network_iface(&network)) {
+            Some(i) => i.to_string(),
+            None => {
+                return fail(FirewallError::ValidationFailed {
+                    errors: vec![format!("network: no network named {network:?}")],
+                });
+            }
         };
         let slot = match crate::capture::slot(&own) {
             Ok(s) => s,
