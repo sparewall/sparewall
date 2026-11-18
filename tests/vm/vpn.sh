@@ -346,9 +346,10 @@ vpn_moved() { # event
     site_poll 160 > site-poll.log 2>&1 &
 }
 
-# When the gateway moved, by the nodes' journals: the newest time either
+# When the gateway moved, by the nodes' journals: the first time either
 # node's keepalived entered MASTER on the WAN within 30 s of $1 (when
-# this test noticed the move), or $1 if neither says. The test notices
+# this test noticed the move), or $1 if neither says. The first, so that
+# a flap after the takeover can only lengthen the count, never shorten it. The test notices
 # a handover by polling, and a rolling upgrade's `[failover]` line comes
 # as the old master stops, so the takeover lands a few seconds either
 # side of the notice. The new master may start the site's tunnel before
@@ -357,15 +358,15 @@ vpn_moved() { # event
 # journals are read 20 s after the notice, for a takeover just after
 # it; the probes count handshake times, so they lose nothing by it.
 handover_at() { # noticed
-    local noticed=$1 n t best=0
+    local noticed=$1 n t best=
     sleep "$(awk -v n="$noticed" -v now="$(date +%s.%N)" 'BEGIN { d = n + 20 - now; print (d > 0 ? d : 0) }')"
     for n in fw1 fw2; do
         # A node that is down (master loss) answers nothing, quickly.
         t=$(AT_TIMEOUT=10 at "$n" "sudo journalctl -u keepalived -o short-unix --no-pager --since -10min -g 'VI_wan\\) Entering MASTER STATE'" 2>/dev/null \
-            | awk -v n="$noticed" 'NF && $1 + 0 >= n - 30 && $1 + 0 <= n + 30 { t = $1 } END { printf "%.6f\n", t + 0 }') || t=0
-        awk -v a="$t" -v b="$best" 'BEGIN { exit !(a > b) }' && best=$t
+            | awk -v n="$noticed" 'NF && $1 + 0 >= n - 30 && $1 + 0 <= n + 30 { if (t == "") t = $1 } END { printf "%.6f\n", t + 0 }') || t=0
+        awk -v a="$t" -v b="${best:-0}" 'BEGIN { exit !(a > 0 && (b == 0 || a < b)) }' && best=$t
     done
-    if awk -v a="$best" 'BEGIN { exit !(a > 0) }'; then
+    if [ -n "$best" ]; then
         awk -v a="$best" -v n="$noticed" 'BEGIN { printf "  handover at %.1f, %+.1f s from the notice\n", a, a - n }' >&2
         echo "$best"
     else
