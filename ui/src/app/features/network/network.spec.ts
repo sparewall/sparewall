@@ -1,7 +1,10 @@
 import { TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 
+import { signal } from '@angular/core';
+
 import { ApiClient } from '../../api/api-client';
+import { NodeStatus } from '../../core/node-status';
 import { Session } from '../../core/session';
 import { Neighbour, Network, Route } from './network';
 
@@ -35,7 +38,7 @@ const route = (destination: string, more: Partial<Route> = {}): Route => ({
   ...more,
 });
 
-async function render(replies: Record<string, unknown[]>) {
+async function render(replies: Record<string, unknown[]>, peer: string | null = null) {
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const api = {
     call: async (method: string, params: Record<string, unknown>) => {
@@ -48,6 +51,7 @@ async function render(replies: Record<string, unknown[]>) {
       provideNoopAnimations(),
       { provide: ApiClient, useValue: api },
       { provide: Session, useValue: { can: (r: string) => r !== 'admin' } },
+      { provide: NodeStatus, useValue: { node: signal('fw1'), peer: signal(peer) } },
     ],
   });
   const fixture = TestBed.createComponent(Network);
@@ -71,7 +75,10 @@ describe('Network', () => {
       ],
       'org.sparewall.Diagnostics.Routes': [{ routes: [route('default')], cut: false }],
     });
-    expect(calls.map((c) => c.params)).toEqual([{ network: null }, { network: null }]);
+    expect(calls.map((c) => c.params)).toEqual([
+      { network: null, node: null },
+      { network: null, node: null },
+    ]);
     const rows = el.querySelectorAll('[data-testid=neighbours] tbody tr');
     expect(rows.length).toBe(2);
     expect(rows[1].classList).toContain('bad');
@@ -98,5 +105,28 @@ describe('Network', () => {
       ),
     ).toBe('unreachable, linkdown, from 10.0.0.1, expires in 60s');
     expect(notes(route('default'))).toBe('');
+  });
+
+  it("reads the peer's through this node, in a pair (#268)", async () => {
+    const { fixture, el, calls } = await render(
+      {
+        'org.sparewall.Diagnostics.Neighbours': [
+          { neighbours: [], cut: false },
+          { neighbours: [], cut: false },
+        ],
+        'org.sparewall.Diagnostics.Routes': [
+          { routes: [], cut: false },
+          { routes: [], cut: false },
+        ],
+      },
+      'fw2',
+    );
+    (el.querySelector('[data-testid="peer-node"] button') as HTMLButtonElement).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(calls.slice(2).map((c) => c.params)).toEqual([
+      { network: null, node: 'fw2' },
+      { network: null, node: 'fw2' },
+    ]);
   });
 });

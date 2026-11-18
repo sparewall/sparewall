@@ -92,6 +92,7 @@ describe('Hits', () => {
       pair: null,
       address: null,
       port: null,
+      node: null,
       since: '-1h',
       limit: 200,
     });
@@ -121,7 +122,13 @@ describe('Hits', () => {
     );
     (el.querySelector('mat-slide-toggle button') as HTMLButtonElement).click();
     fixture.detectChanges();
-    expect(streams[0]).toEqual({ rule: null, pair: 'wan->lan', address: null, port: null });
+    expect(streams[0]).toEqual({
+      rule: null,
+      pair: 'wan->lan',
+      address: null,
+      port: null,
+      node: null,
+    });
     stream.push({ hit: null });
     stream.push({ hit: hit(2e15, 'wan->lan:ssh') });
     await settle();

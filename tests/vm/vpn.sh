@@ -202,6 +202,36 @@ site_debug() {
     ns site ip -br addr || true
 }
 
+# Evidence for #275, where the site was sometimes cut off for 123 s after
+# the rolling upgrade: what crosses the site's side of the wire (from the
+# moment its tunnel is up), and each node's view of the site's peer every
+# few seconds after a move (site-poll.sh). Printed only when the site is
+# cut off for too long.
+site_watch() {
+    command -v tcpdump >/dev/null || { echo "no tcpdump: the site's wire is not captured"; return 0; }
+    ns site tcpdump -l -n -e -tt -i eth0 'udp port 51821 or arp' > site-wire.log 2>&1 &
+}
+
+site_poll() { # seconds
+    local key end=$((SECONDS + $1)) n
+    key=$(cat "$WORK/site.pub")
+    while [ $SECONDS -lt "$end" ]; do
+        for n in fw1 fw2; do
+            AT_TIMEOUT=4 at "$n" "bash -s $key" < "$HERE/site-poll.sh" 2>/dev/null \
+                || echo "$(date +%s.%N) $n unreachable"
+        done
+        sleep 2
+    done
+}
+
+# What the site watchers saw, from shortly before the move on.
+site_evidence() { # since
+    echo "--- the site's wire from 30 s before the move ($1)"
+    awk -v t="$1" '$1 + 0 >= t - 30' site-wire.log 2>/dev/null | head -400
+    echo "--- the nodes' view of the site's peer"
+    cat site-poll.log 2>/dev/null
+}
+
 # The site, added as a peer of the instance with the other clients. Its
 # keepalive needs schema revision 4, so the sync-VLAN cut after it
 # changes a revision-4 document with the peer out of reach, which needs
@@ -249,6 +279,7 @@ site_setup() {
     done
     reach_site() { ns site ping -c 1 -W 1 -I "$SITE_LAN" "$VPN_TARGET" >/dev/null 2>&1; }
     wait_for 30 "the site's network reaches $VPN_TARGET" reach_site
+    site_watch
     for n in fw1 fw2; do
         at "$n" 'ip route show 10.30.0.0/24' | grep -q 'dev ra' \
             || fail "$n does not route the site's network through the tunnel"
@@ -310,6 +341,7 @@ vpn_moved() { # event
     # The site sends nothing: only the new master can start its tunnel.
     keepalive_recovery site "$VPN_MOVED_AT" > site.recovery &
     VPN_PROBES+=($!)
+    site_poll 160 > site-poll.log 2>&1 &
 }
 
 # Seconds until an idle client gets through, probing once a second.
@@ -384,7 +416,16 @@ vpn_after_move() { # event
         check_recovery "$event" "$c (idle)" "$(cat "$c.recovery")" "$VPN_BOUND"
     done
     check_recovery "$event" "natk (idle, keepalives only)" "$(cat natk.recovery)" "$VPN_KEEPALIVE_BOUND"
-    check_recovery "$event" "site (site-to-site, started by the pair)" "$(cat site.recovery)" "$VPN_BOUND"
+    count() { local c; c=$(grep -c -- "$1" "$2" 2>/dev/null); echo "${c:-0}"; }
+    echo "  site watch: $(count ' IPv4 ' site-wire.log) packets," \
+        "$(count ' fw[12] endpoint=' site-poll.log) polls," \
+        "$(count ' unreachable$' site-poll.log) unreachable"
+    s=$(cat site.recovery)
+    if [ "$s" = never ] || awk -v s="$s" -v b="$VPN_BOUND" 'BEGIN { exit !(s > b) }'; then
+        site_evidence "$since"
+        site_debug
+    fi
+    check_recovery "$event" "site (site-to-site, started by the pair)" "$s" "$VPN_BOUND"
     s=$(ns site wg show wg0 endpoints | awk '{print $2}')
     [ "$s" = "$VPN_SERVER:51820" ] || fail "the site's peer moved to $s after $event"
     ns site ping -c 3 -W 2 -I "$SITE_LAN" "$VPN_TARGET" >/dev/null \

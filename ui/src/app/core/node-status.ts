@@ -3,7 +3,7 @@ import { Service, computed, inject } from '@angular/core';
 
 import { callUrl } from '../api/api-client';
 import { Reply } from '../api/api.model';
-import { HealthState, UpdateState } from '../api/status.model';
+import { HealthState, SyncState, UpdateState } from '../api/status.model';
 import { updateNotice } from '../shared/update-notice';
 import { NodeEvents } from './node-events';
 import { Session } from './session';
@@ -21,6 +21,12 @@ export class NodeStatus {
   });
 
   readonly node = computed(() => (this.status.hasValue() ? this.status.value().node : undefined));
+  /** The other node of the pair, if this node has one (#268). */
+  readonly peer = computed(() =>
+    this.status.hasValue()
+      ? ((this.status.value().sync as unknown as SyncState | undefined)?.peer ?? null)
+      : null,
+  );
   /** What the update check offers, if anything (#188). */
   readonly update = computed(() =>
     this.status.hasValue()

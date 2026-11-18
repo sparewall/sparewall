@@ -391,10 +391,12 @@ init_daemon_domain(sparewall_capture_t, sparewall_capture_exec_t)
 init_nnp_daemon_domain(sparewall_capture_t)
 # Its first run is permissive, to see all it needs at once.
 permissive sparewall_capture_t;
-# /run/sparewall/capture.sock, which systemd listens on.
+# /run/sparewall/capture.sock, which systemd listens on. systemd labels
+# a socket unit's sockets with the domain of the service it starts, so
+# the listening socket, and each connection it accepts, are this domain's.
 type sparewall_capture_var_run_t;
 files_pid_file(sparewall_capture_var_run_t)
-stream_connect_pattern(sparewalld_t, sparewalld_var_run_t, sparewall_capture_var_run_t, init_t)
+stream_connect_pattern(sparewalld_t, sparewalld_var_run_t, sparewall_capture_var_run_t, sparewall_capture_t)
 
 gen_require(`
 	type netutils_exec_t;
@@ -404,7 +406,7 @@ gen_require(`
 can_exec(sparewall_capture_t, netutils_exec_t)
 # The connection systemd accepted, as its stdin and stdout.
 allow sparewall_capture_t init_t:fd use;
-allow sparewall_capture_t init_t:unix_stream_socket { getattr ioctl read write shutdown };
+allow sparewall_capture_t self:unix_stream_socket { getattr ioctl read write shutdown };
 allow sparewall_capture_t self:capability net_raw;
 allow sparewall_capture_t self:packet_socket create_socket_perms;
 allow sparewall_capture_t self:netlink_route_socket { create_netlink_socket_perms nlmsg_read };

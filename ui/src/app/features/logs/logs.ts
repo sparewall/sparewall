@@ -9,6 +9,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 
 import { ApiClient, CallFailed } from '../../api/api-client';
+import { NodeSwitch } from '../../shared/node-switch';
 import { Schemas } from '../../api/api.model';
 
 export type LogEntry = Schemas['org.sparewall.Diagnostics.LogEntry'];
@@ -50,11 +51,13 @@ export function shortUnit(u: string): string {
     MatInputModule,
     MatSelectModule,
     MatSlideToggleModule,
+    NodeSwitch,
   ],
   template: `
     <div class="page-header">
       <h1>Logs</h1>
       <span class="subtitle">Sparewall's units on this node, newest first</span>
+      <app-node-switch [node]="node()" (nodeChange)="node.set($event); load()" />
     </div>
     <form class="filters" (ngSubmit)="load()">
       <mat-form-field subscriptSizing="dynamic">
@@ -256,6 +259,8 @@ export class Logs implements OnInit {
   protected since = '-1h';
   protected grep = '';
 
+  /** The pair's other node, when reading it through this one (#268). */
+  protected readonly node = signal<string | null>(null);
   protected readonly known = signal<string[]>([]);
   protected readonly entries = signal<LogEntry[]>([]);
   protected readonly older = signal<string | null>(null);
@@ -285,6 +290,7 @@ export class Logs implements OnInit {
       grep: this.grep.trim() || null,
       limit: 200,
       before: before ?? null,
+      node: this.node(),
     };
   }
 
@@ -337,7 +343,7 @@ export class Logs implements OnInit {
       try {
         for await (const r of this.api.stream(
           'org.sparewall.Diagnostics.FollowLogs',
-          { units: p.units, priority: p.priority, grep: p.grep },
+          { units: p.units, priority: p.priority, grep: p.grep, node: p.node },
           abort.signal,
         )) {
           const e = r.entry;

@@ -53,6 +53,29 @@ fn match_expr(m: &Match) -> String {
     set_lit(match_items(m))
 }
 
+/// Addresses as nft can match them: an anonymous set can't hold a named
+/// one (#259), so the literals together are one match and each `@object`
+/// is a match of its own. A packet matches the list when it matches any of
+/// them, so a rule renders a line for each (see [`rule_lines`]).
+fn addr_groups(items: Vec<String>) -> Vec<String> {
+    let (objects, literals): (Vec<String>, Vec<String>) =
+        items.into_iter().partition(|i| i.starts_with('@'));
+    let mut groups = Vec::new();
+    if !literals.is_empty() {
+        groups.push(set_lit(literals));
+    }
+    groups.extend(objects);
+    groups
+}
+
+/// Every pairing of a source and a destination match, either of which may
+/// be absent (`[None]`).
+fn cross(src: &[Option<String>], dst: &[Option<String>]) -> Vec<(Option<String>, Option<String>)> {
+    src.iter()
+        .flat_map(|s| dst.iter().map(move |d| (s.clone(), d.clone())))
+        .collect()
+}
+
 fn limit_expr(l: &str) -> String {
     let mut words = l.split_whitespace();
     let rate = words.next().unwrap_or_default();
@@ -112,8 +135,12 @@ impl Script {
 
 /// A rule's lines: one without addresses, or one per family its
 /// addresses and protocol allow (#211, #212), each with that family's
-/// addresses (`ip saddr`, `ip6 saddr`). Splitting changes nothing: every
-/// line has the rule's verdict, and a packet is of one family.
+/// addresses (`ip saddr`, `ip6 saddr`), and within a family one per pairing
+/// of its source and destination matches ([`addr_groups`], #259).
+/// Splitting doesn't change what matches: every line has the rule's
+/// verdict, a packet is of one family, and one that matches a line ends
+/// there. A `limit` would be each line's, so validation refuses one on a
+/// rule that needs more than a line per family.
 fn rule_lines(doc: &Document, pair: &str, name: &str, r: &Rule) -> Vec<String> {
     if r.src.is_none() && r.dst.is_none() {
         return vec![rule_line(doc, pair, name, r, None, None)];
@@ -138,17 +165,18 @@ fn rule_lines(doc: &Document, pair: &str, name: &str, r: &Rule) -> Vec<String> {
         if proto == Some(other) {
             continue;
         }
-        let addr = |dir: &str, items: Option<Vec<String>>| {
-            items.map(|i| format!("{fam} {dir} {}", set_lit(i)))
+        let addr = |dir: &str, items: Option<Vec<String>>| -> Vec<Option<String>> {
+            match items {
+                None => vec![None],
+                Some(i) => addr_groups(i)
+                    .into_iter()
+                    .map(|g| Some(format!("{fam} {dir} {g}")))
+                    .collect(),
+            }
         };
-        lines.push(rule_line(
-            doc,
-            pair,
-            name,
-            r,
-            addr("saddr", s),
-            addr("daddr", d),
-        ));
+        for (s, d) in cross(&addr("saddr", s), &addr("daddr", d)) {
+            lines.push(rule_line(doc, pair, name, r, s, d));
+        }
     }
     lines
 }
@@ -614,23 +642,30 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             } else {
                 format!("forward:{name}")
             };
-            let mut parts = vec![format!("iifname {}", ifset(&ifs))];
-            if let Some(s) = &f.src {
-                parts.push(format!("ip saddr {}", match_expr(s)));
-            }
-            if let Some(d) = &f.dst {
-                parts.push(format!("ip daddr {}", match_expr(d)));
-            }
-            parts.push(format!("{} dport {}", f.proto, match_expr(&f.dport)));
-            parts.push("counter".into());
             let to = match f.to_port {
                 Some(p) => format!("{}:{p}", f.to),
                 None => f.to.to_string(),
             };
-            parts.push(format!("dnat ip to {to}"));
-            parts.push(format!("comment {}", q(&comment)));
-            dnat.push_str(&parts.join(" "));
-            dnat.push('\n');
+            let addr = |dir: &str, m: &Option<Match>| -> Vec<Option<String>> {
+                match m {
+                    None => vec![None],
+                    Some(m) => addr_groups(match_items(m))
+                        .into_iter()
+                        .map(|g| Some(format!("ip {dir} {g}")))
+                        .collect(),
+                }
+            };
+            for (s, d) in cross(&addr("saddr", &f.src), &addr("daddr", &f.dst)) {
+                let mut parts = vec![format!("iifname {}", ifset(&ifs))];
+                parts.extend(s);
+                parts.extend(d);
+                parts.push(format!("{} dport {}", f.proto, match_expr(&f.dport)));
+                parts.push("counter".into());
+                parts.push(format!("dnat ip to {to}"));
+                parts.push(format!("comment {}", q(&comment)));
+                dnat.push_str(&parts.join(" "));
+                dnat.push('\n');
+            }
         }
     }
     // Remote access on more ports: to the listen port, for the gateway
@@ -732,15 +767,17 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             None => line(String::new()),
             Some(s) => {
                 let (four, six) = doc.split_families(s);
-                if !four.is_empty() {
-                    line(format!(" ip saddr {}", set_lit(four)));
+                for g in addr_groups(four) {
+                    line(format!(" ip saddr {g}"));
                 }
                 let mgmt_v6 = doc
                     .networks
                     .get(&doc.management.network)
                     .is_some_and(|n| n.ipv6.is_some());
-                if !six.is_empty() && mgmt_v6 {
-                    line(format!(" ip6 saddr {}", set_lit(six)));
+                if mgmt_v6 {
+                    for g in addr_groups(six) {
+                        line(format!(" ip6 saddr {g}"));
+                    }
                 }
             }
         }
@@ -833,15 +870,16 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         } else {
             ""
         };
-        writeln!(
-            input,
-            "ip daddr {} {} dport {} counter reject{how} comment {}",
-            match_expr(d),
-            f.proto,
-            match_expr(&f.dport),
-            q(&format!("forward:{name}:not-here"))
-        )
-        .unwrap();
+        for d in addr_groups(match_items(d)) {
+            writeln!(
+                input,
+                "ip daddr {d} {} dport {} counter reject{how} comment {}",
+                f.proto,
+                match_expr(&f.dport),
+                q(&format!("forward:{name}:not-here"))
+            )
+            .unwrap();
+        }
     }
     service_rules(doc, &mut input);
     input.push_str(&raw_at_hook(doc, RawHook::Input));

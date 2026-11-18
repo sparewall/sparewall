@@ -46,7 +46,7 @@ describe('ToolsPanel', () => {
     fixture.detectChanges();
     expect(calls[0]).toEqual({
       method: 'org.sparewall.Diagnostics.Ping',
-      params: { host: '192.168.1.10', network: 'lan', count: 4 },
+      params: { host: '192.168.1.10', network: 'lan', count: 4, node: null },
     });
     expect(el.querySelector('[data-testid=output]')!.textContent).toBe(
       'PING 192.168.1.10\n2 packets transmitted, 2 received',
@@ -64,7 +64,7 @@ describe('ToolsPanel', () => {
     fixture.detectChanges();
     expect(calls[0]).toEqual({
       method: 'org.sparewall.Diagnostics.Lookup',
-      params: { name: 'nas.home.arpa', record: 'AAAA', server: '192.168.1.1' },
+      params: { name: 'nas.home.arpa', record: 'AAAA', server: '192.168.1.1', node: null },
     });
     expect(el.querySelector('.exit')!.textContent).toContain('status 9');
   });
@@ -83,7 +83,7 @@ describe('ToolsPanel', () => {
     fixture.detectChanges();
     expect(calls[0]).toEqual({
       method: 'org.sparewall.Diagnostics.Traceroute',
-      params: { host: 'x;y', network: null },
+      params: { host: 'x;y', network: null, node: null },
     });
     expect(el.querySelector('[role=alert]')!.textContent).toContain('not an address');
   });
