@@ -9,6 +9,7 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { ApiClient, CallFailed } from '../../api/api-client';
 import { Schemas } from '../../api/api.model';
 import { Session } from '../../core/session';
+import { NodeSwitch } from '../../shared/node-switch';
 import { ToolsPanel } from './tools-panel';
 
 export type Neighbour = Schemas['org.sparewall.Diagnostics.Neighbour'];
@@ -27,12 +28,14 @@ const BAD = ['FAILED', 'INCOMPLETE'];
     MatIconModule,
     MatSelectModule,
     MatTabsModule,
+    NodeSwitch,
     ToolsPanel,
   ],
   template: `
     <div class="page-header">
       <h1>Network</h1>
       <span class="subtitle">What this node sees on its networks, now</span>
+      <app-node-switch [node]="node()" (nodeChange)="node.set($event); load()" />
     </div>
     <div class="filters">
       <mat-form-field subscriptSizing="dynamic">
@@ -137,7 +140,7 @@ const BAD = ['FAILED', 'INCOMPLETE'];
       </mat-tab>
       @if (session.can('operator')) {
         <mat-tab label="Tools">
-          <app-tools-panel [networks]="networks()" />
+          <app-tools-panel [networks]="networks()" [node]="node()" />
         </mat-tab>
       }
     </mat-tab-group>
@@ -208,6 +211,8 @@ export class Network implements OnInit {
   protected readonly session = inject(Session);
 
   protected network = '';
+  /** The pair's other node, when reading it through this one (#268). */
+  protected readonly node = signal<string | null>(null);
   protected readonly neighbours = signal<Neighbour[]>([]);
   protected readonly routes = signal<Route[]>([]);
   protected readonly neighboursCut = signal(false);
@@ -240,8 +245,8 @@ export class Network implements OnInit {
     const network = this.network || null;
     try {
       const [n, r] = await Promise.all([
-        this.api.call('org.sparewall.Diagnostics.Neighbours', { network }),
-        this.api.call('org.sparewall.Diagnostics.Routes', { network }),
+        this.api.call('org.sparewall.Diagnostics.Neighbours', { network, node: this.node() }),
+        this.api.call('org.sparewall.Diagnostics.Routes', { network, node: this.node() }),
       ]);
       this.neighbours.set(n.neighbours);
       this.routes.set(r.routes);

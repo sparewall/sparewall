@@ -92,6 +92,7 @@ describe('Logs', () => {
       grep: null,
       limit: 200,
       before: null,
+      node: null,
     });
     const lines = () => [...el.querySelectorAll('.msg')].map((m) => m.textContent);
     expect(lines()).toEqual(['third', 'second']);
@@ -130,7 +131,7 @@ describe('Logs', () => {
     const toggle = el.querySelector('mat-slide-toggle button') as HTMLButtonElement;
     toggle.click();
     fixture.detectChanges();
-    expect(streams[0]).toEqual({ units: null, priority: null, grep: null });
+    expect(streams[0]).toEqual({ units: null, priority: null, grep: null, node: null });
     stream.push({ entry: null });
     stream.push({ entry: entry(2e15, 'new') });
     await settle();
