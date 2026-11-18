@@ -22,6 +22,13 @@ StateDirectoryMode=0711
 RuntimeDirectory=sparewall-api
 RuntimeDirectoryMode=0755
 Environment=SPAREWALL_LOG=info
+# A fixed mmap threshold (#298). Each backup seals its secrets with
+# Argon2id, whose 19 MiB block glibc would otherwise move into the
+# arena of whichever blocking thread runs it, after raising the
+# threshold past it on the first free; the block stayed there, and the
+# daemon grew by an arena's worth with each new thread. A block above
+# the fixed threshold is mapped and unmapped on its own.
+Environment=GLIBC_TUNABLES=glibc.malloc.mmap_threshold=4194304
 
 # Sandboxing (design: "Host hardening"). The coordinator writes its state,
 # runtime networkd files and kernel tunables, and drives nft, networkctl,

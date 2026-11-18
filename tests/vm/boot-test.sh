@@ -618,6 +618,11 @@ vm "printf %s '$PASSWORD' | sudo sparewall backup --check-password" \
     || fail "the backup password does not open the newest bundle"
 ! vm "printf %s 'not it' | sudo sparewall backup --check-password" \
     || fail "a wrong backup password opened the newest bundle"
+# Each of those ran Argon2id's 19 MiB block; with the unit's fixed mmap
+# threshold, none of it stays in the daemon (#298).
+vm 'sudo sh -c "tr \"\\0\" \"\\n\" < /proc/\$(pidof sparewalld)/environ"' | grep -qx 'GLIBC_TUNABLES=glibc.malloc.mmap_threshold=[0-9]*' \
+    || fail "sparewalld runs without its fixed mmap threshold"
+vm 'grep -E "^(RssAnon|Threads):" /proc/$(pidof sparewalld)/status'
 # The bundle carries the secrets decrypted: log-token, sealed before the
 # reboot, was unsealed by the coordinator.
 deadline=$((SECONDS + 120))
