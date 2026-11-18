@@ -139,9 +139,16 @@ pub struct PeerInterface {
     changes: Changes,
 }
 
-/// The peer API, which the other node of a pair calls.
+/// The peer API, which the other node of a pair calls: `org.sparewall.Peer`,
+/// and the read-only diagnostics of this node, which the peer serves to its
+/// callers as this node's (#268).
 #[derive(zlink::Service)]
-pub struct PeerService(PeerInterface);
+pub struct PeerService {
+    #[zlink(state)]
+    diagnostics_state: crate::service::Shared,
+    peer: PeerInterface,
+    diagnostics: crate::service::DiagnosticsInterface,
+}
 
 impl PeerService {
     pub fn new(
@@ -151,13 +158,23 @@ impl PeerService {
         pair: Pair,
         changes: Changes,
     ) -> Self {
-        PeerService(PeerInterface {
-            core,
-            events,
-            sync,
-            pair,
-            changes,
-        })
+        PeerService {
+            diagnostics_state: crate::service::Shared::for_peer(
+                core.clone(),
+                events.clone(),
+                pair.clone(),
+                sync.clone(),
+                changes.clone(),
+            ),
+            peer: PeerInterface {
+                core,
+                events,
+                sync,
+                pair,
+                changes,
+            },
+            diagnostics: crate::service::DiagnosticsInterface,
+        }
     }
 }
 
@@ -452,6 +469,7 @@ pub async fn connect(link: Link) -> Result<Connection<zlink::tokio::unix::Stream
     .await
     .map_err(|_| format!("{addr}: timed out"))?
     .map_err(|e| format!("{addr}: {e}"))?;
+    keep_alive(&tcp);
     let (ours, theirs) = tokio::net::UnixStream::pair().map_err(|e| e.to_string())?;
     tokio::spawn(async move {
         let (mut tcp, mut theirs) = (tcp, theirs);
@@ -460,6 +478,25 @@ pub async fn connect(link: Link) -> Result<Connection<zlink::tokio::unix::Stream
     let stream: zlink::tokio::unix::Stream =
         ours.try_into().map_err(|e: zlink::Error| e.to_string())?;
     Ok(Connection::new(stream))
+}
+
+/// Find a peer connection that went silent: keepalives after 10 s idle,
+/// every 5 s, three missed, and at most 30 s for sent data to be
+/// acknowledged. Most calls are short, but a diagnostics follow (#268) can
+/// be idle for long, and without this a tunnel that drops packets would
+/// keep it open on both nodes for good.
+pub fn keep_alive(tcp: &tokio::net::TcpStream) {
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(10))
+        .with_interval(Duration::from_secs(5))
+        .with_retries(3);
+    let s = socket2::SockRef::from(tcp);
+    if let Err(e) = s
+        .set_tcp_keepalive(&ka)
+        .and_then(|()| s.set_tcp_user_timeout(Some(Duration::from_secs(30))))
+    {
+        tracing::warn!(error = %e, "cannot set keepalives on a peer connection");
+    }
 }
 
 /// Listen for the peer on this node's tunnel address. With `device`, the
@@ -576,6 +613,7 @@ pub async fn listener(
         .flatten();
         pl.refresh(want);
         if let Some((mut tcp, from)) = pl.accept(Duration::from_secs(5)).await {
+            keep_alive(&tcp);
             let socket = socket.clone();
             tokio::spawn(async move {
                 match tokio::net::UnixStream::connect(&socket).await {

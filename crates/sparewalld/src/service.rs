@@ -30,6 +30,7 @@ use zlink::{Reply, interface};
 use crate::access::{Principal, Session};
 use crate::author;
 use crate::peer::{Pair, PairStatus};
+use crate::remote;
 
 pub type Core = Arc<Mutex<Coordinator<Box<dyn System>>>>;
 
@@ -83,6 +84,9 @@ pub struct Shared {
     /// the root-only sockets.
     session: Option<Session>,
     logins: Logins,
+    /// Serving the peer, on its listener: a diagnostics call runs here
+    /// only, never on to the node it came from (#268).
+    peer_api: bool,
 }
 
 /// The lock that runs changes one at a time, shared with the peer service
@@ -105,6 +109,59 @@ impl Shared {
             changes,
             session: None,
             logins: Logins::default(),
+            peer_api: false,
+        }
+    }
+
+    /// The state of the diagnostics the peer's listener serves (#268).
+    pub fn for_peer(
+        core: Core,
+        events: broadcast::Sender<Value>,
+        pair: Pair,
+        sync: Arc<Notify>,
+        changes: Changes,
+    ) -> Self {
+        Shared {
+            peer_api: true,
+            ..Shared::new(core, events, pair, sync, changes)
+        }
+    }
+
+    /// Where a diagnostics call naming `node` runs: here for this node or
+    /// none, on the peer through the sync tunnel for the peer (#268).
+    async fn diagnostics_on(&self, node: Option<&str>) -> Result<remote::Where, FirewallError> {
+        let Some(node) = node else {
+            return Ok(remote::Where::Here);
+        };
+        let (own, ends) = with_core(&self.core, &self.events, |c| {
+            let ends = c
+                .active_document()?
+                .and_then(|d| crate::peer::tunnel_addrs(&d, c.node()));
+            Ok((c.node().to_string(), ends))
+        })
+        .await?;
+        if node == own {
+            return Ok(remote::Where::Here);
+        }
+        match ends {
+            Some((own_addr, peer_addr, peer)) if peer == node && !self.peer_api => {
+                Ok(remote::Where::Peer {
+                    link: crate::peer::Link {
+                        own: own_addr,
+                        peer: peer_addr,
+                    },
+                    peer,
+                })
+            }
+            Some((_, _, peer)) if peer == node => Err(FirewallError::NotSupported {
+                message: "a call from the peer runs on the node it reached".into(),
+            }),
+            Some((_, _, peer)) => Err(FirewallError::NotSupported {
+                message: format!("no node {node:?} here: this pair is {own} and {peer}"),
+            }),
+            None => Err(FirewallError::NotSupported {
+                message: format!("no node {node:?} here: {own} has no peer"),
+            }),
         }
     }
 
@@ -244,6 +301,19 @@ fn tool_replies(run: Result<crate::tools::Run, FirewallError>, more: bool) -> To
         }
         Ok(Reply::new(Some(ToolReply { lines, exit })))
     }))
+}
+
+/// A tool's stream from the peer: relayed as it comes with `more`,
+/// gathered into one reply without, as a local run answers (#268).
+fn tool_on_peer(
+    link: crate::peer::Link,
+    peer: String,
+    more: bool,
+    method: &'static str,
+    params: serde_json::Map<String, Value>,
+) -> ToolStream {
+    let s = remote::relay(link, peer, method, params);
+    if more { s } else { remote::gather(s) }
 }
 
 /// Run a coordinator call off the async thread, then publish its events.
@@ -1314,7 +1384,25 @@ where
         grep: Option<String>,
         limit: Option<i64>,
         before: Option<String>,
+        node: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<LogsReply, FirewallError> {
+        if let remote::Where::Peer { link, peer } = fw.diagnostics_on(node.as_deref()).await? {
+            let mut c = remote::connect(link, &peer).await?;
+            let r = sparewall_api::DiagnosticsProxy::logs(
+                &mut c,
+                units.as_deref(),
+                priority.as_deref(),
+                since.as_deref(),
+                until.as_deref(),
+                grep.as_deref(),
+                limit,
+                before.as_deref(),
+                None,
+            )
+            .await;
+            return remote::reply(&peer, r);
+        }
         let q = crate::journal::Query::new(units, priority, since, until, grep, limit, before)?;
         crate::journal::logs(&q).await
     }
@@ -1329,7 +1417,25 @@ where
         units: Option<Vec<String>>,
         priority: Option<String>,
         grep: Option<String>,
+        node: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> impl Stream<Item = Result<Reply<LogReply>, FirewallError>> + Unpin + 'static {
+        let on = match fw.diagnostics_on(node.as_deref()).await {
+            Ok(w) => w,
+            Err(e) => return Box::pin(tokio_stream::once(Err(e))) as remote::Relayed<LogReply>,
+        };
+        if let (true, remote::Where::Peer { link, peer }) = (more, on) {
+            return remote::relay(
+                link,
+                peer,
+                "org.sparewall.Diagnostics.FollowLogs",
+                remote::params([
+                    ("units", units.map(|u| json!(u))),
+                    ("priority", priority.map(|p| json!(p))),
+                    ("grep", grep.map(|g| json!(g))),
+                ]),
+            );
+        }
         let follow = if more {
             crate::journal::Query::new(units, priority, None, None, grep, None, None)
                 .and_then(|q| crate::journal::follow(&q))
@@ -1373,7 +1479,26 @@ where
         until: Option<String>,
         limit: Option<i64>,
         before: Option<String>,
+        node: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> Result<HitsReply, FirewallError> {
+        if let remote::Where::Peer { link, peer } = fw.diagnostics_on(node.as_deref()).await? {
+            let mut c = remote::connect(link, &peer).await?;
+            let r = sparewall_api::DiagnosticsProxy::hits(
+                &mut c,
+                rule.as_deref(),
+                pair.as_deref(),
+                address.as_deref(),
+                port,
+                since.as_deref(),
+                until.as_deref(),
+                limit,
+                before.as_deref(),
+                None,
+            )
+            .await;
+            return remote::reply(&peer, r);
+        }
         let q = crate::hits::Query::new(rule, pair, address, port, since, until, limit, before)?;
         crate::hits::hits(&q).await
     }
@@ -1382,6 +1507,7 @@ where
     /// caller goes.
     /// [Requires 'more' flag]
     #[zlink(rename = "FollowHits", more)]
+    #[allow(clippy::too_many_arguments)]
     async fn diagnostics_follow_hits(
         &mut self,
         more: bool,
@@ -1389,7 +1515,26 @@ where
         pair: Option<String>,
         address: Option<String>,
         port: Option<i64>,
+        node: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> impl Stream<Item = Result<Reply<HitReply>, FirewallError>> + Unpin + 'static {
+        let on = match fw.diagnostics_on(node.as_deref()).await {
+            Ok(w) => w,
+            Err(e) => return Box::pin(tokio_stream::once(Err(e))) as remote::Relayed<HitReply>,
+        };
+        if let (true, remote::Where::Peer { link, peer }) = (more, on) {
+            return remote::relay(
+                link,
+                peer,
+                "org.sparewall.Diagnostics.FollowHits",
+                remote::params([
+                    ("rule", rule.map(|r| json!(r))),
+                    ("pair", pair.map(|p| json!(p))),
+                    ("address", address.map(|a| json!(a))),
+                    ("port", port.map(|p| json!(p))),
+                ]),
+            );
+        }
         let follow = if more {
             crate::hits::Query::new(rule, pair, address, port, None, None, None, None)
                 .and_then(|q| crate::hits::follow(&q))
@@ -1420,8 +1565,15 @@ where
     async fn diagnostics_neighbours(
         &mut self,
         network: Option<String>,
+        node: Option<String>,
         #[zlink(state)] fw: &mut Shared,
     ) -> Result<NeighboursReply, FirewallError> {
+        if let remote::Where::Peer { link, peer } = fw.diagnostics_on(node.as_deref()).await? {
+            let mut c = remote::connect(link, &peer).await?;
+            let r =
+                sparewall_api::DiagnosticsProxy::neighbours(&mut c, network.as_deref(), None).await;
+            return remote::reply(&peer, r);
+        }
         let (map, keep) = fw.network_filter(network.as_deref()).await?;
         let mut out = Vec::new();
         for fam in ["4", "6"] {
@@ -1445,8 +1597,20 @@ where
         &mut self,
         network: Option<String>,
         family: Option<String>,
+        node: Option<String>,
         #[zlink(state)] fw: &mut Shared,
     ) -> Result<RoutesReply, FirewallError> {
+        if let remote::Where::Peer { link, peer } = fw.diagnostics_on(node.as_deref()).await? {
+            let mut c = remote::connect(link, &peer).await?;
+            let r = sparewall_api::DiagnosticsProxy::routes(
+                &mut c,
+                network.as_deref(),
+                family.as_deref(),
+                None,
+            )
+            .await;
+            return remote::reply(&peer, r);
+        }
         let fams = crate::network::families(family.as_deref())?;
         let (map, keep) = fw.network_filter(network.as_deref()).await?;
         let mut out = Vec::new();
@@ -1475,8 +1639,21 @@ where
         host: String,
         network: Option<String>,
         count: Option<i64>,
+        node: Option<String>,
         #[zlink(state)] fw: &mut Shared,
     ) -> impl Stream<Item = Result<Reply<ToolReply>, FirewallError>> + Unpin + 'static {
+        match fw.diagnostics_on(node.as_deref()).await {
+            Err(e) => return Box::pin(tokio_stream::once(Err(e))) as ToolStream,
+            Ok(remote::Where::Here) => {}
+            Ok(remote::Where::Peer { link, peer }) => {
+                let p = remote::params([
+                    ("host", Some(json!(host))),
+                    ("network", network.map(|n| json!(n))),
+                    ("count", count.map(|c| json!(c))),
+                ]);
+                return tool_on_peer(link, peer, more, "org.sparewall.Diagnostics.Ping", p);
+            }
+        }
         let run = match crate::tools::Target::parse(&host, "host") {
             Err(e) => Err(e),
             Ok(t) => match fw.tool_source(network.as_deref(), &t).await {
@@ -1497,8 +1674,20 @@ where
         more: bool,
         host: String,
         network: Option<String>,
+        node: Option<String>,
         #[zlink(state)] fw: &mut Shared,
     ) -> impl Stream<Item = Result<Reply<ToolReply>, FirewallError>> + Unpin + 'static {
+        match fw.diagnostics_on(node.as_deref()).await {
+            Err(e) => return Box::pin(tokio_stream::once(Err(e))) as ToolStream,
+            Ok(remote::Where::Here) => {}
+            Ok(remote::Where::Peer { link, peer }) => {
+                let p = remote::params([
+                    ("host", Some(json!(host))),
+                    ("network", network.map(|n| json!(n))),
+                ]);
+                return tool_on_peer(link, peer, more, "org.sparewall.Diagnostics.Traceroute", p);
+            }
+        }
         let run = match crate::tools::Target::parse(&host, "host") {
             Err(e) => Err(e),
             Ok(t) => match fw.tool_source(network.as_deref(), &t).await {
@@ -1523,7 +1712,21 @@ where
         name: String,
         record: Option<String>,
         server: Option<String>,
+        node: Option<String>,
+        #[zlink(state)] fw: &mut Shared,
     ) -> impl Stream<Item = Result<Reply<ToolReply>, FirewallError>> + Unpin + 'static {
+        match fw.diagnostics_on(node.as_deref()).await {
+            Err(e) => return Box::pin(tokio_stream::once(Err(e))) as ToolStream,
+            Ok(remote::Where::Here) => {}
+            Ok(remote::Where::Peer { link, peer }) => {
+                let p = remote::params([
+                    ("name", Some(json!(name))),
+                    ("record", record.map(|r| json!(r))),
+                    ("server", server.map(|s| json!(s))),
+                ]);
+                return tool_on_peer(link, peer, more, "org.sparewall.Diagnostics.Lookup", p);
+            }
+        }
         let run = crate::tools::Target::parse(&name, "name")
             .and_then(|t| crate::tools::lookup_args(&t, record.as_deref(), server.as_deref()))
             .and_then(|a| crate::tools::run("dig", a, crate::tools::LOOKUP_LIMIT));

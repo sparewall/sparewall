@@ -1015,6 +1015,7 @@ export interface Calls {
   "org.sparewall.Diagnostics.FollowHits": {
     parameters: {
       "address"?: string | null;
+      "node"?: string | null;
       "pair"?: string | null;
       "port"?: number | null;
       "rule"?: string | null;
@@ -1030,6 +1031,7 @@ export interface Calls {
   "org.sparewall.Diagnostics.FollowLogs": {
     parameters: {
       "grep"?: string | null;
+      "node"?: string | null;
       "priority"?: string | null;
       "units"?: Array<string> | null;
     };
@@ -1046,6 +1048,7 @@ export interface Calls {
       "address"?: string | null;
       "before"?: string | null;
       "limit"?: number | null;
+      "node"?: string | null;
       "pair"?: string | null;
       "port"?: number | null;
       "rule"?: string | null;
@@ -1067,6 +1070,7 @@ export interface Calls {
       "before"?: string | null;
       "grep"?: string | null;
       "limit"?: number | null;
+      "node"?: string | null;
       "priority"?: string | null;
       "since"?: string | null;
       "units"?: Array<string> | null;
@@ -1087,6 +1091,7 @@ export interface Calls {
   "org.sparewall.Diagnostics.Lookup": {
     parameters: {
       "name": string;
+      "node"?: string | null;
       "record"?: string | null;
       "server"?: string | null;
     };
@@ -1103,6 +1108,7 @@ export interface Calls {
   "org.sparewall.Diagnostics.Neighbours": {
     parameters: {
       "network"?: string | null;
+      "node"?: string | null;
     };
     reply: {
       /** More than a reply holds: the rest were left out. */
@@ -1118,6 +1124,7 @@ export interface Calls {
       "count"?: number | null;
       "host": string;
       "network"?: string | null;
+      "node"?: string | null;
     };
     reply: {
       /** The tool's exit status, in the last reply. */
@@ -1133,6 +1140,7 @@ export interface Calls {
     parameters: {
       "family"?: string | null;
       "network"?: string | null;
+      "node"?: string | null;
     };
     reply: {
       /** More than a reply holds: the rest were left out. */
@@ -1147,6 +1155,7 @@ export interface Calls {
     parameters: {
       "host": string;
       "network"?: string | null;
+      "node"?: string | null;
     };
     reply: {
       /** The tool's exit status, in the last reply. */

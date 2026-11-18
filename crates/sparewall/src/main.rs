@@ -258,6 +258,9 @@ enum Cmd {
     Neighbours {
         /// Only this network's.
         network: Option<String>,
+        /// The peer's, in a pair, through this node.
+        #[arg(long, value_name = "PEER")]
+        node: Option<String>,
     },
     /// Routes, from every table but the local one, by network.
     Routes {
@@ -269,6 +272,9 @@ enum Cmd {
         /// IPv6 only.
         #[arg(short = '6')]
         ipv6: bool,
+        /// The peer's, in a pair, through this node.
+        #[arg(long, value_name = "PEER")]
+        node: Option<String>,
     },
     /// Ping a host from the node.
     Ping {
@@ -282,6 +288,9 @@ enum Cmd {
         /// How many (default 4, at most 10). (-c is --context.)
         #[arg(short = 'n', long)]
         count: Option<i64>,
+        /// The peer's, in a pair, through this node.
+        #[arg(long, value_name = "PEER")]
+        node: Option<String>,
     },
     /// Trace the route to a host from the node.
     Traceroute {
@@ -291,6 +300,9 @@ enum Cmd {
         /// From the node's own address on this network.
         #[arg(long = "from")]
         network: Option<String>,
+        /// The peer's, in a pair, through this node.
+        #[arg(long, value_name = "PEER")]
+        node: Option<String>,
     },
     /// Look a name (or, in reverse, an address) up from the node.
     Lookup {
@@ -301,6 +313,9 @@ enum Cmd {
         /// Through this server rather than the node's own resolver.
         #[arg(long)]
         server: Option<String>,
+        /// The peer's, in a pair, through this node.
+        #[arg(long, value_name = "PEER")]
+        node: Option<String>,
     },
     /// Stream coordinator events.
     Events,
@@ -329,6 +344,9 @@ enum Cmd {
         /// Then keep printing new entries as they are logged.
         #[arg(short, long)]
         follow: bool,
+        /// The peer's, in a pair, through this node.
+        #[arg(long, value_name = "PEER")]
+        node: Option<String>,
     },
     /// Hits of rules, policy defaults and forwards with `log: true`,
     /// oldest first.
@@ -358,6 +376,9 @@ enum Cmd {
         /// Then keep printing new hits as they are logged.
         #[arg(short, long)]
         follow: bool,
+        /// The peer's, in a pair, through this node.
+        #[arg(long, value_name = "PEER")]
+        node: Option<String>,
     },
     /// Schema operations.
     #[command(subcommand)]
@@ -1636,8 +1657,12 @@ impl App {
                     }
                 }
             }
-            Cmd::Neighbours { network } => {
-                let r = self.conn().await?.neighbours(network.as_deref()).await??;
+            Cmd::Neighbours { network, node } => {
+                let r = self
+                    .conn()
+                    .await?
+                    .neighbours(network.as_deref(), node.as_deref())
+                    .await??;
                 match self.output {
                     Some(Output::Json) | Some(Output::Yaml) => print_value(
                         &serde_json::to_value(&r.neighbours).unwrap_or_default(),
@@ -1655,6 +1680,7 @@ impl App {
                 network,
                 ipv4,
                 ipv6,
+                node,
             } => {
                 let family = match (ipv4, ipv6) {
                     (true, _) => Some("4"),
@@ -1664,7 +1690,7 @@ impl App {
                 let r = self
                     .conn()
                     .await?
-                    .routes(network.as_deref(), family)
+                    .routes(network.as_deref(), family, node.as_deref())
                     .await??;
                 match self.output {
                     Some(Output::Json) | Some(Output::Yaml) => print_value(
@@ -1683,27 +1709,34 @@ impl App {
                 destination,
                 network,
                 count,
+                node,
             } => {
                 let mut conn = self.conn().await?;
-                let stream = conn.ping(&destination, network.as_deref(), count).await?;
+                let stream = conn
+                    .ping(&destination, network.as_deref(), count, node.as_deref())
+                    .await?;
                 tool_output("ping", stream).await?;
             }
             Cmd::Traceroute {
                 destination,
                 network,
+                node,
             } => {
                 let mut conn = self.conn().await?;
-                let stream = conn.traceroute(&destination, network.as_deref()).await?;
+                let stream = conn
+                    .traceroute(&destination, network.as_deref(), node.as_deref())
+                    .await?;
                 tool_output("traceroute", stream).await?;
             }
             Cmd::Lookup {
                 name,
                 record,
                 server,
+                node,
             } => {
                 let mut conn = self.conn().await?;
                 let stream = conn
-                    .lookup(&name, record.as_deref(), server.as_deref())
+                    .lookup(&name, record.as_deref(), server.as_deref(), node.as_deref())
                     .await?;
                 tool_output("lookup", stream).await?;
             }
@@ -1724,6 +1757,7 @@ impl App {
                 grep,
                 lines,
                 follow,
+                node,
             } => {
                 let units = (!unit.is_empty()).then_some(unit.as_slice());
                 let r = self
@@ -1737,6 +1771,7 @@ impl App {
                         grep.as_deref(),
                         lines,
                         None,
+                        node.as_deref(),
                     )
                     .await??;
                 let structured = matches!(self.output, Some(Output::Json) | Some(Output::Yaml));
@@ -1753,7 +1788,7 @@ impl App {
                 if follow {
                     let mut conn = self.conn().await?;
                     let stream = conn
-                        .follow_logs(units, priority.as_deref(), grep.as_deref())
+                        .follow_logs(units, priority.as_deref(), grep.as_deref(), node.as_deref())
                         .await?;
                     pin_mut!(stream);
                     while let Some(item) = stream.next().await {
@@ -1772,6 +1807,7 @@ impl App {
                 until,
                 lines,
                 follow,
+                node,
             } => {
                 let r = self
                     .conn()
@@ -1785,6 +1821,7 @@ impl App {
                         until.as_deref(),
                         lines,
                         None,
+                        node.as_deref(),
                     )
                     .await??;
                 let structured = matches!(self.output, Some(Output::Json) | Some(Output::Yaml));
@@ -1801,7 +1838,13 @@ impl App {
                 if follow {
                     let mut conn = self.conn().await?;
                     let stream = conn
-                        .follow_hits(rule.as_deref(), pair.as_deref(), addr.as_deref(), port)
+                        .follow_hits(
+                            rule.as_deref(),
+                            pair.as_deref(),
+                            addr.as_deref(),
+                            port,
+                            node.as_deref(),
+                        )
                         .await?;
                     pin_mut!(stream);
                     while let Some(item) = stream.next().await {

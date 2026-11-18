@@ -377,7 +377,7 @@ mod tests {
     use std::sync::Arc;
 
     use serde_json::{Value, json};
-    use sparewall_api::{AuthProxy, FirewallError, FirewallProxy, SecretsProxy};
+    use sparewall_api::{AuthProxy, DiagnosticsProxy, FirewallError, FirewallProxy, SecretsProxy};
     use sparewall_config::identity::{BootstrapPort, Identity};
     use sparewall_core::system::Fake;
     use sparewall_core::{Coordinator, Store, System};
@@ -694,6 +694,57 @@ mod tests {
                 ),
                 e => panic!("not a refusal: {e}"),
             }
+        };
+        tokio::select! {
+            () = server => unreachable!(),
+            () = test => {}
+        }
+    }
+
+    /// A diagnostics call names the node to run on (#268): only this one,
+    /// or its peer in a pair. Another is refused, a stream's too, before
+    /// anything runs.
+    #[tokio::test(flavor = "current_thread")]
+    async fn diagnostics_run_on_this_node_or_its_peer_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_core, f) = firewall(dir.path());
+        let server = serve(dir.path(), f);
+        let test = async {
+            let mut c = connect(dir.path(), "root.sock").await;
+            let refused = |e: FirewallError| match e {
+                FirewallError::NotSupported { message } => {
+                    assert_eq!(message, "no node \"fw9\" here: fw1 has no peer")
+                }
+                e => panic!("not refused: {e}"),
+            };
+            refused(
+                c.routes(None, None, Some("fw9"))
+                    .await
+                    .unwrap()
+                    .unwrap_err(),
+            );
+            {
+                use futures_util::StreamExt;
+                let s = c
+                    .ping("127.0.0.1", None, Some(1), Some("fw9"))
+                    .await
+                    .unwrap();
+                futures_util::pin_mut!(s);
+                refused(s.next().await.unwrap().unwrap().unwrap_err());
+            }
+            // Its own name is this node.
+            let mut c = connect(dir.path(), "root.sock").await;
+            let e = c
+                .ping("not a host", None, Some(1), Some("fw1"))
+                .await
+                .unwrap();
+            futures_util::pin_mut!(e);
+            let e = futures_util::StreamExt::next(&mut e)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert!(!matches!(e, FirewallError::NotSupported { .. }), "{e}");
         };
         tokio::select! {
             () = server => unreachable!(),
