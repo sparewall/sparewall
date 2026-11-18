@@ -336,12 +336,37 @@ vpn_moved() { # event
     VPN_PROBES+=($!)
     idle_recovery vpnc > vpnc.recovery &
     VPN_PROBES+=($!)
-    keepalive_recovery natk "$VPN_MOVED_AT" > natk.recovery &
+    # These two wait for a handshake, which the new master may make
+    # before the move is noticed here: they count from the handover.
+    keepalive_recovery natk "$(handover_at "$VPN_MOVED_AT")" > natk.recovery &
     VPN_PROBES+=($!)
     # The site sends nothing: only the new master can start its tunnel.
-    keepalive_recovery site "$VPN_MOVED_AT" > site.recovery &
+    keepalive_recovery site "$(handover_at "$VPN_MOVED_AT")" > site.recovery &
     VPN_PROBES+=($!)
     site_poll 160 > site-poll.log 2>&1 &
+}
+
+# When the gateway moved, by the nodes' journals: the newest time either
+# node's keepalived entered MASTER on the WAN, up to $1 (when this test
+# noticed the move), or $1 if neither says. The test notices a rolling
+# upgrade's handover by polling its output, seconds late, and the new
+# master may start the site's tunnel in those seconds: counted from the
+# notice, that handshake looked older than the move, and the wait ran to
+# the next rekey, 120 s on (#275).
+handover_at() { # noticed
+    local noticed=$1 n t best=0
+    for n in fw1 fw2; do
+        # A node that is down (master loss) answers nothing, quickly.
+        t=$(AT_TIMEOUT=10 at "$n" "sudo journalctl -u keepalived -o short-unix --no-pager --since -10min -g 'VI_wan\\) Entering MASTER STATE'" 2>/dev/null \
+            | awk -v n="$noticed" 'NF && $1 + 0 <= n + 1 { t = $1 } END { printf "%.6f\n", t + 0 }') || t=0
+        awk -v a="$t" -v b="$best" 'BEGIN { exit !(a > b) }' && best=$t
+    done
+    if awk -v a="$best" 'BEGIN { exit !(a > 0) }'; then
+        awk -v a="$best" -v n="$noticed" 'BEGIN { printf "  handover at %.1f, noticed %.1f s later\n", a, n - a }' >&2
+        echo "$best"
+    else
+        echo "$noticed"
+    fi
 }
 
 # Seconds until an idle client gets through, probing once a second.
