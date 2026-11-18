@@ -947,14 +947,32 @@ pub struct ToolReply {
     pub exit: Option<i64>,
 }
 
+/// Part of a packet capture (#265): the pcap's bytes as they come, the
+/// file's header first. Joined in order, a capture's `data` is one pcap
+/// file, cut at a packet's end.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+pub struct CaptureReply {
+    /// The next of the pcap's bytes, in base64: empty in the last reply
+    /// of a stream.
+    pub data: String,
+    /// The capture's size so far, in bytes.
+    pub bytes: i64,
+    /// Packets captured so far.
+    pub packets: i64,
+    /// Why it ended, in the last reply: `time` (its time limit),
+    /// `size` (its size limit; the packet past it is left out) or
+    /// `stopped` (tcpdump stopped, the interface gone, say).
+    pub end: Option<String>,
+}
+
 /// The client side of `org.sparewall.Diagnostics`, in a module of its own:
 /// the proxy's generated code takes `Logs`'s filters as arguments.
 mod diagnostics {
     #![allow(clippy::too_many_arguments)]
 
     use super::{
-        FirewallError, HitReply, HitsReply, LogReply, LogsReply, NeighboursReply, RoutesReply,
-        ToolReply,
+        CaptureReply, FirewallError, HitReply, HitsReply, LogReply, LogsReply, NeighboursReply,
+        RoutesReply, ToolReply,
     };
 
     /// Each method takes `node`: this node's name or none for this
@@ -1053,6 +1071,18 @@ mod diagnostics {
             node: Option<&str>,
         ) -> zlink::Result<
             impl futures_util::Stream<Item = zlink::Result<Result<ToolReply, FirewallError>>>,
+        >;
+        /// Capture packets on a network, as a pcap (#265).
+        #[zlink(more)]
+        async fn capture(
+            &mut self,
+            network: &str,
+            filter: Option<&str>,
+            seconds: Option<i64>,
+            max_size: Option<i64>,
+            node: Option<&str>,
+        ) -> zlink::Result<
+            impl futures_util::Stream<Item = zlink::Result<Result<CaptureReply, FirewallError>>>,
         >;
     }
 }

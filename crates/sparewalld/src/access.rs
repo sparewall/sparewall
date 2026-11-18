@@ -127,6 +127,8 @@ pub fn needed(method: &str) -> Option<Need> {
         // configuration a peer's keys. A check that stays degraded until
         // seen (an SELinux denial) is an admin's to acknowledge.
         "org.sparewall.Firewall.Backup"
+        // Other people's traffic (#265).
+        | "org.sparewall.Diagnostics.Capture"
         | "org.sparewall.Firewall.AckHealth"
         | "org.sparewall.Firewall.VpnClientConfig"
         | "org.sparewall.Upgrade.Start"

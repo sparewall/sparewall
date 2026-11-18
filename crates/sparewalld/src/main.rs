@@ -4,6 +4,8 @@ mod access;
 mod acme;
 mod author;
 mod backup;
+mod capture;
+mod capture_check;
 mod dhcp_ha;
 mod failover;
 mod history;

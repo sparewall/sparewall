@@ -1,0 +1,19 @@
+[Unit]
+Description=Sparewall packet capture helper socket
+Documentation=https://github.com/sparewall/sparewall
+
+# The coordinator connects for each packet capture (#265); each
+# connection starts sparewall-capture@.service, which runs tcpdump with
+# the connection as its output. Only root reaches it: the directory is
+# sparewalld.socket's (0700), and the socket is root's too.
+[Socket]
+ListenStream=/run/sparewall/capture.sock
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=yes
+Accept=yes
+# One capture at a time, as the coordinator also holds to.
+MaxConnections=1
+
+[Install]
+WantedBy=sockets.target

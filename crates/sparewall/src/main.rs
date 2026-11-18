@@ -317,6 +317,30 @@ enum Cmd {
         #[arg(long, value_name = "PEER")]
         node: Option<String>,
     },
+    /// Capture packets on a network, as a pcap (admin), until --seconds
+    /// or --max-size, whichever comes first. One runs at a time, and each
+    /// is recorded in the node's journal.
+    Capture {
+        network: String,
+        /// Only what matches this, in pcap-filter syntax (`icmp`,
+        /// `tcp port 443 and host 192.0.2.10`).
+        #[arg(long)]
+        filter: Option<String>,
+        /// For this long (default 30, at most 300).
+        #[arg(long)]
+        seconds: Option<i64>,
+        /// At most this big: bytes, or with K or M (default 8M, at most
+        /// 32M). The packet past it is left out.
+        #[arg(long, value_name = "SIZE", value_parser = parse_size)]
+        max_size: Option<i64>,
+        /// The pcap file to write, or `-` for stdout. (-o is the output
+        /// format.)
+        #[arg(short = 'w', long = "write", value_name = "FILE")]
+        file: PathBuf,
+        /// The peer's, in a pair, through this node.
+        #[arg(long, value_name = "PEER")]
+        node: Option<String>,
+    },
     /// Stream coordinator events.
     Events,
     /// Logs of Sparewall's units, oldest first, as journalctl prints them.
@@ -997,6 +1021,46 @@ async fn tool_output(
             message: format!("{what} did not finish"),
         }),
     }
+}
+
+/// A capture's pcap, written as it comes; its last reply.
+async fn write_capture(
+    stream: impl futures_util::Stream<
+        Item = zlink::Result<Result<sparewall_api::CaptureReply, FirewallError>>,
+    >,
+    out: &mut dyn Write,
+) -> Result<sparewall_api::CaptureReply, Fail> {
+    use base64::Engine as _;
+    pin_mut!(stream);
+    let mut last = None;
+    while let Some(item) = stream.next().await {
+        let r = item??;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(&r.data)
+            .map_err(|e| Fail::other(format!("the capture's data: {e}")))?;
+        out.write_all(&data)
+            .and_then(|()| out.flush())
+            .map_err(|e| Fail::other(format!("writing the capture: {e}")))?;
+        last = Some(r);
+    }
+    last.filter(|r| r.end.is_some())
+        .ok_or_else(|| Fail::other("the capture did not finish"))
+}
+
+/// A size: bytes, or with K or M (KiB, MiB).
+fn parse_size(s: &str) -> Result<i64, String> {
+    let (n, mul) = match s.strip_suffix(['K', 'k']) {
+        Some(n) => (n, 1 << 10),
+        None => match s.strip_suffix(['M', 'm']) {
+            Some(n) => (n, 1 << 20),
+            None => (s, 1),
+        },
+    };
+    n.parse::<i64>()
+        .ok()
+        .and_then(|n| n.checked_mul(mul))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("{s:?}: a size in bytes, or with K or M"))
 }
 
 fn print_value(v: &Value, output: Option<Output>) {
@@ -1739,6 +1803,48 @@ impl App {
                     .lookup(&name, record.as_deref(), server.as_deref(), node.as_deref())
                     .await?;
                 tool_output("lookup", stream).await?;
+            }
+            Cmd::Capture {
+                network,
+                filter,
+                seconds,
+                max_size,
+                file,
+                node,
+            } => {
+                let mut out: Box<dyn Write> = if file == Path::new("-") {
+                    if std::io::stdout().is_terminal() {
+                        return Err(Fail::usage("not writing a pcap to a terminal: -w FILE"));
+                    }
+                    Box::new(std::io::stdout().lock())
+                } else {
+                    Box::new(
+                        std::fs::File::create(&file)
+                            .map_err(|e| Fail::usage(format!("{}: {e}", file.display())))?,
+                    )
+                };
+                let mut conn = self.conn().await?;
+                let stream = conn
+                    .capture(
+                        &network,
+                        filter.as_deref(),
+                        seconds,
+                        max_size,
+                        node.as_deref(),
+                    )
+                    .await?;
+                let end = write_capture(stream, &mut out).await?;
+                self.say(format!(
+                    "{} packets, {} bytes{}",
+                    end.packets,
+                    end.bytes,
+                    match end.end.as_deref() {
+                        Some("time") => ": the time limit",
+                        Some("size") => ": the size limit",
+                        Some("stopped") => ": tcpdump stopped",
+                        _ => "",
+                    }
+                ));
             }
             Cmd::Events => {
                 let mut conn = self.conn().await?;
@@ -2678,10 +2784,31 @@ fn ipv6_line(st: &serde_json::Value) -> String {
 mod tests {
     use super::{
         Cli, LogEntry, Neighbour, QueryReply, Route, RuleHit, duration_secs, entry_line,
-        fingerprint, hash_password, hit_line, neighbour_table, node_only, paste_slip, query_table,
-        route_table,
+        fingerprint, hash_password, hit_line, neighbour_table, node_only, parse_size, paste_slip,
+        query_table, route_table,
     };
     use clap::Parser;
+
+    #[test]
+    fn sizes() {
+        assert_eq!(parse_size("65536"), Ok(65536));
+        assert_eq!(parse_size("512K"), Ok(512 << 10));
+        assert_eq!(parse_size("8M"), Ok(8 << 20));
+        assert_eq!(parse_size("8m"), Ok(8 << 20));
+        for bad in ["", "0", "-1M", "8G", "M", "1.5M"] {
+            assert!(parse_size(bad).is_err(), "{bad}");
+        }
+        let c = Cli::try_parse_from([
+            "sparewall",
+            "capture",
+            "users",
+            "-w",
+            "x.pcap",
+            "--max-size",
+            "1M",
+        ]);
+        assert!(c.is_ok());
+    }
 
     /// Every command's arguments are well formed: no two share a short
     /// option (ping's count is not --context's -c) or a name with a
