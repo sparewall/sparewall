@@ -196,9 +196,15 @@ async fn capture(
     let first: serde_json::Value = serde_json::from_str(&first)
         .map_err(|_| unavailable("the capture helper gave no answer"))?;
     if let Some(e) = first.get("error").and_then(|e| e.as_str()) {
-        // The interface was checked here: what tcpdump refuses is the
-        // filter, in its own words.
-        return Err(invalid(format!("filter: {e}")));
+        // The filter, the caller's to fix, when the helper says so (it
+        // says it as `filter: …`); anything else is the helper's.
+        return Err(
+            if first.get("filter").and_then(|f| f.as_bool()) == Some(true) {
+                invalid(e)
+            } else {
+                unavailable(e)
+            },
+        );
     }
     if first.get("ok").and_then(|o| o.as_bool()) != Some(true) {
         return Err(unavailable("the capture helper gave no answer"));
@@ -414,18 +420,24 @@ mod tests {
         assert_eq!((last.packets, data), (1, body));
     }
 
+    /// A filter tcpdump refuses is the caller's to fix; anything else
+    /// that stops it is the helper's.
     #[tokio::test]
     async fn tcpdump_refusing_the_filter_says_why() {
-        let (_d, path) = helper(
-            "{\"error\":\"syntax error in filter expression\"}\n",
-            vec![],
-        )
-        .await;
-        let s = run_at(path, req(5, MIN_SIZE), (), "t".into());
-        let (_, last) = all(s).await;
+        let refused =
+            "{\"error\":\"filter: can't parse filter expression: syntax error\",\"filter\":true}\n";
+        let (_d, path) = helper(refused, vec![]).await;
+        let (_, last) = all(run_at(path, req(5, MIN_SIZE), (), "t".into())).await;
         assert!(
             matches!(last, Err(FirewallError::ValidationFailed { errors })
-            if errors[0] == "filter: syntax error in filter expression")
+            if errors[0] == "filter: can't parse filter expression: syntax error")
+        );
+        let killed = "{\"error\":\"tcpdump was killed by signal 31\",\"filter\":false}\n";
+        let (_d, path) = helper(killed, vec![]).await;
+        let (_, last) = all(run_at(path, req(5, MIN_SIZE), (), "t".into())).await;
+        assert!(
+            matches!(last, Err(FirewallError::ServiceUnavailable { message, .. })
+            if message == "tcpdump was killed by signal 31")
         );
     }
 }

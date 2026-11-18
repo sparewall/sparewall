@@ -37,14 +37,20 @@ fn answer(out: &mut impl Write, v: serde_json::Value) -> std::io::Result<()> {
     out.flush()
 }
 
-fn refuse(message: impl Into<String>) -> ExitCode {
+/// Refuse the capture, saying why; `filter` when the filter is why, the
+/// caller's to fix.
+fn refuse_as(message: impl Into<String>, filter: bool) -> ExitCode {
     let message = message.into();
     eprintln!("sparewall-capture: {message}");
     let _ = answer(
         &mut std::io::stdout().lock(),
-        serde_json::json!({ "error": message }),
+        serde_json::json!({ "error": message, "filter": filter }),
     );
     ExitCode::FAILURE
+}
+
+fn refuse(message: impl Into<String>) -> ExitCode {
+    refuse_as(message, false)
 }
 
 fn kill(child: &Mutex<Child>) {
@@ -69,7 +75,7 @@ fn main() -> ExitCode {
     }
     let filter = req.filter.unwrap_or_default();
     if let Some(p) = capture_check::filter_problem(&filter) {
-        return refuse(p);
+        return refuse_as(p, true);
     }
 
     // -U and --immediate-mode: each packet as it comes, the header first.
@@ -131,12 +137,24 @@ fn main() -> ExitCode {
         let status = child.lock().unwrap_or_else(|p| p.into_inner()).wait();
         let _ = messages.join();
         let said = said.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        let said = if said.is_empty() {
-            format!("tcpdump stopped ({status:?})")
-        } else {
-            said
+        // tcpdump names the filter when the filter is what it refused.
+        let filter = said.contains("filter expression");
+        let how = match status {
+            Ok(s) => match (s.code(), std::os::unix::process::ExitStatusExt::signal(&s)) {
+                (Some(c), _) => format!("tcpdump exited with status {c}"),
+                (None, Some(n)) => format!("tcpdump was killed by signal {n}"),
+                _ => format!("tcpdump stopped ({s})"),
+            },
+            Err(e) => format!("tcpdump: {e}"),
         };
-        return refuse(said);
+        let said = if said.is_empty() {
+            how
+        } else if filter {
+            format!("filter: {said}")
+        } else {
+            format!("{how}: {said}")
+        };
+        return refuse_as(said, filter);
     }
     let mut copy = || -> std::io::Result<()> {
         answer(&mut out, serde_json::json!({ "ok": true }))?;

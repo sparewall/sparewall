@@ -408,7 +408,12 @@ can_exec(sparewall_capture_t, netutils_exec_t)
 allow sparewall_capture_t init_t:fd use;
 allow sparewall_capture_t self:unix_stream_socket { getattr ioctl read write shutdown };
 allow sparewall_capture_t self:capability net_raw;
-allow sparewall_capture_t self:packet_socket create_socket_perms;
+# The capture's ring buffer is mapped from the packet socket.
+allow sparewall_capture_t self:packet_socket { create_socket_perms map };
+# libpcap's probes as it opens the interface: generic netlink, and RDMA
+# devices, which it finds none of.
+allow sparewall_capture_t self:netlink_generic_socket { create ioctl };
+allow sparewall_capture_t self:netlink_rdma_socket { create bind getattr setopt };
 allow sparewall_capture_t self:netlink_route_socket { create_netlink_socket_perms nlmsg_read };
 allow sparewall_capture_t self:udp_socket { create ioctl };
 allow sparewall_capture_t self:fifo_file rw_fifo_file_perms;

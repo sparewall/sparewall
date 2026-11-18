@@ -44,6 +44,9 @@ RemoveIPC=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
+# tcpdump sets its group and user to its own as it starts (dropping a
+# setuid bit's); without CAP_SETUID and CAP_SETGID that is all they do.
+SystemCallFilter=setuid setgid
 # AF_PACKET for the capture; tcpdump finds the interface over netlink
 # and an inet socket's ioctls. It sends nothing.
 RestrictAddressFamilies=AF_UNIX AF_PACKET AF_NETLINK AF_INET AF_INET6
