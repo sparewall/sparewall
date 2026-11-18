@@ -784,7 +784,8 @@ streaming with `?more=true`.
 ### Packet captures
 
 An `admin` can capture packets on a network, without SSH, as a pcap
-file for Wireshark or `tcpdump -r`:
+file for Wireshark or `tcpdump -r`, from the CLI or the Network page's
+Capture tab, which offers the file when the capture ends:
 
 ```shell
 sparewall capture lan --filter 'icmp and host 192.168.1.20' -w ping.pcap
