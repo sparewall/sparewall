@@ -3741,6 +3741,151 @@
         "x-sparewall-role": "operator"
       }
     },
+    "/call/org.sparewall.Diagnostics.Capture": {
+      "post": {
+        "description": "Capture packets on `network` as a pcap (#265), matching `filter` (pcap-filter syntax), for `seconds` (default 30, at most 300) or until `max_size` bytes (default 8 MiB, at most 32 MiB), whichever comes first. With `more`, the pcap's bytes as they come; without, all of it in one reply. One capture runs on a node at a time, and each is recorded in the journal.",
+        "operationId": "Diagnostics.Capture",
+        "parameters": [
+          {
+            "description": "Stream replies as an RFC 7464 JSON text sequence (application/json-seq) until the connection closes.",
+            "in": "query",
+            "name": "more",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "filter": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "max_size": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "network": {
+                    "type": "string"
+                  },
+                  "node": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "seconds": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "network"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "description": "The capture's size so far, in bytes.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "data": {
+                      "description": "The next of the pcap's bytes, in base64: empty in the last reply of a stream.",
+                      "type": "string"
+                    },
+                    "end": {
+                      "description": "Why it ended, in the last reply: `time` (its time limit), `size` (its size limit; the packet past it is left out) or `stopped` (tcpdump stopped, the interface gone, say).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "packets": {
+                      "description": "Packets captured so far.",
+                      "format": "int64",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "bytes",
+                    "packets"
+                  ],
+                  "type": "object"
+                }
+              },
+              "application/json-seq": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "description": "The capture's size so far, in bytes.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "data": {
+                      "description": "The next of the pcap's bytes, in base64: empty in the last reply of a stream.",
+                      "type": "string"
+                    },
+                    "end": {
+                      "description": "Why it ended, in the last reply: `time` (its time limit), `size` (its size limit; the packet past it is left out) or `stopped` (tcpdump stopped, the interface gone, say).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "packets": {
+                      "description": "Packets captured so far.",
+                      "format": "int64",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "bytes",
+                    "packets"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The reply."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Capture packets on `network` as a pcap (#265), matching `filter` (pcap-filter syntax), for `seconds` (default 30, at most 300) or until `max_size` bytes (default 8 MiB, at most 32 MiB), whichever comes first.",
+        "tags": [
+          "org.sparewall.Diagnostics"
+        ],
+        "x-sparewall-role": "admin"
+      }
+    },
     "/call/org.sparewall.Diagnostics.FollowHits": {
       "post": {
         "description": "New hits as they are logged, filtered as `Hits` is, until the caller goes.",

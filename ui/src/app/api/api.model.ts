@@ -1011,6 +1011,28 @@ export interface Calls {
     role: "operator";
     streams: false;
   };
+  /** Capture packets on `network` as a pcap (#265), matching `filter` (pcap-filter syntax), for `seconds` (default 30, at most 300) or until `max_size` bytes (default 8 MiB, at most 32 MiB), whichever comes first. With `more`, the pcap's bytes as they come; without, all of it in one reply. One capture runs on a node at a time, and each is recorded in the journal. */
+  "org.sparewall.Diagnostics.Capture": {
+    parameters: {
+      "filter"?: string | null;
+      "max_size"?: number | null;
+      "network": string;
+      "node"?: string | null;
+      "seconds"?: number | null;
+    };
+    reply: {
+      /** The capture's size so far, in bytes. */
+      "bytes": number;
+      /** The next of the pcap's bytes, in base64: empty in the last reply of a stream. */
+      "data": string;
+      /** Why it ended, in the last reply: `time` (its time limit), `size` (its size limit; the packet past it is left out) or `stopped` (tcpdump stopped, the interface gone, say). */
+      "end"?: string | null;
+      /** Packets captured so far. */
+      "packets": number;
+    };
+    role: "admin";
+    streams: true;
+  };
   /** New hits as they are logged, filtered as `Hits` is, until the caller goes. */
   "org.sparewall.Diagnostics.FollowHits": {
     parameters: {

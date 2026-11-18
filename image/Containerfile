@@ -27,6 +27,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     cargo build --release --locked -p sparewalld -p sparewall -p sparewall-httpd \
     && install -D -m 0755 target/release/sparewalld /out/usr/bin/sparewalld \
     && install -D -m 0755 target/release/sparewall-httpd /out/usr/bin/sparewall-httpd \
+    && install -D -m 0755 target/release/sparewall-capture /out/usr/bin/sparewall-capture \
     && install -D -m 0755 target/release/sparewall /out/usr/bin/sparewall \
     && /out/usr/bin/sparewall completion bash > /out/sparewall.bash \
     && install -D -m 0644 /out/sparewall.bash /out/usr/share/bash-completion/completions/sparewall \

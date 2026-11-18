@@ -315,6 +315,48 @@ out=$(at fw1 'sudo sparewall routes --node fw9 2>&1' || true)
 grep -q 'no node "fw9" here' <<<"$out" \
     || fail "a node outside the pair was not refused: $out"
 
+log "packet captures (#265)"
+# A ping from a client on users, captured on each node: fw1's here, and
+# fw2's through fw1. The pcap comes to this host, which reads it back.
+capture_ping() { # node-to-ask capture-args address file
+    local n=$1 args=$2 addr=$3 file=$4 pid
+    at "$n" "sudo sparewall capture users --filter 'icmp and host $addr' --seconds 8 -w - $args" \
+        > "$file" 2> "$file.err" &
+    pid=$!
+    sleep 4
+    # Started: a second one on that node is refused.
+    if [ -z "$args" ]; then
+        out=$(at fw1 'sudo sparewall capture users --seconds 2 -w /dev/null 2>&1' || true)
+        grep -q 'one at a time' <<<"$out" || fail "a second capture on fw1 was not refused: $out"
+        # tcpdump runs in the helper's domain, as its dynamic user.
+        at fw1 'ps -eo label,user,comm' | grep -E 'sparewall_capture_t' \
+            || fail "no tcpdump in sparewall_capture_t: $(at fw1 'ps -eo label,user,comm' | grep -E 'tcpdump|capture')"
+    fi
+    ns users ping -c 3 -i 0.3 -W 2 "$addr" >/dev/null || fail "users cannot ping $addr"
+    wait "$pid" || fail "the capture on $n failed: $(cat "$file.err")"
+    cat "$file.err"
+    local got
+    got=$(tcpdump -nr "$file" 2>/dev/null | grep -c "ICMP echo request" || true)
+    [ "$got" -ge 3 ] || fail "the capture ($args) holds $got of the 3 pings: $(tcpdump -nr "$file" 2>&1 | head)"
+}
+capture_ping fw1 "" 192.0.2.2 "$WORK/fw1.pcap"
+capture_ping fw1 "--node fw2" 192.0.2.3 "$WORK/fw2.pcap"
+# Each capture is in the journal of the node it ran on, with who asked
+# (sparewalld's fields are F_ ones).
+records() { at "$1" "sudo journalctl -b -u sparewalld -o verbose --no-pager -g '^capture $2\$'"; }
+records fw1 started | grep -q 'F_NETWORK=users' || fail "fw1's journal has no record of its capture"
+records fw2 ended | grep -q 'F_CAPTURE=the peer' \
+    || fail "fw2's journal has no record of the capture fw1 asked for: $(records fw2 ended | tail -20)"
+records fw1 ended | grep -E 'F_(CAPTURE|BYTES|PACKETS|END)=' | tail -8
+# Nothing stays behind: no helper.
+! at fw1 'systemctl list-units --no-legend "sparewall-capture@*"' | grep -q . \
+    || fail "a capture helper outlived its capture"
+# Only an admin may capture.
+OP=$(at fw1 'sudo sparewall token create ci-capture --role operator -q')
+out=$(at fw1 "SPAREWALL_TOKEN=$OP sparewall capture users -w /dev/null 2>&1" || true)
+grep -qi 'permission' <<<"$out" || fail "an operator's capture was not refused: $out"
+at fw1 'sudo sparewall token revoke ci-capture' >/dev/null
+
 log "the LAN cannot reach the peer API, even with a permissive policy"
 # A client on users routes to the sync-tunnel addresses through fw1 (issue #3).
 ns users ip route replace 169.254.77.0/24 via 192.0.2.2

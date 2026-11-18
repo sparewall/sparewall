@@ -1,4 +1,4 @@
-policy_module(sparewalld, 0.16.0)
+policy_module(sparewalld, 0.17.0)
 
 ########################################
 #
@@ -374,6 +374,51 @@ fs_search_cgroup_dirs(sparewall_httpd_t)
 fs_read_cgroup_files(sparewall_httpd_t)
 # Its log lines reach the journal on stderr; systemd's notify socket is
 # not used (Type=simple).
+
+########################################
+#
+# sparewall-capture, tcpdump for the coordinator's packet captures (#265).
+# It runs as a dynamic user holding CAP_NET_RAW and nothing else, one
+# instance for each connection to sparewall-capture.socket, which only
+# the coordinator makes: the request comes in on the connection and the
+# pcap goes out on it. It writes no files. The suites fail on its
+# denials too.
+#
+
+type sparewall_capture_t;
+type sparewall_capture_exec_t;
+init_daemon_domain(sparewall_capture_t, sparewall_capture_exec_t)
+init_nnp_daemon_domain(sparewall_capture_t)
+# /run/sparewall/capture.sock, which systemd listens on. systemd labels
+# a socket unit's sockets with the domain of the service it starts, so
+# the listening socket, and each connection it accepts, are this domain's.
+type sparewall_capture_var_run_t;
+files_pid_file(sparewall_capture_var_run_t)
+stream_connect_pattern(sparewalld_t, sparewalld_var_run_t, sparewall_capture_var_run_t, sparewall_capture_t)
+
+gen_require(`
+	type netutils_exec_t;
+')
+# tcpdump, in this domain (no transition into netutils_t, which other
+# tools share).
+can_exec(sparewall_capture_t, netutils_exec_t)
+# The connection systemd accepted, as its stdin and stdout.
+allow sparewall_capture_t init_t:fd use;
+allow sparewall_capture_t self:unix_stream_socket { getattr ioctl read write shutdown };
+allow sparewall_capture_t self:capability net_raw;
+# The capture's ring buffer is mapped from the packet socket.
+allow sparewall_capture_t self:packet_socket { create_socket_perms map };
+# libpcap's probes as it opens the interface: generic netlink, and RDMA
+# devices, which it finds none of.
+allow sparewall_capture_t self:netlink_generic_socket { create ioctl };
+allow sparewall_capture_t self:netlink_rdma_socket { create bind getattr setopt };
+allow sparewall_capture_t self:netlink_route_socket { create_netlink_socket_perms nlmsg_read };
+allow sparewall_capture_t self:udp_socket { create ioctl };
+allow sparewall_capture_t self:fifo_file rw_fifo_file_perms;
+allow sparewall_capture_t self:process { signal sigkill };
+# The interface's existence, in sysfs.
+dev_read_sysfs(sparewall_capture_t)
+kernel_read_network_state(sparewall_capture_t)
 
 ########################################
 #

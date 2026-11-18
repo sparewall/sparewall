@@ -1,0 +1,54 @@
+[Unit]
+Description=Sparewall packet capture %i
+Documentation=https://github.com/sparewall/sparewall
+CollectMode=inactive-or-failed
+
+# One packet capture for the coordinator (#265), on the connection
+# sparewall-capture.socket accepted: the request in, the pcap out, and
+# nothing on disk. tcpdump holds other people's traffic, so it runs
+# here, not in the coordinator: a dynamic user with CAP_NET_RAW and
+# nothing else, in its own SELinux domain.
+[Service]
+ExecStart=/usr/bin/sparewall-capture
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+# The coordinator stops a capture at its time limit (at most 300 s);
+# this stops tcpdump should it not.
+RuntimeMaxSec=330s
+
+DynamicUser=yes
+UMask=0077
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# tcpdump sets its group and user to its own as it starts (dropping a
+# setuid bit's); without CAP_SETUID and CAP_SETGID that is all they do.
+SystemCallFilter=setuid setgid
+# AF_PACKET for the capture; tcpdump finds the interface over netlink
+# and an inet socket's ioctls. It sends nothing.
+RestrictAddressFamilies=AF_UNIX AF_PACKET AF_NETLINK AF_INET AF_INET6
+IPAddressDeny=any
+DevicePolicy=closed

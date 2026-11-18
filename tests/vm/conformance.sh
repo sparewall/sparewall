@@ -229,7 +229,7 @@ selinux_report() { # run-command node-name
     # here): they are denied by design.
     denials=$($run 'sudo journalctl -b -k --no-pager; sudo journalctl -b --no-pager _TRANSPORT=audit' \
         | grep -oE 'avc: +denied .*' \
-        | grep -E 'scontext=[^ ]*:(sparewalld|sparewall_httpd|keepalived|keepalived_unconfined_script|conntrackd|bootupd|virt_qemu_ga|virt_qemu_ga_unconfined)_t:|tcontext=[^ ]*:(sparewalld|sparewall_httpd)_[a-z_]*:|comm="rsyslogd" .*scontext=[^ ]*:syslogd_t:|comm="prometheus" .*scontext=[^ ]*:container_t:' \
+        | grep -E 'scontext=[^ ]*:(sparewalld|sparewall_httpd|sparewall_capture|keepalived|keepalived_unconfined_script|conntrackd|bootupd|virt_qemu_ga|virt_qemu_ga_unconfined)_t:|tcontext=[^ ]*:(sparewalld|sparewall_httpd|sparewall_capture)_[a-z_]*:|comm="rsyslogd" .*scontext=[^ ]*:syslogd_t:|comm="prometheus" .*scontext=[^ ]*:container_t:' \
         | grep -vE 'denied +\{ (noatsecure|siginh|rlimitinh) \}' \
         | grep -vE 'denied +\{ create \} .*comm="dig" .*anonclass=\[io_uring\]' \
         | sed -E 's/ (pid|ino|dev)=[^ ]+//g; s/ permissive=[01]//' \

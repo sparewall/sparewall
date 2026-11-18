@@ -8,12 +8,13 @@ use std::sync::{Arc, Mutex};
 use futures_util::Stream;
 use serde_json::{Value, json};
 use sparewall_api::{
-    ApplyReply, BackupReply, BindReply, CheckBackupPasswordReply, ConfigReply, Empty, EventReply,
-    ExportReply, FailoverReply, FirewallError, GenerationReply, HealthCheck, HealthReply,
-    HistoryReply, HitReply, HitsReply, LogEntry, LogReply, LoginReply, LogsReply, Neighbour,
-    NeighboursReply, QueryReply, Route, RoutesReply, RuleHit, SecretInfo, SecretListReply,
-    SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply, ToolReply,
-    UpgradeCheckReply, UpgradeStartReply, UserInfo, UserListReply, ValidateReply, VpnConfigReply,
+    ApplyReply, BackupReply, BindReply, CaptureReply, CheckBackupPasswordReply, ConfigReply, Empty,
+    EventReply, ExportReply, FailoverReply, FirewallError, GenerationReply, HealthCheck,
+    HealthReply, HistoryReply, HitReply, HitsReply, LogEntry, LogReply, LoginReply, LogsReply,
+    Neighbour, NeighboursReply, QueryReply, Route, RoutesReply, RuleHit, SecretInfo,
+    SecretListReply, SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply,
+    ToolReply, UpgradeCheckReply, UpgradeStartReply, UserInfo, UserListReply, ValidateReply,
+    VpnConfigReply,
 };
 use sparewall_core::hostop::HostOp;
 use sparewall_core::pair::SyncState;
@@ -1732,6 +1733,145 @@ where
             .and_then(|a| crate::tools::run("dig", a, crate::tools::LOOKUP_LIMIT));
         tool_replies(run, more)
     }
+
+    /// Capture packets on `network` as a pcap (#265), matching `filter`
+    /// (pcap-filter syntax), for `seconds` (default 30, at most 300) or
+    /// until `max_size` bytes (default 8 MiB, at most 32 MiB), whichever
+    /// comes first. With `more`, the pcap's bytes as they come; without,
+    /// all of it in one reply. One capture runs on a node at a time, and
+    /// each is recorded in the journal.
+    /// [Supports 'more' flag]
+    #[zlink(rename = "Capture", more)]
+    #[allow(clippy::too_many_arguments)]
+    async fn diagnostics_capture(
+        &mut self,
+        more: bool,
+        network: String,
+        filter: Option<String>,
+        seconds: Option<i64>,
+        max_size: Option<i64>,
+        node: Option<String>,
+        #[zlink(connection)] conn: &mut Connection<Sock>,
+        #[zlink(state)] fw: &mut Shared,
+    ) -> impl Stream<Item = Result<Reply<CaptureReply>, FirewallError>> + Unpin + 'static {
+        let fail = |e| Box::pin(tokio_stream::once(Err(e))) as CaptureStream;
+        let (seconds, max_size) = match crate::capture::limits(seconds, max_size) {
+            Ok(l) => l,
+            Err(e) => return fail(e),
+        };
+        let filter = filter.filter(|f| !f.trim().is_empty());
+        if let Some(p) = filter.as_deref().and_then(crate::capture::filter_problem) {
+            return fail(FirewallError::ValidationFailed { errors: vec![p] });
+        }
+        let who = if fw.peer_api {
+            "the peer, through the sync tunnel".to_string()
+        } else {
+            fw.author(conn).await
+        };
+        let at = match fw.diagnostics_on(node.as_deref()).await {
+            Err(e) => return fail(e),
+            Ok(w) => w,
+        };
+        if let remote::Where::Peer { link, peer } = at {
+            tracing::info!(
+                who,
+                node = peer,
+                network,
+                filter,
+                seconds,
+                max_size,
+                "capture started on the peer"
+            );
+            let p = remote::params([
+                ("network", Some(json!(network))),
+                ("filter", filter.map(|f| json!(f))),
+                ("seconds", Some(json!(seconds))),
+                ("max_size", Some(json!(max_size))),
+            ]);
+            let audit = format!("{who} on {peer}");
+            let relayed =
+                remote::relay::<CaptureReply>(link, peer, "org.sparewall.Diagnostics.Capture", p)
+                    .filter_map(|r| match r {
+                        Ok(r) => r.into_parameters().map(Ok),
+                        Err(e) => Some(Err(e)),
+                    })
+                    .map(move |r| {
+                        if let Ok(c) = &r
+                            && let Some(end) = &c.end
+                        {
+                            tracing::info!(
+                                capture = audit,
+                                bytes = c.bytes,
+                                packets = c.packets,
+                                end,
+                                "capture ended on the peer"
+                            );
+                        }
+                        r
+                    });
+            return capture_replies(Box::pin(relayed), more);
+        }
+        let found = with_core(&fw.core, &fw.events, |c| {
+            Ok((c.active_document()?, c.node().to_string()))
+        })
+        .await;
+        let (doc, own) = match found {
+            Ok(f) => f,
+            Err(e) => return fail(e),
+        };
+        // The network's own interface (its VLAN, or its port), where its
+        // traffic is: not the VIP's or the IPv6 gateway's macvlans, which
+        // see only what is sent to their own addresses.
+        let iface = match doc.as_ref().and_then(|d| d.network_iface(&network)) {
+            Some(i) => i.to_string(),
+            None => {
+                return fail(FirewallError::ValidationFailed {
+                    errors: vec![format!("network: no network named {network:?}")],
+                });
+            }
+        };
+        let slot = match crate::capture::slot(&own) {
+            Ok(s) => s,
+            Err(e) => return fail(e),
+        };
+        tracing::info!(
+            who,
+            network,
+            iface,
+            filter,
+            seconds,
+            max_size,
+            "capture started"
+        );
+        let audit = format!("{who} on {network}");
+        let req = crate::capture::Request {
+            iface,
+            filter,
+            seconds,
+            max_size,
+        };
+        capture_replies(crate::capture::run(req, slot, audit), more)
+    }
+}
+
+type CaptureStream =
+    std::pin::Pin<Box<dyn Stream<Item = Result<Reply<CaptureReply>, FirewallError>> + Send>>;
+
+/// A capture as replies: with `more`, each part as it comes, the last
+/// with why it ended; without, the pcap whole in one.
+fn capture_replies(s: crate::capture::Captured, more: bool) -> CaptureStream {
+    let s = if more { s } else { crate::capture::gather(s) };
+    Box::pin(s.map(move |r| {
+        r.map(|c| {
+            let last = c.end.is_some();
+            let r = Reply::new(Some(c));
+            if more {
+                r.set_continues(Some(!last))
+            } else {
+                r
+            }
+        })
+    }))
 }
 
 impl Shared {

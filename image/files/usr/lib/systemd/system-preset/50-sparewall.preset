@@ -3,6 +3,7 @@ enable sparewall-label-boot.service
 enable sparewall-label-sysroot.service
 enable sparewall-rekey-credential-secret.service
 enable sparewalld.socket
+enable sparewall-capture.socket
 enable sparewalld.service
 enable systemd-networkd.service
 enable systemd-networkd-wait-online.service

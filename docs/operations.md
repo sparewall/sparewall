@@ -781,6 +781,43 @@ lines, and at most 3 run at once. Over the HTTP API:
 `org.sparewall.Diagnostics.Ping`, `Traceroute` and `Lookup`, each
 streaming with `?more=true`.
 
+### Packet captures
+
+An `admin` can capture packets on a network, without SSH, as a pcap
+file for Wireshark or `tcpdump -r`:
+
+```shell
+sparewall capture lan --filter 'icmp and host 192.168.1.20' -w ping.pcap
+sparewall capture wan --filter 'udp port 51820' --seconds 120 --max-size 2M -w wg.pcap
+sparewall capture lan --seconds 10 -w - | tcpdump -nr -
+```
+
+`--filter` takes tcpdump's capture-filter syntax (pcap-filter). A
+capture ends after `--seconds` (default 30, at most 300) or at
+`--max-size` (default 8M, at most 32M), whichever comes first; at the
+size limit, the packet past it is left out, so the file is always whole.
+It streams to the caller as it runs, and nothing of it stays on the
+node.
+
+One capture runs on a node at a time: a second is refused while it does.
+Captures hold other people's traffic, so each is recorded in sparewalld's
+journal: who started it, the network, the filter and the limits, then its
+size and why it ended.
+
+```shell
+journalctl -u sparewalld -g '^capture (started|ended)' -o verbose \
+    --output-fields=F_WHO,F_NETWORK,F_FILTER,F_CAPTURE,F_BYTES,F_PACKETS,F_END
+```
+
+tcpdump doesn't run in the coordinator. Each capture starts
+`sparewall-capture@.service` on its own connection to
+`sparewall-capture.socket`, which only root reaches. The service runs
+as a dynamic user that holds `CAP_NET_RAW` and nothing else, in its own
+SELinux domain (`sparewall_capture_t`), and writes no files. Over the
+HTTP API: `org.sparewall.Diagnostics.Capture`, streaming with
+`?more=true`, where each reply's `data` is the next part of the pcap, in
+base64.
+
 ### Logged traffic
 
 `log: true` logs the packets that reach a policy's default action, match
@@ -831,6 +868,7 @@ sparewall logs --node fw2 -u keepalived -f
 sparewall hits --node fw2 --pair 'wan->users'
 sparewall routes --node fw2
 sparewall ping --node fw2 192.0.2.1 --from lan
+sparewall capture --node fw2 lan --filter icmp -w fw2.pcap
 ```
 
 The call is checked against your role on the node you reached, then

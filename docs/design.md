@@ -852,6 +852,7 @@ The design once planned `RestrictNetworkInterfaces=` and `IPAddressAllow=` on ss
 
 - **SELinux enforcing.** Distribution policy confines networkd, chronyd, keepalived and containers; the coordinator runs in its own enforcing domain, `sparewalld_t`, from its own policy module. The VM suites fail on any denial it logs, with dontaudit rules off.
 - **Coordinator sandboxing:** bounded capabilities (network administration, raw sockets), `NoNewPrivileges=`, `RestrictAddressFamilies=` (UNIX, netlink, IPv4, IPv6), `ProtectHome=`, a `@system-service` syscall filter, writes limited to its own state and rendered configs; tracked with `systemd-analyze security` in CI.
+- **Packet captures** run outside the coordinator: `sparewall-capture@.service`, a dynamic user with `CAP_NET_RAW` alone, in its own domain, `sparewall_capture_t`, runs tcpdump for each connection the coordinator makes to `sparewall-capture.socket`, and the pcap streams back on that connection with nothing written to disk (#265).
 - **Secure Boot and measured boot** are optional and recommended on physical nodes; binding TPM-sealed secrets to the boot state stops a moved disk from unsealing them.
 
 ## Bootstrap
