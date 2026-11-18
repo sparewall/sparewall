@@ -1812,28 +1812,60 @@ impl App {
                 file,
                 node,
             } => {
+                // A file is written beside its target and renamed once the
+                // capture has run, so a refused or failed one leaves an
+                // existing file as it was. Not a regular file (/dev/null, a
+                // FIFO): written as it is.
+                let part = (file != Path::new("-")
+                    && std::fs::metadata(&file).map_or(true, |m| m.is_file()))
+                .then(|| {
+                    let mut p = file.clone().into_os_string();
+                    p.push(".part");
+                    PathBuf::from(p)
+                });
                 let mut out: Box<dyn Write> = if file == Path::new("-") {
                     if std::io::stdout().is_terminal() {
                         return Err(Fail::usage("not writing a pcap to a terminal: -w FILE"));
                     }
                     Box::new(std::io::stdout().lock())
                 } else {
+                    let to = part.as_ref().unwrap_or(&file);
                     Box::new(
-                        std::fs::File::create(&file)
-                            .map_err(|e| Fail::usage(format!("{}: {e}", file.display())))?,
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(part.is_some())
+                            .open(to)
+                            .map_err(|e| Fail::usage(format!("{}: {e}", to.display())))?,
                     )
                 };
-                let mut conn = self.conn().await?;
-                let stream = conn
-                    .capture(
-                        &network,
-                        filter.as_deref(),
-                        seconds,
-                        max_size,
-                        node.as_deref(),
-                    )
-                    .await?;
-                let end = write_capture(stream, &mut out).await?;
+                let run = async {
+                    let mut conn = self.conn().await?;
+                    let stream = conn
+                        .capture(
+                            &network,
+                            filter.as_deref(),
+                            seconds,
+                            max_size,
+                            node.as_deref(),
+                        )
+                        .await?;
+                    write_capture(stream, &mut out).await
+                };
+                let end = match run.await {
+                    Ok(end) => end,
+                    Err(e) => {
+                        if let Some(p) = &part {
+                            let _ = std::fs::remove_file(p);
+                        }
+                        return Err(e);
+                    }
+                };
+                drop(out);
+                if let Some(p) = &part {
+                    std::fs::rename(p, &file)
+                        .map_err(|e| Fail::other(format!("{}: {e}", file.display())))?;
+                }
                 self.say(format!(
                     "{} packets, {} bytes{}",
                     end.packets,
