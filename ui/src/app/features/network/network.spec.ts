@@ -38,7 +38,12 @@ const route = (destination: string, more: Partial<Route> = {}): Route => ({
   ...more,
 });
 
-async function render(replies: Record<string, unknown[]>, peer: string | null = null) {
+async function render(
+  replies: Record<string, unknown[]>,
+  peer: string | null = null,
+  role = 'operator',
+) {
+  const order = ['monitor', 'viewer', 'operator', 'admin'];
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const api = {
     call: async (method: string, params: Record<string, unknown>) => {
@@ -50,7 +55,10 @@ async function render(replies: Record<string, unknown[]>, peer: string | null = 
     providers: [
       provideNoopAnimations(),
       { provide: ApiClient, useValue: api },
-      { provide: Session, useValue: { can: (r: string) => r !== 'admin' } },
+      {
+        provide: Session,
+        useValue: { can: (r: string) => order.indexOf(r) <= order.indexOf(role) },
+      },
       { provide: NodeStatus, useValue: { node: signal('fw1'), peer: signal(peer) } },
     ],
   });
@@ -62,6 +70,25 @@ async function render(replies: Record<string, unknown[]>, peer: string | null = 
 }
 
 describe('Network', () => {
+  it('shows the Tools tab from operator up, and Capture to an admin only (#265)', async () => {
+    const tabs = async (role: string) => {
+      TestBed.resetTestingModule();
+      const { el } = await render(
+        {
+          'org.sparewall.Diagnostics.Neighbours': [{ neighbours: [], cut: false }],
+          'org.sparewall.Diagnostics.Routes': [{ routes: [], cut: false }],
+        },
+        null,
+        role,
+      );
+      return [...el.querySelectorAll('[role=tab]')].map((t) => t.textContent!.trim());
+    };
+    expect(await tabs('viewer')).not.toContain('Tools');
+    expect(await tabs('operator')).toContain('Tools');
+    expect(await tabs('operator')).not.toContain('Capture');
+    expect(await tabs('admin')).toContain('Capture');
+  });
+
   it('lists the neighbours, a failed one marked, and the networks to filter by', async () => {
     const { el, calls, fixture } = await render({
       'org.sparewall.Diagnostics.Neighbours': [

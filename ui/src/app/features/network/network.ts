@@ -10,6 +10,7 @@ import { ApiClient, CallFailed } from '../../api/api-client';
 import { Schemas } from '../../api/api.model';
 import { Session } from '../../core/session';
 import { NodeSwitch } from '../../shared/node-switch';
+import { CapturePanel } from './capture-panel';
 import { ToolsPanel } from './tools-panel';
 
 export type Neighbour = Schemas['org.sparewall.Diagnostics.Neighbour'];
@@ -28,6 +29,7 @@ const BAD = ['FAILED', 'INCOMPLETE'];
     MatIconModule,
     MatSelectModule,
     MatTabsModule,
+    CapturePanel,
     NodeSwitch,
     ToolsPanel,
   ],
@@ -141,6 +143,11 @@ const BAD = ['FAILED', 'INCOMPLETE'];
       @if (session.can('operator')) {
         <mat-tab label="Tools">
           <app-tools-panel [networks]="networks()" [node]="node()" />
+        </mat-tab>
+      }
+      @if (session.can('admin')) {
+        <mat-tab label="Capture">
+          <app-capture-panel [networks]="networks()" [node]="node()" />
         </mat-tab>
       }
     </mat-tab-group>
