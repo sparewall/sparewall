@@ -310,8 +310,10 @@ at fw1 'sudo sparewall ping --node fw2 -n 1 127.0.0.1' | grep -q '1 received' \
     || fail "ping through fw1 from fw2 did not run"
 at fw1 'sudo sparewall logs --node fw2 -u sparewalld -n 5' | grep -q . \
     || fail "fw2's logs through fw1 are empty"
-at fw1 'sudo sparewall routes --node fw9 2>&1' | grep -q 'no node "fw9" here' \
-    || fail "a node outside the pair was not refused"
+# The CLI fails, as it should: keep its output rather than its status.
+out=$(at fw1 'sudo sparewall routes --node fw9 2>&1' || true)
+grep -q 'no node "fw9" here' <<<"$out" \
+    || fail "a node outside the pair was not refused: $out"
 
 log "the LAN cannot reach the peer API, even with a permissive policy"
 # A client on users routes to the sync-tunnel addresses through fw1 (issue #3).
