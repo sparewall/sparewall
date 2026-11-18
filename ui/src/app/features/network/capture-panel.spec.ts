@@ -90,6 +90,25 @@ describe('CapturePanel', () => {
     expect(panel.pcap()!.name).toMatch(/^capture-fw2-wan-/);
   });
 
+  it('offers nothing once the page is gone, mid-capture', async () => {
+    let more!: () => void;
+    const { fixture, panel } = await render([]);
+    const api = TestBed.inject(ApiClient) as unknown as { stream: unknown };
+    api.stream = (_m: string, _p: unknown, signal: AbortSignal) =>
+      (async function* () {
+        yield { data: b64([1, 2]), bytes: 2, packets: 0, end: null };
+        await new Promise<void>((r) => (more = r));
+        if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+      })();
+    panel.network = 'lan';
+    const run = panel.start();
+    await new Promise((r) => setTimeout(r));
+    fixture.destroy();
+    more();
+    await run;
+    expect(made).toEqual([]);
+  });
+
   it('shows a refusal, and offers nothing', async () => {
     const { fixture, panel, el } = await render(
       new CallFailed(503, {

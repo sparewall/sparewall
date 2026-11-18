@@ -161,9 +161,11 @@ export class CapturePanel {
     return `: ${ENDS[e] ?? e}`;
   });
   private abort: AbortController | null = null;
+  private destroyed = false;
 
   constructor() {
     inject(DestroyRef).onDestroy(() => {
+      this.destroyed = true;
       this.abort?.abort();
       this.release();
     });
@@ -213,8 +215,10 @@ export class CapturePanel {
       this.running.set(false);
     }
     // Every part ends at a packet's end, so a capture stopped early is
-    // still a whole pcap.
-    if (parts.length) this.offer(parts, params.node ?? null, params.network, started);
+    // still a whole pcap. Gone with the page, it offers nothing: no URL
+    // would be left to revoke.
+    if (parts.length && !this.destroyed)
+      this.offer(parts, params.node ?? null, params.network, started);
   }
 
   protected stop(): void {
