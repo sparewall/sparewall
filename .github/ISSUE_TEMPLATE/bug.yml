@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in Sparewall doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting it. Before you paste anything, take out what you don't want public: public addresses, host names, keys and passwords. `sparewall export` holds no secrets (only references to them), but it does hold your addresses.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      description: The commands you ran, or the change you applied, if you know.
+      placeholder: |
+        1. sparewall set ...
+        2. sparewall apply ...
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `sparewall --version` on the node.
+      placeholder: sparewall 0.6.1
+    validations:
+      required: true
+  - type: dropdown
+    id: topology
+    attributes:
+      label: Single node or pair
+      options:
+        - A single node
+        - An HA pair
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Hardware or hypervisor
+      placeholder: A mini PC with two Intel NICs, or Proxmox, or libvirt...
+  - type: textarea
+    id: status
+    attributes:
+      label: Status and logs
+      description: |
+        `sparewall status`, and anything relevant from `sparewall logs` (for example `sparewall logs -u sparewalld -n 100`). In a pair, from both nodes if you can.
+      render: shell
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: The relevant part of `sparewall export`, if it matters. Leave it out if you're unsure.
+      render: yaml
