@@ -1812,31 +1812,41 @@ impl App {
                 file,
                 node,
             } => {
-                // A file is written beside its target and renamed once the
-                // capture has run, so a refused or failed one leaves an
-                // existing file as it was. Not a regular file (/dev/null, a
-                // FIFO): written as it is.
-                let part = (file != Path::new("-")
-                    && std::fs::metadata(&file).map_or(true, |m| m.is_file()))
-                .then(|| {
-                    let mut p = file.clone().into_os_string();
-                    p.push(".part");
-                    PathBuf::from(p)
-                });
+                // A file is written to a new temporary file beside its
+                // target (created there, never through a link) and renamed
+                // over it once the capture has run, so a refused or failed
+                // one leaves an existing file as it was, and removes only its
+                // own. Not a regular file (/dev/null, a FIFO): written as it
+                // is.
+                let to_file = file != Path::new("-")
+                    && std::fs::metadata(&file).map_or(true, |m| m.is_file());
+                let mut part = None;
                 let mut out: Box<dyn Write> = if file == Path::new("-") {
                     if std::io::stdout().is_terminal() {
                         return Err(Fail::usage("not writing a pcap to a terminal: -w FILE"));
                     }
                     Box::new(std::io::stdout().lock())
+                } else if to_file {
+                    let dir = file
+                        .parent()
+                        .filter(|d| !d.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."));
+                    let t = tempfile::Builder::new()
+                        .prefix(".capture-")
+                        .suffix(".part")
+                        .tempfile_in(dir)
+                        .map_err(|e| Fail::usage(format!("{}: {e}", dir.display())))?;
+                    let f = t
+                        .reopen()
+                        .map_err(|e| Fail::usage(format!("{}: {e}", t.path().display())))?;
+                    part = Some(t);
+                    Box::new(f)
                 } else {
-                    let to = part.as_ref().unwrap_or(&file);
                     Box::new(
                         std::fs::OpenOptions::new()
                             .write(true)
-                            .create(true)
-                            .truncate(part.is_some())
-                            .open(to)
-                            .map_err(|e| Fail::usage(format!("{}: {e}", to.display())))?,
+                            .open(&file)
+                            .map_err(|e| Fail::usage(format!("{}: {e}", file.display())))?,
                     )
                 };
                 let run = async {
@@ -1852,19 +1862,12 @@ impl App {
                         .await?;
                     write_capture(stream, &mut out).await
                 };
-                let end = match run.await {
-                    Ok(end) => end,
-                    Err(e) => {
-                        if let Some(p) = &part {
-                            let _ = std::fs::remove_file(p);
-                        }
-                        return Err(e);
-                    }
-                };
+                // On an error, `part` goes with this scope, and its file with it.
+                let end = run.await?;
                 drop(out);
-                if let Some(p) = &part {
-                    std::fs::rename(p, &file)
-                        .map_err(|e| Fail::other(format!("{}: {e}", file.display())))?;
+                if let Some(t) = part {
+                    t.persist(&file)
+                        .map_err(|e| Fail::other(format!("{}: {}", file.display(), e.error)))?;
                 }
                 self.say(format!(
                     "{} packets, {} bytes{}",
