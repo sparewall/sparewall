@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: A question, or "would Sparewall work for my setup?"
+    url: https://github.com/sparewall/sparewall/discussions/categories/q-a
+    about: Ask in Discussions. Issues are for bugs and for work on Sparewall itself.
+  - name: An idea to talk over
+    url: https://github.com/sparewall/sparewall/discussions/categories/ideas
+    about: Not sure it's a feature request yet? Start it in Discussions.
+  - name: A security vulnerability
+    url: https://github.com/sparewall/sparewall/security/advisories/new
+    about: Report it privately, never in a public issue (see the security policy).

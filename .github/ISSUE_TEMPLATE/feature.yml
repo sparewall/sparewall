@@ -1,0 +1,21 @@
+name: Feature request
+description: Something Sparewall should do, or do differently.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The problem or the network you have, rather than the feature you picture. It helps to know how you'd use it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+      description: How you'd want Sparewall to handle it, if you have an idea.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do now
+      description: Workarounds, or how another firewall does it.
