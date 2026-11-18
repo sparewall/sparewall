@@ -9,7 +9,10 @@
 //! A reply comes back as it is. A stream (a follow, or a tool with
 //! `more`) is relayed by a task that owns the tunnel connection: it ends
 //! when the peer's stream does, when the caller goes, or with
-//! `PeerUnreachable` when the tunnel does.
+//! `PeerUnreachable` when the tunnel does. A tunnel that goes silent is
+//! found by the connection's TCP keepalive and user timeout
+//! ([`crate::peer::keep_alive`]), within about half a minute, even while a
+//! follow has nothing to send.
 
 use std::pin::Pin;
 
@@ -48,11 +51,35 @@ pub fn reply<T>(
     r.map_err(|e| failed(peer, e))?
 }
 
-/// A call to the peer that failed below its own errors: the tunnel went,
-/// or the peer, older than 0.7.0, doesn't serve diagnostics.
+/// A call to the peer that failed below its own errors. A lost tunnel
+/// (the connection read, written or closed under it) is `PeerUnreachable`;
+/// a peer older than 0.7.0 doesn't serve diagnostics on its listener, and
+/// anything else is the peer's reply that couldn't be read.
 fn failed(peer: &str, e: zlink::Error) -> FirewallError {
-    FirewallError::ApplyFailed {
-        message: format!("{peer}: {e}"),
+    use zlink::varlink_service::Error as Service;
+    match &e {
+        zlink::Error::SocketRead
+        | zlink::Error::SocketWrite
+        | zlink::Error::Io(_)
+        | zlink::Error::UnexpectedEof => {
+            tracing::debug!(peer, error = %e, "lost the peer during a diagnostics call");
+            FirewallError::PeerUnreachable { peer: peer.into() }
+        }
+        zlink::Error::VarlinkService(s)
+            if matches!(
+                s.inner(),
+                Service::MethodNotFound { .. } | Service::InterfaceNotFound { .. }
+            ) =>
+        {
+            FirewallError::NotSupported {
+                message: format!(
+                    "{peer} doesn't serve diagnostics: it runs a release older than 0.7.0"
+                ),
+            }
+        }
+        _ => FirewallError::ApplyFailed {
+            message: format!("{peer}: {e}"),
+        },
     }
 }
 
@@ -145,4 +172,39 @@ pub fn gather(s: Relayed<ToolReply>) -> Relayed<ToolReply> {
         }
         Ok(Reply::new(Some(all)))
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A lost tunnel is the peer being unreachable, an older peer says
+    /// so, and anything else names the peer (#268).
+    #[test]
+    fn failures_say_what_went_wrong() {
+        use zlink::varlink_service::{Error as Service, OwnedError};
+        for e in [
+            zlink::Error::UnexpectedEof,
+            zlink::Error::SocketRead,
+            zlink::Error::SocketWrite,
+            zlink::Error::Io(std::io::ErrorKind::TimedOut.into()),
+        ] {
+            assert_eq!(
+                failed("fw2", e),
+                FirewallError::PeerUnreachable { peer: "fw2".into() }
+            );
+        }
+        let old = zlink::Error::VarlinkService(OwnedError::from(Service::MethodNotFound {
+            method: "org.sparewall.Diagnostics.Routes".into(),
+        }));
+        assert!(
+            matches!(failed("fw2", old), FirewallError::NotSupported { message }
+                if message.contains("older than 0.7.0")),
+        );
+        let odd = zlink::Error::UnknownErrorReply("org.example.Odd".into());
+        assert!(
+            matches!(failed("fw2", odd), FirewallError::ApplyFailed { message }
+                if message.starts_with("fw2: ")),
+        );
+    }
 }

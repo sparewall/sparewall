@@ -1966,3 +1966,93 @@ fn the_file_that_advertises_a_network_s_prefix() {
     let text = file_in(&r, Subsystem::Networkd, &f);
     assert!(text.contains("IPv6SendRA=yes"), "{text}");
 }
+
+/// An address list mixing literals and `@objects` of one family (#259):
+/// nft can't put a named set inside an anonymous one, so the literals are
+/// one match and each object another, a line for each (the cross product
+/// for a rule's source and destination), wherever addresses are listed.
+#[test]
+fn mixed_address_lists_render_a_line_per_match() {
+    let text = std::fs::read_to_string(format!(
+        "{}/../../examples/two-nic.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut v = sparewall_config::to_value(&parse(&text, Format::Yaml).unwrap());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({
+            "management": {"sources": ["192.168.1.10", "@admins"]},
+            "objects": {
+                "admins": {"type": "ipv4", "elements": ["192.168.1.11"]},
+                "ops": {"type": "ipv4", "elements": ["192.168.1.12"]},
+                "nas": {"type": "ipv4", "elements": ["198.51.100.20"]},
+                "partners": {"type": "ipv4", "elements": ["203.0.113.0/24"]},
+                "outside": {"type": "ipv4", "elements": ["198.51.100.11"]},
+            },
+            "policy": {"lan->wan": {"rules": {
+                "mixed": {"order": 100, "proto": "tcp", "dport": 22,
+                    "src": ["192.168.1.10", "@admins", "192.168.1.13", "@ops"],
+                    "dst": ["@nas", "198.51.100.21"], "action": "accept"},
+            }}},
+            "forwards": {"web": {"proto": "tcp", "dport": 443, "to": "192.168.1.20",
+                "src": ["198.51.100.0/24", "@partners"],
+                "dst": ["198.51.100.10", "@outside"]}},
+        }),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&sparewall_config::validate::validate_history(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    assert_nft_ok(&r);
+    let script = &r.files[&format!("nftables/{}", nft::SCRIPT)];
+    let lines = |comment: &str| -> Vec<&str> {
+        script
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.ends_with(&format!("comment \"{comment}\"")))
+            .collect()
+    };
+    let rule = lines("rule:lan->wan:mixed");
+    let want: Vec<String> = ["{ 192.168.1.10, 192.168.1.13 }", "@admins", "@ops"]
+        .iter()
+        .flat_map(|s| {
+            ["198.51.100.21", "@nas"].iter().map(move |d| {
+                format!("ip saddr {s} ip daddr {d} tcp dport 22 counter accept comment \"rule:lan->wan:mixed\"")
+            })
+        })
+        .collect();
+    assert_eq!(rule, want, "{script}");
+    let web: Vec<&str> = lines("forward:web")
+        .into_iter()
+        .filter(|l| l.contains("dnat ip to"))
+        .collect();
+    let pairs: Vec<String> = ["198.51.100.0/24", "@partners"]
+        .iter()
+        .flat_map(|s| {
+            ["198.51.100.10", "@outside"]
+                .iter()
+                .map(move |d| format!("ip saddr {s} ip daddr {d} tcp dport 443 "))
+        })
+        .collect();
+    assert_eq!(web.len(), pairs.len(), "{web:#?}");
+    for (l, p) in web.iter().zip(&pairs) {
+        assert!(l.contains(p.as_str()), "{l} lacks {p}");
+    }
+    let not_here = lines("forward:web:not-here");
+    assert_eq!(
+        not_here,
+        [
+            "ip daddr 198.51.100.10 tcp dport 443 counter reject with tcp reset comment \"forward:web:not-here\"",
+            "ip daddr @outside tcp dport 443 counter reject with tcp reset comment \"forward:web:not-here\"",
+        ],
+        "{script}"
+    );
+    let lockout = lines("anti-lockout");
+    assert_eq!(lockout.len(), 2, "{lockout:#?}");
+    assert!(
+        lockout[0].contains("ip saddr 192.168.1.10 tcp"),
+        "{lockout:#?}"
+    );
+    assert!(lockout[1].contains("ip saddr @admins tcp"), "{lockout:#?}");
+}
