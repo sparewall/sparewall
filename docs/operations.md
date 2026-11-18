@@ -836,11 +836,11 @@ sparewall ping --node fw2 192.0.2.1 --from lan
 The call is checked against your role on the node you reached, then
 runs on the peer over the sync tunnel (the peer's listener serves the
 same read-only `org.sparewall.Diagnostics`). A follow streams through the
-tunnel and ends, with `PeerUnreachable`, if the tunnel does. Naming this
+tunnel and ends, with `PeerUnreachable`, if the tunnel does: a silent
+one within about half a minute. Naming this
 node is the same as leaving `--node` out, and any other name is refused.
 Over the HTTP API, it is the methods' `node` parameter. A peer older than
-0.7.0 doesn't serve diagnostics: the call fails with an error that names
-the peer.
+0.7.0 doesn't serve diagnostics, and the call says so.
 
 ### Forwarding logs
 
