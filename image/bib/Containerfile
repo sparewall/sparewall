@@ -3,4 +3,4 @@
 # digest, where Dependabot's docker updates can see it (.github/dependabot.yml).
 # Its sources are in github.com/osbuild/image-builder; the image is still
 # published here.
-FROM quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b
+FROM quay.io/centos-bootc/bootc-image-builder:latest@sha256:dab86ee6b46dcade411b37f4e70b07d93b6a06da0dbfec6fe89247a220e0d9f8
