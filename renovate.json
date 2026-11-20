@@ -40,6 +40,11 @@
       "description": "The Quadlet units name images by placeholders that the build fills in (Image=@KEA_IMAGE@); there is nothing to update.",
       "matchManagers": ["quadlet"],
       "enabled": false
+    },
+    {
+      "description": "Commit as build(deps): for every update. Last, so it overrides the fix/chore split that config:recommended applies by dependency type.",
+      "matchPackageNames": ["*"],
+      "semanticCommitType": "build"
     }
   ]
 }
