@@ -1,0 +1,50 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "semanticCommits": "enabled",
+  "semanticCommitType": "build",
+  "semanticCommitScope": "deps",
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 4,
+  "prHourlyLimit": 2,
+  "major": {
+    "dependencyDashboardApproval": true
+  },
+  "packageRules": [
+    {
+      "description": "Group non-major Rust crate updates, as Dependabot's rust group did.",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "rust crates"
+    },
+    {
+      "description": "Group non-major updates to the web UI's npm packages.",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "ui dependencies"
+    },
+    {
+      "description": "Group GitHub Actions updates; they stay pinned to commit SHAs.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
+      "groupName": "github actions"
+    },
+    {
+      "description": "Fedora base images: a new Fedora release is a deliberate move made by hand, never a branched or Rawhide image. Within a release the tags float on purpose, and the monthly rebuild tracks them.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["quay.io/fedora/**"],
+      "enabled": false
+    },
+    {
+      "description": "The Quadlet units name images by placeholders that the build fills in (Image=@KEA_IMAGE@); there is nothing to update.",
+      "matchManagers": ["quadlet"],
+      "enabled": false
+    },
+    {
+      "description": "Commit as build(deps): for every update. Last, so it overrides the fix/chore split that config:recommended applies by dependency type.",
+      "matchPackageNames": ["*"],
+      "semanticCommitType": "build"
+    }
+  ]
+}
