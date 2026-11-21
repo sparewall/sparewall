@@ -12,10 +12,11 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatListModule } from '@angular/material/list';
-import { Router, RouterLink } from '@angular/router';
+import { Router } from '@angular/router';
 import { UISchemaElement } from '@jsonforms/core';
 import { JsonFormsModule } from '@jsonforms/angular';
 
+import { SectionLayout } from '../../shared/section-layout';
 import { Setting, search, sectionGroups, settingPlace, settings } from './config-sections';
 import { Document, DraftPage } from './draft-page';
 import { fieldLabel } from './layout';
@@ -36,7 +37,7 @@ import { configRenderers } from './renderers';
     MatIconModule,
     MatInputModule,
     MatListModule,
-    RouterLink,
+    SectionLayout,
   ],
   templateUrl: './config.html',
   styleUrl: './config.scss',

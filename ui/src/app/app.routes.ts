@@ -65,8 +65,12 @@ export const routes: Routes = [
         title: 'Logged traffic · Sparewall',
         loadComponent: () => import('./features/hits/hits').then((m) => m.Hits),
       },
+      // The first section in the page's list (#304).
+      { path: 'network', pathMatch: 'full', redirectTo: 'network/neighbours' },
       {
-        path: 'network',
+        // One route for every section, so moving between them keeps the
+        // page and what it has read.
+        path: 'network/:section',
         title: 'Network · Sparewall',
         loadComponent: () => import('./features/network/network').then((m) => m.Network),
       },

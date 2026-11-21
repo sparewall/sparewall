@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
+import { provideRouter } from '@angular/router';
 
 import { signal } from '@angular/core';
 
@@ -42,6 +43,7 @@ async function render(
   replies: Record<string, unknown[]>,
   peer: string | null = null,
   role = 'operator',
+  section = 'neighbours',
 ) {
   const order = ['monitor', 'viewer', 'operator', 'admin'];
   const calls: { method: string; params: Record<string, unknown> }[] = [];
@@ -54,6 +56,7 @@ async function render(
   TestBed.configureTestingModule({
     providers: [
       provideNoopAnimations(),
+      provideRouter([]),
       { provide: ApiClient, useValue: api },
       {
         provide: Session,
@@ -63,30 +66,80 @@ async function render(
     ],
   });
   const fixture = TestBed.createComponent(Network);
+  fixture.componentRef.setInput('section', section);
   fixture.detectChanges();
   await fixture.whenStable();
+  // Let the first load's replies land: the mock API's calls aren't tasks
+  // whenStable waits for.
+  await new Promise((r) => setTimeout(r));
   fixture.detectChanges();
   return { fixture, el: fixture.nativeElement as HTMLElement, calls };
 }
 
 describe('Network', () => {
-  it('shows the Tools tab from operator up, and Capture to an admin only (#265)', async () => {
-    const tabs = async (role: string) => {
+  const empty = () => ({
+    'org.sparewall.Diagnostics.Neighbours': [{ neighbours: [], cut: false }],
+    'org.sparewall.Diagnostics.Routes': [{ routes: [], cut: false }],
+  });
+
+  it('lists every section for every role, disabling those the role cannot use (#304)', async () => {
+    const sections = async (role: string) => {
       TestBed.resetTestingModule();
-      const { el } = await render(
-        {
-          'org.sparewall.Diagnostics.Neighbours': [{ neighbours: [], cut: false }],
-          'org.sparewall.Diagnostics.Routes': [{ routes: [], cut: false }],
-        },
-        null,
-        role,
-      );
-      return [...el.querySelectorAll('[role=tab]')].map((t) => t.textContent!.trim());
+      const { el } = await render(empty(), null, role);
+      return [...el.querySelectorAll('nav [data-section]')].map((s) => {
+        const hint = s.querySelector('.hint')?.textContent?.trim();
+        const off = s.getAttribute('aria-disabled') === 'true';
+        return `${s.getAttribute('data-section')}${off ? ` (needs ${hint})` : ''}`;
+      });
     };
-    expect(await tabs('viewer')).not.toContain('Tools');
-    expect(await tabs('operator')).toContain('Tools');
-    expect(await tabs('operator')).not.toContain('Capture');
-    expect(await tabs('admin')).toContain('Capture');
+    expect(await sections('viewer')).toEqual([
+      'neighbours',
+      'routes',
+      'tools (needs operator)',
+      'capture (needs admin)',
+    ]);
+    expect(await sections('operator')).toEqual([
+      'neighbours',
+      'routes',
+      'tools',
+      'capture (needs admin)',
+    ]);
+    expect(await sections('admin')).toEqual(['neighbours', 'routes', 'tools', 'capture']);
+  });
+
+  it('links each usable section to its own route, the shown one current', async () => {
+    const { el } = await render(empty(), null, 'operator', 'routes');
+    const links = [...el.querySelectorAll('nav a[data-section]')];
+    expect(links.map((a) => a.getAttribute('href'))).toEqual([
+      '/network/neighbours',
+      '/network/routes',
+      '/network/tools',
+    ]);
+    expect(el.querySelector('nav [aria-current=page]')?.getAttribute('data-section')).toBe(
+      'routes',
+    );
+    expect(el.querySelector('[data-testid=routes]')).not.toBeNull();
+    expect(el.querySelector('[data-testid=neighbours]')).toBeNull();
+  });
+
+  it('shows the first section for an unknown one', async () => {
+    const { el } = await render(empty(), null, 'viewer', 'nonsense');
+    expect(el.querySelector('[data-testid=neighbours]')).not.toBeNull();
+  });
+
+  it('says which role a section needs, instead of opening it', async () => {
+    const { el } = await render(empty(), null, 'operator', 'capture');
+    expect(el.querySelector('app-capture-panel')).toBeNull();
+    expect(el.querySelector('[data-testid=needs-role]')?.textContent).toContain('admin');
+    expect(el.querySelector('.filters')).toBeNull();
+  });
+
+  it('removes the capture panel, and so stops its capture, when its section is left', async () => {
+    const { el, fixture } = await render(empty(), null, 'admin', 'capture');
+    expect(el.querySelector('app-capture-panel')).not.toBeNull();
+    fixture.componentRef.setInput('section', 'routes');
+    fixture.detectChanges();
+    expect(el.querySelector('app-capture-panel')).toBeNull();
   });
 
   it('lists the neighbours, a failed one marked, and the networks to filter by', async () => {
