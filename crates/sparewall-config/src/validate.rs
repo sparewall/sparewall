@@ -6,7 +6,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use ipnet::{Ipv4Net, Ipv6Net};
 
 use crate::model::*;
-use crate::pointer::name as seg;
+use crate::pointer::{name as seg, quoted};
 use crate::providers::{self, Role};
 use crate::topology::{SELF_ZONE, reserved_iface};
 
@@ -1436,7 +1436,7 @@ impl Validator<'_> {
     fn policy(&mut self) {
         let doc = self.doc;
         for (key, pol) in &doc.policy {
-            let p = format!("policy.'{key}'");
+            let p = format!("policy.{}", quoted(key));
             let Some((from, to)) = Document::split_pair(key) else {
                 self.err(&p, "policy keys look like \"from->to\"");
                 continue;

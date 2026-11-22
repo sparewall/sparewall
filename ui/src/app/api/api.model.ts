@@ -709,7 +709,7 @@ export interface Schemas {
       /** The same problems, each with its place in the document (#305). Absent from nodes older than 0.8.0. */
       "issues"?: Array<{
         "message": string;
-        /** The place as the validator names it: names joined by `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A name holding a `.`, `[`, `]` or a quote is quoted with `'` (or `"`), and policy keys always are: `policy.'users->wan'.rules.'allow.web'`. Null for a problem with no place in the document. */
+        /** The place as the validator names it: names joined by `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A name that would not read back as itself (holding a `.`, `[`, `]`, a quote or a `\`, with a space at either end, or empty) is quoted with `'`, a `'` or `\` inside escaped with `\`; policy keys always are: `policy.'users->wan'.rules.'allow.web'`. Null for a problem with no place in the document. */
         "path"?: string | null;
         /** The same place as an RFC 6901 JSON Pointer, e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is. */
         "pointer"?: string | null;
@@ -1414,7 +1414,7 @@ export interface Calls {
       /** The same warnings, each with the place in the document it concerns, as in ValidationFailed's `issues` (#305). Absent from nodes older than 0.8.0. */
       "issues"?: Array<{
         "message": string;
-        /** The place as the validator names it: names joined by `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A name holding a `.`, `[`, `]` or a quote is quoted with `'` (or `"`), and policy keys always are: `policy.'users->wan'.rules.'allow.web'`. Null for a problem with no place in the document. */
+        /** The place as the validator names it: names joined by `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A name that would not read back as itself (holding a `.`, `[`, `]`, a quote or a `\`, with a space at either end, or empty) is quoted with `'`, a `'` or `\` inside escaped with `\`; policy keys always are: `policy.'users->wan'.rules.'allow.web'`. Null for a problem with no place in the document. */
         "path"?: string | null;
         /** The same place as an RFC 6901 JSON Pointer, e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is. */
         "pointer"?: string | null;

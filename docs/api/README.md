@@ -66,8 +66,10 @@ reply does the same for its `warnings`. Nodes before 0.8.0 send no
 
 - **`path`:** the place as the validator names it: names joined by `.`,
   and `[n]` for a list index, as in `networks.lan.dhcp.ranges[0]`. A
-  name holding a `.`, `[`, `]` or a quote is quoted with `'` (or `"` when
-  it holds a `'`), so a path reads one way only:
+  name that would not read back as itself (one holding a `.`, `[`, `]`,
+  a quote or a `\`, starting or ending with a space, or empty) is quoted
+  with `'`, with `\'` and `\\` for a `'` or `\` inside, so a path reads
+  one way only:
   `policy.'users->wan'.rules.'allow.web'.action`. Policy keys are always
   quoted, for their `->`.
 - **`pointer`:** the same place as an [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)
