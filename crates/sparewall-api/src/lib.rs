@@ -59,7 +59,7 @@ pub struct ValidationIssue {
     /// The place as the validator names it: names joined by `.`, and `[n]`
     /// for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A name that
     /// would not read back as itself (holding a `.`, `[`, `]`, a quote or a
-    /// `\`, with a space at either end, or empty) is quoted with `'`, a `'`
+    /// `\`, with whitespace at either end, or empty) is quoted with `'`, a `'`
     /// or `\` inside escaped with `\`; policy keys always are:
     /// `policy.'users->wan'.rules.'allow.web'`. Null for a problem with no
     /// place in the document.

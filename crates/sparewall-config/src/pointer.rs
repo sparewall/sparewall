@@ -3,7 +3,7 @@
 //! The validator names a place in the document as a path: names joined by
 //! `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A
 //! name that would not read back as itself (one holding a `.`, `[`, `]`,
-//! a quote or a `\`, starting or ending with a space, or empty) is quoted
+//! a quote or a `\`, starting or ending with whitespace, or empty) is quoted
 //! with `'`, a `'` or `\` inside escaped with `\`, as [`name`] does. A
 //! path therefore reads one way only, and [`segments`] reads back exactly
 //! the names [`name`] wrote: `policy.'users->wan'.rules.'allow.web'.action`.

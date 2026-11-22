@@ -67,7 +67,7 @@ reply does the same for its `warnings`. Nodes before 0.8.0 send no
 - **`path`:** the place as the validator names it: names joined by `.`,
   and `[n]` for a list index, as in `networks.lan.dhcp.ranges[0]`. A
   name that would not read back as itself (one holding a `.`, `[`, `]`,
-  a quote or a `\`, starting or ending with a space, or empty) is quoted
+  a quote or a `\`, starting or ending with whitespace, or empty) is quoted
   with `'`, with `\'` and `\\` for a `'` or `\` inside, so a path reads
   one way only:
   `policy.'users->wan'.rules.'allow.web'.action`. Policy keys are always
