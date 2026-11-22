@@ -1,15 +1,15 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSelectModule } from '@angular/material/select';
-import { MatTabsModule } from '@angular/material/tabs';
 
 import { ApiClient, CallFailed } from '../../api/api-client';
 import { Schemas } from '../../api/api.model';
-import { Session } from '../../core/session';
+import { Role, Session } from '../../core/session';
 import { NodeSwitch } from '../../shared/node-switch';
+import { NavGroup, SectionLayout } from '../../shared/section-layout';
 import { CapturePanel } from './capture-panel';
 import { ToolsPanel } from './tools-panel';
 
@@ -19,7 +19,19 @@ export type Route = Schemas['org.sparewall.Diagnostics.Route'];
 /** States of a neighbour that mean it does not answer. */
 const BAD = ['FAILED', 'INCOMPLETE'];
 
-/** The node's neighbour table and routes, by network (#263). */
+/** The page's sections, and the role each needs beyond viewer. */
+const SECTIONS: { key: string; label: string; role?: Role }[] = [
+  { key: 'neighbours', label: 'Neighbours' },
+  { key: 'routes', label: 'Routes' },
+  { key: 'tools', label: 'Tools', role: 'operator' },
+  { key: 'capture', label: 'Capture', role: 'admin' },
+];
+
+/**
+ * The node's neighbour table and routes, by network (#263), with the
+ * diagnostic tools and packet capture, one section each
+ * (`/network/<section>`, #304).
+ */
 @Component({
   selector: 'app-network',
   imports: [
@@ -28,9 +40,9 @@ const BAD = ['FAILED', 'INCOMPLETE'];
     MatFormFieldModule,
     MatIconModule,
     MatSelectModule,
-    MatTabsModule,
     CapturePanel,
     NodeSwitch,
+    SectionLayout,
     ToolsPanel,
   ],
   template: `
@@ -39,118 +51,133 @@ const BAD = ['FAILED', 'INCOMPLETE'];
       <span class="subtitle">What this node sees on its networks, now</span>
       <app-node-switch [node]="node()" (nodeChange)="node.set($event); load()" />
     </div>
-    <div class="filters">
-      <mat-form-field subscriptSizing="dynamic">
-        <mat-label>Network</mat-label>
-        <mat-select [(ngModel)]="network" (selectionChange)="load()">
-          <mat-option [value]="''">All</mat-option>
-          @for (n of networks(); track n) {
-            <mat-option [value]="n">{{ n }}</mat-option>
+    <app-section-layout
+      navLabel="Network sections"
+      base="/network"
+      [groups]="groups()"
+      [active]="shown().key"
+    >
+      @if (shown().key === 'neighbours' || shown().key === 'routes') {
+        <div class="filters">
+          <mat-form-field subscriptSizing="dynamic">
+            <mat-label>Network</mat-label>
+            <mat-select [(ngModel)]="network" (selectionChange)="load()">
+              <mat-option [value]="''">All</mat-option>
+              @for (n of networks(); track n) {
+                <mat-option [value]="n">{{ n }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+          <button mat-stroked-button type="button" (click)="load()" [disabled]="loading()">
+            <mat-icon>refresh</mat-icon>
+            Refresh
+          </button>
+        </div>
+      }
+      @if (problem(); as p) {
+        <p class="problem" role="alert">{{ p }}</p>
+      }
+      <div class="tables" [class.loading]="loading()">
+        @switch (shown().key) {
+          @case ('neighbours') {
+            <div class="table">
+              <table data-testid="neighbours">
+                <thead>
+                  <tr>
+                    <th scope="col">Network</th>
+                    <th scope="col">Interface</th>
+                    <th scope="col">Address</th>
+                    <th scope="col">MAC</th>
+                    <th scope="col">State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (n of neighbours(); track n.iface + n.address) {
+                    <tr [class.bad]="isBad(n)">
+                      <td>{{ n.network ?? '–' }}</td>
+                      <td>{{ n.iface }}</td>
+                      <td class="mono">{{ n.address }}</td>
+                      <td class="mono">{{ n.mac ?? '–' }}</td>
+                      <td>
+                        {{ n.state.join(', ') }}
+                        @if (n.router) {
+                          <span class="tag">router</span>
+                        }
+                      </td>
+                    </tr>
+                  } @empty {
+                    <tr>
+                      <td colspan="5" class="none">No entries.</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+            @if (neighboursCut()) {
+              <p class="note">More entries than one reply holds: the rest are left out.</p>
+            }
           }
-        </mat-select>
-      </mat-form-field>
-      <button mat-stroked-button type="button" (click)="load()" [disabled]="loading()">
-        <mat-icon>refresh</mat-icon>
-        Refresh
-      </button>
-    </div>
-    @if (problem(); as p) {
-      <p class="problem" role="alert">{{ p }}</p>
-    }
-    <mat-tab-group [class.loading]="loading()">
-      <mat-tab label="Neighbours">
-        <div class="table">
-          <table data-testid="neighbours">
-            <thead>
-              <tr>
-                <th scope="col">Network</th>
-                <th scope="col">Interface</th>
-                <th scope="col">Address</th>
-                <th scope="col">MAC</th>
-                <th scope="col">State</th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (n of neighbours(); track n.iface + n.address) {
-                <tr [class.bad]="isBad(n)">
-                  <td>{{ n.network ?? '–' }}</td>
-                  <td>{{ n.iface }}</td>
-                  <td class="mono">{{ n.address }}</td>
-                  <td class="mono">{{ n.mac ?? '–' }}</td>
-                  <td>
-                    {{ n.state.join(', ') }}
-                    @if (n.router) {
-                      <span class="tag">router</span>
-                    }
-                  </td>
-                </tr>
-              } @empty {
-                <tr>
-                  <td colspan="5" class="none">No entries.</td>
-                </tr>
-              }
-            </tbody>
-          </table>
-        </div>
-        @if (neighboursCut()) {
-          <p class="note">More entries than one reply holds: the rest are left out.</p>
+          @case ('routes') {
+            <div class="table">
+              <table data-testid="routes">
+                <thead>
+                  <tr>
+                    <th scope="col">Table</th>
+                    <th scope="col">Destination</th>
+                    <th scope="col">Gateway</th>
+                    <th scope="col">Network</th>
+                    <th scope="col">Interface</th>
+                    <th scope="col">Protocol</th>
+                    <th scope="col">Metric</th>
+                    <th scope="col">Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (r of routes(); track $index) {
+                    <tr [class.bad]="r.kind !== 'unicast' || r.flags.includes('linkdown')">
+                      <td>{{ r.table }}</td>
+                      <td class="mono">
+                        {{ r.destination }}
+                        @if (r.destination === 'default') {
+                          <span class="tag">IPv{{ r.family }}</span>
+                        }
+                      </td>
+                      <td class="mono">{{ r.gateway ?? '–' }}</td>
+                      <td>{{ r.network ?? '–' }}</td>
+                      <td>{{ r.iface ?? '–' }}</td>
+                      <td>{{ r.protocol ?? '–' }}</td>
+                      <td>{{ r.metric ?? '–' }}</td>
+                      <td>{{ notes(r) }}</td>
+                    </tr>
+                  } @empty {
+                    <tr>
+                      <td colspan="8" class="none">No routes.</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+            @if (routesCut()) {
+              <p class="note">More routes than one reply holds: the rest are left out.</p>
+            }
+          }
+          @case ('tools') {
+            @if (shown().disabled) {
+              <p class="none" data-testid="needs-role">Tools needs the operator role.</p>
+            } @else {
+              <app-tools-panel [networks]="networks()" [node]="node()" />
+            }
+          }
+          @case ('capture') {
+            @if (shown().disabled) {
+              <p class="none" data-testid="needs-role">Capture needs the admin role.</p>
+            } @else {
+              <app-capture-panel [networks]="networks()" [node]="node()" />
+            }
+          }
         }
-      </mat-tab>
-      <mat-tab label="Routes">
-        <div class="table">
-          <table data-testid="routes">
-            <thead>
-              <tr>
-                <th scope="col">Table</th>
-                <th scope="col">Destination</th>
-                <th scope="col">Gateway</th>
-                <th scope="col">Network</th>
-                <th scope="col">Interface</th>
-                <th scope="col">Protocol</th>
-                <th scope="col">Metric</th>
-                <th scope="col">Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (r of routes(); track $index) {
-                <tr [class.bad]="r.kind !== 'unicast' || r.flags.includes('linkdown')">
-                  <td>{{ r.table }}</td>
-                  <td class="mono">
-                    {{ r.destination }}
-                    @if (r.destination === 'default') {
-                      <span class="tag">IPv{{ r.family }}</span>
-                    }
-                  </td>
-                  <td class="mono">{{ r.gateway ?? '–' }}</td>
-                  <td>{{ r.network ?? '–' }}</td>
-                  <td>{{ r.iface ?? '–' }}</td>
-                  <td>{{ r.protocol ?? '–' }}</td>
-                  <td>{{ r.metric ?? '–' }}</td>
-                  <td>{{ notes(r) }}</td>
-                </tr>
-              } @empty {
-                <tr>
-                  <td colspan="8" class="none">No routes.</td>
-                </tr>
-              }
-            </tbody>
-          </table>
-        </div>
-        @if (routesCut()) {
-          <p class="note">More routes than one reply holds: the rest are left out.</p>
-        }
-      </mat-tab>
-      @if (session.can('operator')) {
-        <mat-tab label="Tools">
-          <app-tools-panel [networks]="networks()" [node]="node()" />
-        </mat-tab>
-      }
-      @if (session.can('admin')) {
-        <mat-tab label="Capture">
-          <app-capture-panel [networks]="networks()" [node]="node()" />
-        </mat-tab>
-      }
-    </mat-tab-group>
+      </div>
+    </app-section-layout>
   `,
   styles: `
     .filters {
@@ -164,7 +191,7 @@ const BAD = ['FAILED', 'INCOMPLETE'];
         width: 200px;
       }
     }
-    mat-tab-group {
+    .tables {
       transition: opacity 0.2s;
 
       &.loading {
@@ -216,6 +243,27 @@ const BAD = ['FAILED', 'INCOMPLETE'];
 export class Network implements OnInit {
   private readonly api = inject(ApiClient);
   protected readonly session = inject(Session);
+
+  /** The section shown, from the route. */
+  readonly section = input<string>();
+
+  /** Every section, for every role: those a role can't use are disabled and say which it needs. */
+  protected readonly groups = computed((): NavGroup[] => {
+    return [
+      {
+        sections: SECTIONS.map(({ key, label, role }) =>
+          role && !this.session.can(role)
+            ? { key, label, disabled: true, hint: role }
+            : { key, label },
+        ),
+      },
+    ];
+  });
+  /** The section shown: the route's, or the first one. */
+  protected readonly shown = computed(() => {
+    const all = this.groups()[0].sections;
+    return all.find((s) => s.key === this.section()) ?? all[0];
+  });
 
   protected network = '';
   /** The pair's other node, when reading it through this one (#268). */

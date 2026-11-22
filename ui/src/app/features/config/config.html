@@ -26,8 +26,16 @@
   <p class="problem" role="alert">The configuration could not be read.</p>
 }
 
-<div class="layout">
-  <nav aria-label="Configuration sections">
+<app-section-layout
+  navLabel="Configuration sections"
+  base="/config"
+  [groups]="groups()"
+  [active]="shown()?.key"
+  [marked]="editedSections()"
+  markTitle="Changed, not yet applied"
+  [showSections]="!query()"
+>
+  <div sectionNavTop class="nav-top">
     <mat-form-field class="search" subscriptSizing="dynamic">
       <mat-icon matPrefix>search</mat-icon>
       <mat-label>Find a setting</mat-label>
@@ -52,27 +60,8 @@
           <p class="none">No setting matches.</p>
         }
       </mat-nav-list>
-    } @else {
-      @for (g of groups(); track g.label) {
-        <h2>{{ g.label }}</h2>
-        <mat-nav-list>
-          @for (s of g.sections; track s.key) {
-            <a
-              mat-list-item
-              [routerLink]="['/config', s.key]"
-              [activated]="s.key === shown()?.key"
-              [attr.aria-current]="s.key === shown()?.key ? 'page' : null"
-            >
-              <span matListItemTitle>{{ s.label }}</span>
-              @if (editedSections().has(s.key)) {
-                <span matListItemMeta class="edited" title="Changed, not yet applied">●</span>
-              }
-            </a>
-          }
-        </mat-nav-list>
-      }
     }
-  </nav>
+  </div>
 
   <section class="form">
     @if (shown(); as s) {
@@ -95,4 +84,4 @@
       />
     }
   </section>
-</div>
+</app-section-layout>

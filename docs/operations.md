@@ -764,7 +764,8 @@ are not unicast or whose link is down. Over the HTTP API:
 
 ### Network tools
 
-From any `operator` up, without SSH, and on the Network page's Tools tab:
+From any `operator` up, without SSH, and in the Tools section of the web UI's
+Network page (`/network/tools`):
 
 ```shell
 sparewall ping 192.0.2.1 --from lan -n 2      # from the node's own LAN address
@@ -784,8 +785,9 @@ streaming with `?more=true`.
 ### Packet captures
 
 An `admin` can capture packets on a network, without SSH, as a pcap
-file for Wireshark or `tcpdump -r`, from the CLI or the Network page's
-Capture tab, which offers the file when the capture ends:
+file for Wireshark or `tcpdump -r`, from the CLI or the Capture section of
+the Network page (`/network/capture`), which offers the file when the
+capture ends:
 
 ```shell
 sparewall capture lan --filter 'icmp and host 192.168.1.20' -w ping.pcap
