@@ -282,7 +282,7 @@ fn run_spooled_in(
     roots: &crate::hostop::Roots,
 ) -> Result<(), Error> {
     if !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
-        return Err(Error::Validation(vec![format!("bad job id {id:?}")]));
+        return Err(Error::invalid(format!("bad job id {id:?}")));
     }
     let job = dir.join(format!("{id}.json"));
     let out = dir.join(format!("{id}.out.json"));
@@ -295,7 +295,7 @@ fn run_spooled_in(
         };
         write_atomic(&out, &serde_json::to_vec(&r).expect("json"))
             .map_err(|e| Error::io(&out, e))?;
-        Err(Error::Validation(vec![why]))
+        Err(Error::invalid(why))
     };
     let bytes = fs::read(&job).map_err(|e| Error::io(&job, e))?;
     let j: Spooled = match serde_json::from_slice(&bytes) {

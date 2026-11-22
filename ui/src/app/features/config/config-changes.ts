@@ -9,8 +9,19 @@ import { ReviewChange, ReviewData } from './review-change';
 
 type Document = Schemas['Document'];
 
-/** How a review ended: applied, cancelled, or refused with the node's reasons. */
-export type Outcome = { applied: true } | { applied: false; problems: string[] };
+/** A refusal's reason that has a place in the document (#305). */
+export interface FieldIssue {
+  /** An RFC 6901 JSON Pointer into the document, e.g. `/networks/lan/mtu`. */
+  pointer: string;
+  message: string;
+}
+
+/**
+ * How a review ended: applied, cancelled, or refused with the node's
+ * reasons, every one as a line and those with a place also as `issues`.
+ */
+export type Outcome =
+  { applied: true } | { applied: false; problems: string[]; issues: FieldIssue[] };
 
 /**
  * Applying an edited document, wherever it was edited (the editor, the
@@ -35,7 +46,7 @@ export class ConfigChanges {
       const confirmSeconds = await firstValueFrom(
         this.dialog.open(ReviewChange, { data, width: '640px' }).afterClosed(),
       );
-      if (confirmSeconds === undefined) return { applied: false, problems: [] };
+      if (confirmSeconds === undefined) return { applied: false, problems: [], issues: [] };
       applying?.();
       const r = await this.api.call('org.sparewall.Firewall.Apply', {
         config: draft,
@@ -51,9 +62,19 @@ export class ConfigChanges {
       );
       return { applied: true };
     } catch (e) {
-      return { applied: false, problems: problems(e) };
+      return { applied: false, problems: problems(e), issues: issues(e) };
     }
   }
+}
+
+/** The reasons with a place in the document; none from nodes before 0.8.0. */
+export function issues(e: unknown): FieldIssue[] {
+  if (e instanceof CallFailed && e.reply?.error === 'org.sparewall.Firewall.ValidationFailed') {
+    return (e.reply.parameters.issues ?? []).flatMap((i) =>
+      i.pointer ? [{ pointer: i.pointer, message: i.message }] : [],
+    );
+  }
+  return [];
 }
 
 function problems(e: unknown): string[] {

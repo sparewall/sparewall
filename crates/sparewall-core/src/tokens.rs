@@ -122,15 +122,13 @@ impl<S: System> Coordinator<S> {
         ttl_days: Option<u32>,
     ) -> Result<(String, TokenInfo), Error> {
         if !crate::secrets::name_ok(name) || name.starts_with(SESSION_PREFIX) {
-            return Err(Error::Validation(vec![format!(
-                "invalid token name {name:?}"
-            )]));
+            return Err(Error::invalid(format!("invalid token name {name:?}")));
         }
         let mut all = self.tokens()?;
         if all.iter().any(|t| t.name == name) {
-            return Err(Error::Validation(vec![format!(
+            return Err(Error::invalid(format!(
                 "a token named {name:?} exists; revoke it first"
-            )]));
+            )));
         }
         let token = random_token()?;
         let now = jiff::Timestamp::now();

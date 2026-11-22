@@ -281,9 +281,9 @@ pub fn check_password(bundle: &Path, password: &[u8]) -> Result<Vec<String>, Err
                 .map_err(|e| Error::Internal(format!("{SECRETS}: {e}")))?;
         return Ok(secrets.into_iter().map(|s| s.info.name).collect());
     }
-    Err(Error::Validation(vec![format!(
+    Err(Error::invalid(format!(
         "the bundle has no secrets: it was written without a {PASSWORD_SECRET} secret"
-    )]))
+    )))
 }
 
 /// Restore a bundle into a state directory (with sparewalld stopped,
@@ -301,17 +301,17 @@ pub fn restore(
     let m = manifest(bundle)?;
     let mut secrets = Vec::new();
     if m.format > FORMAT {
-        return Err(Error::Validation(vec![format!(
+        return Err(Error::invalid(format!(
             "bundle format {} is newer than this coordinator understands ({FORMAT})",
             m.format
-        )]));
+        )));
     }
     if m.schema > sparewall_config::SCHEMA_VERSION {
-        return Err(Error::Validation(vec![format!(
+        return Err(Error::invalid(format!(
             "bundle schema {} is newer than this coordinator reads ({})",
             m.schema,
             sparewall_config::SCHEMA_VERSION
-        )]));
+        )));
     }
     // Read everything first, so a wrong password changes nothing.
     let f = fs::File::open(bundle).map_err(|e| Error::io(bundle, e))?;

@@ -1,4 +1,5 @@
 import { Component, input } from '@angular/core';
+import { MatIconModule } from '@angular/material/icon';
 import { MatListModule } from '@angular/material/list';
 import { RouterLink } from '@angular/router';
 
@@ -26,7 +27,7 @@ export interface NavGroup {
  */
 @Component({
   selector: 'app-section-layout',
-  imports: [MatListModule, RouterLink],
+  imports: [MatIconModule, MatListModule, RouterLink],
   template: `
     <nav [attr.aria-label]="navLabel()">
       <ng-content select="[sectionNavTop]" />
@@ -53,7 +54,15 @@ export interface NavGroup {
                   [attr.aria-current]="s.key === active() ? 'page' : null"
                 >
                   <span matListItemTitle>{{ s.label }}</span>
-                  @if (marked().has(s.key)) {
+                  @if (flagged().has(s.key)) {
+                    <mat-icon
+                      matListItemMeta
+                      class="flagged"
+                      [title]="flagTitle()"
+                      [attr.aria-label]="flagTitle()"
+                      >error</mat-icon
+                    >
+                  } @else if (marked().has(s.key)) {
                     <span matListItemMeta class="marked" [title]="markTitle()">●</span>
                   } @else if (s.hint) {
                     <span matListItemMeta class="hint">{{ s.hint }}</span>
@@ -103,6 +112,10 @@ export interface NavGroup {
         font-size: 1.25em;
       }
 
+      .flagged {
+        color: var(--mat-sys-error);
+      }
+
       .hint {
         font: var(--mat-sys-label-small);
         color: var(--mat-sys-on-surface-variant);
@@ -134,6 +147,10 @@ export class SectionLayout {
   readonly marked = input<ReadonlySet<string>>(new Set());
   /** What a mark means, as its tooltip. */
   readonly markTitle = input('');
+  /** Sections to flag as holding a problem, e.g. a field the node refused. */
+  readonly flagged = input<ReadonlySet<string>>(new Set());
+  /** What a flag means, as its tooltip and accessible name. */
+  readonly flagTitle = input('');
   /** False hides the list, e.g. while search results stand in for it. */
   readonly showSections = input(true);
 }

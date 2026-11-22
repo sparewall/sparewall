@@ -9,12 +9,12 @@ use sparewall_config::identity::Identity;
 use sparewall_config::{Document, validate};
 use sparewall_render::{Rendered, Subsystem, nft};
 
-use crate::Error;
 use crate::health::{Check, Health, Level};
 use crate::store::{Generation, Pending, State, Store};
 use crate::store::{LinkDecision, WriteFailure};
 use crate::system::{Files, System};
 use crate::tokens::Role;
+use crate::{Error, Problem};
 
 /// Subsystems whose files a provider service reads from /run/sparewall.
 const PROVIDER_SUBSYSTEMS: &[Subsystem] = &[
@@ -319,15 +319,15 @@ impl<S: System> Coordinator<S> {
         let need = doc.schema;
         match &self.peer_reads {
             Some((n, reads)) if *n == peer && need <= *reads => Ok(()),
-            Some((n, reads)) if *n == peer => Err(Error::Validation(vec![format!(
+            Some((n, reads)) if *n == peer => Err(Error::invalid(format!(
                 "schema: this change needs schema revision {need}, and {peer} reads revisions 1 to {reads}: \
                  upgrade {peer} first"
-            )])),
+            ))),
             _ if need <= running.schema => Ok(()),
-            _ => Err(Error::Validation(vec![format!(
+            _ => Err(Error::invalid(format!(
                 "schema: this change needs schema revision {need}, and which revisions {peer} reads is \
                  not known until it is reached (it may read revision 1 only): reach {peer} first"
-            )])),
+            ))),
         }
     }
 
@@ -372,10 +372,10 @@ impl<S: System> Coordinator<S> {
     /// replaces it.
     fn readable_base(&self, id: u64) -> Result<(), Error> {
         match self.unreadable.get(&id) {
-            Some(e) => Err(Error::Validation(vec![format!(
+            Some(e) => Err(Error::invalid(format!(
                 "generation {id} cannot be read ({e}): apply a whole document \
                  (sparewall apply -f) or roll back to a generation this release can read"
-            )])),
+            ))),
             None => Ok(()),
         }
     }
@@ -578,14 +578,14 @@ impl<S: System> Coordinator<S> {
     }
 
     /// Parse and check a document for this node, to run it.
-    pub fn check(&self, value: Value) -> Result<(Document, Vec<String>, Rendered), Error> {
+    pub fn check(&self, value: Value) -> Result<(Document, Vec<Problem>, Rendered), Error> {
         self.check_with(value, validate)
     }
 
     /// Parse and check a document only to keep it in history: settings
     /// earlier versions accepted and this one no longer runs are allowed,
     /// since it will not run unless checked again.
-    fn check_history(&self, value: Value) -> Result<(Document, Vec<String>, Rendered), Error> {
+    fn check_history(&self, value: Value) -> Result<(Document, Vec<Problem>, Rendered), Error> {
         self.check_with(value, validate::validate_history)
     }
 
@@ -593,27 +593,42 @@ impl<S: System> Coordinator<S> {
         &self,
         value: Value,
         validate: fn(&Document) -> Vec<validate::Issue>,
-    ) -> Result<(Document, Vec<String>, Rendered), Error> {
-        let doc = sparewall_config::from_value(value)
-            .map_err(|e| Error::Validation(vec![e.to_string()]))?;
+    ) -> Result<(Document, Vec<Problem>, Rendered), Error> {
+        let doc = match sparewall_config::from_value(value) {
+            Ok(d) => d,
+            Err(sparewall_config::Error::Type { path, message }) if !path.starts_with('(') => {
+                return Err(Error::invalid_at(path, message));
+            }
+            Err(e) => return Err(Error::invalid(e.to_string())),
+        };
         let issues = validate(&doc);
-        let errors = validate::errors(&issues);
+        let errors: Vec<Problem> = issues
+            .iter()
+            .filter(|i| i.severity == validate::Severity::Error)
+            .map(|i| Problem::at(i.path.clone(), &i.message))
+            .collect();
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
         if !doc.cluster.nodes.iter().any(|n| n == self.node()) {
-            return Err(Error::Validation(vec![format!(
-                "cluster.nodes: this node ({}) is not listed",
-                self.node()
-            )]));
+            return Err(Error::invalid_at(
+                "cluster.nodes",
+                format!("this node ({}) is not listed", self.node()),
+            ));
         }
         let rendered = sparewall_render::render(&doc, self.node())
-            .map_err(|e| Error::Validation(vec![e.to_string()]))?;
-        Ok((doc, validate::warnings(&issues), rendered))
+            .map_err(|e| Error::invalid(e.to_string()))?;
+        let warnings = issues
+            .iter()
+            .filter(|i| i.severity == validate::Severity::Warning)
+            .map(|i| Problem::at(i.path.clone(), &i.message))
+            .collect();
+        Ok((doc, warnings, rendered))
     }
 
     /// Validate only: schema, semantics, rendering and the nft dry run.
-    pub fn validate(&mut self, value: Value) -> Result<Vec<String>, Error> {
+    /// The warnings come back with their places in the document (#305).
+    pub fn validate(&mut self, value: Value) -> Result<Vec<Problem>, Error> {
         let (doc, warnings, rendered) = self.check(value)?;
         let active = self.rendered_for(self.active()?)?;
         self.dry_run(&doc, &rendered, Some(&active))?;
@@ -633,7 +648,7 @@ impl<S: System> Coordinator<S> {
         if let Some(w) = doc.updates.as_ref().and_then(|u| u.window.as_deref()) {
             self.sys
                 .calendar_check(w)
-                .map_err(|e| Error::Validation(vec![format!("updates.window: {e}")]))?;
+                .map_err(|e| Error::invalid_at("updates.window", e))?;
         }
         let body = r
             .files
@@ -666,7 +681,8 @@ impl<S: System> Coordinator<S> {
     pub fn apply(&mut self, value: Value, opts: &ApplyOptions) -> Result<ApplyResult, Error> {
         let state = self.check_base(opts.base)?;
         self.link_change_in_progress(&state)?;
-        let (mut doc, mut warnings, rendered) = self.check(value)?;
+        let (mut doc, warnings, rendered) = self.check(value)?;
+        let mut warnings: Vec<String> = warnings.iter().map(ToString::to_string).collect();
         // Record the oldest schema revision that reads it (#168). Only a
         // local change sets it: a generation from the peer keeps its own,
         // so that both nodes hash it alike.
@@ -730,20 +746,19 @@ impl<S: System> Coordinator<S> {
         self.ensure_vpn_keys(&doc)?;
         if opts.stage_sync_link && link_change(&old_value, &new_value) {
             if let Some(p) = &state.pending {
-                return Err(Error::Validation(vec![format!(
+                return Err(Error::invalid(format!(
                     "the sync link cannot change while generation {} is pending; confirm it or roll it back first",
                     p.id
-                )]));
+                )));
             }
             if without_sync_link(&old_value, &new_value)
                 != without_sync_link(&new_value, &old_value)
             {
-                return Err(Error::Validation(vec![
+                return Err(Error::invalid(
                     "a change to the sync link must change nothing else (the peer may switch \
                      between the old and new link until it learns the outcome): make the \
-                     other changes separately"
-                        .into(),
-                ]));
+                     other changes separately",
+                ));
             }
             self.store.save(&g, &doc, &rendered)?;
             tracing::info!(
@@ -902,8 +917,7 @@ impl<S: System> Coordinator<S> {
         let state = self.check_base(opts.base)?;
         self.readable_base(state.active)?;
         let mut v = self.document_value(state.active)?;
-        sparewall_config::json_patch(&mut v, ops)
-            .map_err(|e| Error::Validation(vec![e.to_string()]))?;
+        sparewall_config::json_patch(&mut v, ops).map_err(|e| Error::invalid(e.to_string()))?;
         self.apply(v, opts)
     }
 
@@ -1043,15 +1057,15 @@ impl<S: System> Coordinator<S> {
 
     fn link_change_in_progress(&self, state: &State) -> Result<(), Error> {
         match &state.pending {
-            Some(p) if p.decides_link => Err(Error::Validation(vec![format!(
+            Some(p) if p.decides_link => Err(Error::invalid(format!(
                 "the sync-link change {} is waiting for the peer; confirm it or roll it back first",
                 p.id
-            )])),
-            Some(p) if p.link_change => Err(Error::Validation(vec![format!(
+            ))),
+            Some(p) if p.link_change => Err(Error::invalid(format!(
                 "the peer's sync-link change {} is in progress; the peer decides it (or take \
                  the peer's configuration with sparewall sync --from <peer>)",
                 p.id
-            )])),
+            ))),
             _ => Ok(()),
         }
     }
@@ -1545,10 +1559,10 @@ impl<S: System> Coordinator<S> {
         }
         let (doc, _, rendered) = self.check_history(value)?;
         if sparewall_config::hash(&doc) != g.hash {
-            return Err(Error::Validation(vec![format!(
+            return Err(Error::invalid(format!(
                 "generation {} does not match its hash",
                 g.id
-            )]));
+            )));
         }
         if replace {
             let to = self.store.set_aside(g.id, "diverged")?;
@@ -1616,10 +1630,10 @@ impl<S: System> Coordinator<S> {
     ) -> Result<(), Error> {
         let (doc, _, rendered) = self.check(value)?;
         if sparewall_config::hash(&doc) != g.hash {
-            return Err(Error::Validation(vec![format!(
+            return Err(Error::invalid(format!(
                 "generation {} does not match its hash",
                 g.id
-            )]));
+            )));
         }
         let from = self.active()?;
         let old_rendered = self.rendered_for(from)?;

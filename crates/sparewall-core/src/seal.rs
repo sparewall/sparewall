@@ -43,13 +43,13 @@ pub fn open(password: &[u8], blob: &[u8]) -> Result<Vec<u8>, Error> {
     let rest = blob
         .strip_prefix(MAGIC)
         .filter(|r| r.len() > SALT + NONCE)
-        .ok_or_else(|| Error::Validation(vec!["not a sealed backup section".into()]))?;
+        .ok_or_else(|| Error::invalid("not a sealed backup section"))?;
     let (salt, rest) = rest.split_at(SALT);
     let (nonce, ct) = rest.split_at(NONCE);
     let nonce: [u8; NONCE] = nonce.try_into().expect("split");
     ChaCha20Poly1305::new(&key(password, salt)?)
         .decrypt(&Nonce::from(nonce), ct)
-        .map_err(|_| Error::Validation(vec!["wrong backup password (or a damaged bundle)".into()]))
+        .map_err(|_| Error::invalid("wrong backup password (or a damaged bundle)"))
 }
 
 #[cfg(test)]

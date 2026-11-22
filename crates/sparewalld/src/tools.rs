@@ -30,9 +30,7 @@ pub const RECORDS: &[&str] = &[
 ];
 
 fn invalid(msg: impl Into<String>) -> FirewallError {
-    FirewallError::ValidationFailed {
-        errors: vec![msg.into()],
-    }
+    FirewallError::invalid(vec![msg.into()])
 }
 
 /// A host name as DNS has them: labels of letters, digits and `-`, not

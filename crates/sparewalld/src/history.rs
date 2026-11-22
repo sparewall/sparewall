@@ -71,9 +71,7 @@ fn answer(body: &[u8]) -> Result<QueryReply, FirewallError> {
     // The query's own fault (it does not parse, or asks for too much),
     // or Prometheus's (a timeout, shutting down).
     match v["errorType"].as_str() {
-        Some("bad_data" | "execution") => Err(FirewallError::ValidationFailed {
-            errors: vec![error],
-        }),
+        Some("bad_data" | "execution") => Err(FirewallError::invalid(vec![error])),
         _ => Err(unavailable(error)),
     }
 }
@@ -105,12 +103,10 @@ pub async fn query(path: &str, params: &[(&str, &str)]) -> Result<QueryReply, Fi
             .await
             .map_err(|e| {
                 if e.is::<http_body_util::LengthLimitError>() {
-                    FirewallError::ValidationFailed {
-                        errors: vec![format!(
-                            "the result is over {} MiB: select fewer series, or a longer step",
-                            MAX_REPLY >> 20
-                        )],
-                    }
+                    FirewallError::invalid(vec![format!(
+                        "the result is over {} MiB: select fewer series, or a longer step",
+                        MAX_REPLY >> 20
+                    )])
                 } else {
                     unavailable(e.to_string())
                 }

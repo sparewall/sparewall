@@ -354,7 +354,7 @@ method Status() -> (role: string, sync: object, links: object, vrrp: object, con
 method Backup() -> (path: string, digest: string)
 method Subscribe() -> (event: object)  # called with "more": streams events
 
-error ValidationFailed (errors: []string)
+error ValidationFailed (errors: []string, issues: ?[](path: ?string, pointer: ?string, message: string))
 error Conflict (current: int)
 error ConfirmTimeout (rolled_back_to: int)
 error PeerUnreachable (peer: string)

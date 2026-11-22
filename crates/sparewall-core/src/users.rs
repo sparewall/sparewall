@@ -128,28 +128,28 @@ impl<S: System> Coordinator<S> {
     /// Ends the user's sessions.
     pub fn user_set(&mut self, name: &str, role: Role, hash: &str) -> Result<(), Error> {
         if !user_name_ok(name) {
-            return Err(Error::Validation(vec![format!(
+            return Err(Error::invalid(format!(
                 "invalid user name {name:?}: lowercase letters, digits, - and _, starting with a letter"
-            )]));
+            )));
         }
         let kept;
         let hash = if hash.is_empty() {
             kept = self
                 .user_record(name)?
                 .map(|r| r.hash)
-                .ok_or_else(|| Error::Validation(vec![format!("no user named {name}")]))?;
+                .ok_or_else(|| Error::invalid(format!("no user named {name}")))?;
             kept.as_str()
         } else {
             hash
         };
         if !password_hash_ok(hash) {
-            return Err(Error::Validation(vec![
-                "the password must be a crypt(3) hash or \"!\"".into(),
-            ]));
+            return Err(Error::invalid(
+                "the password must be a crypt(3) hash or \"!\"",
+            ));
         }
         if name == ADMIN_USER {
             if role != Role::Admin {
-                return Err(Error::Validation(vec!["admin keeps the admin role".into()]));
+                return Err(Error::invalid("admin keeps the admin role"));
             }
             self.secret_set(ADMIN_PASSWORD, hash.as_bytes(), SecretClass::Cluster)?;
             self.apply_admin_password()?;
@@ -174,9 +174,9 @@ impl<S: System> Coordinator<S> {
     /// `sparewall passwd --lock` instead.
     pub fn user_remove(&mut self, name: &str) -> Result<bool, Error> {
         if name == ADMIN_USER {
-            return Err(Error::Validation(vec![
-                "admin cannot be removed; lock its password instead".into(),
-            ]));
+            return Err(Error::invalid(
+                "admin cannot be removed; lock its password instead",
+            ));
         }
         let Some(mut r) = self.user_record(name)? else {
             return Ok(false);

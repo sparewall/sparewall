@@ -70,21 +70,21 @@ pub async fn run(
         let upload = match cfg.as_ref().filter(|b| b.enabled) {
             Some(b) if b.repository.is_some() => {
                 let password = c.secret_get(PASSWORD_SECRET)?.ok_or_else(|| {
-                    sparewall_core::Error::Validation(vec![format!(
+                    sparewall_core::Error::invalid(format!(
                         "backup.repository needs the repository password: \
                          sparewall secret set {PASSWORD_SECRET}"
-                    )])
+                    ))
                 })?;
                 let env = match &b.credentials {
                     Some(r) => {
                         let name = r.strip_prefix("secret:").unwrap_or(r);
                         let v = c.secret_get(name)?.ok_or_else(|| {
-                            sparewall_core::Error::Validation(vec![format!(
+                            sparewall_core::Error::invalid(format!(
                                 "backup.credentials: no secret {name:?}"
-                            )])
+                            ))
                         })?;
                         credentials_env("backup credentials", &String::from_utf8_lossy(&v))
-                            .map_err(|e| sparewall_core::Error::Validation(vec![e]))?
+                            .map_err(sparewall_core::Error::invalid)?
                     }
                     None => vec![],
                 };

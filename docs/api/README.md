@@ -42,10 +42,43 @@ An error keeps its Varlink name and parameters, with a message in words:
 ```json
 {
   "error": "org.sparewall.Firewall.ValidationFailed",
-  "parameters": {"errors": ["networks.users.vlan: expected an integer"]},
+  "parameters": {
+    "errors": ["networks.users.vlan: expected an integer"],
+    "issues": [
+      {
+        "path": "networks.users.vlan",
+        "pointer": "/networks/users/vlan",
+        "message": "expected an integer"
+      }
+    ]
+  },
   "message": "validation failed:\n  networks.users.vlan: expected an integer"
 }
 ```
+
+### Where a problem is
+
+`ValidationFailed` lists each problem twice: as a line in `errors`
+(`path: message`, as the CLI prints it), and in `issues` with its place
+in the document, so a form can mark the field at fault. `Validate`'s
+reply does the same for its `warnings`. Nodes before 0.8.0 send no
+`issues`.
+
+- **`path`:** the place as the validator names it: names joined by `.`,
+  and `[n]` for a list index, as in `networks.lan.dhcp.ranges[0]`. A
+  name that would not read back as itself (one holding a `.`, `[`, `]`,
+  a quote or a `\`, starting or ending with whitespace, or empty) is quoted
+  with `'`, with `\'` and `\\` for a `'` or `\` inside, so a path reads
+  one way only:
+  `policy.'users->wan'.rules.'allow.web'.action`. Policy keys are always
+  quoted, for their `->`.
+- **`pointer`:** the same place as an [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)
+  JSON Pointer: `/policy/users->wan/rules/allow.web/action`. It may name
+  a field the document leaves out, when that field is required.
+- **Neither:** both are null for a problem with no place in the
+  document, such as a dry run's failure or a refused password.
+
+Both forms are part of the API that 1.0 freezes.
 
 | Status | Errors |
 | --- | --- |

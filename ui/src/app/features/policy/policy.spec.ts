@@ -80,7 +80,7 @@ describe('PolicyMatrix', () => {
     t.closed.next({ policy: { action: 'reject' } });
     t.closed.complete();
     await editing;
-    t.review.mockResolvedValue({ applied: false, problems: [] });
+    t.review.mockResolvedValue({ applied: false, problems: [], issues: [] });
     await page.review();
     const [draft, base] = t.review.mock.calls[0];
     expect(base).toBe(1);
@@ -112,7 +112,7 @@ describe('PolicyMatrix, when the configuration changes under the dialog', () => 
     t.closed.next({ policy: { action: 'reject' } });
     t.closed.complete();
     await editing;
-    t.review.mockResolvedValue({ applied: false, problems: [] });
+    t.review.mockResolvedValue({ applied: false, problems: [], issues: [] });
     await page.review();
     const [draft, base] = t.review.mock.calls[0];
     expect(base).toBe(1);
@@ -147,7 +147,7 @@ describe('leaving the editor', () => {
     expect(page.hasUnappliedChanges()).toBe(true);
     applying();
     expect(page.hasUnappliedChanges()).toBe(false);
-    finish({ applied: false, problems: ['refused'] });
+    finish({ applied: false, problems: ['refused'], issues: [] });
     await reviewing;
     // Refused: the edits are still there, and guarded again.
     expect(page.hasUnappliedChanges()).toBe(true);

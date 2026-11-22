@@ -15,6 +15,7 @@ import { MatListModule } from '@angular/material/list';
 import { Router } from '@angular/router';
 import { UISchemaElement } from '@jsonforms/core';
 import { JsonFormsModule } from '@jsonforms/angular';
+import { ErrorObject } from 'ajv';
 
 import { SectionLayout } from '../../shared/section-layout';
 import { Setting, search, sectionGroups, settingPlace, settings } from './config-sections';
@@ -71,6 +72,21 @@ export class Config extends DraftPage {
       s && ({ type: 'Control', scope: `#/properties/${s.key}`, label: false } as UISchemaElement)
     );
   });
+
+  /** The node's reasons as JSON Forms errors, so each shows on its field (#305). */
+  protected readonly fieldErrors = computed((): ErrorObject[] =>
+    this.issues().map((i) => ({
+      instancePath: i.pointer,
+      schemaPath: '',
+      keyword: 'sparewall',
+      params: {},
+      message: i.message,
+    })),
+  );
+  /** Sections holding a field the node refused. */
+  protected readonly flaggedSections = computed(
+    () => new Set(this.issues().map((i) => sectionOf(i.pointer))),
+  );
 
   /** Sections whose draft differs from the active document. */
   protected readonly editedSections = computed(() => {
@@ -140,4 +156,9 @@ export class Config extends DraftPage {
     }
     return undefined;
   }
+}
+
+/** The top-level section a JSON Pointer is in: `/networks/lan/mtu` → `networks`. */
+export function sectionOf(pointer: string): string {
+  return (pointer.split('/')[1] ?? '').replace(/~1/g, '/').replace(/~0/g, '~');
 }

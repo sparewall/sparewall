@@ -11,9 +11,7 @@ use sparewall_api::{FirewallError, Neighbour, Route};
 use sparewall_config::Document;
 
 fn invalid(msg: impl Into<String>) -> FirewallError {
-    FirewallError::ValidationFailed {
-        errors: vec![msg.into()],
-    }
+    FirewallError::invalid(vec![msg.into()])
 }
 
 const TIMEOUT: Duration = Duration::from_secs(5);

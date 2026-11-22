@@ -89,9 +89,7 @@ pub fn unit_named(u: &str) -> Option<String> {
 }
 
 pub(crate) fn invalid(msg: impl Into<String>) -> FirewallError {
-    FirewallError::ValidationFailed {
-        errors: vec![msg.into()],
-    }
+    FirewallError::invalid(vec![msg.into()])
 }
 
 /// What a caller asks for.

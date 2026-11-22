@@ -14,7 +14,7 @@ import { callUrl } from '../../api/api-client';
 import { Reply, Schemas } from '../../api/api.model';
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
-import { ConfigChanges } from './config-changes';
+import { ConfigChanges, FieldIssue } from './config-changes';
 import { documentSchema } from './form-schema';
 import { HoldsEdits } from './keep-edits';
 
@@ -66,11 +66,16 @@ export abstract class DraftPage implements HoldsEdits {
   );
   protected readonly busy = signal(false);
   protected readonly problems = signal<string[]>([]);
+  /** The node's last refusal's reasons that have a place in the document (#305). */
+  protected readonly issues = signal<FieldIssue[]>([]);
   private applying = false;
 
   constructor() {
     effect(() => {
-      if (!this.changed()) this.problems.set([]);
+      if (!this.changed()) {
+        this.problems.set([]);
+        this.issues.set([]);
+      }
     });
     // Follow the node's configuration (an apply elsewhere, a revert) while
     // nothing is edited here; with edits, the apply's base check says so.
@@ -98,12 +103,16 @@ export abstract class DraftPage implements HoldsEdits {
     if (!draft || base === undefined) return;
     this.busy.set(true);
     this.problems.set([]);
+    this.issues.set([]);
     try {
       // Leaving stays guarded through the dry run and the review, until
       // the apply itself starts.
       const r = await this.changes.review(draft, base, () => (this.applying = true));
       if (r.applied) await this.router.navigate(['/status']);
-      else this.problems.set(r.problems);
+      else {
+        this.problems.set(r.problems);
+        this.issues.set(r.issues);
+      }
     } finally {
       this.applying = false;
       this.busy.set(false);

@@ -198,10 +198,10 @@ impl<S: System> Coordinator<S> {
 
     fn secret_put(&mut self, info: SecretInfo, value: &[u8]) -> Result<SecretInfo, Error> {
         if !name_ok(&info.name) {
-            return Err(Error::Validation(vec![format!(
+            return Err(Error::invalid(format!(
                 "secret names: letters, digits, '-', '_' and '.', at most 64: {:?}",
                 info.name
-            )]));
+            )));
         }
         let blob = self.system().encrypt(&info.name, value)?;
         store_encrypted(self.store().root(), &info, &blob)?;
@@ -288,9 +288,9 @@ impl<S: System> Coordinator<S> {
         };
         let hash = String::from_utf8(v).unwrap_or_default();
         if !sparewall_config::identity::password_hash_ok(&hash) {
-            return Err(Error::Validation(vec![format!(
+            return Err(Error::invalid(format!(
                 "the {ADMIN_PASSWORD} secret is not a password hash"
-            )]));
+            )));
         }
         self.system().set_admin_password(&hash)?;
         tracing::info!(
@@ -489,45 +489,43 @@ impl<S: System> Coordinator<S> {
     ) -> Result<String, Error> {
         let doc = self
             .active_document()?
-            .ok_or_else(|| Error::Validation(vec!["no configuration applied".into()]))?;
+            .ok_or_else(|| Error::invalid("no configuration applied"))?;
         let (name, vpn) = match instance {
             Some(i) => doc
                 .vpn
                 .get_key_value(i)
-                .ok_or_else(|| Error::Validation(vec![format!("no VPN instance {i:?}")]))?,
+                .ok_or_else(|| Error::invalid(format!("no VPN instance {i:?}")))?,
             None => doc
                 .vpn
                 .iter()
                 .find(|(_, v)| v.peers.contains_key(peer))
-                .ok_or_else(|| {
-                    Error::Validation(vec![format!("no VPN instance has a peer {peer:?}")])
-                })?,
+                .ok_or_else(|| Error::invalid(format!("no VPN instance has a peer {peer:?}")))?,
         };
         let p = vpn
             .peers
             .get(peer)
-            .ok_or_else(|| Error::Validation(vec![format!("vpn.{name}.peers has no {peer:?}")]))?;
+            .ok_or_else(|| Error::invalid(format!("vpn.{name}.peers has no {peer:?}")))?;
         let server = self
             .vpn_public_key(name)?
-            .ok_or_else(|| Error::Validation(vec![format!("vpn {name} has no server key yet")]))?;
+            .ok_or_else(|| Error::invalid(format!("vpn {name} has no server key yet")))?;
         // The listen port, or one of the extra ports it is also reached on.
         let port = match port {
             None => vpn.listen_port,
             Some(p) if p == vpn.listen_port || vpn.extra_ports.contains(&p) => p,
             Some(p) => {
-                return Err(Error::Validation(vec![format!(
+                return Err(Error::invalid(format!(
                     "vpn {name} is not reached on port {p}: its listen_port is {}, extra_ports {:?}",
                     vpn.listen_port, vpn.extra_ports
-                )]));
+                )));
             }
         };
         let psk = match &p.preshared_key {
             Some(r) => {
                 let secret = r.strip_prefix("secret:").unwrap_or(r);
                 let k = self.secret_get(secret)?.ok_or_else(|| {
-                    Error::Validation(vec![format!(
+                    Error::invalid(format!(
                         "vpn.{name}.peers.{peer}: its preshared key {secret:?} is not set"
-                    )])
+                    ))
                 })?;
                 format!("PresharedKey = {}\n", String::from_utf8_lossy(&k).trim())
             }
