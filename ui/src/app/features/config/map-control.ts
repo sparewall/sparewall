@@ -61,13 +61,15 @@ export class MapControl extends JsonFormsControl {
           ? objectLayout(entry)
           : Generate.uiSchema(entry, 'VerticalLayout', undefined, this.rootSchema);
     }
+    // Each refused place as its segments, so a name holding a `.` stays
+    // one name: `nas` is not at fault for a field of `nas.home`.
     const refused = (this.jsonFormsService.getState()?.jsonforms?.core?.additionalErrors ?? []).map(
-      (e) => dotted(e.instancePath),
+      (e) => segments(e.instancePath),
     );
     this.faulty = new Set(
-      this.names.filter((n) => {
-        const p = this.entryPath(n);
-        return refused.some((r) => r === p || r.startsWith(`${p}.`));
+      refused.flatMap((s) => {
+        const n = entryOf(s, this.propsPath);
+        return n !== undefined && this.names.includes(n) ? [n] : [];
       }),
     );
     this.cd.markForCheck();
@@ -142,11 +144,21 @@ export const mapControlTester: RankedTester = rankWith(
   schemaMatches((s) => isMap(s as JsonSchema7)),
 );
 
-/** A JSON Pointer as a JSON Forms path: `/networks/lan/mtu` → `networks.lan.mtu`. */
-function dotted(pointer: string): string {
+/** A JSON Pointer's segments: `/networks/nas.home/mtu` → `networks`, `nas.home`, `mtu`. */
+export function segments(pointer: string): string[] {
   return pointer
     .split('/')
     .slice(1)
-    .map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'))
-    .join('.');
+    .map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'));
+}
+
+/**
+ * The entry of the map at `mapPath` (a JSON Forms path, names joined by
+ * `.`) that a place is in: the segment after those that make up the path.
+ */
+export function entryOf(place: string[], mapPath: string): string | undefined {
+  for (let m = 0; m < place.length; m++) {
+    if (place.slice(0, m).join('.') === mapPath) return place[m];
+  }
+  return undefined;
 }

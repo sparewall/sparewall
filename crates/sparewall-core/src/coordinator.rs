@@ -594,10 +594,10 @@ impl<S: System> Coordinator<S> {
         value: Value,
         validate: fn(&Document) -> Vec<validate::Issue>,
     ) -> Result<(Document, Vec<Problem>, Rendered), Error> {
-        let doc = match sparewall_config::from_value(value.clone()) {
+        let doc = match sparewall_config::from_value(value) {
             Ok(d) => d,
             Err(sparewall_config::Error::Type { path, message }) if !path.starts_with('(') => {
-                return Err(Error::invalid_at(path, message).locate(&value));
+                return Err(Error::invalid_at(path, message));
             }
             Err(e) => return Err(Error::invalid(e.to_string())),
         };
@@ -605,7 +605,7 @@ impl<S: System> Coordinator<S> {
         let errors: Vec<Problem> = issues
             .iter()
             .filter(|i| i.severity == validate::Severity::Error)
-            .map(|i| Problem::at(i.path.clone(), &i.message).locate(&value))
+            .map(|i| Problem::at(i.path.clone(), &i.message))
             .collect();
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
@@ -614,15 +614,14 @@ impl<S: System> Coordinator<S> {
             return Err(Error::invalid_at(
                 "cluster.nodes",
                 format!("this node ({}) is not listed", self.node()),
-            )
-            .locate(&value));
+            ));
         }
         let rendered = sparewall_render::render(&doc, self.node())
             .map_err(|e| Error::invalid(e.to_string()))?;
         let warnings = issues
             .iter()
             .filter(|i| i.severity == validate::Severity::Warning)
-            .map(|i| Problem::at(i.path.clone(), &i.message).locate(&value))
+            .map(|i| Problem::at(i.path.clone(), &i.message))
             .collect();
         Ok((doc, warnings, rendered))
     }
@@ -647,9 +646,9 @@ impl<S: System> Coordinator<S> {
         // The maintenance window is a systemd calendar expression: systemd
         // is its only complete parser (#84).
         if let Some(w) = doc.updates.as_ref().and_then(|u| u.window.as_deref()) {
-            self.sys.calendar_check(w).map_err(|e| {
-                Error::invalid_at("updates.window", e).locate(&sparewall_config::to_value(doc))
-            })?;
+            self.sys
+                .calendar_check(w)
+                .map_err(|e| Error::invalid_at("updates.window", e))?;
         }
         let body = r
             .files

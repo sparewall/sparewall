@@ -11,6 +11,7 @@ import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
 import { Config, sectionOf } from './config';
 import { ConfigChanges, Outcome, issues } from './config-changes';
+import { entryOf, segments } from './map-control';
 
 const doc = {
   networks: {
@@ -19,7 +20,7 @@ const doc = {
   },
 };
 
-async function render(outcome: Outcome) {
+async function render(outcome: Outcome, config: typeof doc = doc) {
   const review = vi.fn().mockResolvedValue(outcome);
   TestBed.configureTestingModule({
     providers: [
@@ -39,7 +40,7 @@ async function render(outcome: Outcome) {
   http.expectOne('/openapi.json').flush(openapi);
   http
     .expectOne(callUrl('org.sparewall.Firewall.GetConfig'))
-    .flush({ generation: { id: 1 }, config: structuredClone(doc) });
+    .flush({ generation: { id: 1 }, config: structuredClone(config) });
   await fixture.whenStable();
   fixture.detectChanges();
   const page = fixture.componentInstance as unknown as {
@@ -47,7 +48,7 @@ async function render(outcome: Outcome) {
     review(): Promise<void>;
   };
   // An edit the node will refuse, then its review.
-  const edited = structuredClone(doc);
+  const edited = structuredClone(config);
   edited.networks.users.mtu = 100;
   page.edited(edited);
   await page.review();
@@ -81,6 +82,25 @@ describe('Config', () => {
     expect(guests.classList).not.toContain('mat-expanded');
     // The field itself.
     expect(users.textContent).toContain('must be 576-9216');
+  });
+
+  it('keeps names that extend one another apart (#337 review)', async () => {
+    const withDots = {
+      networks: {
+        ...structuredClone(doc.networks),
+        'users.lab': { port: 'uplink', role: 'inside' },
+      },
+    } as typeof doc;
+    const { el } = await render(
+      {
+        applied: false,
+        problems: ["networks.'users.lab'.vlan: required"],
+        issues: [{ pointer: '/networks/users.lab/vlan', message: 'required' }],
+      },
+      withDots,
+    );
+    expect(el.querySelector('[data-entry="users.lab"] .faulty')).not.toBeNull();
+    expect(el.querySelector('[data-entry=users] .faulty')).toBeNull();
   });
 
   it('marks nothing for reasons with no place in the document', async () => {
@@ -119,6 +139,17 @@ describe('refusals', () => {
   it('have none from a node before 0.8.0', () => {
     expect(issues(refused({ errors: ['networks.users.mtu: must be 576-9216'] }))).toEqual([]);
     expect(issues(new Error('offline'))).toEqual([]);
+  });
+
+  it('find their map entry by whole names', () => {
+    expect(entryOf(segments('/networks/users.lab/vlan'), 'networks')).toBe('users.lab');
+    expect(entryOf(segments('/networks/users/vlan'), 'networks')).toBe('users');
+    expect(entryOf(segments('/policy/a->b/rules/web.tls/dport'), 'policy.a->b.rules')).toBe(
+      'web.tls',
+    );
+    expect(entryOf(segments('/networks'), 'networks')).toBeUndefined();
+    expect(entryOf(segments('/zones/x'), 'networks')).toBeUndefined();
+    expect(segments('/policy/a~1b~0c')).toEqual(['policy', 'a/b~c']);
   });
 
   it('name their section', () => {

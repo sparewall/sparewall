@@ -709,9 +709,9 @@ export interface Schemas {
       /** The same problems, each with its place in the document (#305). Absent from nodes older than 0.8.0. */
       "issues"?: Array<{
         "message": string;
-        /** The place as the validator names it: names joined by `.` (a name holding a `.` or `->` may be quoted with `'`), and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. Null for a problem with no place in the document. */
+        /** The place as the validator names it: names joined by `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A name holding a `.`, `[`, `]` or a quote is quoted with `'` (or `"`), and policy keys always are: `policy.'users->wan'.rules.'allow.web'`. Null for a problem with no place in the document. */
         "path"?: string | null;
-        /** The same place as an RFC 6901 JSON Pointer into the document checked (for a partial change, `Merge` or `Patch`, the whole document it would make), e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is. */
+        /** The same place as an RFC 6901 JSON Pointer, e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is. */
         "pointer"?: string | null;
       }> | null;
     };
@@ -1414,9 +1414,9 @@ export interface Calls {
       /** The same warnings, each with the place in the document it concerns, as in ValidationFailed's `issues` (#305). Absent from nodes older than 0.8.0. */
       "issues"?: Array<{
         "message": string;
-        /** The place as the validator names it: names joined by `.` (a name holding a `.` or `->` may be quoted with `'`), and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. Null for a problem with no place in the document. */
+        /** The place as the validator names it: names joined by `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A name holding a `.`, `[`, `]` or a quote is quoted with `'` (or `"`), and policy keys always are: `policy.'users->wan'.rules.'allow.web'`. Null for a problem with no place in the document. */
         "path"?: string | null;
-        /** The same place as an RFC 6901 JSON Pointer into the document checked (for a partial change, `Merge` or `Patch`, the whole document it would make), e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is. */
+        /** The same place as an RFC 6901 JSON Pointer, e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is. */
         "pointer"?: string | null;
       }> | null;
       "warnings": Array<string>;

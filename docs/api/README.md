@@ -66,14 +66,13 @@ reply does the same for its `warnings`. Nodes before 0.8.0 send no
 
 - **`path`:** the place as the validator names it: names joined by `.`,
   and `[n]` for a list index, as in `networks.lan.dhcp.ranges[0]`. A
-  name holding `.` or `->` may be quoted with `'`, as in
-  `policy.'users->wan'.rules.web`, but needn't be.
+  name holding a `.`, `[`, `]` or a quote is quoted with `'` (or `"` when
+  it holds a `'`), so a path reads one way only:
+  `policy.'users->wan'.rules.'allow.web'.action`. Policy keys are always
+  quoted, for their `->`.
 - **`pointer`:** the same place as an [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)
-  JSON Pointer into the document checked: `/networks/lan/dhcp/ranges/0`.
-  It is read against the document, so a name holding a `.` comes out
-  whole, as one step. It may name a field the document
-  leaves out, when that field is required. For a partial change (`Merge`,
-  `Patch`), it points into the whole document the change would make.
+  JSON Pointer: `/policy/users->wan/rules/allow.web/action`. It may name
+  a field the document leaves out, when that field is required.
 - **Neither:** both are null for a problem with no place in the
   document, such as a dry run's failure or a refused password.
 

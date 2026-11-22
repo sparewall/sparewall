@@ -44,31 +44,21 @@ pub const VERSION: &str = match option_env!("SPAREWALL_VERSION") {
 pub struct Problem {
     /// The validator's path, e.g. `networks.lan.dhcp.ranges[0]`.
     pub path: Option<String>,
-    /// The same place as an RFC 6901 JSON Pointer into the document,
-    /// when the document is known: `/networks/lan/dhcp/ranges/0`.
+    /// The same place as an RFC 6901 JSON Pointer:
+    /// `/networks/lan/dhcp/ranges/0`.
     pub pointer: Option<String>,
     pub message: String,
 }
 
 impl Problem {
-    /// A problem at `path` in the document.
+    /// A problem at `path` in the document; its pointer follows from it.
     pub fn at(path: impl Into<String>, message: impl std::fmt::Display) -> Self {
+        let path = path.into();
         Problem {
-            path: Some(path.into()),
-            pointer: None,
+            pointer: sparewall_config::pointer(&path),
+            path: Some(path),
             message: message.to_string(),
         }
-    }
-
-    /// Fill in the pointer from the document the path is in.
-    pub fn locate(mut self, doc: &serde_json::Value) -> Self {
-        if self.pointer.is_none() {
-            self.pointer = self
-                .path
-                .as_deref()
-                .and_then(|p| sparewall_config::pointer(doc, p));
-        }
-        self
     }
 }
 
@@ -142,16 +132,6 @@ impl Error {
     /// A refusal at `path` in the document.
     pub fn invalid_at(path: impl Into<String>, message: impl std::fmt::Display) -> Self {
         Error::Validation(vec![Problem::at(path, message)])
-    }
-
-    /// Fill in each validation problem's pointer from the document.
-    pub fn locate(self, doc: &serde_json::Value) -> Self {
-        match self {
-            Error::Validation(ps) => {
-                Error::Validation(ps.into_iter().map(|p| p.locate(doc)).collect())
-            }
-            e => e,
-        }
     }
 
     pub fn io(path: &Path, source: std::io::Error) -> Self {

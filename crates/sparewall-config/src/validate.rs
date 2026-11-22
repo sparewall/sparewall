@@ -6,6 +6,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use ipnet::{Ipv4Net, Ipv6Net};
 
 use crate::model::*;
+use crate::pointer::name as seg;
 use crate::providers::{self, Role};
 use crate::topology::{SELF_ZONE, reserved_iface};
 
@@ -354,11 +355,14 @@ impl Validator<'_> {
         }
         for (n, key) in &c.sync_keys {
             if !self.is_node(n) {
-                self.err(format!("cluster.sync_keys.{n}"), "not a cluster node");
+                self.err(
+                    format!("cluster.sync_keys.{}", seg(n)),
+                    "not a cluster node",
+                );
             }
             if !wg_key_ok(key) {
                 self.err(
-                    format!("cluster.sync_keys.{n}"),
+                    format!("cluster.sync_keys.{}", seg(n)),
                     "not a WireGuard public key (44 base64 characters)",
                 );
             }
@@ -372,7 +376,10 @@ impl Validator<'_> {
             }
             for n in vrrp.priority.keys() {
                 if !self.is_node(n) {
-                    self.err(format!("cluster.vrrp.priority.{n}"), "not a cluster node");
+                    self.err(
+                        format!("cluster.vrrp.priority.{}", seg(n)),
+                        "not a cluster node",
+                    );
                 }
             }
             if let Some(cs) = vrrp.advert_interval_cs
@@ -408,11 +415,11 @@ impl Validator<'_> {
         let doc = self.doc;
         for (node, ports) in &doc.ports {
             if !self.is_node(node) {
-                self.err(format!("ports.{node}"), "not a cluster node");
+                self.err(format!("ports.{}", seg(node)), "not a cluster node");
             }
             let mut hw: BTreeMap<&str, String> = BTreeMap::new();
             for (role, port) in ports {
-                let p = format!("ports.{node}.{role}");
+                let p = format!("ports.{}.{}", seg(node), seg(role));
                 if !iface_name_ok(role) || reserved_iface(role) {
                     self.err(
                         &p,
@@ -497,7 +504,7 @@ impl Validator<'_> {
             for role in &used {
                 if !doc.ports.get(&node).is_some_and(|p| p.contains_key(*role)) {
                     self.err(
-                        format!("ports.{node}"),
+                        format!("ports.{}", seg(&node)),
                         format!(
                             "port role {role:?} is used by a network but not bound on node {node:?}"
                         ),
@@ -521,7 +528,7 @@ impl Validator<'_> {
         let mut subnets: Vec<(Ipv4Net, &str)> = Vec::new();
         let mut wans = 0;
         for (name, net) in &doc.networks {
-            let p = format!("networks.{name}");
+            let p = format!("networks.{}", seg(name));
             if !iface_name_ok(name) || reserved_iface(name) {
                 self.err(&p, "network names become interface names: lowercase, start with a letter, at most 15 characters, not reserved");
             }
@@ -557,7 +564,7 @@ impl Validator<'_> {
             // Addresses.
             for n in net.addresses.keys() {
                 if !self.is_node(n) {
-                    self.err(format!("{p}.addresses.{n}"), "not a cluster node");
+                    self.err(format!("{p}.addresses.{}", seg(n)), "not a cluster node");
                 }
             }
             if net.dhcp_client {
@@ -600,14 +607,14 @@ impl Validator<'_> {
                 let s = a.0.trunc();
                 if a.0.addr() == s.network() && a.0.prefix_len() < 31 {
                     self.err(
-                        format!("{p}.addresses.{n}"),
+                        format!("{p}.addresses.{}", seg(n)),
                         "is the network address of its subnet",
                     );
                 }
                 match subnet {
                     None => subnet = Some(s),
                     Some(prev) if prev != s => self.err(
-                        format!("{p}.addresses.{n}"),
+                        format!("{p}.addresses.{}", seg(n)),
                         format!("not in the same subnet as the other nodes ({prev})"),
                     ),
                     _ => {}
@@ -760,7 +767,7 @@ impl Validator<'_> {
                     .any(|n| n.vip.is_some() && n.vrid.is_some())
             {
                 self.err(
-                    format!("networks.{name}.dhcp_client"),
+                    format!("networks.{}.dhcp_client", seg(name)),
                     "a leased WAN follows the master: some network needs a gateway address (vip)",
                 );
             }
@@ -769,7 +776,7 @@ impl Validator<'_> {
             for (b, bn) in &subnets[i + 1..] {
                 if a.contains(b) || b.contains(a) {
                     self.err(
-                        format!("networks.{bn}"),
+                        format!("networks.{}", seg(bn)),
                         format!("subnet {b} overlaps network {an:?} ({a})"),
                     );
                 }
@@ -796,7 +803,7 @@ impl Validator<'_> {
             .collect();
         for (name, net) in &doc.networks {
             let Some(v6) = &net.ipv6 else { continue };
-            let p = format!("networks.{name}.ipv6");
+            let p = format!("networks.{}.ipv6", seg(name));
             let wan = net.role == NetworkRole::Wan;
             let mode = format!("{:?}", v6.mode).to_lowercase();
             match (net.role, v6.mode) {
@@ -999,14 +1006,14 @@ impl Validator<'_> {
                                 Some(a) => {
                                     if !px.contains(a) || *a == px.network() {
                                         self.err(
-                                            format!("{p}.addresses.{node}"),
+                                            format!("{p}.addresses.{}", seg(node)),
                                             format!("not a host in {}", px.trunc()),
                                         );
                                     }
                                     if let Some(prev) = seen.insert(*a, node.as_str()) {
                                         let prev = prev.to_string();
                                         self.err(
-                                            format!("{p}.addresses.{node}"),
+                                            format!("{p}.addresses.{}", seg(node)),
                                             format!("also node {prev:?}'s"),
                                         );
                                     }
@@ -1016,7 +1023,7 @@ impl Validator<'_> {
                         for node in v6.addresses.keys() {
                             if !self.is_node(node) {
                                 self.err(
-                                    format!("{p}.addresses.{node}"),
+                                    format!("{p}.addresses.{}", seg(node)),
                                     format!("no node named {node:?}"),
                                 );
                             }
@@ -1052,7 +1059,7 @@ impl Validator<'_> {
     ///   network's VRRP virtual MAC for IPv6, so it needs a `vrid`.
     fn pair_ipv6(&mut self, name: &str, net: &Network, v6: &NetworkIpv6) {
         let doc = self.doc;
-        let p = format!("networks.{name}.ipv6");
+        let p = format!("networks.{}.ipv6", seg(name));
         if net.role == NetworkRole::Wan {
             if doc.split_wan(name).is_some() && !net.vmac {
                 self.err(
@@ -1177,7 +1184,7 @@ impl Validator<'_> {
         let doc = self.doc;
         let mut member: BTreeMap<&str, &str> = BTreeMap::new();
         for (name, z) in &doc.zones {
-            let p = format!("zones.{name}");
+            let p = format!("zones.{}", seg(name));
             if name == SELF_ZONE {
                 self.err(&p, "the self zone is built in");
                 continue;
@@ -1219,7 +1226,7 @@ impl Validator<'_> {
                 && !member.contains_key(name.as_str())
                 && net.role != NetworkRole::Management
             {
-                self.warn(format!("networks.{name}"), "network is in no zone, so it can only reach the firewall through the anti-lockout rule");
+                self.warn(format!("networks.{}", seg(name)), "network is in no zone, so it can only reach the firewall through the anti-lockout rule");
             }
         }
     }
@@ -1231,7 +1238,7 @@ impl Validator<'_> {
     fn objects(&mut self) {
         let doc = self.doc;
         for (name, o) in &doc.objects {
-            let p = format!("objects.{name}");
+            let p = format!("objects.{}", seg(name));
             if !nft_name_ok(name) {
                 self.err(
                     &p,
@@ -1274,7 +1281,7 @@ impl Validator<'_> {
                 self.err(format!("{p}.suffixes"), "only ipv6 objects have suffixes");
             }
             for (net, sfx) in &o.suffixes {
-                let sp = format!("{p}.suffixes.{net}");
+                let sp = format!("{p}.suffixes.{}", seg(net));
                 match doc.networks.get(net).and_then(|n| n.ipv6.as_ref()) {
                     None if !doc.networks.contains_key(net) => {
                         self.err(&sp, format!("no network named {net:?}"))
@@ -1456,7 +1463,7 @@ impl Validator<'_> {
             }
             let mut orders: BTreeMap<u32, &str> = BTreeMap::new();
             for (rname, r) in &pol.rules {
-                let rp = format!("{p}.rules.{rname}");
+                let rp = format!("{p}.rules.{}", seg(rname));
                 if !rname
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
@@ -1592,7 +1599,7 @@ impl Validator<'_> {
     fn forwards(&mut self) {
         let doc = self.doc;
         for (name, f) in &doc.forwards {
-            let p = format!("forwards.{name}");
+            let p = format!("forwards.{}", seg(name));
             let from = f.from.as_deref().unwrap_or("wan");
             if !doc.zones.contains_key(from) {
                 self.err(format!("{p}.from"), format!("no zone named {from:?}"));
@@ -1658,7 +1665,7 @@ impl Validator<'_> {
         }
         for (name, net) in &doc.networks {
             for (i, x) in net.extra_vips.iter().enumerate() {
-                let p = format!("networks.{name}.extra_vips[{i}]");
+                let p = format!("networks.{}.extra_vips[{i}]", seg(name));
                 let Some(vip) = &net.vip else {
                     self.err(p, "extra gateway addresses need a gateway address (vip)");
                     continue;
@@ -1700,7 +1707,7 @@ impl Validator<'_> {
                 && held(*snat) == Some(false)
             {
                 self.err(
-                    format!("policy.{key}.nat.snat"),
+                    format!("policy.{}.nat.snat", seg(key)),
                     format!("no node holds {snat}: add it to the network's extra_vips"),
                 );
             }
@@ -1722,7 +1729,7 @@ impl Validator<'_> {
                     && held(a) == Some(false)
                 {
                     self.err(
-                        format!("forwards.{name}.dst"),
+                        format!("forwards.{}.dst", seg(name)),
                         format!("no node holds {a}: add it to the network's extra_vips"),
                     );
                 }
@@ -1734,7 +1741,7 @@ impl Validator<'_> {
         let doc = self.doc;
         let mut orders: BTreeMap<(String, u32), &str> = BTreeMap::new();
         for (name, r) in &doc.raw {
-            let p = format!("raw.{name}");
+            let p = format!("raw.{}", seg(name));
             if !name
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
@@ -1773,7 +1780,7 @@ impl Validator<'_> {
         let Some(d) = &doc.dhcp else { return };
         self.provider(Role::Dhcp, "dhcp.provider".into(), d.provider.as_deref());
         for (name, dn) in &d.networks {
-            let p = format!("dhcp.{name}");
+            let p = format!("dhcp.{}", seg(name));
             let Some(net) = doc.networks.get(name) else {
                 self.err(&p, format!("no network named {name:?}"));
                 continue;
@@ -1816,7 +1823,7 @@ impl Validator<'_> {
             }
             let mut macs = BTreeSet::new();
             for (rname, r) in &dn.reservations {
-                let rp = format!("{p}.reservations.{rname}");
+                let rp = format!("{p}.reservations.{}", seg(rname));
                 if !mac_ok(&r.mac) {
                     self.err(format!("{rp}.mac"), "not a MAC address");
                 }
@@ -1980,7 +1987,7 @@ impl Validator<'_> {
             if let Some(d) = c.acme.as_ref().and_then(|a| a.dns.as_ref()) {
                 chosen.push((
                     Role::AcmeDns,
-                    format!("tls.certificates.{name}.acme.dns.provider"),
+                    format!("tls.certificates.{}.acme.dns.provider", seg(name)),
                     &d.provider,
                 ));
             }
@@ -1997,7 +2004,7 @@ impl Validator<'_> {
         }
         for name in doc.provider_options.keys() {
             self.err(
-                format!("provider_options.{name}"),
+                format!("provider_options.{}", seg(name)),
                 "provider passthrough options are not supported yet",
             );
         }
@@ -2097,7 +2104,7 @@ impl Validator<'_> {
         let doc = self.doc;
         let mut ports = BTreeSet::new();
         for (name, v) in &doc.vpn {
-            let p = format!("vpn.{name}");
+            let p = format!("vpn.{}", seg(name));
             if !iface_name_ok(name) || reserved_iface(name) {
                 self.err(&p, "VPN names become interface names: lowercase, start with a letter, at most 15 characters");
             }
@@ -2122,7 +2129,7 @@ impl Validator<'_> {
             }
             let mut used: BTreeSet<Ipv4Addr> = v.addresses.iter().map(|a| a.0.addr()).collect();
             for (pn, peer) in &v.peers {
-                let pp = format!("{p}.peers.{pn}");
+                let pp = format!("{p}.peers.{}", seg(pn));
                 if !wg_key_ok(&peer.public_key) {
                     self.err(
                         format!("{pp}.public_key"),
@@ -2199,7 +2206,7 @@ impl Validator<'_> {
         let doc = self.doc;
         let mut routed: BTreeMap<&str, &str> = BTreeMap::new();
         for (name, c) in &doc.vpn_clients {
-            let p = format!("vpn_clients.{name}");
+            let p = format!("vpn_clients.{}", seg(name));
             if !iface_name_ok(name) || reserved_iface(name) {
                 self.err(&p, "VPN client names become interface names: lowercase, start with a letter, at most 15 characters");
             }
@@ -2311,7 +2318,7 @@ impl Validator<'_> {
         }
         for (name, v) in &doc.vpn {
             for (pn, peer) in v.peers.iter().filter(|(_, p)| p.endpoint.is_some()) {
-                let pp = format!("vpn.{name}.peers.{pn}.addresses");
+                let pp = format!("vpn.{}.peers.{}.addresses", seg(name), seg(pn));
                 for a in &peer.addresses {
                     let net = a.0.trunc();
                     if v.addresses.iter().any(|t| t.0.trunc().contains(&net)) {
@@ -2328,7 +2335,7 @@ impl Validator<'_> {
                         let what = what.clone();
                         self.err(&pp, format!("{net} overlaps {what}"));
                     }
-                    taken.push((format!("vpn.{name}.peers.{pn}"), net));
+                    taken.push((format!("vpn.{}.peers.{}", seg(name), seg(pn)), net));
                 }
             }
         }
@@ -2338,7 +2345,7 @@ impl Validator<'_> {
         let doc = self.doc;
         let Some(t) = &doc.tls else { return };
         for (name, c) in &t.certificates {
-            let p = format!("tls.certificates.{name}");
+            let p = format!("tls.certificates.{}", seg(name));
             if !cert_name_ok(name) {
                 self.err(
                     &p,
@@ -2395,7 +2402,7 @@ impl Validator<'_> {
                                     });
                                 if !env {
                                     self.err(
-                                        format!("{p}.acme.dns.options.{k}"),
+                                        format!("{p}.acme.dns.options.{}", seg(k)),
                                         "a lego provider's options are its environment \
                                          variables, e.g. GCE_PROJECT",
                                     );
@@ -2430,10 +2437,16 @@ impl Validator<'_> {
                     if let Some(d) = &a.dns
                         && let Some(cr) = &d.credentials
                     {
-                        refs.push((format!("tls.certificates.{n}.acme.dns.credentials"), cr));
+                        refs.push((
+                            format!("tls.certificates.{}.acme.dns.credentials", seg(n)),
+                            cr,
+                        ));
                     }
                     if let Some(e) = &a.eab {
-                        refs.push((format!("tls.certificates.{n}.acme.eab.hmac"), &e.hmac));
+                        refs.push((
+                            format!("tls.certificates.{}.acme.eab.hmac", seg(n)),
+                            &e.hmac,
+                        ));
                     }
                 }
             }
@@ -2454,14 +2467,20 @@ impl Validator<'_> {
         for (name, v) in &doc.vpn {
             for (peer, p) in &v.peers {
                 if let Some(k) = &p.preshared_key {
-                    refs.push((format!("vpn.{name}.peers.{peer}.preshared_key"), k));
+                    refs.push((
+                        format!("vpn.{}.peers.{}.preshared_key", seg(name), seg(peer)),
+                        k,
+                    ));
                 }
             }
         }
         for (name, c) in &doc.vpn_clients {
-            refs.push((format!("vpn_clients.{name}.private_key"), &c.private_key));
+            refs.push((
+                format!("vpn_clients.{}.private_key", seg(name)),
+                &c.private_key,
+            ));
             if let Some(k) = &c.peer.preshared_key {
-                refs.push((format!("vpn_clients.{name}.peer.preshared_key"), k));
+                refs.push((format!("vpn_clients.{}.peer.preshared_key", seg(name)), k));
             }
         }
         for (p, r) in refs {
@@ -2493,7 +2512,7 @@ fn wan_udp_user(doc: &Document, port: u16) -> Option<String> {
             && wan_zone(f.from.as_deref().unwrap_or("wan"))
             && match_has_port(doc, &f.dport, port)
         {
-            return Some(format!("forwards.{name}"));
+            return Some(format!("forwards.{}", seg(name)));
         }
     }
     if port == 53

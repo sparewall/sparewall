@@ -137,6 +137,23 @@ fn refusals_name_their_place_in_the_document() {
         )]
     );
 
+    // Names that extend one another (#337 review): `web` and `web.tls`,
+    // the fault in `web.tls`. The path quotes the name holding a `.`, so
+    // the pointer names that rule and not `web`.
+    let mut v = example();
+    v["policy"]["users->self"]["rules"]["web"] =
+        json!({"order": 300, "proto": "tcp", "dport": 80, "action": "accept"});
+    v["policy"]["users->self"]["rules"]["web.tls"] =
+        json!({"order": 400, "dport": 443, "action": "accept"});
+    assert_eq!(
+        place(t.c.validate(v).map(drop)),
+        [(
+            some("policy.'users->self'.rules.'web.tls'.dport"),
+            some("/policy/users->self/rules/web.tls/dport"),
+            "policy.'users->self'.rules.'web.tls'.dport: ports need proto tcp, udp or sctp".into()
+        )]
+    );
+
     // A field of the wrong type, refused when the document is read.
     let mut v = example();
     v["networks"]["users"]["vlan"] = json!("twenty");

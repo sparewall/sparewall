@@ -1,65 +1,67 @@
-//! From a validator path to a JSON Pointer (#305).
+//! Document paths and JSON Pointers (#305).
 //!
 //! The validator names a place in the document as a path: names joined by
-//! `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`,
-//! the form `serde_path_to_error` uses too; a name may be quoted, as
-//! `policy.'users->wan'` is. Names may hold a `.` themselves
-//! (a DNS name, say), so the path is read against the document: at each
-//! step the longest name the document has there wins. Past what the
-//! document has (a required field left out), each `.` separates a name.
+//! `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A
+//! name that holds a `.`, `[`, `]` or a quote is quoted with `'` (or `"`,
+//! when it holds a `'`), as [`name`] does, so a path always reads one way:
+//! `policy.'users->wan'.rules.'allow.web'.action`. Policy keys are quoted
+//! always, for the `->`.
 
-use serde_json::Value;
+use std::borrow::Cow;
 
-/// The RFC 6901 JSON Pointer for `path` in `doc`, or `None` for a path
-/// that names the whole document or isn't one.
-pub fn pointer(doc: &Value, path: &str) -> Option<String> {
-    let path = path.trim();
-    if path.is_empty() || path == "." || path.starts_with('(') {
-        return None;
+/// A document name as one path segment: quoted when it would otherwise
+/// read as more than one, or as an index.
+pub fn name(k: &str) -> Cow<'_, str> {
+    if !k.is_empty() && !k.contains(['.', '[', ']', '\'', '"']) {
+        Cow::Borrowed(k)
+    } else if k.contains('\'') {
+        Cow::Owned(format!("\"{k}\""))
+    } else {
+        Cow::Owned(format!("'{k}'"))
     }
-    let mut segments: Vec<String> = Vec::new();
-    let mut here = Some(doc);
-    let mut rest = path;
+}
+
+/// The segments of a path: names, and list indexes as their digits.
+/// `None` for one that isn't a path (an unterminated quote, a bad index).
+pub fn segments(path: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut rest = path.trim();
     while !rest.is_empty() {
         if let Some(r) = rest.strip_prefix('[') {
             let end = r.find(']')?;
             let index: usize = r[..end].parse().ok()?;
-            segments.push(index.to_string());
-            here = here.and_then(|v| v.get(index));
+            out.push(index.to_string());
             rest = &r[end + 1..];
         } else if let Some(q) = rest.chars().next().filter(|c| *c == '\'' || *c == '"') {
             let r = &rest[1..];
             let end = r.find(q)?;
-            let name = &r[..end];
-            here = here.and_then(|v| v.get(name));
-            segments.push(name.to_string());
+            out.push(r[..end].to_string());
             rest = &r[end + 1..];
         } else {
-            let known = here
-                .and_then(Value::as_object)
-                .and_then(|o| {
-                    o.keys()
-                        .filter(|k| {
-                            rest.strip_prefix(k.as_str()).is_some_and(|after| {
-                                after.is_empty() || after.starts_with(['.', '['])
-                            })
-                        })
-                        .max_by_key(|k| k.len())
-                })
-                .cloned();
-            let name = known.unwrap_or_else(|| {
-                let end = rest.find(['.', '[']).unwrap_or(rest.len());
-                rest[..end].to_string()
-            });
-            if name.is_empty() {
+            let end = rest.find(['.', '[']).unwrap_or(rest.len());
+            if end == 0 {
                 return None;
             }
-            here = here.and_then(|v| v.get(&name));
-            rest = &rest[name.len()..];
-            segments.push(name);
+            out.push(rest[..end].to_string());
+            rest = &rest[end..];
         }
-        rest = rest.strip_prefix('.').unwrap_or(rest);
+        match rest.strip_prefix('.') {
+            Some(r) if !r.is_empty() => rest = r,
+            Some(_) => return None,
+            None if rest.is_empty() || rest.starts_with('[') => {}
+            None => return None,
+        }
     }
+    Some(out)
+}
+
+/// The RFC 6901 JSON Pointer for a path, or `None` for one that names the
+/// whole document or isn't a path.
+pub fn pointer(path: &str) -> Option<String> {
+    if path.starts_with('(') {
+        return None;
+    }
+    let segments = segments(path).filter(|s| !s.is_empty())?;
     Some(
         segments
             .iter()
@@ -70,66 +72,75 @@ pub fn pointer(doc: &Value, path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::pointer;
-    use serde_json::json;
+    use super::{name, pointer};
 
     #[test]
     fn names_and_indexes() {
-        let doc = json!({"networks": {"lan": {"dhcp": {"ranges": ["a", "b"]}}}});
         assert_eq!(
-            pointer(&doc, "networks.lan.dhcp.ranges[1]").as_deref(),
+            pointer("networks.lan.dhcp.ranges[1]").as_deref(),
             Some("/networks/lan/dhcp/ranges/1")
         );
         assert_eq!(
-            pointer(&doc, "networks.lan").as_deref(),
-            Some("/networks/lan")
-        );
-    }
-
-    #[test]
-    fn a_name_with_dots_is_read_against_the_document() {
-        let doc = json!({"dns": {"hosts": {"nas.home.arpa": {"a": "192.0.2.5"}}}});
-        assert_eq!(
-            pointer(&doc, "dns.hosts.nas.home.arpa.a").as_deref(),
-            Some("/dns/hosts/nas.home.arpa/a")
-        );
-    }
-
-    #[test]
-    fn past_the_document_each_dot_separates() {
-        let doc = json!({"networks": {"wan": {}}});
-        assert_eq!(
-            pointer(&doc, "networks.wan.gateway").as_deref(),
-            Some("/networks/wan/gateway")
-        );
-        assert_eq!(
-            pointer(&json!({}), "cluster.nodes[1]").as_deref(),
+            pointer("cluster.nodes[1]").as_deref(),
             Some("/cluster/nodes/1")
         );
+        assert_eq!(pointer("a[0][2].b").as_deref(), Some("/a/0/2/b"));
     }
 
     #[test]
-    fn a_quoted_name() {
-        let doc = json!({"policy": {"users->wan": {"rules": {"web": {}}}}});
+    fn quoted_names_keep_their_dots() {
         assert_eq!(
-            pointer(&doc, "policy.'users->wan'.rules.web.action").as_deref(),
-            Some("/policy/users->wan/rules/web/action")
+            pointer("policy.'users->wan'.rules.'allow.web'.action").as_deref(),
+            Some("/policy/users->wan/rules/allow.web/action")
+        );
+        assert_eq!(pointer("raw.\"it's.x\"").as_deref(), Some("/raw/it's.x"));
+    }
+
+    /// Codex's review of #337: with keys `home->wan` and `home->wan.nat`,
+    /// and `nas` and `nas.home`, each path reads one way only.
+    #[test]
+    fn keys_that_extend_one_another_stay_apart() {
+        let p = |k: &str| format!("policy.{}.nat.snat", name(k));
+        assert_eq!(
+            pointer(&p("home->wan")).as_deref(),
+            Some("/policy/home->wan/nat/snat")
         );
         assert_eq!(
-            pointer(&doc, "policy.users->wan.nat.snat").as_deref(),
-            Some("/policy/users->wan/nat/snat")
+            pointer(&p("home->wan.nat")).as_deref(),
+            Some("/policy/home->wan.nat/nat/snat")
         );
+        let h = |k: &str| format!("dhcp.lan.reservations.{}.mac", name(k));
+        assert_eq!(
+            pointer(&h("nas.home")).as_deref(),
+            Some("/dhcp/lan/reservations/nas.home/mac")
+        );
+        assert_eq!(
+            pointer(&h("nas")).as_deref(),
+            Some("/dhcp/lan/reservations/nas/mac")
+        );
+    }
+
+    #[test]
+    fn name_quotes_only_when_it_must() {
+        assert_eq!(name("users"), "users");
+        assert_eq!(name("users->wan"), "users->wan");
+        assert_eq!(name("a.b"), "'a.b'");
+        assert_eq!(name("x[0]"), "'x[0]'");
+        assert_eq!(name("it's"), "\"it's\"");
+        assert_eq!(name(""), "''");
     }
 
     #[test]
     fn escapes_and_non_paths() {
-        let doc = json!({"policy": {"a/b~c": {}}});
         assert_eq!(
-            pointer(&doc, "policy.a/b~c").as_deref(),
+            pointer("policy.'a/b~c'").as_deref(),
             Some("/policy/a~1b~0c")
         );
-        assert_eq!(pointer(&doc, "(document)"), None);
-        assert_eq!(pointer(&doc, ""), None);
-        assert_eq!(pointer(&doc, "x[oops]"), None);
+        assert_eq!(pointer(""), None);
+        assert_eq!(pointer("(document)"), None);
+        assert_eq!(pointer("x[oops]"), None);
+        assert_eq!(pointer("x.'open"), None);
+        assert_eq!(pointer("x..y"), None);
+        assert_eq!(pointer("x."), None);
     }
 }

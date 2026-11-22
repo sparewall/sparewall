@@ -99,9 +99,40 @@ pub fn format_value<T: serde::Serialize>(value: &T, format: Format) -> String {
 /// first type error.
 pub fn from_value(value: Value) -> Result<Document, Error> {
     serde_path_to_error::deserialize(value).map_err(|e| Error::Type {
-        path: display_path(&e.path().to_string()),
+        path: display_path(&document_path(e.path())),
         message: e.inner().to_string(),
     })
+}
+
+/// A parse error's place as the validator writes paths: a name holding a
+/// `.` quoted, so the path reads one way (#305).
+fn document_path(p: &serde_path_to_error::Path) -> String {
+    use serde_path_to_error::Segment;
+    let mut out = String::new();
+    for s in p.iter() {
+        match s {
+            Segment::Seq { index } => out.push_str(&format!("[{index}]")),
+            Segment::Map { key } => {
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push_str(&pointer::name(key));
+            }
+            Segment::Enum { variant } => {
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push_str(&pointer::name(variant));
+            }
+            Segment::Unknown => {
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push('?');
+            }
+        }
+    }
+    out
 }
 
 fn display_path(p: &str) -> String {

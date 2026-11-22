@@ -2434,14 +2434,14 @@
                           "type": "string"
                         },
                         "path": {
-                          "description": "The place as the validator names it: names joined by `.` (a name holding a `.` or `->` may be quoted with `'`), and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. Null for a problem with no place in the document.",
+                          "description": "The place as the validator names it: names joined by `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A name holding a `.`, `[`, `]` or a quote is quoted with `'` (or `\"`), and policy keys always are: `policy.'users->wan'.rules.'allow.web'`. Null for a problem with no place in the document.",
                           "type": [
                             "string",
                             "null"
                           ]
                         },
                         "pointer": {
-                          "description": "The same place as an RFC 6901 JSON Pointer into the document checked (for a partial change, `Merge` or `Patch`, the whole document it would make), e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is.",
+                          "description": "The same place as an RFC 6901 JSON Pointer, e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is.",
                           "type": [
                             "string",
                             "null"
@@ -5937,14 +5937,14 @@
                             "type": "string"
                           },
                           "path": {
-                            "description": "The place as the validator names it: names joined by `.` (a name holding a `.` or `->` may be quoted with `'`), and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. Null for a problem with no place in the document.",
+                            "description": "The place as the validator names it: names joined by `.`, and `[n]` for a list index, e.g. `networks.lan.dhcp.ranges[0]`. A name holding a `.`, `[`, `]` or a quote is quoted with `'` (or `\"`), and policy keys always are: `policy.'users->wan'.rules.'allow.web'`. Null for a problem with no place in the document.",
                             "type": [
                               "string",
                               "null"
                             ]
                           },
                           "pointer": {
-                            "description": "The same place as an RFC 6901 JSON Pointer into the document checked (for a partial change, `Merge` or `Patch`, the whole document it would make), e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is.",
+                            "description": "The same place as an RFC 6901 JSON Pointer, e.g. `/networks/lan/dhcp/ranges/0`, for marking the field. It may name a field the document leaves out (a required one). Null when `path` is.",
                             "type": [
                               "string",
                               "null"
