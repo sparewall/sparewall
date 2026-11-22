@@ -5,6 +5,7 @@
 pub mod identity;
 pub mod model;
 pub mod path;
+pub mod pointer;
 pub mod providers;
 pub mod schema;
 pub mod topology;
@@ -14,6 +15,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub use model::{Document, SCHEMA_VERSION};
+pub use pointer::pointer;
 pub use validate::{Issue, Severity, validate};
 
 #[derive(Debug, thiserror::Error)]

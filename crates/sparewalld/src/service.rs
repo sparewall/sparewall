@@ -14,7 +14,7 @@ use sparewall_api::{
     Neighbour, NeighboursReply, QueryReply, Route, RoutesReply, RuleHit, SecretInfo,
     SecretListReply, SecretSetReply, StatusReply, TokenCreateReply, TokenInfo, TokenListReply,
     ToolReply, UpgradeCheckReply, UpgradeStartReply, UserInfo, UserListReply, ValidateReply,
-    VpnConfigReply,
+    ValidationIssue, VpnConfigReply,
 };
 use sparewall_core::hostop::HostOp;
 use sparewall_core::pair::SyncState;
@@ -371,12 +371,22 @@ pub fn gated_rollback(
     c.rollback_staging(target, author, reachable, role).map(Ok)
 }
 
+/// A validation problem as the API gives it (#305).
+fn api_issue(p: sparewall_core::Problem) -> ValidationIssue {
+    ValidationIssue {
+        path: p.path,
+        pointer: p.pointer,
+        message: p.message,
+    }
+}
+
 pub fn to_api_error(e: Error) -> FirewallError {
     match e {
-        Error::Validation(errors) => FirewallError::ValidationFailed { errors },
-        Error::Check(m) => FirewallError::ValidationFailed {
-            errors: vec![format!("dry run: {m}")],
+        Error::Validation(problems) => FirewallError::ValidationFailed {
+            errors: problems.iter().map(ToString::to_string).collect(),
+            issues: Some(problems.into_iter().map(api_issue).collect()),
         },
+        Error::Check(m) => FirewallError::invalid(vec![format!("dry run: {m}")]),
         Error::Conflict { current } => FirewallError::Conflict {
             current: current as i64,
         },
@@ -513,7 +523,10 @@ where
         #[zlink(state)] fw: &mut Shared,
     ) -> Result<ValidateReply, FirewallError> {
         let warnings = with_core(&fw.core, &fw.events, move |c| c.validate(config)).await?;
-        Ok(ValidateReply { warnings })
+        Ok(ValidateReply {
+            warnings: warnings.iter().map(ToString::to_string).collect(),
+            issues: Some(warnings.into_iter().map(api_issue).collect()),
+        })
     }
 
     /// Replace the configuration with `config`. `base` is the generation it
@@ -884,14 +897,14 @@ where
             let admin_password = name == ADMIN_PASSWORD;
             if admin_password {
                 if !sparewall_config::identity::password_hash_ok(&value) {
-                    return Err(Error::Validation(vec![format!(
+                    return Err(Error::invalid(format!(
                         "{ADMIN_PASSWORD} takes a crypt(3) hash or \"!\": use sparewall passwd"
-                    )]));
+                    )));
                 }
                 if class != SecretClass::Cluster {
-                    return Err(Error::Validation(vec![format!(
+                    return Err(Error::invalid(format!(
                         "{ADMIN_PASSWORD} is a cluster secret"
-                    )]));
+                    )));
                 }
             }
             let info = c.secret_set(&name, value.as_bytes(), class)?;
@@ -1761,7 +1774,7 @@ where
         };
         let filter = filter.filter(|f| !f.trim().is_empty());
         if let Some(p) = filter.as_deref().and_then(crate::capture::filter_problem) {
-            return fail(FirewallError::ValidationFailed { errors: vec![p] });
+            return fail(FirewallError::invalid(vec![p]));
         }
         let who = if fw.peer_api {
             "the peer, through the sync tunnel".to_string()
@@ -1825,9 +1838,9 @@ where
         let iface = match doc.as_ref().and_then(|d| d.network_iface(&network)) {
             Some(i) => i.to_string(),
             None => {
-                return fail(FirewallError::ValidationFailed {
-                    errors: vec![format!("network: no network named {network:?}")],
-                });
+                return fail(FirewallError::invalid(vec![format!(
+                    "network: no network named {network:?}"
+                )]));
             }
         };
         let slot = match crate::capture::slot(&own) {
@@ -1933,10 +1946,10 @@ impl Shared {
 }
 
 fn parse_role(role: &str) -> Result<Role, FirewallError> {
-    Role::parse(role).ok_or_else(|| FirewallError::ValidationFailed {
-        errors: vec![format!(
+    Role::parse(role).ok_or_else(|| {
+        FirewallError::invalid(vec![format!(
             "role must be monitor, viewer, operator or admin, not {role:?}"
-        )],
+        )])
     })
 }
 

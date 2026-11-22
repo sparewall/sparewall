@@ -42,10 +42,42 @@ An error keeps its Varlink name and parameters, with a message in words:
 ```json
 {
   "error": "org.sparewall.Firewall.ValidationFailed",
-  "parameters": {"errors": ["networks.users.vlan: expected an integer"]},
+  "parameters": {
+    "errors": ["networks.users.vlan: expected an integer"],
+    "issues": [
+      {
+        "path": "networks.users.vlan",
+        "pointer": "/networks/users/vlan",
+        "message": "expected an integer"
+      }
+    ]
+  },
   "message": "validation failed:\n  networks.users.vlan: expected an integer"
 }
 ```
+
+### Where a problem is
+
+`ValidationFailed` lists each problem twice: as a line in `errors`
+(`path: message`, as the CLI prints it), and in `issues` with its place
+in the document, so a form can mark the field at fault. `Validate`'s
+reply does the same for its `warnings`. Nodes before 0.8.0 send no
+`issues`.
+
+- **`path`:** the place as the validator names it: names joined by `.`,
+  and `[n]` for a list index, as in `networks.lan.dhcp.ranges[0]`. A
+  name holding `.` or `->` may be quoted with `'`, as in
+  `policy.'users->wan'.rules.web`, but needn't be.
+- **`pointer`:** the same place as an [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)
+  JSON Pointer into the document checked: `/networks/lan/dhcp/ranges/0`.
+  It is read against the document, so a name holding a `.` comes out
+  whole, as one step. It may name a field the document
+  leaves out, when that field is required. For a partial change (`Merge`,
+  `Patch`), it points into the whole document the change would make.
+- **Neither:** both are null for a problem with no place in the
+  document, such as a dry run's failure or a refused password.
+
+Both forms are part of the API that 1.0 freezes.
 
 | Status | Errors |
 | --- | --- |

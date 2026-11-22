@@ -38,10 +38,78 @@ pub const VERSION: &str = match option_env!("SPAREWALL_VERSION") {
     _ => env!("CARGO_PKG_VERSION"),
 };
 
+/// A reason a document or a request is refused, with the part of the
+/// document it concerns when there is one (#305).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    /// The validator's path, e.g. `networks.lan.dhcp.ranges[0]`.
+    pub path: Option<String>,
+    /// The same place as an RFC 6901 JSON Pointer into the document,
+    /// when the document is known: `/networks/lan/dhcp/ranges/0`.
+    pub pointer: Option<String>,
+    pub message: String,
+}
+
+impl Problem {
+    /// A problem at `path` in the document.
+    pub fn at(path: impl Into<String>, message: impl std::fmt::Display) -> Self {
+        Problem {
+            path: Some(path.into()),
+            pointer: None,
+            message: message.to_string(),
+        }
+    }
+
+    /// Fill in the pointer from the document the path is in.
+    pub fn locate(mut self, doc: &serde_json::Value) -> Self {
+        if self.pointer.is_none() {
+            self.pointer = self
+                .path
+                .as_deref()
+                .and_then(|p| sparewall_config::pointer(doc, p));
+        }
+        self
+    }
+}
+
+impl From<String> for Problem {
+    fn from(message: String) -> Self {
+        Problem {
+            path: None,
+            pointer: None,
+            message,
+        }
+    }
+}
+
+impl From<&str> for Problem {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+/// As the CLI and the `errors` strings have always shown it: `path: message`.
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.path {
+            Some(p) => write!(f, "{p}: {}", self.message),
+            None => f.write_str(&self.message),
+        }
+    }
+}
+
+fn joined(problems: &[Problem]) -> String {
+    problems
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("validation failed: {}", .0.join("; "))]
-    Validation(Vec<String>),
+    #[error("validation failed: {}", joined(.0))]
+    Validation(Vec<Problem>),
     #[error("conflict: the configuration changed (current generation is {current})")]
     Conflict { current: u64 },
     #[error("generation {0} not found")]
@@ -66,6 +134,26 @@ pub enum Error {
 }
 
 impl Error {
+    /// A refusal with no place in the document.
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Error::Validation(vec![Problem::from(message.into())])
+    }
+
+    /// A refusal at `path` in the document.
+    pub fn invalid_at(path: impl Into<String>, message: impl std::fmt::Display) -> Self {
+        Error::Validation(vec![Problem::at(path, message)])
+    }
+
+    /// Fill in each validation problem's pointer from the document.
+    pub fn locate(self, doc: &serde_json::Value) -> Self {
+        match self {
+            Error::Validation(ps) => {
+                Error::Validation(ps.into_iter().map(|p| p.locate(doc)).collect())
+            }
+            e => e,
+        }
+    }
+
     pub fn io(path: &Path, source: std::io::Error) -> Self {
         Error::Io {
             path: path.display().to_string(),

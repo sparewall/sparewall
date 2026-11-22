@@ -98,6 +98,73 @@ fn apply_confirm_and_history() {
     assert_eq!(ev[1], Event::Confirmed { id: 1 });
 }
 
+/// Each refusal names its place in the document as the validator's path
+/// and as a JSON Pointer into the document sent (#305), and reads as it
+/// always has.
+#[test]
+fn refusals_name_their_place_in_the_document() {
+    let mut t = setup();
+    let place = |r: Result<(), Error>| match r {
+        Err(Error::Validation(e)) => e
+            .iter()
+            .map(|p| (p.path.clone(), p.pointer.clone(), p.to_string()))
+            .collect::<Vec<_>>(),
+        other => panic!("expected a validation error, got {other:?}"),
+    };
+    let some = |s: &str| Some(s.to_string());
+
+    // A nested path: a network's field.
+    let mut v = example();
+    v["networks"]["users"]["mtu"] = json!(100);
+    assert_eq!(
+        place(t.c.validate(v).map(drop)),
+        [(
+            some("networks.users.mtu"),
+            some("/networks/users/mtu"),
+            "networks.users.mtu: must be 576-9216".into()
+        )]
+    );
+
+    // A list index.
+    let mut v = example();
+    v["ntp"] = json!({"serve": ["users", "nope"]});
+    assert_eq!(
+        place(t.c.apply(v, &opts(0, None)).map(drop)),
+        [(
+            some("ntp.serve[1]"),
+            some("/ntp/serve/1"),
+            "ntp.serve[1]: no network named \"nope\"".into()
+        )]
+    );
+
+    // A field of the wrong type, refused when the document is read.
+    let mut v = example();
+    v["networks"]["users"]["vlan"] = json!("twenty");
+    let p = place(t.c.validate(v).map(drop));
+    assert_eq!(
+        (p[0].0.as_deref(), p[0].1.as_deref()),
+        (Some("networks.users.vlan"), Some("/networks/users/vlan")),
+        "{p:?}"
+    );
+
+    // A check outside the validator: this node isn't in the cluster.
+    let mut v = example();
+    v["cluster"]["nodes"] = json!(["fw2"]);
+    v["ports"] = json!({"fw2": {"uplink": {"nic": "52:54:00:aa:00:01"}}});
+    v["networks"]["mgmt"]["addresses"] = json!({"fw2": "10.0.99.2/24"});
+    v["networks"]["users"]["addresses"] = json!({"fw2": "192.0.2.2/24"});
+    v["networks"]["guests"]["addresses"] = json!({"fw2": "198.51.100.2/24"});
+    let p = place(t.c.validate(v).map(drop));
+    assert_eq!(
+        (p[0].0.as_deref(), p[0].1.as_deref()),
+        (Some("cluster.nodes"), Some("/cluster/nodes")),
+        "{p:?}"
+    );
+    assert!(
+        matches!(t.c.validate(json!("not a document")), Err(Error::Validation(e)) if e[0].path.is_none() && e[0].pointer.is_none())
+    );
+}
+
 /// The maintenance window is checked by systemd when a change is applied
 /// (#84): one systemd rejects is refused at its path, and nothing runs.
 #[test]
@@ -109,7 +176,7 @@ fn a_window_systemd_rejects_is_refused() {
     match t.c.apply(v.clone(), &opts(1, None)) {
         Err(Error::Validation(e)) => assert!(
             e.iter()
-                .any(|m| m.starts_with("updates.window: Failed to parse")),
+                .any(|m| m.to_string().starts_with("updates.window: Failed to parse")),
             "{e:?}"
         ),
         other => panic!("expected a validation error, got {other:?}"),
@@ -670,7 +737,10 @@ fn validation_and_dry_run_failures_change_nothing() {
     v["networks"]["guests"]["addresses"] = json!({"fw2": "198.51.100.2/24"});
     match t.c.apply(v, &opts(0, None)) {
         Err(Error::Validation(e)) => {
-            assert!(e[0].contains("this node (fw1) is not listed"), "{e:?}")
+            assert!(
+                e[0].to_string().contains("this node (fw1) is not listed"),
+                "{e:?}"
+            )
         }
         other => panic!("{other:?}"),
     }
@@ -1942,12 +2012,12 @@ fn stored_generations_are_checked_before_they_run() {
         for gate in [PeerGate::PeerConfirms, PeerGate::Immediate] {
             let r = b.c.receive(&g2, v2.clone(), gate);
             assert!(
-                matches!(&r, Err(Error::Validation(e)) if e.iter().any(|m| m.starts_with(path))),
+                matches!(&r, Err(Error::Validation(e)) if e.iter().any(|m| m.to_string().starts_with(path))),
                 "{path}: {r:?}"
             );
             let r = b.c.adopt(&g2, v2.clone(), gate);
             assert!(
-                matches!(&r, Err(Error::Validation(e)) if e.iter().any(|m| m.starts_with(path))),
+                matches!(&r, Err(Error::Validation(e)) if e.iter().any(|m| m.to_string().starts_with(path))),
                 "{path}: {r:?}"
             );
             let st = b.c.state().unwrap();

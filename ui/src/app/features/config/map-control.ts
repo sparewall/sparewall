@@ -42,6 +42,8 @@ export class MapControl extends JsonFormsControl {
   private taken: string[] = [];
   protected entrySchema: JsonSchema7 = {};
   protected entryUiSchema: UISchemaElement = { type: 'VerticalLayout' };
+  /** Entries holding a field the node refused (#305): marked, and opened. */
+  protected faulty = new Set<string>();
 
   override mapAdditionalProps(props: ControlProps): void {
     const data = (props.data ?? {}) as Record<string, unknown>;
@@ -59,6 +61,15 @@ export class MapControl extends JsonFormsControl {
           ? objectLayout(entry)
           : Generate.uiSchema(entry, 'VerticalLayout', undefined, this.rootSchema);
     }
+    const refused = (this.jsonFormsService.getState()?.jsonforms?.core?.additionalErrors ?? []).map(
+      (e) => dotted(e.instancePath),
+    );
+    this.faulty = new Set(
+      this.names.filter((n) => {
+        const p = this.entryPath(n);
+        return refused.some((r) => r === p || r.startsWith(`${p}.`));
+      }),
+    );
     this.cd.markForCheck();
   }
 
@@ -130,3 +141,12 @@ export const mapControlTester: RankedTester = rankWith(
   5,
   schemaMatches((s) => isMap(s as JsonSchema7)),
 );
+
+/** A JSON Pointer as a JSON Forms path: `/networks/lan/mtu` → `networks.lan.mtu`. */
+function dotted(pointer: string): string {
+  return pointer
+    .split('/')
+    .slice(1)
+    .map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'))
+    .join('.');
+}

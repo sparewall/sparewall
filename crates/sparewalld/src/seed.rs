@@ -118,7 +118,7 @@ fn step<S: System>(
         } else {
             let format = sparewall_config::Format::detect(Some(&s.source), &s.text);
             let applied = sparewall_config::parse_value(&s.text, format)
-                .map_err(|e| Error::Validation(vec![e.to_string()]))
+                .map_err(|e| Error::invalid(e.to_string()))
                 .and_then(|v| {
                     c.apply(
                         v,

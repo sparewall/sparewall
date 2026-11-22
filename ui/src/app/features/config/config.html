@@ -33,6 +33,8 @@
   [active]="shown()?.key"
   [marked]="editedSections()"
   markTitle="Changed, not yet applied"
+  [flagged]="flaggedSections()"
+  flagTitle="The node refused a setting here"
   [showSections]="!query()"
 >
   <div sectionNavTop class="nav-top">
@@ -79,6 +81,7 @@
         [readonly]="!session.can('operator')"
         [ajv]="ajv"
         [config]="formConfig"
+        [additionalErrors]="fieldErrors()"
         validationMode="NoValidation"
         (dataChange)="edited($event)"
       />

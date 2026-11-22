@@ -36,9 +36,7 @@ const FILE_HEADER: usize = 24;
 const RECORD_HEADER: usize = 16;
 
 fn invalid(e: impl Into<String>) -> FirewallError {
-    FirewallError::ValidationFailed {
-        errors: vec![e.into()],
-    }
+    FirewallError::invalid(vec![e.into()])
 }
 
 /// A capture's limits, checked: (seconds, bytes).
@@ -429,7 +427,7 @@ mod tests {
         let (_d, path) = helper(refused, vec![]).await;
         let (_, last) = all(run_at(path, req(5, MIN_SIZE), (), "t".into())).await;
         assert!(
-            matches!(last, Err(FirewallError::ValidationFailed { errors })
+            matches!(last, Err(FirewallError::ValidationFailed { errors, .. })
             if errors[0] == "filter: can't parse filter expression: syntax error")
         );
         let killed = "{\"error\":\"tcpdump was killed by signal 31\",\"filter\":false}\n";

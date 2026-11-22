@@ -44,6 +44,30 @@ pub struct Generation {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ValidateReply {
     pub warnings: Vec<String>,
+    /// The same warnings, each with the place in the document it concerns,
+    /// as in ValidationFailed's `issues` (#305). Absent from nodes older
+    /// than 0.8.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issues: Option<Vec<ValidationIssue>>,
+}
+
+/// One validation problem, with the place in the document it concerns
+/// (#305). An inline object, not a named type: errors are shared by every
+/// interface, and a named type would have to be declared in each.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ValidationIssue {
+    /// The place as the validator names it: names joined by `.` (a name
+    /// holding a `.` or `->` may be quoted with `'`), and `[n]` for a list
+    /// index, e.g. `networks.lan.dhcp.ranges[0]`. Null for a problem with
+    /// no place in the document.
+    pub path: Option<String>,
+    /// The same place as an RFC 6901 JSON Pointer into the document
+    /// checked (for a partial change, `Merge` or `Patch`, the whole document
+    /// it would make), e.g. `/networks/lan/dhcp/ranges/0`, for marking the
+    /// field. It may name a field the document leaves out (a required
+    /// one). Null when `path` is.
+    pub pointer: Option<String>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -149,7 +173,11 @@ pub struct EventReply {
 #[zlink(interface = "org.sparewall.Firewall")]
 pub enum FirewallError {
     ValidationFailed {
+        /// Each problem as one line, `path: message`.
         errors: Vec<String>,
+        /// The same problems, each with its place in the document (#305).
+        /// Absent from nodes older than 0.8.0.
+        issues: Option<Vec<ValidationIssue>>,
     },
     Conflict {
         current: i64,
@@ -188,7 +216,7 @@ pub enum FirewallError {
 impl std::fmt::Display for FirewallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FirewallError::ValidationFailed { errors } => {
+            FirewallError::ValidationFailed { errors, .. } => {
                 write!(f, "validation failed:")?;
                 for e in errors {
                     write!(f, "\n  {e}")?;
@@ -227,6 +255,24 @@ impl std::fmt::Display for FirewallError {
 }
 
 impl std::error::Error for FirewallError {}
+
+impl FirewallError {
+    /// A refusal from messages with no place in the document.
+    pub fn invalid(errors: Vec<String>) -> Self {
+        let issues = errors
+            .iter()
+            .map(|m| ValidationIssue {
+                path: None,
+                pointer: None,
+                message: m.clone(),
+            })
+            .collect();
+        FirewallError::ValidationFailed {
+            errors,
+            issues: Some(issues),
+        }
+    }
+}
 
 /// Client side of `org.sparewall.Firewall`.
 #[zlink::proxy("org.sparewall.Firewall")]
