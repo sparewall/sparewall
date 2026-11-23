@@ -429,6 +429,15 @@ vm 'ps -eo uid,label,comm' | grep -E '^ *65534 +system_u:system_r:container_t:.*
     || fail "Prometheus does not run as 65534 in container_t: $(vm 'ps -eo uid,label,comm' | grep prometheus)"
 [ "$(vm 'sudo stat -c %u:%g /var/lib/containers/storage/volumes/sparewall-prometheus-data/_data')" = 65534:65534 ] \
     || fail "the history volume is not the user Prometheus runs as"
+# Its logs and unbound's reach the journal as the unit's own output, at
+# info: a container's stderr through podman's journald driver is all at
+# err (#338).
+for u in sparewall-prometheus sparewall-unbound; do
+    vm "sudo journalctl -b -u $u -p err -o cat --no-pager" > errs.txt
+    if grep -qiE 'level=info| info: ' errs.txt; then
+        fail "$u logs ordinary messages as errors: $(grep -iE 'level=info| info: ' errs.txt | head -3)"
+    fi
+done
 # Nothing new on the network: Prometheus answers loopback only.
 vm 'sudo ss -Htlnp' > listen.txt
 grep prometheus listen.txt | grep -v ' 127\.0\.0\.1:9090 ' && fail "Prometheus listens beyond loopback"

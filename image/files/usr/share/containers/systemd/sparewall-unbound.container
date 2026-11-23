@@ -20,7 +20,9 @@ ReadOnly=true
 Volume=/run/sparewall/dns:/etc/unbound:ro
 Volume=sparewall-unbound-state:/var/lib/unbound:z
 Volume=/run/unbound:/run/unbound:z
-LogDriver=journald
+# Its output is the unit's own, logged at the unit's level (info). Podman's
+# journald driver logs all of a container's stderr at err (#338).
+LogDriver=passthrough
 
 [Service]
 ExecStartPre=/usr/bin/install -d -m 0755 /run/unbound

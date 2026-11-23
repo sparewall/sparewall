@@ -739,7 +739,7 @@ Logs land in the journal and can be forwarded off the box; metrics are exposed i
 | Source | Captured by |
 | --- | --- |
 | Host services (networkd, keepalived, conntrackd, coordinator) | journald |
-| Containers (Kea, resolver) | Podman's journald log driver, tagged with the unit name |
+| Containers (Kea, resolver, Prometheus) | The unit's own output (`LogDriver=passthrough`), under the unit's name at info: podman's journald driver would log all of stderr at err |
 | Firewall rule hits | nft `log group N` → ulogd2 → structured JSON entries in the journal, avoiding kernel-log rate limits |
 | Connection and NAT records (optional, off by default) | ulogd2's conntrack plugin: flow start and end with NAT mappings |
 | Configuration changes | The coordinator: generation, hash, author and diff summary as structured journal fields |

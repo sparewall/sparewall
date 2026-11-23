@@ -38,9 +38,15 @@ export const RECORDS = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'PTR', 'SOA', 'SRV', '
             }
           </mat-select>
         </mat-form-field>
-        <mat-form-field subscriptSizing="dynamic">
-          <mat-label>Server (default: the node's)</mat-label>
-          <input matInput [(ngModel)]="server" name="server" />
+        <mat-form-field subscriptSizing="dynamic" floatLabel="always">
+          <mat-label>Server</mat-label>
+          <input
+            matInput
+            [(ngModel)]="server"
+            name="server"
+            placeholder="Default"
+            title="Leave empty to ask the node's own resolver"
+          />
         </mat-form-field>
       } @else {
         <mat-form-field subscriptSizing="dynamic">
