@@ -130,30 +130,70 @@ fn sync_views(doc: Option<&Document>, cache: &Path, dir: &Path) -> (bool, Vec<St
     (changed, full)
 }
 
-/// Where a redirect from `at` to `loc` goes: an absolute URL, one
-/// without a scheme (`//host/path`), or a path on the same host. Never
-/// from HTTPS to plain HTTP: the list would lose the protection the
-/// document asked for.
+/// Where a redirect from `at` to `loc` goes, resolving a relative
+/// reference as RFC 3986 says (`ads.txt`, `../v2/ads.txt`, `/x`,
+/// `//host/x`, `?v=2`). Never from HTTPS to plain HTTP: the list would
+/// lose the protection the document asked for.
 fn redirect(at: &str, loc: &str) -> Result<String, String> {
-    let scheme = if at.starts_with("https://") {
-        "https"
-    } else {
-        "http"
+    let (scheme, rest) = at.split_once("://").ok_or("not a URL")?;
+    let (authority, path_q) = match rest.find('/') {
+        Some(i) => rest.split_at(i),
+        None => (rest, "/"),
     };
+    let base_path = path_q.split(['?', '#']).next().unwrap_or("/");
+    let loc = loc.split('#').next().unwrap_or("");
     let next = if loc.starts_with("https://") || loc.starts_with("http://") {
         loc.to_string()
-    } else if let Some(rest) = loc.strip_prefix("//") {
-        format!("{scheme}://{rest}")
-    } else if let Some(path) = loc.strip_prefix('/') {
-        let base = at.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
-        format!("{base}/{path}")
+    } else if let Some(r) = loc.strip_prefix("//") {
+        format!("{scheme}://{r}")
+    } else if loc.is_empty() {
+        return Err("to an empty location".into());
+    } else if loc.starts_with('?') {
+        format!("{scheme}://{authority}{base_path}{loc}")
     } else {
-        return Err(format!("to {loc:?}, which isn't a URL or a path"));
+        let (lpath, query) = match loc.find('?') {
+            Some(i) => loc.split_at(i),
+            None => (loc, ""),
+        };
+        if lpath.contains(':') && !lpath.starts_with('/') && !lpath.contains('/') {
+            return Err(format!("to {loc:?}, which isn't HTTP"));
+        }
+        let merged = if lpath.starts_with('/') {
+            lpath.to_string()
+        } else {
+            let dir = &base_path[..=base_path.rfind('/').unwrap_or(0)];
+            format!("{dir}{lpath}")
+        };
+        format!("{scheme}://{authority}{}{query}", remove_dots(&merged))
     };
     if scheme == "https" && !next.starts_with("https://") {
         return Err(format!("to {next:?}, which isn't HTTPS"));
     }
     Ok(next)
+}
+
+/// A path without its `.` and `..` segments (RFC 3986, 5.2.4).
+fn remove_dots(path: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let segs: Vec<&str> = path.split('/').skip(1).collect();
+    for (i, seg) in segs.iter().enumerate() {
+        let last = i + 1 == segs.len();
+        match *seg {
+            "." => {
+                if last {
+                    out.push("");
+                }
+            }
+            ".." => {
+                out.pop();
+                if last {
+                    out.push("");
+                }
+            }
+            s => out.push(s),
+        }
+    }
+    format!("/{}", out.join("/"))
 }
 
 /// The body at `url`, following up to five redirects; at most
@@ -429,7 +469,33 @@ mod tests {
                 .unwrap_err()
                 .contains("isn't HTTPS")
         );
-        assert!(redirect(a, "ads2.txt").is_err());
+        assert_eq!(
+            redirect(a, "ads2.txt").unwrap(),
+            "https://lists.example/ads2.txt"
+        );
+        let deep = "https://lists.example/a/b/ads.txt?x=1";
+        assert_eq!(
+            redirect(deep, "../lists/ads.txt").unwrap(),
+            "https://lists.example/a/lists/ads.txt"
+        );
+        assert_eq!(
+            redirect(deep, "./c.txt?v=2#top").unwrap(),
+            "https://lists.example/a/b/c.txt?v=2"
+        );
+        assert_eq!(
+            redirect(deep, "?v=2").unwrap(),
+            "https://lists.example/a/b/ads.txt?v=2"
+        );
+        assert_eq!(
+            redirect(deep, "../../../x").unwrap(),
+            "https://lists.example/x"
+        );
+        assert_eq!(
+            redirect("https://lists.example", "x").unwrap(),
+            "https://lists.example/x"
+        );
+        assert!(redirect(a, "ftp:x").is_err());
+        assert!(redirect(a, "").is_err());
         let h = "http://lists.example/ads.txt";
         assert_eq!(
             redirect(h, "https://cdn.example/x").unwrap(),
