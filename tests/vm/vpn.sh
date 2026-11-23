@@ -338,37 +338,42 @@ vpn_moved() { # event
     VPN_PROBES+=($!)
     # These two wait for a handshake, which the new master may make
     # before the move is noticed here: they count from the handover.
-    keepalive_recovery natk "$(handover_at "$VPN_MOVED_AT")" > natk.recovery &
+    # shellcheck disable=SC2046 # "time node", split on purpose
+    keepalive_recovery natk $(handover_at "$VPN_MOVED_AT") > natk.recovery &
     VPN_PROBES+=($!)
     # The site sends nothing: only the new master can start its tunnel.
-    keepalive_recovery site "$(handover_at "$VPN_MOVED_AT")" > site.recovery &
+    # shellcheck disable=SC2046
+    keepalive_recovery site $(handover_at "$VPN_MOVED_AT") > site.recovery &
     VPN_PROBES+=($!)
     site_poll 160 > site-poll.log 2>&1 &
 }
 
-# When the gateway moved, by the nodes' journals: the first time either
-# node's keepalived entered MASTER on the WAN within 30 s of $1 (when
-# this test noticed the move), or $1 if neither says. The first, so that
-# a flap after the takeover can only lengthen the count, never shorten it. The test notices
-# a handover by polling, and a rolling upgrade's `[failover]` line comes
+# When the gateway moved, and to which node, by the nodes' journals: the
+# first time either node's keepalived entered MASTER on the WAN within
+# 30 s of $1 (when this test noticed the move), and that node; or $1 and
+# no node if neither says. The first, so that a flap after the takeover
+# can only lengthen the count, never shorten it. The test notices a
+# handover by polling, and a rolling upgrade's `[failover]` line comes
 # as the old master stops, so the takeover lands a few seconds either
 # side of the notice. The new master may start the site's tunnel before
 # the notice: counted from the notice, that handshake looked older than
 # the move, and the wait ran to the next rekey, 120 s on (#275). The
 # journals are read 20 s after the notice, for a takeover just after
 # it; the probes count handshake times, so they lose nothing by it.
-handover_at() { # noticed
-    local noticed=$1 n t best=
+handover_at() { # noticed -> "time node"
+    local noticed=$1 n t best="" node=""
     sleep "$(awk -v n="$noticed" -v now="$(date +%s.%N)" 'BEGIN { d = n + 20 - now; print (d > 0 ? d : 0) }')"
     for n in fw1 fw2; do
         # A node that is down (master loss) answers nothing, quickly.
         t=$(AT_TIMEOUT=10 at "$n" "sudo journalctl -u keepalived -o short-unix --no-pager --since -10min -g 'VI_wan\\) Entering MASTER STATE'" 2>/dev/null \
             | awk -v n="$noticed" 'NF && $1 + 0 >= n - 30 && $1 + 0 <= n + 30 { if (t == "") t = $1 } END { printf "%.6f\n", t + 0 }') || t=0
-        awk -v a="$t" -v b="${best:-0}" 'BEGIN { exit !(a > 0 && (b == 0 || a < b)) }' && best=$t
+        if awk -v a="$t" -v b="${best:-0}" 'BEGIN { exit !(a > 0 && (b == 0 || a < b)) }'; then
+            best=$t node=$n
+        fi
     done
     if [ -n "$best" ]; then
-        awk -v a="$best" -v n="$noticed" 'BEGIN { printf "  handover at %.1f, %+.1f s from the notice\n", a, a - n }' >&2
-        echo "$best"
+        awk -v a="$best" -v n="$noticed" -v w="$node" 'BEGIN { printf "  handover to %s at %.1f, %+.1f s from the notice\n", w, a, a - n }' >&2
+        echo "$best $node"
     else
         echo "  no handover in the nodes' journals: counting from the notice" >&2
         echo "$noticed"
@@ -389,17 +394,32 @@ idle_recovery() { # client
     echo "never"
 }
 
-# Seconds until a client sending only keepalives has a new handshake
-# (whole seconds: wg reports handshake times in seconds). A handshake in
-# the same second as the move counts: the new master often starts the
-# site's tunnel within a second of taking the gateway, and a strict
-# comparison let that handshake pass for the old session's, so the wait
-# ran on to the next rekey, 120 s later (#275). The old master's last
-# handshake comes before the move, in an earlier second.
-keepalive_recovery() { # client since
-    local since=${2%.*} h i
+# A client's last handshake as a node's own WireGuard sees it, or 0.
+node_handshake() { # node client
+    local h
+    h=$(AT_TIMEOUT=4 at "$1" "sudo wg show ra latest-handshakes" 2>/dev/null \
+        | awk -v k="$(cat "$WORK/$2.pub")" '$1 == k { print $2 }')
+    echo "${h:-0}"
+}
+
+# Seconds until a client sending only keepalives has a handshake with
+# the new master, as the new master sees it: its WireGuard holds only
+# its own sessions, so the old master's last handshake, even in the
+# second of the move, can't pass for it. A handshake in the same second
+# as the move counts: the new master often starts the site's tunnel
+# within a second of taking the gateway, and wg reports handshake times
+# in whole seconds; a strict comparison let that handshake pass for an
+# old one, so the wait ran on to the next rekey, 120 s later (#275).
+# Without the node (the journals didn't say), the client's own view,
+# from the second after the move.
+keepalive_recovery() { # client since [node]
+    local since=${2%.*} node=${3:-} h i
     for i in $(seq 1 $((VPN_KEEPALIVE_BOUND + 30))); do
-        h=$(handshake "$1")
+        if [ -n "$node" ]; then
+            h=$(node_handshake "$node" "$1")
+        else
+            h=$(( $(handshake "$1") - 1 ))
+        fi
         if [ "$h" -ge "$since" ]; then
             echo $((h - since))
             return 0
