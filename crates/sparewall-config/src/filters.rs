@@ -157,11 +157,27 @@ pub fn views(doc: &Document) -> Vec<View> {
     }
     by.into_iter()
         .map(|(filters, networks)| View {
-            name: filters.join("+"),
+            name: view_name(&filters),
             filters,
             networks,
         })
         .collect()
+}
+
+/// The longest view name made of its filters' names; past it, a name
+/// from their hash, so a file name stays well inside the system's limit.
+const MAX_VIEW_NAME: usize = 64;
+
+fn view_name(filters: &[String]) -> String {
+    let joined = filters.join("+");
+    if joined.len() <= MAX_VIEW_NAME {
+        return joined;
+    }
+    // FNV-1a: stable across releases and nodes, which must agree.
+    let h = joined.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("filters-{h:016x}")
 }
 
 /// The file a view's names are in, in the resolver's configuration
@@ -255,6 +271,17 @@ x.localhost
         let (out, dropped) = compact(names, &["cdn.example.net".into(), "OK.example.org".into()]);
         assert_eq!(out, ["ads.example.com", "tracker.example.org"]);
         assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn long_view_names_are_hashed() {
+        let few: Vec<String> = vec!["ads".into(), "kids".into()];
+        assert_eq!(view_name(&few), "ads+kids");
+        let many: Vec<String> = (0..20).map(|i| format!("filter-number-{i:02}")).collect();
+        let n = view_name(&many);
+        assert!(n.starts_with("filters-") && n.len() == 24, "{n}");
+        assert_eq!(n, view_name(&many));
+        assert_ne!(n, view_name(&many[1..]));
     }
 
     #[test]

@@ -114,7 +114,8 @@ fn sync_views(doc: Option<&Document>, cache: &Path, dir: &Path) -> (bool, Vec<St
             match sparewall_core::store::write_atomic(&p, body.as_bytes()) {
                 Ok(()) => changed = true,
                 Err(e) => {
-                    tracing::warn!(error = %e, view = v.name, "cannot write a DNS filter's names")
+                    tracing::warn!(error = %e, view = v.name, "cannot write a DNS filter's names");
+                    full.push(format!("{}: cannot write its names: {e}", v.name));
                 }
             }
         }
@@ -127,6 +128,32 @@ fn sync_views(doc: Option<&Document>, cache: &Path, dir: &Path) -> (bool, Vec<St
         }
     }
     (changed, full)
+}
+
+/// Where a redirect from `at` to `loc` goes: an absolute URL, one
+/// without a scheme (`//host/path`), or a path on the same host. Never
+/// from HTTPS to plain HTTP: the list would lose the protection the
+/// document asked for.
+fn redirect(at: &str, loc: &str) -> Result<String, String> {
+    let scheme = if at.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    };
+    let next = if loc.starts_with("https://") || loc.starts_with("http://") {
+        loc.to_string()
+    } else if let Some(rest) = loc.strip_prefix("//") {
+        format!("{scheme}://{rest}")
+    } else if let Some(path) = loc.strip_prefix('/') {
+        let base = at.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
+        format!("{base}/{path}")
+    } else {
+        return Err(format!("to {loc:?}, which isn't a URL or a path"));
+    };
+    if scheme == "https" && !next.starts_with("https://") {
+        return Err(format!("to {next:?}, which isn't HTTPS"));
+    }
+    Ok(next)
 }
 
 /// The body at `url`, following up to five redirects; at most
@@ -156,14 +183,7 @@ async fn fetch(url: &str) -> Result<String, String> {
                 .get(hyper::header::LOCATION)
                 .and_then(|l| l.to_str().ok())
                 .ok_or_else(|| format!("{status} with no location"))?;
-            at = if loc.starts_with("https://") || loc.starts_with("http://") {
-                loc.to_string()
-            } else if let Some(path) = loc.strip_prefix('/') {
-                let base = at.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
-                format!("{base}/{path}")
-            } else {
-                return Err(format!("{status} to {loc:?}"));
-            };
+            at = redirect(&at, loc).map_err(|e| format!("{status}: {e}"))?;
             continue;
         }
         if !status.is_success() {
@@ -387,6 +407,35 @@ mod tests {
             "https://l.example/a: never fetched (404 Not Found)"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn redirects_never_drop_tls() {
+        let a = "https://lists.example/ads.txt";
+        assert_eq!(
+            redirect(a, "https://cdn.example/x").unwrap(),
+            "https://cdn.example/x"
+        );
+        assert_eq!(
+            redirect(a, "/v2/ads.txt").unwrap(),
+            "https://lists.example/v2/ads.txt"
+        );
+        assert_eq!(
+            redirect(a, "//cdn.example/x").unwrap(),
+            "https://cdn.example/x"
+        );
+        assert!(
+            redirect(a, "http://cdn.example/x")
+                .unwrap_err()
+                .contains("isn't HTTPS")
+        );
+        assert!(redirect(a, "ads2.txt").is_err());
+        let h = "http://lists.example/ads.txt";
+        assert_eq!(
+            redirect(h, "https://cdn.example/x").unwrap(),
+            "https://cdn.example/x"
+        );
+        assert_eq!(redirect(h, "/y").unwrap(), "http://lists.example/y");
     }
 
     #[test]
