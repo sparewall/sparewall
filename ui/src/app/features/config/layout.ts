@@ -54,6 +54,7 @@ export const ACRONYMS = new Set([
 export const SPELLED: Record<string, string> = {
   cs: '(cs)',
   dhcpv6: 'DHCPv6',
+  dot: 'DoT',
   dport: 'destination port',
   dst: 'destination',
   id: 'ID',

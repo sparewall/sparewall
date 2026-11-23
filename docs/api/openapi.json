@@ -696,6 +696,14 @@
             },
             "type": "array"
           },
+          "intercept": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.DnsIntercept"
+            },
+            "description": "Networks whose DNS queries go to the resolver the site chose,\nwhatever server a client asks (#73), by network name: the\nfirewall's own resolver there, or `to`.",
+            "type": "object",
+            "x-since": 7
+          },
           "networks": {
             "description": "Networks to serve; default every network with DHCP.",
             "items": {
@@ -722,6 +730,28 @@
         "required": [
           "enabled"
         ],
+        "type": "object"
+      },
+      "Document.DnsIntercept": {
+        "additionalProperties": false,
+        "description": "How a network's DNS queries are intercepted (`dns.intercept.<network>`).",
+        "properties": {
+          "block_dot": {
+            "description": "Refuse DNS over TLS (TCP 853) from the network, so clients fall back\nto plain DNS. Default true. DNS over HTTPS can't be told apart by\nits port.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "to": {
+            "description": "Send them to this resolver instead of the firewall's own, e.g. a\nPi-hole. Queries over IPv6 are then refused, so clients ask over\nIPv4.",
+            "format": "ipv4",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "Document.DynamicKind": {

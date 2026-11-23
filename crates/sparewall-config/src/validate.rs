@@ -1857,6 +1857,55 @@ impl Validator<'_> {
                 _ => {}
             }
         }
+        for (n, x) in &d.intercept {
+            let p = format!("dns.intercept.{}", seg(n));
+            match doc.networks.get(n) {
+                None => {
+                    self.err(p, format!("no network named {n:?}"));
+                    continue;
+                }
+                Some(net) if net.role == NetworkRole::Wan => {
+                    self.err(p, "the WAN's DNS is not intercepted");
+                    continue;
+                }
+                Some(_) if doc.any_subnet(n).is_none() => {
+                    self.err(
+                        p,
+                        format!("{n} has no address, so the firewall routes nothing there"),
+                    );
+                    continue;
+                }
+                Some(_) => {}
+            }
+            match x.to {
+                Some(to) => {
+                    if doc.network_containing(to).is_none() {
+                        self.err(
+                            format!("{p}.to"),
+                            format!("{to} is on none of the networks: the resolver must be on one"),
+                        );
+                    }
+                }
+                None => {
+                    let served = d.enabled
+                        && (if d.networks.is_empty() {
+                            doc.dhcp
+                                .as_ref()
+                                .is_some_and(|h| h.networks.contains_key(n))
+                        } else {
+                            d.networks.contains(n)
+                        });
+                    if !served {
+                        self.err(
+                            p,
+                            format!(
+                                "the firewall's resolver does not serve {n}: serve it (dns.networks), or name another resolver with `to`"
+                            ),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Settings the schema reserves for features not built yet. Accepting

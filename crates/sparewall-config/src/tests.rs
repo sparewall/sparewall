@@ -2121,3 +2121,44 @@ fn a_limit_needs_one_line_per_family() {
     bad(json!({"dst": ["@a4", "@b4"]}));
     bad(json!({"src": ["10.0.0.1", "@a4"], "dst": "192.168.1.20"}));
 }
+
+/// DNS interception (#73): on a routed network, to the firewall's
+/// resolver only where it serves, and to a resolver of the site's own on
+/// one of its networks.
+#[test]
+fn dns_interception_is_checked() {
+    let with = |intercept: serde_json::Value| {
+        let mut doc = load(STANDALONE);
+        doc.dns.as_mut().unwrap().intercept = serde_json::from_value(intercept).unwrap();
+        doc
+    };
+    assert_valid(&with(json!({"users": {}, "guests": {"to": "192.0.2.53"}})));
+    let doc = with(json!({
+        "lab": {},
+        "wan": {},
+        "mgmt": {},
+        "guests": {"to": "203.0.113.9"},
+    }));
+    let errs = error_paths(&doc);
+    for want in [
+        "dns.intercept.lab: no network named \"lab\"",
+        "dns.intercept.wan: the WAN's DNS is not intercepted",
+        "dns.intercept.mgmt: the firewall's resolver does not serve mgmt",
+        "dns.intercept.guests.to: 203.0.113.9 is on none of the networks",
+    ] {
+        assert!(
+            errs.iter().any(|e| e.starts_with(want)),
+            "missing {want}: {errs:#?}"
+        );
+    }
+    // A resolver of the site's own works without the firewall's.
+    let mut doc = with(json!({"mgmt": {"to": "192.0.2.53"}}));
+    doc.dns.as_mut().unwrap().enabled = false;
+    assert_valid(&doc);
+    let mut doc = with(json!({"users": {}}));
+    doc.dns.as_mut().unwrap().enabled = false;
+    assert!(has_error(
+        &doc,
+        "the firewall's resolver does not serve users"
+    ));
+}

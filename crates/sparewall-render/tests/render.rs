@@ -2056,3 +2056,140 @@ fn mixed_address_lists_render_a_line_per_match() {
     );
     assert!(lockout[1].contains("ip saddr @admins tcp"), "{lockout:#?}");
 }
+
+/// A document patched with `patch` (a JSON merge patch), which must
+/// validate.
+fn patched(
+    doc: &sparewall_config::Document,
+    patch: serde_json::Value,
+) -> sparewall_config::Document {
+    let mut v = sparewall_config::to_value(doc);
+    sparewall_config::merge_patch(&mut v, &patch);
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    doc
+}
+
+fn nft_script(doc: &sparewall_config::Document, node: &str) -> String {
+    let r = render(doc, node).unwrap();
+    assert_nft_ok(&r);
+    r.files[&format!("{}/{}", Subsystem::Nft.dir(), nft::SCRIPT)].clone()
+}
+
+/// DNS interception (#73): queries to any server go to the firewall's
+/// resolver, or to the site's own; DNS over TLS is refused unless kept.
+#[test]
+fn dns_interception() {
+    let doc = patched(
+        &example("standalone.yaml"),
+        serde_json::json!({"dns": {"intercept": {
+            "users": {},
+            "guests": {"to": "192.0.2.53", "block_dot": false},
+        }}}),
+    );
+    let s = nft_script(&doc, "fw1");
+    for want in [
+        // To the firewall's resolver, at the gateway address.
+        "iifname \"users\" ip daddr != 192.0.2.1 meta l4proto { tcp, udp } th dport 53 counter dnat ip to 192.0.2.1 comment \"dns-intercept:users\"",
+        "iifname \"users\" meta l4proto { tcp, udp } th dport 853 counter reject with icmpx type admin-prohibited comment \"dns-intercept:users:dot\"",
+        // To a resolver of the site's own on another network: its own
+        // queries pass, and the redirected ones are let through.
+        "iifname \"guests\" ip saddr != 192.0.2.53 ip daddr != 192.0.2.53 meta l4proto { tcp, udp } th dport 53 counter dnat ip to 192.0.2.53 comment \"dns-intercept:guests\"",
+        "iifname \"guests\" ip daddr 192.0.2.53 meta l4proto { tcp, udp } th dport 53 ct status dnat counter accept comment \"dns-intercept:guests:forward\"",
+    ] {
+        assert!(s.contains(want), "missing {want}\n{s}");
+    }
+    assert!(!s.contains("dns-intercept:guests:dot"), "{s}");
+    // A query from before the interception, which conntrack carries on
+    // untranslated, is refused before the state rule accepts it; so is
+    // DNS over TLS from an existing flow.
+    for want in [
+        "iifname \"users\" meta l4proto { tcp, udp } th dport 53 ct status != dnat counter reject with icmpx type admin-prohibited comment \"dns-intercept:users:bypass\"",
+        "iifname \"guests\" ip saddr != 192.0.2.53 ip daddr != 192.0.2.53 meta l4proto { tcp, udp } th dport 53 ct status != dnat counter reject with icmpx type admin-prohibited comment \"dns-intercept:guests:bypass\"",
+    ] {
+        assert!(s.contains(want), "missing {want}\n{s}");
+    }
+    let fwd_chain = s.split("chain forward {").nth(1).unwrap();
+    let state = fwd_chain.find("ct state vmap").unwrap();
+    for c in [
+        "dns-intercept:users:bypass",
+        "dns-intercept:guests:bypass",
+        "dns-intercept:users:dot",
+    ] {
+        assert!(
+            fwd_chain.find(c).unwrap() < state,
+            "{c} after the state rule\n{fwd_chain}"
+        );
+    }
+    assert!(!s.contains("dns-intercept:guests:hairpin"), "{s}");
+    // The accept comes before the zone policy's dispatch.
+    let fwd = s.split("chain forward {").nth(1).unwrap();
+    assert!(
+        fwd.find("dns-intercept:guests:forward").unwrap()
+            < fwd.find("iifname . oifname vmap").unwrap(),
+        "{fwd}"
+    );
+
+    // A resolver on the intercepted network itself answers through the
+    // firewall.
+    let doc = patched(
+        &example("standalone.yaml"),
+        serde_json::json!({"dns": {"intercept": {"users": {"to": "192.0.2.53"}}}}),
+    );
+    let s = nft_script(&doc, "fw1");
+    let want = "iifname \"users\" oifname \"users\" ip daddr 192.0.2.53 meta l4proto { tcp, udp } th dport 53 ct status dnat counter snat ip to 192.0.2.1 comment \"dns-intercept:users:hairpin\"";
+    assert!(s.contains(want), "missing {want}\n{s}");
+    let dot = "iifname \"users\" meta nfproto ipv4 ip saddr != 192.0.2.53 meta l4proto { tcp, udp } th dport 853";
+    assert!(s.contains(dot), "missing {dot}\n{s}");
+
+    // In a pair, the gateway address, which moves with the gateway.
+    let doc = patched(
+        &example("pair.yaml"),
+        serde_json::json!({"dns": {"intercept": {"users": {}}}}),
+    );
+    for node in ["fw1", "fw2"] {
+        let s = nft_script(&doc, node);
+        assert!(
+            s.contains("counter dnat ip to 192.0.2.1 comment \"dns-intercept:users\""),
+            "{s}"
+        );
+    }
+}
+
+/// Over IPv6 the firewall's resolver gets the queries too; a resolver of
+/// the site's own has only an IPv4 address, so they are refused.
+#[test]
+fn dns_interception_over_ipv6() {
+    let base = ipv6_two_nic();
+    let mut v = sparewall_config::to_value(&base);
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"dns": {"enabled": true, "networks": ["lan", "lab"],
+            "intercept": {"lab": {}, "lan": {"to": "192.168.2.53"}}}}),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&sparewall_config::validate::validate_history(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let s = nft_script(&doc, "fw1");
+    let lab = doc.network_iface("lab").unwrap();
+    let lan = doc.network_iface("lan").unwrap();
+    for want in [
+        format!(
+            "iifname \"{lab}\" meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 fib daddr type != local counter redirect comment \"dns-intercept:lab\""
+        ),
+        format!(
+            "iifname \"{lan}\" meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 counter reject with icmpx type admin-prohibited comment \"dns-intercept:lan:ipv6\""
+        ),
+        format!(
+            "iifname \"{lan}\" meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 853 counter reject"
+        ),
+    ] {
+        assert!(s.contains(&want), "missing {want}\n{s}");
+    }
+    let fwd = s.split("chain forward {").nth(1).unwrap();
+    assert!(
+        fwd.find("dns-intercept:lan:ipv6").unwrap() < fwd.find("ct state vmap").unwrap(),
+        "{fwd}"
+    );
+}

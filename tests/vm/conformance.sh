@@ -116,6 +116,25 @@ squatter() {
     sudo ip netns del sw-guests2
 }
 
+# DNS interception (#73): on users, a query for a server that isn't a
+# resolver (an unused guests address, so it is routed through the
+# firewall) gets the firewall's answer; guests, not intercepted, gets
+# none, since guests->users drops it. Undone afterwards.
+dns_intercept() {
+    local a
+    echo '{"dns": {"intercept": {"users": {}}}}' | vm 'cat > /tmp/intercept.json'
+    vm 'sudo sparewall merge -f /tmp/intercept.json --confirm 0' >/dev/null
+    a=$(ns users dig +short +time=3 +tries=3 @198.51.100.53 printer.home.arpa) || true
+    [ "$a" = 192.0.2.9 ] || fail "an intercepted query for another server: got '$a'"
+    # dig +short prints a timeout on stdout too: only addresses count.
+    a=$(ns guests dig +short +time=2 +tries=1 @192.0.2.53 printer.home.arpa | grep -v '^;') || true
+    [ -z "$a" ] || fail "guests, not intercepted, got an answer from 192.0.2.53: '$a'"
+    vm 'sudo nft list chain inet sparewall prerouting_nat' | grep 'dns-intercept:users' | grep -q 'packets [1-9]' \
+        || fail "the users interception counted nothing"
+    vm 'sudo sparewall unset dns.intercept --confirm 0' >/dev/null
+    log "DNS interception PASS"
+}
+
 run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
@@ -171,6 +190,9 @@ run_conformance() {
         || fail "sparewall hits finds nothing bound for the users' prefix"
     [ "$(hits "--pair 'guests->users' --addr 203.0.113.0/24")" = 0 ] \
         || fail "sparewall hits matched an address the drop never had"
+    # Last: each applies a change, and a reload resets the rule counters
+    # the checks above read.
+    dns_intercept
     log "conformance PASS"
 }
 

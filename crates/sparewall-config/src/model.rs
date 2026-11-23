@@ -21,7 +21,7 @@ use serde_json::Value;
 /// (#168). A value that earlier releases reject as not built yet says so
 /// too, with `x-since-values` (`{"syslog": 4}`) on its field, and a
 /// combination of fields does in [`crate::schema::revision`] itself.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// A whole deployment: one node or an HA pair.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -814,6 +814,34 @@ pub struct Dns {
     /// Extra local A records, name to address.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub records: BTreeMap<String, Ipv4Addr>,
+    /// Networks whose DNS queries go to the resolver the site chose,
+    /// whatever server a client asks (#73), by network name: the
+    /// firewall's own resolver there, or `to`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-since" = 7))]
+    pub intercept: BTreeMap<String, DnsIntercept>,
+}
+
+/// How a network's DNS queries are intercepted (`dns.intercept.<network>`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DnsIntercept {
+    /// Send them to this resolver instead of the firewall's own, e.g. a
+    /// Pi-hole. Queries over IPv6 are then refused, so clients ask over
+    /// IPv4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<Ipv4Addr>,
+    /// Refuse DNS over TLS (TCP 853) from the network, so clients fall back
+    /// to plain DNS. Default true. DNS over HTTPS can't be told apart by
+    /// its port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_dot: Option<bool>,
+}
+
+impl DnsIntercept {
+    pub fn blocks_dot(&self) -> bool {
+        self.block_dot.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
