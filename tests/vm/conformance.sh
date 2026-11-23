@@ -126,7 +126,8 @@ dns_intercept() {
     vm 'sudo sparewall merge -f /tmp/intercept.json --confirm 0' >/dev/null
     a=$(ns users dig +short +time=3 +tries=3 @198.51.100.53 printer.home.arpa) || true
     [ "$a" = 192.0.2.9 ] || fail "an intercepted query for another server: got '$a'"
-    a=$(ns guests dig +short +time=2 +tries=1 @192.0.2.53 printer.home.arpa) || true
+    # dig +short prints a timeout on stdout too: only addresses count.
+    a=$(ns guests dig +short +time=2 +tries=1 @192.0.2.53 printer.home.arpa | grep -v '^;') || true
     [ -z "$a" ] || fail "guests, not intercepted, got an answer from 192.0.2.53: '$a'"
     vm 'sudo nft list chain inet sparewall prerouting_nat' | grep 'dns-intercept:users' | grep -q 'packets [1-9]' \
         || fail "the users interception counted nothing"
