@@ -8,6 +8,7 @@ mod capture;
 mod capture_check;
 mod dhcp_ha;
 mod failover;
+mod filters;
 mod history;
 mod hits;
 mod http;
@@ -511,6 +512,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 withdrawn::withdrawn_loop(core.clone(), tx.clone(), pair.clone(), args.state.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no resolver to filter for.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                filters::filter_loop(core.clone(), tx.clone(), args.state.clone()).await
             } => Ok(()),
             () = async {
                 // A fake system has no WireGuard interfaces.

@@ -820,6 +820,46 @@ pub struct Dns {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(extend("x-since" = 7))]
     pub intercept: BTreeMap<String, DnsIntercept>,
+    /// Blocklists the firewall's resolver applies to the networks that
+    /// want them (#74), by a name of your own: a blocked name gets
+    /// NXDOMAIN, with its subdomains.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-since" = 7))]
+    pub filters: BTreeMap<String, DnsFilter>,
+}
+
+/// A DNS filter (`dns.filters.<name>`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DnsFilter {
+    /// Networks whose queries it filters. The firewall's resolver must
+    /// serve them.
+    pub networks: Vec<String>,
+    /// Blocklists to fetch, by URL: hosts files, one name per line, or
+    /// adblock-style `||name^` lines. Fetched again every `refresh`; the
+    /// last good copy is kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lists: Vec<String>,
+    /// Names blocked whatever the lists say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub block: Vec<String>,
+    /// Names never blocked, with their subdomains, whatever the lists say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+    /// How often the lists are fetched (`24h`, `6h`, `1d`). Default `24h`;
+    /// at least `1h`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<String>,
+}
+
+impl DnsFilter {
+    /// `refresh` in seconds.
+    pub fn refresh_secs(&self) -> u64 {
+        self.refresh
+            .as_deref()
+            .and_then(crate::filters::duration_secs)
+            .unwrap_or(86400)
+    }
 }
 
 /// How a network's DNS queries are intercepted (`dns.intercept.<network>`).

@@ -135,6 +135,41 @@ dns_intercept() {
     log "DNS interception PASS"
 }
 
+# DNS filters (#74): a list served from this host (QEMU's user network
+# puts it at 10.0.2.2) and a name blocked by hand, on users only. users
+# gets NXDOMAIN for both; guests, unfiltered, gets the local records.
+# Undone afterwards.
+dns_filters() {
+    local d srv status
+    d=$(mktemp -d)
+    printf '# a hosts file\n0.0.0.0 ads.home.arpa\n' > "$d/list.txt"
+    python3 -m http.server 8099 --bind 127.0.0.1 --directory "$d" >/dev/null 2>&1 &
+    srv=$!
+    echo '{"dns": {"records": {"ads": "192.0.2.77", "games": "192.0.2.78"}, "filters": {"ads": {"networks": ["users"], "lists": ["http://10.0.2.2:8099/list.txt"], "block": ["games.home.arpa"]}}}}' \
+        | vm 'cat > /tmp/filters.json'
+    vm 'sudo sparewall merge -f /tmp/filters.json --confirm 0' >/dev/null
+    status() { ns "$1" dig +time=2 +tries=1 "@$2" "$3" | grep -o 'status: [A-Z]*' | cut -d' ' -f2; }
+    local deadline=$((SECONDS + 120))
+    until [ "$(status users 192.0.2.1 ads.home.arpa)" = NXDOMAIN ]; do
+        if [ $SECONDS -ge $deadline ]; then
+            vm 'sudo ls -la /run/sparewall/dns /var/lib/sparewall/dns-filters; sudo journalctl -b -u sparewalld --no-pager | grep -i filter | tail -10' || true
+            kill "$srv"
+            fail "users still resolves ads.home.arpa, which the list blocks"
+        fi
+        sleep 3
+    done
+    kill "$srv"
+    [ "$(status users 192.0.2.1 games.home.arpa)" = NXDOMAIN ] || fail "users resolves games.home.arpa, which the filter blocks"
+    [ "$(ns users dig +short +time=2 +tries=2 @192.0.2.1 printer.home.arpa)" = 192.0.2.9 ] \
+        || fail "users no longer resolves names the filter doesn't block"
+    [ "$(ns guests dig +short +time=2 +tries=2 @198.51.100.1 ads.home.arpa)" = 192.0.2.77 ] \
+        || fail "guests, unfiltered, does not resolve ads.home.arpa"
+    echo '{"dns": {"filters": null, "records": {"ads": null, "games": null}}}' | vm 'cat > /tmp/filters.json'
+    vm 'sudo sparewall merge -f /tmp/filters.json --confirm 0' >/dev/null
+    rm -rf "$d"
+    log "DNS filters PASS"
+}
+
 run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
@@ -193,6 +228,7 @@ run_conformance() {
     # Last: each applies a change, and a reload resets the rule counters
     # the checks above read.
     dns_intercept
+    dns_filters
     log "conformance PASS"
 }
 

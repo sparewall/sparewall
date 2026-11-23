@@ -1857,6 +1857,110 @@ impl Validator<'_> {
                 _ => {}
             }
         }
+        let served = |n: &str| {
+            d.enabled
+                && (if d.networks.is_empty() {
+                    doc.dhcp
+                        .as_ref()
+                        .is_some_and(|h| h.networks.contains_key(n))
+                } else {
+                    d.networks.iter().any(|x| x == n)
+                })
+        };
+        for (f, x) in &d.filters {
+            let p = format!("dns.filters.{}", seg(f));
+            if f.is_empty()
+                || f.len() > 32
+                || !f
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+            {
+                self.err(
+                    p.clone(),
+                    "a filter's name is up to 32 lower-case letters, digits, - and _",
+                );
+            }
+            if x.networks.is_empty() {
+                self.warn(
+                    format!("{p}.networks"),
+                    "names no networks, so it filters nothing",
+                );
+            }
+            for (i, n) in x.networks.iter().enumerate() {
+                let at = format!("{p}.networks[{i}]");
+                if !doc.networks.contains_key(n) {
+                    self.err(at, format!("no network named {n:?}"));
+                } else if !served(n) {
+                    self.err(
+                        at,
+                        format!("the firewall's resolver does not serve {n}, so it sees none of its queries"),
+                    );
+                } else if let Some(to) = d.intercept.get(n).and_then(|i| i.to) {
+                    self.warn(
+                        at,
+                        format!("{n}'s queries are sent to {to} (dns.intercept), so this filter sees none of them"),
+                    );
+                }
+            }
+            for (i, u) in x.lists.iter().enumerate() {
+                let at = format!("{p}.lists[{i}]");
+                let rest = u
+                    .strip_prefix("https://")
+                    .or_else(|| u.strip_prefix("http://"));
+                match rest {
+                    Some(r)
+                        if !r.is_empty()
+                            && !r.starts_with('/')
+                            && !u
+                                .chars()
+                                .any(|c| c.is_whitespace() || c == '"' || c.is_control()) =>
+                    {
+                        if u.starts_with("http://") {
+                            self.warn(
+                                at,
+                                "fetched without TLS, so anyone on the way can change it",
+                            );
+                        }
+                    }
+                    _ => self.err(at, format!("{u:?} is not an http:// or https:// URL")),
+                }
+            }
+            for (key, names) in [("block", &x.block), ("allow", &x.allow)] {
+                for (i, n) in names.iter().enumerate() {
+                    if !crate::filters::is_name(n) {
+                        self.err(
+                            format!("{p}.{key}[{i}]"),
+                            format!("{n:?} is not a domain name with two labels or more"),
+                        );
+                    }
+                }
+            }
+            for (i, n) in x.block.iter().enumerate() {
+                let n = crate::filters::normalize(n);
+                if x.allow
+                    .iter()
+                    .any(|a| crate::filters::within(&n, &crate::filters::normalize(a)))
+                {
+                    self.err(format!("{p}.block[{i}]"), format!("{n} is also allowed"));
+                }
+            }
+            if let Some(r) = &x.refresh {
+                match crate::filters::duration_secs(r) {
+                    None => self.err(
+                        format!("{p}.refresh"),
+                        format!("{r:?} is not a duration such as 24h, 6h or 1d"),
+                    ),
+                    Some(s) if s < 3600 => self.err(
+                        format!("{p}.refresh"),
+                        "at least 1h: list publishers block clients that fetch too often",
+                    ),
+                    Some(_) => {}
+                }
+            }
+            if x.lists.is_empty() && x.block.is_empty() {
+                self.warn(p, "has no lists and blocks no names");
+            }
+        }
         for (n, x) in &d.intercept {
             let p = format!("dns.intercept.{}", seg(n));
             match doc.networks.get(n) {
@@ -1887,15 +1991,7 @@ impl Validator<'_> {
                     }
                 }
                 None => {
-                    let served = d.enabled
-                        && (if d.networks.is_empty() {
-                            doc.dhcp
-                                .as_ref()
-                                .is_some_and(|h| h.networks.contains_key(n))
-                        } else {
-                            d.networks.contains(n)
-                        });
-                    if !served {
+                    if !served(n) {
                         self.err(
                             p,
                             format!(
