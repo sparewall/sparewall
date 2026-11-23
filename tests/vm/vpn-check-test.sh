@@ -54,4 +54,28 @@ awk -v g="$g" 'BEGIN { exit !(g >= 28) }' || { echo "gap after the last reply: $
     [ "$(session_age vpnb)" -ge 120 ] || { echo "vpnb not aged before the upgrade" >&2; exit 1; }
     [ -n "${VPN_MOVED_AT:-}" ] || { echo "no probing at the handover" >&2; exit 1; }
 ) || exit 1
+# Counting from the handover (#275): the handover at 652.0, wg's times
+# in whole seconds.
+(
+    echo SITEKEY > "$WORK/site.pub"
+    sleep() { :; }
+    # shellcheck disable=SC2034 # read by keepalive_recovery
+    VPN_KEEPALIVE_BOUND=5
+    # The new master's own handshake in the handover's second counts.
+    at() { echo "SITEKEY 1795115652"; }
+    handshake() { echo 1795115652; }
+    [ "$(keepalive_recovery site 1795115652.000000 fw1)" = 0 ] \
+        || { echo "the new master's handshake in the handover's second was not counted" >&2; exit 1; }
+    # The old master's, in the same second, as the site sees it, does
+    # not: the new master has none yet.
+    at() { echo "OTHERKEY 1795115660"; }
+    [ "$(keepalive_recovery site 1795115652.000000 fw1)" = never ] \
+        || { echo "the old master's handshake in the handover's second was counted" >&2; exit 1; }
+    # Without the node, the site's view counts from the next second.
+    [ "$(keepalive_recovery site 1795115652.000000)" = never ] \
+        || { echo "a handshake in the handover's second was counted without the node" >&2; exit 1; }
+    handshake() { echo 1795115653; }
+    [ "$(keepalive_recovery site 1795115652.000000)" = 0 ] \
+        || { echo "the site's handshake after the handover was not counted" >&2; exit 1; }
+) || exit 1
 echo "vpn checks ok"
