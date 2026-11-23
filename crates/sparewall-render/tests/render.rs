@@ -2101,6 +2101,27 @@ fn dns_interception() {
         assert!(s.contains(want), "missing {want}\n{s}");
     }
     assert!(!s.contains("dns-intercept:guests:dot"), "{s}");
+    // A query from before the interception, which conntrack carries on
+    // untranslated, is refused before the state rule accepts it; so is
+    // DNS over TLS from an existing flow.
+    for want in [
+        "iifname \"users\" meta l4proto { tcp, udp } th dport 53 ct status != dnat counter reject with icmpx type admin-prohibited comment \"dns-intercept:users:bypass\"",
+        "iifname \"guests\" ip saddr != 192.0.2.53 ip daddr != 192.0.2.53 meta l4proto { tcp, udp } th dport 53 ct status != dnat counter reject with icmpx type admin-prohibited comment \"dns-intercept:guests:bypass\"",
+    ] {
+        assert!(s.contains(want), "missing {want}\n{s}");
+    }
+    let fwd_chain = s.split("chain forward {").nth(1).unwrap();
+    let state = fwd_chain.find("ct state vmap").unwrap();
+    for c in [
+        "dns-intercept:users:bypass",
+        "dns-intercept:guests:bypass",
+        "dns-intercept:users:dot",
+    ] {
+        assert!(
+            fwd_chain.find(c).unwrap() < state,
+            "{c} after the state rule\n{fwd_chain}"
+        );
+    }
     assert!(!s.contains("dns-intercept:guests:hairpin"), "{s}");
     // The accept comes before the zone policy's dispatch.
     let fwd = s.split("chain forward {").nth(1).unwrap();
@@ -2166,4 +2187,9 @@ fn dns_interception_over_ipv6() {
     ] {
         assert!(s.contains(&want), "missing {want}\n{s}");
     }
+    let fwd = s.split("chain forward {").nth(1).unwrap();
+    assert!(
+        fwd.find("dns-intercept:lan:ipv6").unwrap() < fwd.find("ct state vmap").unwrap(),
+        "{fwd}"
+    );
 }

@@ -516,6 +516,79 @@ fn dns_intercepts<'a>(doc: &'a Document, node: &str) -> Vec<Intercept<'a>> {
         .collect()
 }
 
+/// What an intercepted network may not send on (#73), before the state
+/// rule, so that a flow conntrack knew before the interception, which
+/// the DNAT never sees again, stops too:
+///
+/// - DNS forwarded anywhere but to the chosen resolver, untranslated: a
+///   query the interception would have redirected, from before it;
+/// - DNS over IPv6, when the resolver is one of the site's own (an IPv4
+///   address), so clients ask over IPv4;
+/// - DNS over TLS and QUIC (853), unless kept, so clients fall back to
+///   plain DNS.
+///
+/// The resolver's own queries, from its address, are its upstream's.
+fn intercept_refusals(intercepts: &[Intercept]) -> String {
+    let mut out = String::new();
+    let reject = "counter reject with icmpx type admin-prohibited";
+    for x in intercepts {
+        let i = q(&x.iface);
+        let c = |what: &str| q(&format!("dns-intercept:{}:{what}", x.network));
+        match x.to {
+            None => writeln!(
+                out,
+                "iifname {i} meta l4proto {{ tcp, udp }} th dport 53 ct status != dnat {reject} comment {}",
+                c("bypass")
+            )
+            .unwrap(),
+            Some(t) => {
+                writeln!(
+                    out,
+                    "iifname {i} ip saddr != {t} ip daddr != {t} meta l4proto {{ tcp, udp }} th dport 53 ct status != dnat {reject} comment {}",
+                    c("bypass")
+                )
+                .unwrap();
+                if x.ipv6 {
+                    writeln!(
+                        out,
+                        "iifname {i} meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 {reject} comment {}",
+                        c("ipv6")
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        if x.block_dot {
+            match x.to {
+                None => writeln!(
+                    out,
+                    "iifname {i} meta l4proto {{ tcp, udp }} th dport 853 {reject} comment {}",
+                    c("dot")
+                )
+                .unwrap(),
+                Some(t) => {
+                    // Matched by its address, which only IPv4 has.
+                    writeln!(
+                        out,
+                        "iifname {i} meta nfproto ipv4 ip saddr != {t} meta l4proto {{ tcp, udp }} th dport 853 {reject} comment {}",
+                        c("dot")
+                    )
+                    .unwrap();
+                    if x.ipv6 {
+                        writeln!(
+                            out,
+                            "iifname {i} meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 853 {reject} comment {}",
+                            c("dot")
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(), Error> {
     let pair = doc.is_pair();
     // With a network that routes IPv6 (#212), the rules that are IPv4's
@@ -1031,6 +1104,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         fwd.push_str(&ipv6_off(doc, "iifname", &[]));
         fwd.push_str(&ipv6_off(doc, "oifname", &[]));
     }
+    fwd.push_str(&intercept_refusals(&intercepts));
     fwd.push_str(CT_STATE);
     if !v6 {
         fwd.push_str("meta nfproto ipv6 drop\n");
@@ -1050,54 +1124,16 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         .unwrap();
     }
     // Intercepted DNS (#73): the site chose the resolver, so the queries
-    // sent to it may pass whatever the zone policy says. Over IPv6 there
-    // is nowhere to send them when that resolver is one of the site's
-    // own (an IPv4 address): refused, so clients ask over IPv4. DNS over
-    // TLS (and QUIC) is refused, so clients fall back to plain DNS.
+    // sent to it may pass whatever the zone policy says.
     for x in &intercepts {
-        let i = q(&x.iface);
         if let Some(t) = x.to {
             writeln!(
                 fwd,
-                "iifname {i} ip daddr {t} meta l4proto {{ tcp, udp }} th dport 53 ct status dnat counter accept comment {}",
+                "iifname {} ip daddr {t} meta l4proto {{ tcp, udp }} th dport 53 ct status dnat counter accept comment {}",
+                q(&x.iface),
                 q(&format!("dns-intercept:{}:forward", x.network))
             )
             .unwrap();
-            if x.ipv6 {
-                writeln!(
-                    fwd,
-                    "iifname {i} meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 counter reject with icmpx type admin-prohibited comment {}",
-                    q(&format!("dns-intercept:{}:ipv6", x.network))
-                )
-                .unwrap();
-            }
-        }
-        if x.block_dot {
-            let own = match x.to {
-                Some(t) => format!(" ip saddr != {t}"),
-                None => String::new(),
-            };
-            // The resolver's own upstream may be DNS over TLS; matched
-            // by its address, which only IPv4 has.
-            let v4 = if own.is_empty() {
-                ""
-            } else {
-                " meta nfproto ipv4"
-            };
-            writeln!(
-                fwd,
-                "iifname {i}{v4}{own} meta l4proto {{ tcp, udp }} th dport 853 counter reject with icmpx type admin-prohibited comment {}",
-                q(&format!("dns-intercept:{}:dot", x.network))
-            )
-            .unwrap();
-            if !own.is_empty() && x.ipv6 {
-                writeln!(
-                    fwd,
-                    "iifname {i} meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 853 counter reject with icmpx type admin-prohibited comment {}",
-                    q(&format!("dns-intercept:{}:dot", x.network))
-                )
-                .unwrap();
-            }
         }
     }
     let mut fwd_map: Vec<String> = Vec::new();

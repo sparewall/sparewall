@@ -443,7 +443,7 @@ dns:
 - **DNS over HTTPS** uses port 443 like any web traffic and can't be told apart, so it isn't intercepted. Firefox turns DoH off on networks whose resolver answers `use-application-dns.net` with NXDOMAIN.
 - **Counting:** each network's rewritten queries are counted on `/metrics`, in `sparewall_rule_packets_total{rule="dns-intercept:<network>"}`.
 
-In a pair, the queries go to the gateway address, which moves with the gateway.
+Queries already under way when interception starts, which the firewall would otherwise let carry on, are refused, so clients ask again and are redirected. In a pair, the queries go to the gateway address, which moves with the gateway.
 
 ## Remote-access VPN
 
