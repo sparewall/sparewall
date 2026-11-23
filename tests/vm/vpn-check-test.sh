@@ -54,4 +54,17 @@ awk -v g="$g" 'BEGIN { exit !(g >= 28) }' || { echo "gap after the last reply: $
     [ "$(session_age vpnb)" -ge 120 ] || { echo "vpnb not aged before the upgrade" >&2; exit 1; }
     [ -n "${VPN_MOVED_AT:-}" ] || { echo "no probing at the handover" >&2; exit 1; }
 ) || exit 1
+# The new master's handshake in the same second as the handover counts
+# (#275): the handover at 652.0, the handshake at 652.6, reported as 652.
+(
+    handshake() { echo 1795115652; }
+    sleep() { :; }
+    # shellcheck disable=SC2034 # read by keepalive_recovery
+    VPN_KEEPALIVE_BOUND=60
+    [ "$(keepalive_recovery site 1795115652.000000)" = 0 ] \
+        || { echo "a handshake in the handover's second was not counted" >&2; exit 1; }
+    handshake() { echo 1795115651; }
+    [ "$(keepalive_recovery site 1795115652.000000)" = never ] \
+        || { echo "a handshake before the handover was counted" >&2; exit 1; }
+) || exit 1
 echo "vpn checks ok"

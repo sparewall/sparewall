@@ -390,12 +390,17 @@ idle_recovery() { # client
 }
 
 # Seconds until a client sending only keepalives has a new handshake
-# (whole seconds: wg reports handshake times in seconds).
+# (whole seconds: wg reports handshake times in seconds). A handshake in
+# the same second as the move counts: the new master often starts the
+# site's tunnel within a second of taking the gateway, and a strict
+# comparison let that handshake pass for the old session's, so the wait
+# ran on to the next rekey, 120 s later (#275). The old master's last
+# handshake comes before the move, in an earlier second.
 keepalive_recovery() { # client since
     local since=${2%.*} h i
     for i in $(seq 1 $((VPN_KEEPALIVE_BOUND + 30))); do
         h=$(handshake "$1")
-        if [ "$h" -gt "$since" ]; then
+        if [ "$h" -ge "$since" ]; then
             echo $((h - since))
             return 0
         fi
