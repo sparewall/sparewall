@@ -23,7 +23,9 @@ Volume=/run/sparewall/dhcp:/etc/kea:ro
 Volume=sparewall-kea-leases:/var/lib/kea:z
 Volume=/run/kea:/run/kea:z
 Tmpfs=/tmp
-LogDriver=journald
+# Its output is the unit's own, logged at the unit's level (info). Podman's
+# journald driver logs all of a container's stderr at err (#338).
+LogDriver=passthrough
 
 [Service]
 ExecStartPre=/usr/bin/install -d -m 0750 /run/kea

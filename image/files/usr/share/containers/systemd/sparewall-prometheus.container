@@ -26,7 +26,9 @@ Volume=sparewall-prometheus-data:/prometheus:z,U
 # The Go runtime collects harder before it reaches MemoryMax below.
 Environment=GOMEMLIMIT=400MiB
 Exec=/usr/bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --web.listen-address=127.0.0.1:9090 --query.timeout=30s
-LogDriver=journald
+# Its output is the unit's own, logged at the unit's level (info). Podman's
+# journald driver logs all of a container's stderr at err (#338).
+LogDriver=passthrough
 
 [Service]
 ExecReload=/usr/bin/podman kill --signal HUP sparewall-prometheus
