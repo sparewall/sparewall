@@ -10,17 +10,22 @@ import {
 import { isMap } from './form-schema';
 
 /** Words written in capitals wherever they appear in a field's name. */
-const ACRONYMS = new Set([
+export const ACRONYMS = new Set([
   'acme',
+  'ca',
   'dhcp',
   'dns',
+  'eab',
+  'gro',
+  'gso',
   'ha',
+  'hmac',
   'http',
   'https',
   'icmp',
   'ip',
-  'ips',
   'lacp',
+  'lldp',
   'mac',
   'mss',
   'mtu',
@@ -28,20 +33,41 @@ const ACRONYMS = new Set([
   'nic',
   'ntp',
   'psk',
+  'rx',
   'snat',
   'ssh',
   'tcp',
   'tls',
+  'tso',
+  'tx',
   'udp',
   'url',
   'vip',
   'vlan',
+  'vmac',
   'vpn',
+  'vrid',
   'vrrp',
   'wan',
 ]);
 /** Words spelled their own way. */
-const SPELLED: Record<string, string> = { id: 'ID', ipv4: 'IPv4', ipv6: 'IPv6', dhcpv6: 'DHCPv6' };
+export const SPELLED: Record<string, string> = {
+  cs: '(cs)',
+  dhcpv6: 'DHCPv6',
+  dport: 'destination port',
+  dst: 'destination',
+  id: 'ID',
+  ips: 'IPs',
+  ipv4: 'IPv4',
+  ipv6: 'IPv6',
+  kid: 'key ID',
+  miimon: 'link monitor interval',
+  nft: 'nft statement',
+  s: '(s)',
+  sport: 'source port',
+  src: 'source',
+  vips: 'VIPs',
+};
 
 /** How a field reads: `tcp_established_timeout` as "TCP established timeout". */
 export function fieldLabel(key: string): string {
