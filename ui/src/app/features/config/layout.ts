@@ -62,7 +62,7 @@ export const SPELLED: Record<string, string> = {
   ipv6: 'IPv6',
   kid: 'key ID',
   miimon: 'link monitor interval',
-  nft: 'nft statement',
+  nft: 'statement (nft)',
   s: '(s)',
   sport: 'source port',
   src: 'source',
