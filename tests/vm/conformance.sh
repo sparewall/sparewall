@@ -172,7 +172,6 @@ run_conformance() {
     [ "$a" = 192.0.2.9 ] || fail "local DNS record: got '$a'"
     a=$(ns users dig +short +time=3 +tries=3 @192.0.2.1 client20.home.arpa) || true
     [ "$a" = 192.0.2.20 ] || fail "reservation name: got '$a'"
-    dns_intercept
     vm 'sudo nft list chain inet sparewall fwd_guests_users' | grep -q 'packets [1-9]' \
         || fail "the guests->users default drop counted nothing"
     # That drop is logged: ulogd (in ulogd_t, under NoNewPrivileges) hands
@@ -191,6 +190,9 @@ run_conformance() {
         || fail "sparewall hits finds nothing bound for the users' prefix"
     [ "$(hits "--pair 'guests->users' --addr 203.0.113.0/24")" = 0 ] \
         || fail "sparewall hits matched an address the drop never had"
+    # Last: each applies a change, and a reload resets the rule counters
+    # the checks above read.
+    dns_intercept
     log "conformance PASS"
 }
 
