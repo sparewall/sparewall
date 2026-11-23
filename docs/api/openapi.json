@@ -688,6 +688,14 @@
           "enabled": {
             "type": "boolean"
           },
+          "filters": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.DnsFilter"
+            },
+            "description": "Blocklists the firewall's resolver applies to the networks that\nwant them (#74), by a name of your own: a blocked name gets\nNXDOMAIN, with its subdomains.",
+            "type": "object",
+            "x-since": 7
+          },
           "forwarders": {
             "description": "Forward to these servers instead of recursing.",
             "items": {
@@ -729,6 +737,51 @@
         },
         "required": [
           "enabled"
+        ],
+        "type": "object"
+      },
+      "Document.DnsFilter": {
+        "additionalProperties": false,
+        "description": "A DNS filter (`dns.filters.<name>`).",
+        "properties": {
+          "allow": {
+            "description": "Names never blocked, with their subdomains, whatever the lists say.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "block": {
+            "description": "Names blocked whatever the lists say.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "lists": {
+            "description": "Blocklists to fetch, by URL: hosts files, one name per line, or\nadblock-style `||name^` lines. Fetched again every `refresh`; the\nlast good copy is kept.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "networks": {
+            "description": "Networks whose queries it filters. The firewall's resolver must\nserve them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "refresh": {
+            "description": "How often the lists are fetched (`24h`, `6h`, `1d`). Default `24h`;\nat least `1h`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "networks"
         ],
         "type": "object"
       },

@@ -2162,3 +2162,52 @@ fn dns_interception_is_checked() {
         "the firewall's resolver does not serve users"
     ));
 }
+
+/// DNS filters (#74): names, networks the firewall's resolver serves,
+/// URLs, names to block and allow, and how often lists are fetched.
+#[test]
+fn dns_filters_are_checked() {
+    let with = |filters: serde_json::Value| {
+        let mut doc = load(STANDALONE);
+        doc.dns.as_mut().unwrap().filters = serde_json::from_value(filters).unwrap();
+        doc
+    };
+    assert_valid(&with(json!({
+        "ads": {"networks": ["users", "guests"], "lists": ["https://lists.example/ads.txt"],
+            "allow": ["cdn.example.com"], "refresh": "12h"},
+        "kids": {"networks": ["users"], "block": ["games.example"]},
+    })));
+    let doc = with(json!({
+        "Bad Name": {"networks": ["users"], "block": ["x.example"]},
+        "f": {
+            "networks": ["lab", "mgmt"],
+            "lists": ["ftp://lists.example/x", "https://", "http://lists.example/plain"],
+            "block": ["example", "cdn.example.com"],
+            "allow": ["example.com"],
+            "refresh": "10m",
+        },
+    }));
+    let errs = error_paths(&doc);
+    for want in [
+        "dns.filters.Bad Name: a filter's name",
+        "dns.filters.f.networks[0]: no network named \"lab\"",
+        "dns.filters.f.networks[1]: the firewall's resolver does not serve mgmt",
+        "dns.filters.f.lists[0]: \"ftp://lists.example/x\" is not",
+        "dns.filters.f.lists[1]: \"https://\" is not",
+        "dns.filters.f.block[0]: \"example\" is not a domain name",
+        "dns.filters.f.block[1]: cdn.example.com is also allowed",
+        "dns.filters.f.refresh: at least 1h",
+    ] {
+        assert!(
+            errs.iter().any(|e| e.starts_with(want)),
+            "missing {want}: {errs:#?}"
+        );
+    }
+    assert!(
+        warnings(&doc)
+            .iter()
+            .any(|w| w.contains("fetched without TLS")),
+        "{:#?}",
+        warnings(&doc)
+    );
+}

@@ -188,6 +188,10 @@ export interface Schemas {
     /** Local domain for reservation names. */
     "domain"?: string | null;
     "enabled": boolean;
+    /** Blocklists the firewall's resolver applies to the networks that
+     * want them (#74), by a name of your own: a blocked name gets
+     * NXDOMAIN, with its subdomains. */
+    "filters"?: Record<string, Schemas["Document.DnsFilter"]>;
     /** Forward to these servers instead of recursing. */
     "forwarders"?: Array<string>;
     /** Networks whose DNS queries go to the resolver the site chose,
@@ -200,6 +204,23 @@ export interface Schemas {
     "provider"?: string | null;
     /** Extra local A records, name to address. */
     "records"?: Record<string, string>;
+  };
+  /** A DNS filter (`dns.filters.<name>`). */
+  "Document.DnsFilter": {
+    /** Names never blocked, with their subdomains, whatever the lists say. */
+    "allow"?: Array<string>;
+    /** Names blocked whatever the lists say. */
+    "block"?: Array<string>;
+    /** Blocklists to fetch, by URL: hosts files, one name per line, or
+     * adblock-style `||name^` lines. Fetched again every `refresh`; the
+     * last good copy is kept. */
+    "lists"?: Array<string>;
+    /** Networks whose queries it filters. The firewall's resolver must
+     * serve them. */
+    "networks": Array<string>;
+    /** How often the lists are fetched (`24h`, `6h`, `1d`). Default `24h`;
+     * at least `1h`. */
+    "refresh"?: string | null;
   };
   /** How a network's DNS queries are intercepted (`dns.intercept.<network>`). */
   "Document.DnsIntercept": {

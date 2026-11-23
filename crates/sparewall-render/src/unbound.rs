@@ -98,6 +98,27 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     for a in &allow {
         writeln!(s, "    access-control: {a} allow").unwrap();
     }
+    // Each filtered network's queries are answered by its view (#74), by
+    // their source: its IPv4 subnet, and a static IPv6 prefix. A
+    // delegated prefix can't be named, so IPv6 queries there are not
+    // filtered.
+    let views = sparewall_config::filters::views(doc);
+    for v in &views {
+        for n in &v.networks {
+            if let Some(sub) = doc.subnet(n, node) {
+                writeln!(s, "    access-control-view: {sub} {}", v.name).unwrap();
+            }
+            if let Some(p) = doc
+                .networks
+                .get(n)
+                .and_then(|x| x.ipv6.as_ref())
+                .filter(|x| x.mode == Ipv6Mode::Static)
+                .and_then(|x| x.prefix)
+            {
+                writeln!(s, "    access-control-view: {} {}", p.0.trunc(), v.name).unwrap();
+            }
+        }
+    }
     if !v6.is_empty() {
         let statics: BTreeSet<String> = v6
             .iter()
@@ -163,6 +184,31 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         for f in &dns.forwarders {
             writeln!(s, "    forward-addr: {f}").unwrap();
         }
+    }
+    // The views' blocked names are fetched by sparewalld into a dotfile
+    // each (an apply leaves dotfiles alone); a glob that matches nothing
+    // until then, so the resolver starts without them. Names the view
+    // allows are resolved as usual, though a list blocks a parent; a
+    // name that's in no zone of the view's falls to the global ones
+    // (`view-first`), so local names still resolve.
+    for v in &views {
+        writeln!(s, "\nview:\n    name: \"{}\"\n    view-first: yes", v.name).unwrap();
+        let mut allow: BTreeSet<String> = BTreeSet::new();
+        for f in &v.filters {
+            if let Some(x) = dns.filters.get(f) {
+                allow.extend(
+                    x.allow
+                        .iter()
+                        .map(|a| sparewall_config::filters::normalize(a)),
+                );
+            }
+        }
+        for a in allow {
+            writeln!(s, "    local-zone: \"{a}.\" transparent").unwrap();
+        }
+        let file = sparewall_config::filters::view_file(&v.name);
+        let (stem, last) = file.split_at(file.len() - 1);
+        writeln!(s, "    include: \"/etc/unbound/{stem}[{last}]\"").unwrap();
     }
     out.add(Subsystem::Dns, CONF, s);
     out.meta.services.insert(

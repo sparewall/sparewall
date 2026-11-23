@@ -75,7 +75,7 @@ back to one of them keeps its configuration.
 | 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`, `vpn_clients`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
 | 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
 | 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated`; an IPv6 address or `ipv6` object in `management.sources` | 0.7.0 |
-| 7 | `dns.intercept` | 0.8.0 |
+| 7 | `dns.intercept`, `dns.filters` | 0.8.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -445,6 +445,33 @@ dns:
 
 Queries already under way when interception starts, which the firewall would otherwise let carry on, are refused, so clients ask again and are redirected. In a pair, the queries go to the gateway address, which moves with the gateway.
 
+## DNS filters
+
+The firewall's resolver can block names for the networks that want it, as Pi-hole does, from the blocklists you choose:
+
+```yaml
+dns:
+  enabled: true
+  filters:
+    ads:
+      networks: [users, guests]
+      lists:
+        - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+      allow: [cdn.example.com]
+    kids:
+      networks: [kids]
+      block: [games.example]
+      refresh: 12h
+```
+
+- **What's blocked:** a blocked name gets NXDOMAIN, and so do its subdomains. Names in `allow` resolve, with their subdomains, whatever the lists say; names in `block` don't, whatever they say.
+- **Lists:** hosts files, plain lists with one name per line, and adblock-style `||name^` lines are all read. Comments and anything that isn't a name are skipped. Each node fetches its lists when the filter is applied, and again every `refresh` (default `24h`, at least `1h`). It keeps the last good copy under `/var/lib/sparewall`, and tries again 15 minutes after a failed fetch. Prefer `https://`: a list fetched over plain HTTP can be changed by anyone on the way.
+- **Which networks:** the firewall's resolver must serve the network, and it filters the queries it answers. Pair this with [DNS interception](#dns-interception), so that clients can't step around it by asking another server. A network in several filters gets all their names.
+- **Without a list:** until a list has been fetched, its names aren't blocked. DNS never waits for a list, and a failed fetch never stops it.
+- **Limits:** at most a million names per network's set of filters. Health is degraded past that (`dns-filters`), and also when a list hasn't been fetched for three times its `refresh`. Over IPv6, queries are filtered on networks with a `static` prefix; a delegated prefix can't be named ahead of time, so on those networks only queries over IPv4 are filtered.
+
+When a list changes, the resolver reloads, which empties its cache.
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:
@@ -730,6 +757,7 @@ running system, each repeated on every health request:
 | `pair`, `tls`, `backup` | Sync tunnel and peer state, certificate validity, the last backup | |
 | `tunnels` | On the node that holds them (standalone, or the master), every site-to-site peer with a `keepalive`, and every VPN client, has had a handshake in the last three minutes. Degraded, never failed | Peers without a keepalive, whose idle tunnels have no handshakes |
 | `ipv6` | Once a network has IPv6: each WAN with IPv6 has an IPv6 default route, and a `dhcpv6` WAN has a delegated prefix for the `delegated` networks. Degraded, never failed: IPv4 still flows | That hosts on the inside networks have taken addresses |
+| `dns-filters` | Each list a DNS filter names has been fetched within three times its `refresh`, once a fetch has been tried, and no view holds more than a million names. Degraded, never failed: DNS still answers, with the last copy of a list or without it | That a list holds what its publisher means it to |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
 
 Any change to the firewall made outside Sparewall (`nft flush`, an extra

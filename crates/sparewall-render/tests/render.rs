@@ -2193,3 +2193,30 @@ fn dns_interception_over_ipv6() {
         "{fwd}"
     );
 }
+
+/// DNS filters (#74): one view per set of filters, chosen by the
+/// network's subnet; allowed names resolve, and the fetched names are
+/// included from a file that may not exist yet.
+#[test]
+fn dns_filters_make_views() {
+    let doc = patched(
+        &example("standalone.yaml"),
+        serde_json::json!({"dns": {"filters": {
+            "ads": {"networks": ["users", "guests"], "lists": ["https://lists.example/ads.txt"],
+                "allow": ["cdn.example.com"]},
+            "kids": {"networks": ["users"], "block": ["games.example"], "allow": ["School.example."]},
+        }}}),
+    );
+    let r = render(&doc, "fw1").unwrap();
+    let conf = &r.files[&format!("{}/{}", Subsystem::Dns.dir(), "unbound.conf")];
+    for want in [
+        "    access-control-view: 198.51.100.0/24 ads\n",
+        "    access-control-view: 192.0.2.0/24 ads+kids\n",
+        "view:\n    name: \"ads\"\n    view-first: yes\n    local-zone: \"cdn.example.com.\" transparent\n    include: \"/etc/unbound/.filter-ads.con[f]\"\n",
+        "view:\n    name: \"ads+kids\"\n    view-first: yes\n    local-zone: \"cdn.example.com.\" transparent\n    local-zone: \"school.example.\" transparent\n    include: \"/etc/unbound/.filter-ads+kids.con[f]\"\n",
+    ] {
+        assert!(conf.contains(want), "missing {want:?}\n{conf}");
+    }
+    // The access control comes in the server clause, before any view.
+    assert!(conf.find("access-control-view").unwrap() < conf.find("\nview:").unwrap());
+}

@@ -8,17 +8,17 @@ import { ACRONYMS, SPELLED, fieldLabel } from './layout';
  * decides how it reads (#339).
  */
 const PLAIN = new Set(
-  `action address addresses advert allowed anti at backup bandwidth block bond
+  `action address addresses advert allow allowed anti at backup bandwidth block bond
   buckets cake certificate certificates challenge channel check checksum
   client clients cluster comment connections conntrack credentials daily
   delay destination directory domain dynamic elements email enabled endpoint
-  established extra forwarders forwards from gateway generations group
+  established extra filters forwarders forwards from gateway generations group
   hairpin hash hold hook hostname hourly intercept interval keepalive key keys kill
-  last lease length limit listen lockout log logging management max members
+  last lease length limit listen lists lockout log logging management max members
   metrics minutes mode monthly names network networks nodes objects offload
   options order pair password peer peers ping policy pool port ports position
   preempt prefix preshared primary priority private proto protocol provider
-  public rate raw records remote repository reservations retention role route
+  public rate raw records refresh remote repository reservations retention role route
   router rules schedule schema serve servers size source sources subnet
   suffixes switch sync time timeout to type unicast updates use web weekly
   window yearly zone zones`.split(/\s+/),
