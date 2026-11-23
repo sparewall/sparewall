@@ -475,6 +475,47 @@ fn same_network_hairpins<'a>(
         .collect()
 }
 
+/// A network whose DNS is intercepted (#73).
+struct Intercept<'a> {
+    network: &'a str,
+    iface: String,
+    /// The firewall's address on the network: the gateway address in a
+    /// pair.
+    gateway: std::net::Ipv4Addr,
+    /// Where queries go: `to`, or the gateway address (the firewall's own
+    /// resolver, which listens there).
+    target: std::net::Ipv4Addr,
+    /// `to`, a resolver of the site's own.
+    to: Option<std::net::Ipv4Addr>,
+    /// `to` is on the intercepted network itself.
+    same_network: bool,
+    ipv6: bool,
+    block_dot: bool,
+}
+
+fn dns_intercepts<'a>(doc: &'a Document, node: &str) -> Vec<Intercept<'a>> {
+    let Some(d) = &doc.dns else { return vec![] };
+    d.intercept
+        .iter()
+        .filter_map(|(n, x)| {
+            let iface = doc.network_iface(n)?.to_string();
+            let gateway = crate::kea::gateway_addr(doc, n, node)?;
+            Some(Intercept {
+                network: n,
+                iface,
+                gateway,
+                target: x.to.unwrap_or(gateway),
+                to: x.to,
+                same_network: x
+                    .to
+                    .is_some_and(|t| doc.network_containing(t) == Some(n.as_str())),
+                ipv6: doc.networks.get(n).is_some_and(|net| net.ipv6.is_some()),
+                block_dot: x.blocks_dot(),
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(), Error> {
     let pair = doc.is_pair();
     // With a network that routes IPv6 (#212), the rules that are IPv4's
@@ -707,6 +748,34 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
                 "iifname {} {target} comment {}",
                 q(i),
                 q(&format!("vpn-{name}:extra-ports"))
+            )
+            .unwrap();
+        }
+    }
+    // DNS interception (#73): a query for any server goes to the chosen
+    // resolver. A resolver of the site's own sends its own queries out
+    // through the same network, so its address is left alone. Over IPv6
+    // the firewall's resolver listens on every address, so a redirect to
+    // the address the query came to the node on will do.
+    let intercepts = dns_intercepts(doc, node);
+    for x in &intercepts {
+        let comment = q(&format!("dns-intercept:{}", x.network));
+        let own = match x.to {
+            Some(t) => format!(" ip saddr != {t}"),
+            None => String::new(),
+        };
+        writeln!(
+            dnat,
+            "iifname {i}{own} ip daddr != {t} meta l4proto {{ tcp, udp }} th dport 53 counter dnat ip to {t} comment {comment}",
+            i = q(&x.iface),
+            t = x.target
+        )
+        .unwrap();
+        if x.ipv6 && x.to.is_none() {
+            writeln!(
+                dnat,
+                "iifname {i} meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 fib daddr type != local counter redirect comment {comment}",
+                i = q(&x.iface)
             )
             .unwrap();
         }
@@ -980,6 +1049,57 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         )
         .unwrap();
     }
+    // Intercepted DNS (#73): the site chose the resolver, so the queries
+    // sent to it may pass whatever the zone policy says. Over IPv6 there
+    // is nowhere to send them when that resolver is one of the site's
+    // own (an IPv4 address): refused, so clients ask over IPv4. DNS over
+    // TLS (and QUIC) is refused, so clients fall back to plain DNS.
+    for x in &intercepts {
+        let i = q(&x.iface);
+        if let Some(t) = x.to {
+            writeln!(
+                fwd,
+                "iifname {i} ip daddr {t} meta l4proto {{ tcp, udp }} th dport 53 ct status dnat counter accept comment {}",
+                q(&format!("dns-intercept:{}:forward", x.network))
+            )
+            .unwrap();
+            if x.ipv6 {
+                writeln!(
+                    fwd,
+                    "iifname {i} meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 counter reject with icmpx type admin-prohibited comment {}",
+                    q(&format!("dns-intercept:{}:ipv6", x.network))
+                )
+                .unwrap();
+            }
+        }
+        if x.block_dot {
+            let own = match x.to {
+                Some(t) => format!(" ip saddr != {t}"),
+                None => String::new(),
+            };
+            // The resolver's own upstream may be DNS over TLS; matched
+            // by its address, which only IPv4 has.
+            let v4 = if own.is_empty() {
+                ""
+            } else {
+                " meta nfproto ipv4"
+            };
+            writeln!(
+                fwd,
+                "iifname {i}{v4}{own} meta l4proto {{ tcp, udp }} th dport 853 counter reject with icmpx type admin-prohibited comment {}",
+                q(&format!("dns-intercept:{}:dot", x.network))
+            )
+            .unwrap();
+            if !own.is_empty() && x.ipv6 {
+                writeln!(
+                    fwd,
+                    "iifname {i} meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 853 counter reject with icmpx type admin-prohibited comment {}",
+                    q(&format!("dns-intercept:{}:dot", x.network))
+                )
+                .unwrap();
+            }
+        }
+    }
     let mut fwd_map: Vec<String> = Vec::new();
     for (from, to, _, _) in &policies {
         if *from == SELF_ZONE || *to == SELF_ZONE {
@@ -1122,6 +1242,20 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             forward_port(f),
             q(&format!("forward:{name}:hairpin")),
             i = q(&iface)
+        )
+        .unwrap();
+    }
+    // A resolver on the intercepted network itself would answer the
+    // client directly, from its own address, which the client never
+    // asked: make the firewall the source, as for a forward's hairpin.
+    for x in intercepts.iter().filter(|x| x.same_network) {
+        writeln!(
+            post,
+            "iifname {i} oifname {i} ip daddr {t} meta l4proto {{ tcp, udp }} th dport 53 ct status dnat counter snat ip to {gw} comment {}",
+            q(&format!("dns-intercept:{}:hairpin", x.network)),
+            i = q(&x.iface),
+            t = x.target,
+            gw = x.gateway
         )
         .unwrap();
     }

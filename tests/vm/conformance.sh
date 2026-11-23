@@ -116,6 +116,24 @@ squatter() {
     sudo ip netns del sw-guests2
 }
 
+# DNS interception (#73): on users, a query for a server that isn't a
+# resolver (an unused guests address, so it is routed through the
+# firewall) gets the firewall's answer; guests, not intercepted, gets
+# none, since guests->users drops it. Undone afterwards.
+dns_intercept() {
+    local a
+    echo '{"dns": {"intercept": {"users": {}}}}' | vm 'cat > /tmp/intercept.json'
+    vm 'sudo sparewall merge -f /tmp/intercept.json --confirm 0' >/dev/null
+    a=$(ns users dig +short +time=3 +tries=3 @198.51.100.53 printer.home.arpa) || true
+    [ "$a" = 192.0.2.9 ] || fail "an intercepted query for another server: got '$a'"
+    a=$(ns guests dig +short +time=2 +tries=1 @192.0.2.53 printer.home.arpa) || true
+    [ -z "$a" ] || fail "guests, not intercepted, got an answer from 192.0.2.53: '$a'"
+    vm 'sudo nft list chain inet sparewall prerouting_nat' | grep 'dns-intercept:users' | grep -q 'packets [1-9]' \
+        || fail "the users interception counted nothing"
+    vm 'sudo sparewall unset dns.intercept --confirm 0' >/dev/null
+    log "DNS interception PASS"
+}
+
 run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
@@ -153,6 +171,7 @@ run_conformance() {
     [ "$a" = 192.0.2.9 ] || fail "local DNS record: got '$a'"
     a=$(ns users dig +short +time=3 +tries=3 @192.0.2.1 client20.home.arpa) || true
     [ "$a" = 192.0.2.20 ] || fail "reservation name: got '$a'"
+    dns_intercept
     vm 'sudo nft list chain inet sparewall fwd_guests_users' | grep -q 'packets [1-9]' \
         || fail "the guests->users default drop counted nothing"
     # That drop is logged: ulogd (in ulogd_t, under NoNewPrivileges) hands

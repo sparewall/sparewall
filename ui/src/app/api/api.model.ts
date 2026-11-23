@@ -190,12 +190,27 @@ export interface Schemas {
     "enabled": boolean;
     /** Forward to these servers instead of recursing. */
     "forwarders"?: Array<string>;
+    /** Networks whose DNS queries go to the resolver the site chose,
+     * whatever server a client asks (#73), by network name: the
+     * firewall's own resolver there, or `to`. */
+    "intercept"?: Record<string, Schemas["Document.DnsIntercept"]>;
     /** Networks to serve; default every network with DHCP. */
     "networks"?: Array<string>;
     /** Implementation: `unbound` (the default). */
     "provider"?: string | null;
     /** Extra local A records, name to address. */
     "records"?: Record<string, string>;
+  };
+  /** How a network's DNS queries are intercepted (`dns.intercept.<network>`). */
+  "Document.DnsIntercept": {
+    /** Refuse DNS over TLS (TCP 853) from the network, so clients fall back
+     * to plain DNS. Default true. DNS over HTTPS can't be told apart by
+     * its port. */
+    "block_dot"?: boolean | null;
+    /** Send them to this resolver instead of the firewall's own, e.g. a
+     * Pi-hole. Queries over IPv6 are then refused, so clients ask over
+     * IPv4. */
+    "to"?: string | null;
   };
   "Document.DynamicKind": "address" | "prefix";
   "Document.DynamicSource": {

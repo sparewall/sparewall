@@ -75,6 +75,7 @@ back to one of them keeps its configuration.
 | 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`, `vpn_clients`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
 | 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
 | 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated`; an IPv6 address or `ipv6` object in `management.sources` | 0.7.0 |
+| 7 | `dns.intercept` | 0.8.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -423,6 +424,26 @@ while a WAN has its default route, and
 `sparewall_ipv6_delegated_prefix_valid_seconds` and
 `…_preferred_seconds` count down the delegated prefix's lifetimes: alert
 when the valid lifetime runs low, as the ISP has stopped renewing it.
+
+## DNS interception
+
+A network's DHCP tells clients which resolver to use, but a client can ignore it and ask any server, for example `8.8.8.8`. With `dns.intercept`, the firewall answers instead, or sends the query to a resolver you choose, whichever server the client asked:
+
+```yaml
+dns:
+  enabled: true
+  intercept:
+    users: {}                    # the firewall's own resolver
+    guests: { to: 192.0.2.53 }   # a resolver of your own, e.g. a Pi-hole
+```
+
+- **Without `to`,** queries go to the firewall's resolver at the network's gateway address, so the firewall must serve DNS on that network (`dns.networks`, or every DHCP network by default). Over IPv6 they go to the firewall too.
+- **With `to`,** queries go to that address, which must be on one of the networks. They pass whatever the zone policy says, since you chose the resolver. Queries the resolver sends itself are left alone, so it can still reach its upstream. If it's on the intercepted network itself, the firewall stands in as the source, so the answers come back the way the client expects. Queries over IPv6 are refused, so clients ask over IPv4.
+- **DNS over TLS** (and QUIC) on port 853 is refused by default, so clients fall back to plain DNS. Keep it with `block_dot: false`.
+- **DNS over HTTPS** uses port 443 like any web traffic and can't be told apart, so it isn't intercepted. Firefox turns DoH off on networks whose resolver answers `use-application-dns.net` with NXDOMAIN.
+- **Counting:** each network's rewritten queries are counted on `/metrics`, in `sparewall_rule_packets_total{rule="dns-intercept:<network>"}`.
+
+In a pair, the queries go to the gateway address, which moves with the gateway.
 
 ## Remote-access VPN
 
