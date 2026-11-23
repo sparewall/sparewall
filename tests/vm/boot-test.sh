@@ -434,8 +434,8 @@ vm 'ps -eo uid,label,comm' | grep -E '^ *65534 +system_u:system_r:container_t:.*
 # err (#338).
 for u in sparewall-prometheus sparewall-unbound; do
     vm "sudo journalctl -b -u $u -p err -o cat --no-pager" > errs.txt
-    if grep -qE 'level=INFO| info: ' errs.txt; then
-        fail "$u logs ordinary messages as errors: $(grep -E 'level=INFO| info: ' errs.txt | head -3)"
+    if grep -qiE 'level=info| info: ' errs.txt; then
+        fail "$u logs ordinary messages as errors: $(grep -iE 'level=info| info: ' errs.txt | head -3)"
     fi
 done
 # Nothing new on the network: Prometheus answers loopback only.
