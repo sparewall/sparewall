@@ -75,18 +75,18 @@ describe('the form with unions', () => {
 
   it('shows each match branch as text and leaves the data untouched', async () => {
     const f = await render(ruleSchema, rule);
-    expect(f.field('Dport').value).toBe('22, 8000-8100');
-    expect(f.field('Sport').value).toBe('1024');
-    expect(f.field('Src').value).toBe('@admin_nets');
-    expect(f.field('Dst').value).toBe('192.0.2.0/24');
+    expect(f.field('Destination port').value).toBe('22, 8000-8100');
+    expect(f.field('Source port').value).toBe('1024');
+    expect(f.field('Source').value).toBe('@admin_nets');
+    expect(f.field('Destination').value).toBe('192.0.2.0/24');
     expect(f.now()).toEqual(rule);
   });
 
   it('changes only the field edited, to the type its text says', async () => {
     const f = await render(ruleSchema, rule);
-    await f.edit('Dport', '443');
+    await f.edit('Destination port', '443');
     expect(f.now()).toEqual({ ...rule, dport: 443 });
-    await f.edit('Src', '10.0.0.0/8, @lab');
+    await f.edit('Source', '10.0.0.0/8, @lab');
     expect(f.now()).toEqual({ ...rule, dport: 443, src: ['10.0.0.0/8', '@lab'] });
   });
 

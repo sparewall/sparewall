@@ -47,6 +47,8 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
+  // A card is as tall as what it holds, not as its row's tallest.
+  align-items: start;
 
   mat-card {
     background: var(--mat-sys-surface-container-lowest);

@@ -119,3 +119,27 @@ h1 {
 .level-failed {
   color: var(--sw-failed);
 }
+
+// JSON Forms' checkbox puts its description and error outside a form
+// field, so they get none of a form field's hint styling: give them the
+// same small text, under the checkbox's label.
+.boolean-control {
+  mat-hint,
+  mat-error {
+    display: block;
+    font: var(--mat-sys-body-small);
+    padding-left: 40px;
+  }
+
+  mat-hint {
+    color: var(--mat-sys-on-surface-variant);
+  }
+
+  mat-error {
+    color: var(--mat-sys-error);
+  }
+
+  mat-error:empty {
+    display: none;
+  }
+}
