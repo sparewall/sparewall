@@ -112,6 +112,11 @@ pub const UNBOUND_OWNED: &[(&str, &str)] = &[
         "interface*",
         "Unbound listens on the served networks' gateways",
     ),
+    // Unbound's alias for `interface` (util/configlexer.lex, 1.26).
+    (
+        "ip-address",
+        "Unbound listens on the served networks' gateways",
+    ),
     ("port", "Unbound listens on port 53"),
     (
         "ip-freebind",

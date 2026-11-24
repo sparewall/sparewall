@@ -610,7 +610,7 @@ fn provider_options_are_checked() {
             },
         },
         "unbound": {
-            "server": {"interface": "0.0.0.0", "interface-action": "eth0 allow", "access-control-view": "0.0.0.0/0 v", "include": "/x", "Bad_Name": 1, "x": "a\nforward-zone:", "y": [], "z": {}},
+            "server": {"interface": "0.0.0.0", "interface-action": "eth0 allow", "ip-address": "0.0.0.0", "access-control-view": "0.0.0.0/0 v", "include": "/x", "Bad_Name": 1, "x": "a\nforward-zone:", "y": [], "z": {}},
             "forward-zone": [{"forward-addr": "10.1.1.1"}, {"name": "a."}, {"name": "A"}],
             "remote-control": {},
         },
@@ -630,6 +630,7 @@ fn provider_options_are_checked() {
         "provider_options.unbound.server.interface: Sparewall sets interface itself",
         "provider_options.unbound.server.include: give the options here rather than a file",
         "provider_options.unbound.server.interface-action: Sparewall sets interface-action itself",
+        "provider_options.unbound.server.ip-address: Sparewall sets ip-address itself",
         "provider_options.unbound.server.access-control-view: Sparewall sets access-control-view itself: dns.networks and dns.filters",
         "provider_options.unbound.server.Bad_Name: not an Unbound option name",
         "provider_options.unbound.server.x: a value can't hold a line break",
@@ -646,7 +647,7 @@ fn provider_options_are_checked() {
             "{want}\n{errs:#?}"
         );
     }
-    assert_eq!(errs.len(), 21, "{errs:#?}");
+    assert_eq!(errs.len(), 22, "{errs:#?}");
 
     // The root forwarded twice: by dns.forwarders and here.
     let mut d =
