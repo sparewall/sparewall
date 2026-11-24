@@ -173,7 +173,8 @@ dns_filters() {
 # Provider passthrough options (#143): a Kea class for busybox's udhcpc
 # (its vendor class) and an option on the users network, each sent
 # whether asked for or not, and an Unbound record. A key Sparewall sets
-# is refused. Undone afterwards.
+# is refused. Undone afterwards. (A positive time offset: udhcpc prints
+# the option as unsigned.)
 provider_options() {
     local env="$WORK/udhcpc-env"
     cat > "$WORK/udhcpc-po.sh" <<SH
@@ -190,7 +191,7 @@ SH
       "test": "substring(option[60].hex,0,5) == 'udhcp'",
       "option-data": [{"name": "tftp-server-name", "data": "tftp.passthrough.test", "always-send": true}]
     }],
-    "networks": {"users": {"option-data": [{"name": "time-offset", "data": "-21600", "always-send": true}]}}
+    "networks": {"users": {"option-data": [{"name": "time-offset", "data": "3600", "always-send": true}]}}
   },
   "unbound": {"server": {"local-data": "\"passthrough.test. IN A 192.0.2.66\""}}
 }}
@@ -199,7 +200,7 @@ JSON
     rm -f "$env"
     ns users busybox udhcpc -i eth0 -n -q -t 10 -T 3 -s "$WORK/udhcpc-po.sh" >/dev/null 2>&1 \
         || fail "no DHCP lease on users with passthrough options"
-    [ "$(cat "$env")" = "tftp=tftp.passthrough.test timezone=-21600" ] \
+    [ "$(cat "$env")" = "tftp=tftp.passthrough.test timezone=3600" ] \
         || fail "the passthrough options did not reach the client: $(cat "$env")"
     [ "$(ns users dig +short +time=2 +tries=2 @192.0.2.1 passthrough.test)" = 192.0.2.66 ] \
         || fail "Unbound's passthrough record does not resolve"
