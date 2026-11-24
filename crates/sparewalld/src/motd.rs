@@ -108,6 +108,7 @@ mod tests {
             health,
             update: None,
             ipv6: None,
+            dynamic_dns: None,
         }
     }
 

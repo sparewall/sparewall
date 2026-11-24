@@ -685,6 +685,14 @@
               "null"
             ]
           },
+          "dynamic": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.DynamicDns"
+            },
+            "description": "Names kept pointing at the site's public address as it changes\n(#316), by a name of your own: dynamic DNS. Independent of the\nresolver: `enabled` turns only the resolver on and off.",
+            "type": "object",
+            "x-since": 7
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -805,6 +813,58 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "Document.DynamicDns": {
+        "additionalProperties": false,
+        "description": "Dynamic DNS (`dns.dynamic.<name>`): names a provider keeps at the\nWAN's address. In a pair, only the master sends updates.",
+        "properties": {
+          "credentials": {
+            "description": "`secret:<name>`, the provider's credentials as `KEY=value` lines:\n`DYNDNS2_USERNAME` and `DYNDNS2_PASSWORD`; `CF_DNS_API_TOKEN`\n(lego's name, so one secret can serve both); `DUCKDNS_TOKEN`\n(lego's too).",
+            "type": "string"
+          },
+          "discover": {
+            "description": "Ask this service for the public IPv4 address instead of taking the\nWAN's, for a WAN behind carrier-grade NAT or another router: a URL\nthat answers with the address alone, e.g. `https://api.ipify.org`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ipv6": {
+            "description": "Keep the names' AAAA records at the WAN's global IPv6 address too.",
+            "type": "boolean"
+          },
+          "names": {
+            "description": "The names to keep current, e.g. `vpn.example.org`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "network": {
+            "description": "The WAN network whose address the names get (default: the only\nWAN).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Provider settings. `server`: the update URL for `dyndns2`\n(required, e.g. `https://dynupdate.no-ip.com/nic/update`), or a\ncompatible service's API for the others. `zone`: the Cloudflare\nzone (default: found from the names).",
+            "type": "object"
+          },
+          "provider": {
+            "description": "`dyndns2` (Dyn, No-IP and the many services that speak its\nprotocol), `cloudflare` or `duckdns`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "names",
+          "provider",
+          "credentials"
+        ],
         "type": "object"
       },
       "Document.DynamicKind": {
@@ -5785,6 +5845,13 @@
                   "properties": {
                     "conntrack": {
                       "type": "object"
+                    },
+                    "dynamic_dns": {
+                      "description": "Each `dns.dynamic` entry (#316), by name: its `names`, `provider`, the `address` and `ipv6` it should have, what the provider was last `sent` and when (`updated`, Unix seconds), the last `error`, and whether this node is the one that updates it (`active`). Absent without entries, and from nodes older than 0.8.0.",
+                      "type": [
+                        "object",
+                        "null"
+                      ]
                     },
                     "health": {
                       "type": "object"

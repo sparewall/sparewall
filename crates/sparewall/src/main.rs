@@ -1608,6 +1608,13 @@ impl App {
                                 println!("  {net:<10} {}", ipv6_line(st));
                             }
                         }
+                        if let Some(d) = s.dynamic_dns.as_ref().and_then(|v| v.as_object()) {
+                            let now = jiff::Timestamp::now().as_second();
+                            println!("dynamic dns:");
+                            for (name, st) in d {
+                                println!("  {name:<10} {}", ddns_line(st, now));
+                            }
+                        }
                     }
                 }
             }
@@ -2760,6 +2767,41 @@ fn duration_short(s: u64) -> String {
 }
 
 /// One network's line in `sparewall status`'s IPv6 section (#216).
+/// One `dns.dynamic` entry for `sparewall status`: its names, the
+/// address they get, and when it was last sent, or why not.
+fn ddns_line(st: &serde_json::Value, now: i64) -> String {
+    let names: Vec<&str> = st["names"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| n.as_str())
+        .collect();
+    let mut out = format!(
+        "{} {}",
+        st["provider"].as_str().unwrap_or("?"),
+        names.join(",")
+    );
+    let addrs: Vec<&str> = [&st["address"], &st["ipv6"]]
+        .into_iter()
+        .filter_map(|a| a.as_str())
+        .collect();
+    if !addrs.is_empty() {
+        out.push_str(&format!(" -> {}", addrs.join(" ")));
+    }
+    if st["active"] == false {
+        out.push_str(" (the master updates it)");
+    } else if let Some(t) = st["updated"].as_i64() {
+        let ago = u64::try_from(now - t).unwrap_or(0);
+        out.push_str(&format!(", sent {} ago", duration_short(ago)));
+    } else {
+        out.push_str(", not sent yet");
+    }
+    if let Some(e) = st["error"].as_str() {
+        out.push_str(&format!(": {e}"));
+    }
+    out
+}
+
 fn ipv6_line(st: &serde_json::Value) -> String {
     let lifetimes = |a: &serde_json::Value| match (
         a["preferred_seconds"].as_u64(),
@@ -2818,7 +2860,7 @@ fn ipv6_line(st: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, LogEntry, Neighbour, QueryReply, Route, RuleHit, duration_secs, entry_line,
+        Cli, LogEntry, Neighbour, QueryReply, Route, RuleHit, ddns_line, duration_secs, entry_line,
         fingerprint, hash_password, hit_line, neighbour_table, node_only, parse_size, paste_slip,
         query_table, route_table,
     };
@@ -3068,6 +3110,32 @@ mod tests {
                 .is_ok()
         );
         assert_ne!(h, hash_password("correct horse").unwrap(), "salted");
+    }
+
+    #[test]
+    fn ddns_status_lines() {
+        let st = serde_json::json!({
+            "names": ["vpn.example.org"], "provider": "cloudflare",
+            "address": "203.0.113.7", "ipv6": "2001:db8::1", "updated": 1000, "active": true,
+        });
+        assert_eq!(
+            ddns_line(&st, 1300),
+            "cloudflare vpn.example.org -> 203.0.113.7 2001:db8::1, sent 5m ago"
+        );
+        let st = serde_json::json!({
+            "names": ["a.ddns.example", "b.ddns.example"], "provider": "dyndns2",
+            "address": "203.0.113.7", "active": true, "error": "a.ddns.example: badauth",
+        });
+        assert_eq!(
+            ddns_line(&st, 0),
+            "dyndns2 a.ddns.example,b.ddns.example -> 203.0.113.7, not sent yet: a.ddns.example: badauth"
+        );
+        let st =
+            serde_json::json!({"names": ["x.duckdns.org"], "provider": "duckdns", "active": false});
+        assert_eq!(
+            ddns_line(&st, 0),
+            "duckdns x.duckdns.org (the master updates it)"
+        );
     }
 
     #[test]

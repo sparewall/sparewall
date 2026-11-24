@@ -41,6 +41,7 @@ cleanup() {
     fi
     selinux_reports
     sudo pkill -f "$HERE/echo.py" 2>/dev/null || true
+    pkill -f "$HERE/ddns-stub.py" 2>/dev/null || true
     sudo pkill -f "ping -D -i 0.2" 2>/dev/null || true
     [ -n "${REGISTRY:-}" ] && sudo podman rm -f "$REGISTRY" >/dev/null 2>&1 || true
     stop_pair
@@ -468,6 +469,26 @@ c = socket.create_connection(("203.0.113.60", 7002), timeout=5)
 print(c.makefile().readline().strip())') || fail "the servers network cannot reach the WAN"
 [ "$seen" = 203.0.113.5 ] || fail "the servers network reached the WAN as $seen, not 203.0.113.5"
 
+log "dynamic DNS: the master publishes the WAN's address (#316)"
+DDNS_LOG=$PWD/ddns.log
+: > "$DDNS_LOG"
+"$HERE/ddns-stub.py" 8098 "$DDNS_LOG" &
+printf 'DYNDNS2_USERNAME=fw\nDYNDNS2_PASSWORD=pw\n' | at fw1 'sudo sparewall secret set ddns-test'
+echo '{"dns": {"enabled": false, "dynamic": {"test": {"names": ["vpn.example.org"], "provider": "dyndns2", "credentials": "secret:ddns-test", "options": {"server": "http://10.0.2.2:8098/nic/update"}}}}}' \
+    | at fw1 'cat > /tmp/ddns.json'
+at fw1 'sudo sparewall merge -f /tmp/ddns.json --confirm 0' >/dev/null
+ddns_updates() { grep -c 'hostname=vpn.example.org&myip=203.0.113.1$' "$DDNS_LOG"; }
+ddns_sent() { [ "$(ddns_updates)" -ge "$1" ]; }
+wait_for 120 "fw1 sends the dynamic DNS update" ddns_sent 1
+# Unchanged, it isn't sent again; the backup sends nothing. More than a
+# round (a minute).
+sleep 70
+[ "$(wc -l < "$DDNS_LOG")" = 1 ] || fail "dynamic DNS updates for an unchanged address: $(cat "$DDNS_LOG")"
+status fw1 | jq -e '.dynamic_dns.test.updated > 0 and .dynamic_dns.test.active' >/dev/null \
+    || fail "fw1's status has no dynamic DNS update: $(status fw1 | jq -c .dynamic_dns)"
+status fw2 | jq -e '.dynamic_dns.test.active == false' >/dev/null \
+    || fail "fw2 (backup) says it updates dynamic DNS: $(status fw2 | jq -c .dynamic_dns)"
+
 vpn_before_loss
 log "failover"
 sudo kill "$(sudo cat fw1.pid)"; rm -f fw1.pid
@@ -502,6 +523,8 @@ wait_for 60 "fw2 reports the peer down" unreachable fw2
 # the connection above runs from it.)
 wait_for 120 "a DHCP lease from fw2" got_lease
 [ "$(client_ip)" = "$LEASE" ] || fail "the client got $(client_ip) from fw2, not its lease $LEASE"
+# The new master can't know what the old one sent: it sends once.
+wait_for 120 "fw2 sends the dynamic DNS update after the handover" ddns_sent 2
 vpn_after_move "master loss"
 [ -n "${IMAGE:-}" ] || { vpn_summary; log "pair PASS (no IMAGE: rolling upgrade skipped)"; exit 0; }
 

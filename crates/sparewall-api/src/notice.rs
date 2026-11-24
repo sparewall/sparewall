@@ -71,6 +71,7 @@ mod tests {
             health: json!({}),
             update,
             ipv6: None,
+            dynamic_dns: None,
         }
     }
 

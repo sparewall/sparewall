@@ -187,6 +187,10 @@ export interface Schemas {
   "Document.Dns": {
     /** Local domain for reservation names. */
     "domain"?: string | null;
+    /** Names kept pointing at the site's public address as it changes
+     * (#316), by a name of your own: dynamic DNS. Independent of the
+     * resolver: `enabled` turns only the resolver on and off. */
+    "dynamic"?: Record<string, Schemas["Document.DynamicDns"]>;
     "enabled": boolean;
     /** Blocklists the firewall's resolver applies to the networks that
      * want them (#74), by a name of your own: a blocked name gets
@@ -232,6 +236,34 @@ export interface Schemas {
      * Pi-hole. Queries over IPv6 are then refused, so clients ask over
      * IPv4. */
     "to"?: string | null;
+  };
+  /** Dynamic DNS (`dns.dynamic.<name>`): names a provider keeps at the
+   * WAN's address. In a pair, only the master sends updates. */
+  "Document.DynamicDns": {
+    /** `secret:<name>`, the provider's credentials as `KEY=value` lines:
+     * `DYNDNS2_USERNAME` and `DYNDNS2_PASSWORD`; `CF_DNS_API_TOKEN`
+     * (lego's name, so one secret can serve both); `DUCKDNS_TOKEN`
+     * (lego's too). */
+    "credentials": string;
+    /** Ask this service for the public IPv4 address instead of taking the
+     * WAN's, for a WAN behind carrier-grade NAT or another router: a URL
+     * that answers with the address alone, e.g. `https://api.ipify.org`. */
+    "discover"?: string | null;
+    /** Keep the names' AAAA records at the WAN's global IPv6 address too. */
+    "ipv6"?: boolean;
+    /** The names to keep current, e.g. `vpn.example.org`. */
+    "names": Array<string>;
+    /** The WAN network whose address the names get (default: the only
+     * WAN). */
+    "network"?: string | null;
+    /** Provider settings. `server`: the update URL for `dyndns2`
+     * (required, e.g. `https://dynupdate.no-ip.com/nic/update`), or a
+     * compatible service's API for the others. `zone`: the Cloudflare
+     * zone (default: found from the names). */
+    "options"?: Record<string, string>;
+    /** `dyndns2` (Dyn, No-IP and the many services that speak its
+     * protocol), `cloudflare` or `duckdns`. */
+    "provider": string;
   };
   "Document.DynamicKind": "address" | "prefix";
   "Document.DynamicSource": {
@@ -1403,6 +1435,8 @@ export interface Calls {
     parameters: Record<string, never>;
     reply: {
       "conntrack": Record<string, unknown>;
+      /** Each `dns.dynamic` entry (#316), by name: its `names`, `provider`, the `address` and `ipv6` it should have, what the provider was last `sent` and when (`updated`, Unix seconds), the last `error`, and whether this node is the one that updates it (`active`). Absent without entries, and from nodes older than 0.8.0. */
+      "dynamic_dns"?: Record<string, unknown> | null;
       "health": Record<string, unknown>;
       /** Each network with IPv6 (#216), by name: `iface`, `mode`, the interface's global `addresses`, the prefixes `delegated` to it by DHCPv6 and its `default_gateway`; an inside network also its advertised `prefixes`. Lifetimes are seconds left. Absent when no network has IPv6, and from nodes older than 0.6.0. */
       "ipv6"?: Record<string, unknown> | null;
