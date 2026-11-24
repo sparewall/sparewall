@@ -70,10 +70,6 @@ pub const KEA_OWNED: &[(&str, &str)] = &[
         "shared-networks",
         "subnets come from dhcp.<network>; add to one under networks.<network>",
     ),
-    (
-        "dhcp-ddns",
-        "DHCP-to-DNS updates aren't built; this would send leases' names and addresses to another server",
-    ),
     ("valid-lifetime", "set dhcp.lease_time"),
     (
         "authoritative",
@@ -363,6 +359,16 @@ impl Checker {
                 self.err(
                     &path,
                     "give Dhcp4's keys directly, without Dhcp4 around them",
+                );
+                continue;
+            }
+            // Kea would send each lease's name and address to a DHCP-DDNS
+            // server: that egress is a feature of its own, not built.
+            if k == "dhcp-ddns" {
+                self.err(
+                    &path,
+                    "DHCP-to-DNS updates aren't built: this would send leases' names and \
+                     addresses to another server",
                 );
                 continue;
             }
