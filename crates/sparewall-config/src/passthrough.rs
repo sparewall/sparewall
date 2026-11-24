@@ -70,6 +70,10 @@ pub const KEA_OWNED: &[(&str, &str)] = &[
         "shared-networks",
         "subnets come from dhcp.<network>; add to one under networks.<network>",
     ),
+    (
+        "dhcp-ddns",
+        "DHCP-to-DNS updates aren't built; this would send leases' names and addresses to another server",
+    ),
     ("valid-lifetime", "set dhcp.lease_time"),
     (
         "authoritative",

@@ -601,6 +601,7 @@ fn provider_options_are_checked() {
     let bad = po(json!({
         "kea": {
             "hooks-libraries": [],
+            "dhcp-ddns": {"enable-updates": true},
             "valid-lifetime": 600,
             "Dhcp4": {},
             "networks": {
@@ -620,6 +621,7 @@ fn provider_options_are_checked() {
     let errs = error_paths(&bad);
     for want in [
         "provider_options.kea.hooks-libraries: Sparewall sets hooks-libraries itself",
+        "provider_options.kea.dhcp-ddns: Sparewall sets dhcp-ddns itself: DHCP-to-DNS updates aren't built",
         "provider_options.kea.valid-lifetime: Sparewall sets valid-lifetime itself: set dhcp.lease_time",
         "provider_options.kea.Dhcp4: give Dhcp4's keys directly",
         "provider_options.kea.networks.nope: nope is not a network under dhcp",
@@ -647,7 +649,7 @@ fn provider_options_are_checked() {
             "{want}\n{errs:#?}"
         );
     }
-    assert_eq!(errs.len(), 22, "{errs:#?}");
+    assert_eq!(errs.len(), 23, "{errs:#?}");
 
     // The root forwarded twice: by dns.forwarders and here.
     let mut d =
