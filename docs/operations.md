@@ -532,6 +532,21 @@ provider_options:
 
 - **Kea:** keys go into Kea's `Dhcp4` object: `client-classes`, `option-def`, global `option-data`, timers and the like. Under `networks.<network>`, keys go into that DHCP network's subnet, and its `option-data` is added to the options the firewall sets there.
 - **Unbound:** `server` options are added to its `server:` clause, where one given once replaces the firewall's own default (`prefetch: false`, say), and a list gives an option once per item. `forward-zone` and `stub-zone` are lists of clauses, each with a `name`. This covers forwarding a domain to another site's or a directory's DNS servers. A `forward-zone` for the root (`.`) is refused while `dns.forwarders` forwards it. Values are written as given, so put quotes in the value where Unbound wants them, as for `local-zone` above. Yes and no are `true` and `false`.
+- **A directory's zones,** such as Active Directory's: name its DNS servers in a `stub-zone` (they're authoritative for the zone) or a `forward-zone`, with two settings beside it. An AD zone isn't signed, so under a signed public domain DNSSEC validation fails until `domain-insecure` names it. Unbound also answers private reverse zones (`10.in-addr.arpa` and the like) itself unless `unblock-lan-zones` is on, with `insecure-lan-zones` for their DNSSEC:
+
+  ```yaml
+  provider_options:
+    unbound:
+      server:
+        domain-insecure: ['"ad.example.com."']
+        unblock-lan-zones: true
+        insecure-lan-zones: true
+      stub-zone:
+        - { name: ad.example.com., stub-addr: [10.0.0.10, 10.0.0.11] }
+        - { name: 10.in-addr.arpa., stub-addr: [10.0.0.10, 10.0.0.11] }
+  ```
+
+  The queries come from the firewall itself, so a policy must let it reach those servers on port 53 if they're on an inside network.
 - **Refused:** keys the firewall sets itself, with an error at the key's path that says what to set instead. For Kea, these include its interfaces, control socket, lease database, hooks, loggers, subnets and pools, `valid-lifetime` (`dhcp.lease_time`), and on a network the router, DNS, NTP and domain options (`dhcp.<network>.options`). For Unbound, they include its interfaces (`interface`, its alias `ip-address`, and every `interface-` option), port, access control (every `access-control` option), views, user and file locations, `module-config`, and `include`. Only these two providers take passthrough options.
 - **Checked by the daemon:** the rest is checked by Kea's or Unbound's own config test (`kea-dhcp4 -t`, `unbound-checkconf`), in every dry run and apply. A setting either one refuses fails the change with that daemon's message. A setting that is valid but wrong for the site isn't caught, so use `--dry-run` and the review first.
 - **Switching providers:** options for a provider the document doesn't use, such as Kea's with DHCP served nowhere, are kept and ignored with a warning, ready for switching back.
