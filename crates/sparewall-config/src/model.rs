@@ -928,7 +928,8 @@ impl DnsIntercept {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ntp {
-    /// Upstream servers or pools.
+    /// Upstream servers or pools, by host name or address (a name with
+    /// `pool` in it is used as a pool).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<String>,
     /// Networks to serve time on.
