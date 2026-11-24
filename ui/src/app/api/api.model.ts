@@ -445,7 +445,8 @@ export interface Schemas {
   "Document.Ntp": {
     /** Networks to serve time on. */
     "serve"?: Array<string>;
-    /** Upstream servers or pools. */
+    /** Upstream servers or pools, by host name or address (a name with
+     * `pool` in it is used as a pool). */
     "servers"?: Array<string>;
   };
   /** A named set: static elements, or a dynamic set filled by networkd. */
