@@ -131,7 +131,21 @@
           },
           "provider_options": {
             "additionalProperties": true,
-            "description": "Per-provider passthrough settings, keyed by provider name. Not\nbuilt yet: any entry is rejected.",
+            "description": "Per-provider passthrough settings, keyed by provider name (#143):\nset straight in that provider's own configuration, for what the\nrest of the document doesn't cover. Keys Sparewall sets itself are\nrefused, the provider's config test checks the rest, and options\nfor a provider not in use are ignored with a warning.",
+            "properties": {
+              "kea": {
+                "additionalProperties": true,
+                "description": "Kea's Dhcp4 settings, merged into the rendered Dhcp4 object, as in Kea's own configuration (client-classes, option-def, global option-data, timers). Under networks.<network>, settings merged into that DHCP network's subnet; its option-data is added to Sparewall's own.",
+                "type": "object",
+                "x-since": 7
+              },
+              "unbound": {
+                "additionalProperties": true,
+                "description": "Unbound settings by clause: server (options for its server: clause; a list gives an option more than once), and forward-zone and stub-zone (lists of clauses, each with a name). Values are written as given, so quote them where Unbound wants quotes.",
+                "type": "object",
+                "x-since": 7
+              }
+            },
             "type": "object"
           },
           "raw": {

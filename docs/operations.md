@@ -75,7 +75,7 @@ back to one of them keeps its configuration.
 | 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`, `vpn_clients`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
 | 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
 | 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated`; an IPv6 address or `ipv6` object in `management.sources` | 0.7.0 |
-| 7 | `dns.intercept`, `dns.filters`, `dns.dynamic` | 0.8.0 |
+| 7 | `dns.intercept`, `dns.filters`, `dns.dynamic`, `provider_options` | 0.8.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -504,6 +504,39 @@ printf 'CF_DNS_API_TOKEN=%s\n' "$token" | sparewall secret set ddns-cloudflare
 - **Status:** `sparewall status -o json` (`dynamic_dns`) shows each entry's address, what was last sent and when, and the last error. Each change is an event (`ddns`), and health is degraded (`ddns`) while an entry fails, its address isn't public, or a name resolves elsewhere.
 
 `dns.enabled` turns only the resolver on and off; dynamic DNS works either way.
+
+## Provider options
+
+For a Kea or Unbound setting the document doesn't have, `provider_options` passes settings straight into that daemon's own configuration, in its own terms:
+
+```yaml
+provider_options:
+  kea:
+    option-def:
+      - { name: tftp-servers, code: 150, type: ipv4-address, array: true }
+    client-classes:
+      - name: phones
+        test: "substring(option[60].hex,0,7) == 'Polycom'"
+        option-data: [{ name: tftp-servers, data: 192.0.2.5 }]
+    networks:
+      users:
+        option-data: [{ name: time-offset, data: "-21600" }]
+  unbound:
+    server:
+      cache-min-ttl: 60
+      serve-expired: true
+      local-zone: ['"lab.example." static']
+    forward-zone:
+      - { name: corp.example., forward-addr: [10.1.1.1, 10.1.1.2] }
+```
+
+- **Kea:** keys go into Kea's `Dhcp4` object: `client-classes`, `option-def`, global `option-data`, timers and the like. Under `networks.<network>`, keys go into that DHCP network's subnet, and its `option-data` is added to the options the firewall sets there.
+- **Unbound:** `server` options are added to its `server:` clause, where one given once replaces the firewall's own default (`prefetch: false`, say), and a list gives an option once per item. `forward-zone` and `stub-zone` are lists of clauses, each with a `name`. This covers forwarding a domain to another site's or a directory's DNS servers. A `forward-zone` for the root (`.`) is refused while `dns.forwarders` forwards it. Values are written as given, so put quotes in the value where Unbound wants them, as for `local-zone` above. Yes and no are `true` and `false`.
+- **Refused:** keys the firewall sets itself, with an error at the key's path that says what to set instead. For Kea, these include its interfaces, control socket, lease database, hooks, loggers, subnets and pools, `valid-lifetime` (`dhcp.lease_time`), and on a network the router, DNS, NTP and domain options (`dhcp.<network>.options`). For Unbound, they include its interfaces (`interface` and every `interface-` option), port, access control (every `access-control` option), views, user and file locations, `module-config`, and `include`. Only these two providers take passthrough options.
+- **Checked by the daemon:** the rest is checked by Kea's or Unbound's own config test (`kea-dhcp4 -t`, `unbound-checkconf`), in every dry run and apply. A setting either one refuses fails the change with that daemon's message. A setting that is valid but wrong for the site isn't caught, so use `--dry-run` and the review first.
+- **Switching providers:** options for a provider the document doesn't use, such as Kea's with DHCP served nowhere, are kept and ignored with a warning, ready for switching back.
+- **Pairs:** both nodes render the same options, as the document is shared. Kea's HA stays the firewall's.
+- **The web UI** shows each provider's options as JSON, under Services.
 
 ## Remote-access VPN
 
@@ -1360,10 +1393,11 @@ what the test suites see, and a denial on a real node is a missing rule.
 
 ## Settings not built yet
 
-`provider_options` and `dhcp.provider: networkd` are rejected with an
-error at their path. The
-document takes them, and validation checks them in full; activating one
-is refused. `ipv6` objects, IPv6 in policies (#212), a node's WAN (#213,
+`dhcp.provider: networkd` is rejected with an error at its path. The
+document takes it, and validation checks it in full; activating it is
+refused. `provider_options` was too, until 0.8.0 built it ([Provider
+options](#provider-options)); options from a build before 0.1.0 are
+now checked like any others. `ipv6` objects, IPv6 in policies (#212), a node's WAN (#213,
 [IPv6 on the WAN](#ipv6-on-the-wan)), inside networks (#214, [IPv6 on
 inside networks](#ipv6-on-inside-networks)) and IPv6 in a pair (#215,
 [Running an HA pair](pairing.md#ipv6)) are built, and since 0.7.0 hosts
@@ -1385,7 +1419,8 @@ upgrading:
   ```
 
   For a provider, unset it to use the built-in default (`sparewall unset
-  dhcp.provider`, which means Kea). With networkd's DHCP server, nothing
+  dhcp.provider`, which means Kea), and fix or unset passthrough options
+  that are refused. With networkd's DHCP server, nothing
   served DHCP before; Kea starts with an empty lease database. Kea pings
   each address before offering it, so a client still holding an old
   lease is not given away (`dhcp.ping_check`).

@@ -663,7 +663,7 @@ The document says what a service must do; a **provider** turns that intent into 
 ### Rules that keep providers swappable
 
 - **Neutral schema first.** Anything most implementations can express belongs in the shared schema.
-- **Escape hatch.** `provider_options.<provider>` passes settings straight into that provider's config; it is validated by the daemon's checker, shown in diffs, and ignored with a warning if the provider changes.
+- **Escape hatch.** `provider_options.<provider>` passes settings straight into that provider's config; it is validated by the daemon's checker, shown in diffs, and ignored with a warning if the provider changes. *As built (#143):* Kea (`Dhcp4` keys, and per network the subnet's) and Unbound (`server` options, `forward-zone` and `stub-zone` clauses) take it; keys Sparewall sets are refused at their path.
 - **Capabilities are checked.** Each provider declares what it supports (HA, DDNS, DNSSEC, VLAN redetection); validation rejects a document needing something the chosen provider lacks.
 - **State moves or is declared lost.** Switching runs the provider's export and import (Kea's lease file, for example) where possible, and otherwise warns that state will be lost.
 - **One conformance suite per role,** run against every provider and version: a lease on every VLAN, reservations honoured, lease continuity across failover, local names resolve.

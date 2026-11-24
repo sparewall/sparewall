@@ -139,6 +139,17 @@ LEASE=$(client_ip)
 LEASES=/var/lib/containers/storage/volumes/sparewall-kea-leases/_data/kea-leases4.csv
 fw2_has_lease() { at fw2 "sudo grep -q '^$LEASE,02:00:00:00:00:20' $LEASES"; }
 wait_for 60 "fw2 holds the lease of $LEASE (Kea HA)" fw2_has_lease
+# The passthrough class in the document (#143) reaches the client.
+cat > "$WORK/udhcpc-tftp.sh" <<SH
+#!/bin/sh
+[ "\$1" = bound ] && echo "\$tftp" > "$WORK/tftp"
+exit 0
+SH
+chmod +x "$WORK/udhcpc-tftp.sh"
+ns users busybox udhcpc -i eth0 -n -q -t 5 -T 3 -s "$WORK/udhcpc-tftp.sh" >/dev/null 2>&1 \
+    || fail "no DHCP lease from the pair for the passthrough check"
+[ "$(cat "$WORK/tftp")" = tftp.pair.test ] \
+    || fail "the pair's passthrough class did not reach the client: '$(cat "$WORK/tftp")'"
 
 log "the WAN: private node addresses, the public ones on the master (#54)"
 # sw-isp is the ISP's gateway (203.0.113.254), with an outside address

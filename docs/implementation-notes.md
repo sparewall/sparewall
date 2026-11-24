@@ -691,11 +691,8 @@ through the cut network do not survive that long a stall.
   networkd`). Earlier versions accepted it and then rendered nothing,
   silently turning DHCP off; validation now rejects it as not built yet
   (#10). (Syslog forwarding, `logging.remote.provider: syslog`, was in
-  the same state until 0.5.0 built it.)
+  the same state until 0.5.0 built it, and provider passthrough,
+  `provider_options`, until 0.8.0.)
 - Schema migrations. Revision 2 only added a field, which needs none
   (see "Adding a field" above).
 - Benchmarks.
-- Provider passthrough (`provider_options`). The schema keeps the field,
-  and validation rejects it with an error at its path, so a document
-  never shows a setting that has no effect. (Scheduled upgrades were in
-  the same state until 0.4.0, and a local Prometheus until 0.5.0.)

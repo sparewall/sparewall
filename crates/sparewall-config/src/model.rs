@@ -91,9 +91,26 @@ pub struct Document {
     /// OS image update policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updates: Option<Updates>,
-    /// Per-provider passthrough settings, keyed by provider name. Not
-    /// built yet: any entry is rejected.
+    /// Per-provider passthrough settings, keyed by provider name (#143):
+    /// set straight in that provider's own configuration, for what the
+    /// rest of the document doesn't cover. Keys Sparewall sets itself are
+    /// refused, the provider's config test checks the rest, and options
+    /// for a provider not in use are ignored with a warning.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("properties" = {
+        "kea": {
+            "type": "object",
+            "x-since": 7,
+            "additionalProperties": true,
+            "description": "Kea's Dhcp4 settings, merged into the rendered Dhcp4 object, as in Kea's own configuration (client-classes, option-def, global option-data, timers). Under networks.<network>, settings merged into that DHCP network's subnet; its option-data is added to Sparewall's own."
+        },
+        "unbound": {
+            "type": "object",
+            "x-since": 7,
+            "additionalProperties": true,
+            "description": "Unbound settings by clause: server (options for its server: clause; a list gives an option more than once), and forward-zone and stub-zone (lists of clauses, each with a name). Values are written as given, so quote them where Unbound wants quotes."
+        }
+    }))]
     pub provider_options: BTreeMap<String, Value>,
 }
 

@@ -93,3 +93,11 @@ vpn:
       vpnc: { public_key: "@VPNC@", addresses: [10.99.0.12/32] }
       natc: { public_key: "@NATC@", addresses: [10.99.0.13/32] }
       natk: { public_key: "@NATK@", addresses: [10.99.0.14/32] }
+# Kea HA with a passthrough class in place (#143): busybox's udhcpc is
+# sent a TFTP server name.
+provider_options:
+  kea:
+    client-classes:
+      - name: busybox
+        test: "substring(option[60].hex,0,5) == 'udhcp'"
+        option-data: [{ name: tftp-server-name, data: tftp.pair.test, always-send: true }]

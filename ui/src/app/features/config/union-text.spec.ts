@@ -1,4 +1,11 @@
-import { formatMatch, formatUnion, parseMatch, parseUnion } from './union-text';
+import {
+  formatMatch,
+  formatObject,
+  formatUnion,
+  parseMatch,
+  parseObject,
+  parseUnion,
+} from './union-text';
 
 describe('match text', () => {
   it('shows each kind of value as it is', () => {
@@ -35,5 +42,22 @@ describe('union text', () => {
     expect(parseUnion('{"snat": "203.0.113.5"}')).toEqual({ value: { snat: '203.0.113.5' } });
     expect(parseUnion('{"snat": ')).toEqual({ error: 'Not valid JSON.' });
     expect(parseUnion('')).toEqual({ value: undefined });
+  });
+});
+
+describe('object text', () => {
+  it('shows an object as indented JSON, and nothing for none', () => {
+    expect(formatObject({ 'renew-timer': 900 })).toBe('{\n  "renew-timer": 900\n}');
+    expect(formatObject(undefined)).toBe('');
+  });
+
+  it('reads an object back, and refuses anything else', () => {
+    const v = { server: { 'cache-min-ttl': 60 }, 'forward-zone': [{ name: 'corp.' }] };
+    expect(parseObject(formatObject(v))).toEqual({ value: v });
+    expect(parseObject('  ')).toEqual({ value: undefined });
+    expect(parseObject('{')).toEqual({ error: 'Not valid JSON.' });
+    for (const t of ['[]', '3', '"x"', 'null']) {
+      expect('error' in parseObject(t)).toBe(true);
+    }
   });
 });

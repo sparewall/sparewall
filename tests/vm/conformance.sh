@@ -170,6 +170,50 @@ dns_filters() {
     log "DNS filters PASS"
 }
 
+# Provider passthrough options (#143): a Kea class for busybox's udhcpc
+# (its vendor class) and an option on the users network, each sent
+# whether asked for or not, and an Unbound record. A key Sparewall sets
+# is refused. Undone afterwards.
+provider_options() {
+    local env="$WORK/udhcpc-env"
+    cat > "$WORK/udhcpc-po.sh" <<SH
+#!/bin/sh
+[ "\$1" = bound ] && echo "tftp=\$tftp timezone=\$timezone" > "$env"
+exit 0
+SH
+    chmod +x "$WORK/udhcpc-po.sh"
+    cat <<'JSON' | vm 'cat > /tmp/po.json'
+{"provider_options": {
+  "kea": {
+    "client-classes": [{
+      "name": "busybox",
+      "test": "substring(option[60].hex,0,5) == 'udhcp'",
+      "option-data": [{"name": "tftp-server-name", "data": "tftp.passthrough.test", "always-send": true}]
+    }],
+    "networks": {"users": {"option-data": [{"name": "time-offset", "data": "-21600", "always-send": true}]}}
+  },
+  "unbound": {"server": {"local-data": "\"passthrough.test. IN A 192.0.2.66\""}}
+}}
+JSON
+    vm 'sudo sparewall merge -f /tmp/po.json --confirm 0' >/dev/null
+    rm -f "$env"
+    ns users busybox udhcpc -i eth0 -n -q -t 10 -T 3 -s "$WORK/udhcpc-po.sh" >/dev/null 2>&1 \
+        || fail "no DHCP lease on users with passthrough options"
+    [ "$(cat "$env")" = "tftp=tftp.passthrough.test timezone=-21600" ] \
+        || fail "the passthrough options did not reach the client: $(cat "$env")"
+    [ "$(ns users dig +short +time=2 +tries=2 @192.0.2.1 passthrough.test)" = 192.0.2.66 ] \
+        || fail "Unbound's passthrough record does not resolve"
+    local out
+    if out=$(vm "sudo sparewall set 'provider_options.kea.hooks-libraries=[]' --dry-run" 2>&1); then
+        fail "a passthrough key Sparewall sets was accepted"
+    fi
+    echo "$out" | grep -q 'provider_options.kea.hooks-libraries' \
+        || fail "the refused key's error does not name its path: $out"
+    echo '{"provider_options": null}' | vm 'cat > /tmp/po.json'
+    vm 'sudo sparewall merge -f /tmp/po.json --confirm 0' >/dev/null
+    log "provider options PASS"
+}
+
 run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
@@ -229,6 +273,7 @@ run_conformance() {
     # the checks above read.
     dns_intercept
     dns_filters
+    provider_options
     log "conformance PASS"
 }
 

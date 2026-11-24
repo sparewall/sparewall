@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use sparewall_config::model::{Document, Ipv6Mode};
+use sparewall_config::passthrough;
 use sparewall_config::providers::{self, Role};
 
 use crate::kea::gateway_addr;
@@ -145,6 +146,14 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
          \x20   use-caps-for-id: no\n    prefetch: yes\n    so-reuseport: yes\n\
          \x20   auto-trust-anchor-file: \"/var/lib/unbound/root.key\"\n",
     );
+    // Passthrough options (#143), after Sparewall's own: Unbound takes
+    // the last value of a single-valued option, so these can change the
+    // defaults above (`prefetch`, say). Validation has refused what
+    // Sparewall must set, and unbound-checkconf checks the rest.
+    let passthrough = passthrough::unbound(doc);
+    if let Some(o) = passthrough {
+        s.push_str(&passthrough::unbound_server(o));
+    }
     if let Some(domain) = &dns.domain {
         let d = domain.trim_end_matches('.');
         writeln!(s, "    private-domain: \"{d}\"").unwrap();
@@ -184,6 +193,9 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         for f in &dns.forwarders {
             writeln!(s, "    forward-addr: {f}").unwrap();
         }
+    }
+    if let Some(o) = passthrough {
+        s.push_str(&passthrough::unbound_zones(o));
     }
     // The views' blocked names are fetched by sparewalld into a dotfile
     // each (an apply leaves dotfiles alone); a glob that matches nothing

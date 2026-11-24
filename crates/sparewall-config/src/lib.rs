@@ -5,6 +5,7 @@
 pub mod filters;
 pub mod identity;
 pub mod model;
+pub mod passthrough;
 pub mod path;
 pub mod pointer;
 pub mod providers;

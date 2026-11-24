@@ -6,7 +6,7 @@ import { fieldLabel } from './layout';
 const GROUPS: { label: string; keys: string[] }[] = [
   { label: 'Network', keys: ['ports', 'networks', 'zones', 'objects'] },
   { label: 'Firewall', keys: ['policy', 'forwards', 'nat', 'raw'] },
-  { label: 'Services', keys: ['dhcp', 'dns', 'ntp'] },
+  { label: 'Services', keys: ['dhcp', 'dns', 'ntp', 'provider_options'] },
   { label: 'VPN', keys: ['vpn'] },
   {
     label: 'System',

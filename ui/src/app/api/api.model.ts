@@ -31,9 +31,18 @@ export interface Schemas {
     "policy"?: Record<string, Schemas["Document.Policy"]>;
     /** Per node: port role name to the hardware it is bound to. */
     "ports"?: Record<string, Record<string, Schemas["Document.Port"]>>;
-    /** Per-provider passthrough settings, keyed by provider name. Not
-     * built yet: any entry is rejected. */
-    "provider_options"?: Record<string, unknown>;
+    /** Per-provider passthrough settings, keyed by provider name (#143):
+     * set straight in that provider's own configuration, for what the
+     * rest of the document doesn't cover. Keys Sparewall sets itself are
+     * refused, the provider's config test checks the rest, and options
+     * for a provider not in use are ignored with a warning. */
+    "provider_options"?: {
+      /** Kea's Dhcp4 settings, merged into the rendered Dhcp4 object, as in Kea's own configuration (client-classes, option-def, global option-data, timers). Under networks.<network>, settings merged into that DHCP network's subnet; its option-data is added to Sparewall's own. */
+      "kea"?: Record<string, unknown>;
+      /** Unbound settings by clause: server (options for its server: clause; a list gives an option more than once), and forward-zone and stub-zone (lists of clauses, each with a name). Values are written as given, so quote them where Unbound wants quotes. */
+      "unbound"?: Record<string, unknown>;
+      [key: string]: unknown;
+    };
     /** Raw nft statements placed at named hook points. */
     "raw"?: Record<string, Schemas["Document.RawEntry"]>;
     /** The oldest schema revision that reads this document: the newest

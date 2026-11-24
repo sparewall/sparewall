@@ -4,7 +4,16 @@ import { MatInputModule } from '@angular/material/input';
 import { JsonFormsControl } from '@jsonforms/angular';
 import { JsonSchema7, RankedTester, rankWith, schemaMatches } from '@jsonforms/core';
 
-import { formatMatch, formatUnion, parseMatch, parseUnion } from './union-text';
+import { TextFieldModule } from '@angular/cdk/text-field';
+
+import {
+  formatMatch,
+  formatObject,
+  formatUnion,
+  parseMatch,
+  parseObject,
+  parseUnion,
+} from './union-text';
 
 const alternatives = (s: JsonSchema7): JsonSchema7[] => (s.anyOf ?? s.oneOf ?? []) as JsonSchema7[];
 
@@ -120,6 +129,73 @@ export class UnionControl extends TextUnionControl {
     return parseUnion(text);
   }
 }
+
+/**
+ * A free-form object (a provider's passthrough options, #143) as JSON in
+ * a text area: its schema has no fields to draw, and its contents are
+ * the provider's own settings, which the node checks.
+ */
+@Component({
+  selector: 'app-json-object-control',
+  imports: [MatFormFieldModule, MatInputModule, TextFieldModule],
+  template: `
+    @if (!hidden) {
+      <mat-form-field>
+        <mat-label>{{ label }}</mat-label>
+        <textarea
+          matInput
+          class="json"
+          cdkTextareaAutosize
+          cdkAutosizeMinRows="3"
+          spellcheck="false"
+          [value]="text"
+          [disabled]="!isEnabled()"
+          (change)="read($any($event.target).value)"
+        ></textarea>
+        @if (description) {
+          <mat-hint>{{ description }}</mat-hint>
+        }
+      </mat-form-field>
+      @if (problem) {
+        <p class="problem" role="alert">{{ problem }}</p>
+      }
+    }
+  `,
+  styles:
+    STYLES +
+    `
+    .json {
+      font-family: var(--mat-sys-code-font, ui-monospace, monospace);
+    }
+    mat-form-field {
+      margin-bottom: 16px;
+    }
+  `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class JsonObjectControl extends TextUnionControl {
+  protected format(v: unknown): string {
+    return formatObject(v);
+  }
+  protected parse(text: string) {
+    return parseObject(text);
+  }
+}
+
+/** An object with no fields of its own and any keys: not a group or a map. */
+export function isFreeObject(s: JsonSchema7): boolean {
+  return (
+    s.type === 'object' &&
+    !s.properties &&
+    (s.additionalProperties === true || s.additionalProperties === undefined)
+  );
+}
+
+/** Ahead of JSON Forms' object renderer and ours, which would draw nothing. */
+export const jsonObjectControlTester: RankedTester = rankWith(
+  5,
+  schemaMatches((s) => isFreeObject(s as JsonSchema7)),
+);
 
 /** Ahead of every JSON Forms renderer, which would take the first branch. */
 export const matchControlTester: RankedTester = rankWith(
