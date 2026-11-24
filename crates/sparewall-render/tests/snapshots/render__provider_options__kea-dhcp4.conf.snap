@@ -1,0 +1,153 @@
+---
+source: crates/sparewall-render/tests/render.rs
+expression: kea
+---
+{
+  "Dhcp4": {
+    "authoritative": true,
+    "client-classes": [
+      {
+        "name": "phones",
+        "option-data": [
+          {
+            "data": "192.0.2.5",
+            "name": "tftp-servers"
+          }
+        ],
+        "test": "substring(option[60].hex,0,7) == 'Polycom'"
+      }
+    ],
+    "control-sockets": [
+      {
+        "socket-name": "kea4-ctrl-socket",
+        "socket-type": "unix"
+      }
+    ],
+    "hooks-libraries": [
+      {
+        "library": "/usr/lib64/kea/hooks/libdhcp_lease_cmds.so"
+      },
+      {
+        "library": "/usr/lib64/kea/hooks/libdhcp_ping_check.so",
+        "parameters": {
+          "enable-ping-check": true,
+          "min-ping-requests": 1,
+          "ping-cltt-secs": 60,
+          "reply-timeout": 200
+        }
+      }
+    ],
+    "interfaces-config": {
+      "dhcp-socket-type": "raw",
+      "interfaces": [
+        "guests/198.51.100.2",
+        "users/192.0.2.2"
+      ],
+      "service-sockets-max-retries": 60,
+      "service-sockets-require-all": false,
+      "service-sockets-retry-wait-time": 5000
+    },
+    "lease-database": {
+      "lfc-interval": 3600,
+      "name": "/var/lib/kea/kea-leases4.csv",
+      "persist": true,
+      "type": "memfile"
+    },
+    "loggers": [
+      {
+        "name": "kea-dhcp4",
+        "output-options": [
+          {
+            "output": "stdout",
+            "pattern": "%-5p %m\n"
+          }
+        ],
+        "severity": "INFO"
+      }
+    ],
+    "option-def": [
+      {
+        "array": true,
+        "code": 150,
+        "name": "tftp-servers",
+        "type": "ipv4-address"
+      }
+    ],
+    "subnet4": [
+      {
+        "id": 20,
+        "option-data": [
+          {
+            "data": "192.0.2.1",
+            "name": "routers"
+          },
+          {
+            "data": "192.0.2.1",
+            "name": "domain-name-servers"
+          },
+          {
+            "data": "192.0.2.1",
+            "name": "ntp-servers"
+          },
+          {
+            "data": "home.arpa",
+            "name": "domain-name"
+          },
+          {
+            "data": "-21600",
+            "name": "time-offset"
+          }
+        ],
+        "pools": [
+          {
+            "pool": "192.0.2.100 - 192.0.2.199"
+          }
+        ],
+        "renew-timer": 900,
+        "reservations": [
+          {
+            "hostname": "printer",
+            "hw-address": "52:54:00:12:34:56",
+            "ip-address": "192.0.2.20"
+          }
+        ],
+        "subnet": "192.0.2.0/24"
+      },
+      {
+        "id": 30,
+        "option-data": [
+          {
+            "data": "198.51.100.1",
+            "name": "routers"
+          },
+          {
+            "data": "198.51.100.1",
+            "name": "domain-name-servers"
+          },
+          {
+            "data": "198.51.100.1",
+            "name": "ntp-servers"
+          },
+          {
+            "data": "home.arpa",
+            "name": "domain-name"
+          }
+        ],
+        "pools": [
+          {
+            "pool": "198.51.100.100 - 198.51.100.250"
+          }
+        ],
+        "reservations": [],
+        "subnet": "198.51.100.0/24",
+        "user-context": {
+          "ping-check": {
+            "enable-ping-check": false
+          }
+        },
+        "valid-lifetime": 3600
+      }
+    ],
+    "valid-lifetime": 86400
+  }
+}

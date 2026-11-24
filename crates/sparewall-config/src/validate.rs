@@ -2297,6 +2297,16 @@ impl Validator<'_> {
 
     fn unbuilt(&mut self) {
         let doc = self.doc;
+        // Passthrough options (#143): checked only for activation, as
+        // releases before 0.8.0 rejected any, and builds before 0.1.0
+        // took anything.
+        for p in crate::passthrough::check(doc) {
+            if p.warning {
+                self.warn(p.path, p.message);
+            } else {
+                self.err(p.path, p.message);
+            }
+        }
         let mut chosen: Vec<(Role, String, &str)> = Vec::new();
         if let Some(n) = doc.dhcp.as_ref().and_then(|d| d.provider.as_deref()) {
             chosen.push((Role::Dhcp, "dhcp.provider".into(), n));
@@ -2330,12 +2340,6 @@ impl Validator<'_> {
                     format!("the {name} provider is not built yet; use {default}"),
                 );
             }
-        }
-        for name in doc.provider_options.keys() {
-            self.err(
-                format!("provider_options.{}", seg(name)),
-                "provider passthrough options are not supported yet",
-            );
         }
         if let Some(m) = &doc.metrics {
             let local = m.mode == MetricsMode::Local;

@@ -9,6 +9,7 @@ use std::net::Ipv4Addr;
 
 use serde_json::{Value, json};
 use sparewall_config::model::{DhcpHa, Document};
+use sparewall_config::passthrough;
 use sparewall_config::providers::{self, Role};
 
 use crate::networkd::sync_tunnel_addr;
@@ -210,9 +211,9 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         if ping != ping_default {
             s["user-context"] = json!({"ping-check": {"enable-ping-check": ping}});
         }
-        subnets.push(s);
+        subnets.push((name.as_str(), s));
     }
-    subnets.sort_by_key(|s| s["id"].as_u64());
+    subnets.sort_by_key(|(_, s)| s["id"].as_u64());
 
     let mut hooks = vec![json!({"library": format!("{HOOKS}/libdhcp_lease_cmds.so")})];
     // Kea will not start if the hook cannot open its ICMP socket, so it is
@@ -259,7 +260,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             }]},
         }));
     }
-    let conf = json!({
+    let mut conf = json!({
         "Dhcp4": {
             "interfaces-config": {
                 "interfaces": interfaces,
@@ -279,7 +280,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             // Held beside another server, it must not answer that
             // server's clients with DHCPNAKs.
             "authoritative": offer,
-            "subnet4": subnets,
+            "subnet4": [],
             "hooks-libraries": hooks,
             "loggers": [{
                 "name": "kea-dhcp4",
@@ -288,6 +289,13 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             }],
         }
     });
+    // Passthrough options (#143), after Sparewall's own: validation has
+    // refused the keys set above, and Kea's config test checks the rest.
+    if let Some(opts) = passthrough::kea(doc) {
+        let dhcp4 = conf["Dhcp4"].as_object_mut().expect("object");
+        passthrough::kea_merge(opts, dhcp4, &mut subnets);
+    }
+    conf["Dhcp4"]["subnet4"] = subnets.into_iter().map(|(_, s)| s).collect();
     let mut text = serde_json::to_string_pretty(&conf).expect("json");
     text.push('\n');
     out.add(Subsystem::Dhcp, CONF, text);

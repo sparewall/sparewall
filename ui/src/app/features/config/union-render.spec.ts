@@ -50,7 +50,7 @@ async function render(schema: JsonSchema7, data: unknown) {
     [...el.querySelectorAll('mat-form-field')]
       // A required field's label ends in '*'.
       .find((f) => f.querySelector('mat-label')?.textContent?.trim().replace(/\*$/, '') === label)
-      ?.querySelector('input') as HTMLInputElement;
+      ?.querySelector('input, textarea') as HTMLInputElement;
   const edit = async (label: string, text: string) => {
     const i = field(label);
     i.value = text;
@@ -107,6 +107,27 @@ describe('the form with unions', () => {
     const f = await render(rawSchema, raw);
     expect(f.field('At').value).toBe('{"hook":"input"}');
     expect(f.now()).toEqual(raw);
+  });
+});
+
+describe('provider options', () => {
+  const schema = doc.properties!['provider_options'] as JsonSchema7;
+  const opts = { kea: { 'option-def': [{ name: 'tftp', code: 150, type: 'ipv4-address' }] } };
+
+  it("shows each provider's options as JSON, untouched", async () => {
+    const f = await render(schema, opts);
+    expect(JSON.parse(f.field('Kea').value)).toEqual(opts.kea);
+    expect(f.field('Unbound').value).toBe('');
+    expect(f.now()).toEqual(opts);
+  });
+
+  it('reads JSON back, and refuses what is not an object', async () => {
+    const f = await render(schema, opts);
+    await f.edit('Unbound', '{"server": {"cache-min-ttl": 60}}');
+    expect(f.now()).toEqual({ ...opts, unbound: { server: { 'cache-min-ttl': 60 } } });
+    await f.edit('Kea', '[1]');
+    expect(f.el.textContent).toContain('Must be a JSON object');
+    expect((f.now() as typeof opts).kea).toEqual(opts.kea);
   });
 });
 

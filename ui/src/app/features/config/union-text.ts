@@ -50,3 +50,24 @@ export function parseUnion(text: string): { value: unknown } | { error: string }
   }
   return { value: t };
 }
+
+/** A free-form object (a provider's passthrough options) as indented JSON. */
+export function formatObject(v: unknown): string {
+  if (v === undefined || v === null) return '';
+  return JSON.stringify(v, null, 2);
+}
+
+/** JSON text as such an object. Empty text leaves it out. */
+export function parseObject(text: string): { value: unknown } | { error: string } {
+  if (text.trim() === '') return { value: undefined };
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return { error: 'Not valid JSON.' };
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    return { error: 'Must be a JSON object: { … }.' };
+  }
+  return { value: v };
+}

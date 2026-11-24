@@ -2220,3 +2220,72 @@ fn dns_filters_make_views() {
     // The access control comes in the server clause, before any view.
     assert!(conf.find("access-control-view").unwrap() < conf.find("\nview:").unwrap());
 }
+
+/// Passthrough options (#143): Kea's merged into Dhcp4 and one network's
+/// subnet, after Sparewall's own; Unbound's in its server: clause and as
+/// zones of their own. A key Sparewall sets is refused at its path.
+#[test]
+fn provider_options_passthrough() {
+    let mut doc = example("standalone.yaml");
+    let opts = serde_json::json!({
+        "kea": {
+            "option-def": [{"name": "tftp-servers", "code": 150, "type": "ipv4-address", "array": true}],
+            "client-classes": [{
+                "name": "phones",
+                "test": "substring(option[60].hex,0,7) == 'Polycom'",
+                "option-data": [{"name": "tftp-servers", "data": "192.0.2.5"}],
+            }],
+            "networks": {
+                "users": {
+                    "option-data": [{"name": "time-offset", "data": "-21600"}],
+                    "renew-timer": 900,
+                },
+            },
+        },
+        "unbound": {
+            "server": {
+                "cache-min-ttl": 60,
+                "serve-expired": true,
+                "local-zone": ["\"lab.example.\" static", "\"ads.example.\" always_nxdomain"],
+            },
+            "forward-zone": [{"name": "corp.example.", "forward-addr": ["10.1.1.1", "10.1.1.2"]}],
+            "stub-zone": [{"name": "10.in-addr.arpa.", "stub-addr": "10.1.1.1"}],
+        },
+    });
+    doc.provider_options = serde_json::from_value(opts).unwrap();
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+
+    let r = render(&doc, "fw1").unwrap();
+    let kea = &r.files[&format!("{}/kea-dhcp4.conf", Subsystem::Dhcp.dir())];
+    insta::assert_snapshot!("provider_options__kea-dhcp4.conf", kea);
+    let unbound = &r.files[&format!("{}/unbound.conf", Subsystem::Dns.dir())];
+    insta::assert_snapshot!("provider_options__unbound.conf", unbound);
+
+    // Kea's config test sees the same merge.
+    let check = &r.meta.services["dhcp"].check.as_ref().unwrap().overrides["kea-dhcp4.conf"];
+    let check: serde_json::Value = serde_json::from_str(check).unwrap();
+    assert_eq!(check["Dhcp4"]["client-classes"][0]["name"], "phones");
+
+    // Switching DHCP off for every network leaves Kea's out, with a
+    // warning, and the resolver keeps its own.
+    let mut off = doc.clone();
+    off.dhcp.as_mut().unwrap().networks.clear();
+    let issues = validate(&off);
+    assert!(validate::errors(&issues).is_empty());
+    assert!(
+        validate::warnings(&issues)
+            .iter()
+            .any(|w| w.starts_with("provider_options.kea: ignored")),
+        "{issues:?}"
+    );
+
+    // A key Sparewall sets.
+    doc.provider_options.get_mut("kea").unwrap()["hooks-libraries"] = serde_json::json!([]);
+    let errs = validate::errors(&validate(&doc));
+    assert!(
+        errs.iter()
+            .any(|e| e.starts_with("provider_options.kea.hooks-libraries: Sparewall sets")),
+        "{errs:#?}"
+    );
+}

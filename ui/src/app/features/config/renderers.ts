@@ -5,6 +5,8 @@ import { MapControl, mapControlTester } from './map-control';
 import { ObjectControl, objectControlTester } from './object-control';
 import { OptionalBooleanControl, optionalBooleanControlTester } from './optional-boolean-control';
 import {
+  JsonObjectControl,
+  jsonObjectControlTester,
   MatchControl,
   matchControlTester,
   UnionControl,
@@ -19,4 +21,5 @@ export const configRenderers: JsonFormsRendererRegistryEntry[] = [
   { tester: optionalBooleanControlTester, renderer: OptionalBooleanControl },
   { tester: matchControlTester, renderer: MatchControl },
   { tester: unionControlTester, renderer: UnionControl },
+  { tester: jsonObjectControlTester, renderer: JsonObjectControl },
 ];

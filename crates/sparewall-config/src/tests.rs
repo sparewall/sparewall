@@ -552,13 +552,10 @@ fn self_zone_is_reserved() {
 
 #[test]
 fn rejects_settings_not_built_yet() {
-    let d = edit(
-        STANDALONE,
-        json!({"provider_options": {"kea": {"valid-lifetime": 600}}}),
-    );
+    let d = edit(STANDALONE, json!({"dhcp": {"provider": "networkd"}}));
     assert!(has_error(
         &d,
-        "provider_options.kea: provider passthrough options"
+        "dhcp.provider: the networkd provider is not built yet"
     ));
     // What is built stays valid.
     for metrics in ["external", "local", "off"] {
@@ -568,11 +565,119 @@ fn rejects_settings_not_built_yet() {
         STANDALONE,
         json!({"updates": {"channel": "testing", "mode": "manual"}}),
     ));
-    // History may hold them: earlier versions accepted them.
-    let d = edit(STANDALONE, json!({"provider_options": {"kea": {}}}));
-    assert_eq!(error_paths(&d).len(), 1, "{:?}", error_paths(&d));
+    // History may hold passthrough options that this release refuses:
+    // builds before 0.1.0 took anything there.
+    let d = edit(
+        STANDALONE,
+        json!({"provider_options": {"kea": {"valid-lifetime": 600}, "chrony": {}}}),
+    );
+    assert_eq!(error_paths(&d).len(), 2, "{:?}", error_paths(&d));
     let history = validate::validate_history(&d);
     assert!(validate::errors(&history).is_empty(), "{history:?}");
+}
+
+/// Passthrough options (#143): Kea's merged into Dhcp4 and a network's
+/// subnet, Unbound's by clause; keys Sparewall sets are refused, and a
+/// provider not in use only warns.
+#[test]
+fn provider_options_are_checked() {
+    let po = |v: serde_json::Value| edit(STANDALONE, json!({"provider_options": v}));
+    let good = po(json!({
+        "kea": {
+            "client-classes": [{"name": "voip", "test": "substring(option[60].hex,0,6) == 'Polycom'"}],
+            "option-def": [{"name": "tftp", "code": 150, "type": "ipv4-address"}],
+            "networks": {"users": {"option-data": [{"name": "tftp", "data": "192.0.2.5"}]}},
+        },
+        "unbound": {
+            "server": {"cache-min-ttl": 60, "serve-expired": true, "local-zone": ["\"lab.\" static", "\"ads.\" refuse"]},
+            "forward-zone": [{"name": "corp.example.", "forward-addr": ["10.1.1.1", "10.1.1.2"]}],
+            "stub-zone": [{"name": "10.in-addr.arpa.", "stub-addr": "10.1.1.1"}],
+        },
+    }));
+    assert_valid(&good);
+    assert!(warnings(&good).is_empty(), "{:?}", warnings(&good));
+    assert_eq!(schema::revision(&serde_json::to_value(&good).unwrap()), 7);
+
+    let bad = po(json!({
+        "kea": {
+            "hooks-libraries": [],
+            "dhcp-ddns": {"enable-updates": true},
+            "valid-lifetime": 600,
+            "Dhcp4": {},
+            "networks": {
+                "nope": {},
+                "users": {"pools": [], "valid-lifetime": 60, "option-data": {}},
+                "guests": {"option-data": [{"name": "tftp"}, {"code": 6, "data": "9.9.9.9"}]},
+            },
+        },
+        "unbound": {
+            "server": {"interface": "0.0.0.0", "interface-action": "eth0 allow", "ip-address": "0.0.0.0", "access-control-view": "0.0.0.0/0 v", "include": "/x", "Bad_Name": 1, "x": "a\nforward-zone:", "y": [], "z": {}},
+            "forward-zone": [{"forward-addr": "10.1.1.1"}, {"name": "a."}, {"name": "A"}],
+            "remote-control": {},
+        },
+        "syslog": {},
+        "frobnicator": {},
+    }));
+    let errs = error_paths(&bad);
+    for want in [
+        "provider_options.kea.hooks-libraries: Sparewall sets hooks-libraries itself",
+        "provider_options.kea.dhcp-ddns: DHCP-to-DNS updates aren't built",
+        "provider_options.kea.valid-lifetime: Sparewall sets valid-lifetime itself: set dhcp.lease_time",
+        "provider_options.kea.Dhcp4: give Dhcp4's keys directly",
+        "provider_options.kea.networks.nope: nope is not a network under dhcp",
+        "provider_options.kea.networks.users.pools: Sparewall sets pools itself",
+        "provider_options.kea.networks.users.valid-lifetime: Sparewall sets valid-lifetime itself: set dhcp.<network>.lease_time",
+        "provider_options.kea.networks.users.option-data: must be a list",
+        "provider_options.kea.networks.guests.option-data[1]: Sparewall sets domain-name-servers on the network: set dhcp.<network>.options.dns",
+        "provider_options.unbound.server.interface: Sparewall sets interface itself",
+        "provider_options.unbound.server.include: give the options here rather than a file",
+        "provider_options.unbound.server.interface-action: Sparewall sets interface-action itself",
+        "provider_options.unbound.server.ip-address: Sparewall sets ip-address itself",
+        "provider_options.unbound.server.access-control-view: Sparewall sets access-control-view itself: dns.networks and dns.filters",
+        "provider_options.unbound.server.Bad_Name: not an Unbound option name",
+        "provider_options.unbound.server.x: a value can't hold a line break",
+        "provider_options.unbound.server.y: an empty list",
+        "provider_options.unbound.server.z: must be a string, number or yes/no",
+        "provider_options.unbound.forward-zone[0]: needs a name",
+        "provider_options.unbound.forward-zone[2].name: A is named twice",
+        "provider_options.unbound.remote-control: not an Unbound clause",
+        "provider_options.syslog: the syslog provider takes no passthrough options",
+        "provider_options.frobnicator: no provider is named frobnicator",
+    ] {
+        assert!(
+            errs.iter().any(|e| e.starts_with(want)),
+            "{want}\n{errs:#?}"
+        );
+    }
+    assert_eq!(errs.len(), 23, "{errs:#?}");
+
+    // The root forwarded twice: by dns.forwarders and here.
+    let mut d =
+        po(json!({"unbound": {"forward-zone": [{"name": ".", "forward-addr": "192.0.2.53"}]}}));
+    assert_valid(&d);
+    d.dns.as_mut().unwrap().forwarders = vec!["9.9.9.9".parse().unwrap()];
+    assert!(has_error(
+        &d,
+        "forward-zone[0].name: dns.forwarders already forwards the root"
+    ));
+
+    // Kea's for a site without Kea, Unbound's without the resolver: kept
+    // for switching back, with a warning.
+    let mut d = po(json!({"kea": {"option-def": []}, "unbound": {"server": {"prefetch": false}}}));
+    d.dhcp.as_mut().unwrap().networks.clear();
+    d.dns.as_mut().unwrap().enabled = false;
+    assert_valid(&d);
+    let w = warnings(&d);
+    assert!(
+        w.iter()
+            .any(|w| w.starts_with("provider_options.kea: ignored")),
+        "{w:?}"
+    );
+    assert!(
+        w.iter()
+            .any(|w| w.starts_with("provider_options.unbound: ignored")),
+        "{w:?}"
+    );
 }
 
 /// `ntp.servers` are host names or addresses, as each is written into
