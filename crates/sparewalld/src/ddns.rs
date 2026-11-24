@@ -558,8 +558,9 @@ async fn mismatch(names: &[String], a: Addrs) -> Option<String> {
 }
 
 /// Whether what a name resolves to differs from what it should have, in
-/// each family it should have an address in: a missing A or AAAA record
-/// counts, once the name resolves at all. No answer says nothing: the
+/// each family it should have an address in: an address other than the
+/// one it should have, beside it or not, and a missing A or AAAA record
+/// once the name resolves at all, both count. No answer says nothing: the
 /// name may not have reached the resolvers yet.
 fn differs(name: &str, ips: &[IpAddr], a: Addrs) -> Option<String> {
     if ips.is_empty() {
@@ -572,8 +573,8 @@ fn differs(name: &str, ips: &[IpAddr], a: Addrs) -> Option<String> {
             let kind = if w.is_ipv4() { "A" } else { "AAAA" };
             return Some(format!("{name} has no {kind} record, not {w}"));
         }
-        if !same.contains(&&w) {
-            return Some(format!("{name} resolves to {}, not {w}", same[0]));
+        if let Some(other) = same.iter().find(|i| ***i != w) {
+            return Some(format!("{name} resolves to {other}, not {w}"));
         }
     }
     None
@@ -1249,6 +1250,25 @@ mod tests {
             None
         );
         assert_eq!(differs("n", &[], both), None);
+        // A stale address beside the right one.
+        assert_eq!(
+            differs(
+                "n",
+                &[ip("203.0.113.7"), ip("198.51.100.1"), ip("2001:db8::1")],
+                both
+            )
+            .as_deref(),
+            Some("n resolves to 198.51.100.1, not 203.0.113.7")
+        );
+        assert_eq!(
+            differs(
+                "n",
+                &[ip("203.0.113.7"), ip("2001:db8::9"), ip("2001:db8::1")],
+                both
+            )
+            .as_deref(),
+            Some("n resolves to 2001:db8::9, not 2001:db8::1")
+        );
         // A family missing while the other resolves.
         assert_eq!(
             differs("n", &[ip("2001:db8::1")], both).as_deref(),
