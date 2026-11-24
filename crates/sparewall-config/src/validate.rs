@@ -2143,6 +2143,18 @@ impl Validator<'_> {
             .or_else(|| u.strip_prefix("http://"));
         match rest {
             Some(r)
+                if r.split(['/', '?', '#'])
+                    .next()
+                    .unwrap_or_default()
+                    .contains('@') =>
+            {
+                self.err(
+                    at,
+                    "a user or password in the URL would be kept in the document: \
+                     credentials go in the secret",
+                );
+            }
+            Some(r)
                 if !r.is_empty()
                     && !r.starts_with('/')
                     && !u

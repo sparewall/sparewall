@@ -71,6 +71,24 @@ struct Sent {
     at: i64,
 }
 
+/// An entry stopped by an answer retrying can't fix, kept across
+/// restarts so a known-bad request isn't sent again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Stopped {
+    /// The entry's settings when it stopped: a change starts it again.
+    key: String,
+    message: String,
+}
+
+/// The state file.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Kept {
+    #[serde(default)]
+    sent: BTreeMap<String, Sent>,
+    #[serde(default)]
+    stopped: BTreeMap<String, Stopped>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Fail {
     /// Worth trying again later.
@@ -240,9 +258,12 @@ pub async fn duckdns<H: Http>(
     a: Addrs,
 ) -> Result<(), Fail> {
     let token = cred(creds, &["DUCKDNS_TOKEN"])?;
-    let domains: Vec<&str> = names
+    let domains: Vec<String> = names
         .iter()
-        .map(|n| n.trim_end_matches('.').trim_end_matches(".duckdns.org"))
+        .map(|n| {
+            let n = sparewall_config::filters::normalize(n);
+            n.strip_suffix(".duckdns.org").unwrap_or(&n).to_string()
+        })
         .collect();
     let mut url = format!(
         "{}/update?domains={}&token={}",
@@ -527,18 +548,22 @@ async fn mismatch(names: &[String], a: Addrs) -> Option<String> {
         let Some(ips) = looked_up(n).await else {
             continue;
         };
-        let v4: Vec<Ipv4Addr> = ips
-            .iter()
-            .filter_map(|i| match i {
-                IpAddr::V4(x) => Some(*x),
-                IpAddr::V6(_) => None,
-            })
-            .collect();
-        if let Some(want) = a.v4
-            && !v4.is_empty()
-            && !v4.contains(&want)
-        {
-            return Some(format!("{n} resolves to {}, not {want}", v4[0]));
+        if let Some(m) = differs(n, &ips, a) {
+            return Some(m);
+        }
+    }
+    None
+}
+
+/// Whether what a name resolves to differs from what it should have, in
+/// each family it should have an address in. A family with no answer
+/// says nothing: the resolver may not have asked yet.
+fn differs(name: &str, ips: &[IpAddr], a: Addrs) -> Option<String> {
+    let want = [a.v4.map(IpAddr::V4), a.v6.map(IpAddr::V6)];
+    for w in want.into_iter().flatten() {
+        let same: Vec<&IpAddr> = ips.iter().filter(|i| i.is_ipv4() == w.is_ipv4()).collect();
+        if !same.is_empty() && !same.contains(&&w) {
+            return Some(format!("{name} resolves to {}, not {w}", same[0]));
         }
     }
     None
@@ -576,7 +601,7 @@ pub fn status() -> Option<Value> {
     CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-fn load(path: &Path) -> BTreeMap<String, Sent> {
+fn load(path: &Path) -> Kept {
     std::fs::read(path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -638,7 +663,10 @@ async fn update(
 
 pub async fn ddns_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair, state: PathBuf) {
     let path = state.join(STATE_FILE);
-    let mut sent = load(&path);
+    let Kept {
+        mut sent,
+        mut stopped,
+    } = load(&path);
     let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
     let mut discovered: BTreeMap<String, (Instant, Result<Ipv4Addr, String>)> = BTreeMap::new();
     let mut rx = events.subscribe();
@@ -666,7 +694,9 @@ pub async fn ddns_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair,
         entries.retain(|k, _| wanted.contains_key(k));
         let before = sent.len();
         sent.retain(|k, _| wanted.contains_key(k));
-        let mut dirty = sent.len() != before;
+        let before_stopped = stopped.len();
+        stopped.retain(|k, _| wanted.contains_key(k));
+        let mut dirty = sent.len() != before || stopped.len() != before_stopped;
         let active = doc.as_ref().is_some_and(|d| !d.is_pair())
             || pair
                 .lock()
@@ -692,6 +722,11 @@ pub async fn ddns_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair,
                 .or_insert_with(|| Entry::new(key.clone()));
             if entry.key != key {
                 *entry = Entry::new(key.clone());
+            }
+            if entry.stopped.is_none()
+                && let Some(st) = stopped.get(e).filter(|st| st.key == key)
+            {
+                entry.stopped = Some(st.message.clone());
             }
             let mut want = Addrs::default();
             let mut notes: Vec<String> = Vec::new();
@@ -797,6 +832,9 @@ pub async fn ddns_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair,
                             },
                         );
                         dirty = true;
+                        if stopped.remove(e).is_some() {
+                            dirty = true;
+                        }
                         entry.error = None;
                         entry.mismatch = None;
                         entry.backoff = RETRY_FIRST;
@@ -809,6 +847,14 @@ pub async fn ddns_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair,
                         tracing::warn!(entry = e, error = f.message(), "dynamic DNS update failed");
                         entry.error = Some(f.message().to_string());
                         if let Fail::Stop(m) = f {
+                            stopped.insert(
+                                e.clone(),
+                                Stopped {
+                                    key: key.clone(),
+                                    message: m.clone(),
+                                },
+                            );
+                            dirty = true;
                             entry.stopped = Some(m);
                         }
                         entry.next_try = Instant::now() + entry.backoff;
@@ -844,7 +890,11 @@ pub async fn ddns_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair,
         if dirty
             && let Err(err) = sparewall_core::store::write_atomic(
                 &path,
-                &serde_json::to_vec(&sent).unwrap_or_default(),
+                &serde_json::to_vec(&Kept {
+                    sent: sent.clone(),
+                    stopped: stopped.clone(),
+                })
+                .unwrap_or_default(),
             )
         {
             tracing::warn!(error = %err, "cannot keep what dynamic DNS last sent");
@@ -1008,7 +1058,7 @@ mod tests {
     #[tokio::test]
     async fn duckdns_takes_the_subdomains() {
         let c = creds(&[("DUCKDNS_TOKEN", "t-1")]);
-        let names = vec!["home.duckdns.org".to_string()];
+        let names = vec!["Home.DuckDNS.org.".to_string()];
         let f = Fake::new(&[(200, "OK")]);
         duckdns(&f, DUCKDNS, &c, &names, v4("203.0.113.7"))
             .await
@@ -1117,6 +1167,59 @@ mod tests {
         for p in ["10.1.2.3", "192.168.1.1", "100.64.0.1", "169.254.1.1"] {
             assert!(!public_v4(p.parse().unwrap()), "{p}");
         }
+    }
+
+    #[test]
+    fn records_are_checked_in_each_family() {
+        let ip = |s: &str| -> IpAddr { s.parse().unwrap() };
+        let both = Addrs {
+            v4: Some("203.0.113.7".parse().unwrap()),
+            v6: Some("2001:db8::1".parse().unwrap()),
+        };
+        let only6 = Addrs {
+            v4: None,
+            v6: both.v6,
+        };
+        assert_eq!(
+            differs("n", &[ip("203.0.113.7"), ip("2001:db8::1")], both),
+            None
+        );
+        assert_eq!(
+            differs("n", &[ip("203.0.113.7"), ip("2001:db8::9")], both).as_deref(),
+            Some("n resolves to 2001:db8::9, not 2001:db8::1")
+        );
+        assert_eq!(
+            differs("n", &[ip("198.51.100.1"), ip("2001:db8::1")], both).as_deref(),
+            Some("n resolves to 198.51.100.1, not 203.0.113.7")
+        );
+        assert_eq!(
+            differs("n", &[ip("2001:db8::9")], only6).as_deref(),
+            Some("n resolves to 2001:db8::9, not 2001:db8::1")
+        );
+        // An A record an IPv6-only entry doesn't keep; no answer at all.
+        assert_eq!(
+            differs("n", &[ip("198.51.100.1"), ip("2001:db8::1")], only6),
+            None
+        );
+        assert_eq!(differs("n", &[], both), None);
+    }
+
+    #[test]
+    fn a_stopped_entry_stays_stopped_across_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join(STATE_FILE);
+        let mut k = Kept::default();
+        k.stopped.insert(
+            "home".into(),
+            Stopped {
+                key: "k".into(),
+                message: "badauth".into(),
+            },
+        );
+        std::fs::write(&p, serde_json::to_vec(&k).unwrap()).unwrap();
+        let back = load(&p);
+        assert_eq!(back.stopped["home"].message, "badauth");
+        assert!(back.sent.is_empty());
     }
 
     #[test]

@@ -2173,6 +2173,8 @@ fn dynamic_dns_is_checked() {
         doc
     };
     assert_valid(&with(json!({
+        "mixed": {"names": ["Home.DuckDNS.org"], "provider": "duckdns",
+            "credentials": "secret:duck", "discover": "https://ip.example/?who=a@b"},
         "home": {"names": ["vpn.example.org"], "provider": "cloudflare",
             "credentials": "secret:ddns-cf", "options": {"zone": "example.org"}},
         "duck": {"names": ["mysite.duckdns.org"], "provider": "duckdns",
@@ -2190,6 +2192,9 @@ fn dynamic_dns_is_checked() {
             "options": {"zone": "example.org"}, "discover": "ftp://x"},
         "n": {"names": [], "provider": "dyndns2", "credentials": "secret:n",
             "options": {"server": "http://dyn.example/nic/update"}},
+        "u": {"names": ["u.example.org"], "provider": "dyndns2", "credentials": "secret:u",
+            "options": {"server": "https://me:pw@dyn.example/nic/update"},
+            "discover": "https://k@ip.example/?x=a@b"},
     }));
     let errs = error_paths(&doc);
     for want in [
@@ -2205,6 +2210,8 @@ fn dynamic_dns_is_checked() {
         "dns.dynamic.d.discover: \"ftp://x\" is not",
         "dns.dynamic.d.ipv6: the WAN has no IPv6",
         "dns.dynamic.n.names: names no names",
+        "dns.dynamic.u.options.server: a user or password in the URL",
+        "dns.dynamic.u.discover: a user or password in the URL",
     ] {
         assert!(
             errs.iter().any(|e| e.starts_with(want)),
