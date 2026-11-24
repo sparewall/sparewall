@@ -680,6 +680,44 @@ fn provider_options_are_checked() {
     );
 }
 
+/// `ntp.servers` are host names or addresses, as each is written into
+/// chrony's configuration on the host; history keeps what it has.
+#[test]
+fn ntp_servers_are_names_or_addresses() {
+    for ok in [
+        "2.fedora.pool.ntp.org",
+        "time.example.",
+        "ntp",
+        "192.0.2.123",
+        "2001:db8::123",
+    ] {
+        assert!(validate::ntp_server_ok(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "a b",
+        "time.example iburst",
+        "x\nallow",
+        "-x.example",
+        "a..b",
+        "_ntp.example",
+    ] {
+        assert!(!validate::ntp_server_ok(bad), "{bad:?}");
+    }
+    let d = edit(
+        STANDALONE,
+        json!({"ntp": {"servers": ["time.example", "time.example nts"]}}),
+    );
+    assert_eq!(
+        error_paths(&d),
+        vec![
+            "ntp.servers[1]: \"time.example nts\" is not a host name or address; chrony options aren't taken here"
+        ]
+    );
+    let history = validate::validate_history(&d);
+    assert!(validate::errors(&history).is_empty(), "{history:?}");
+}
+
 /// A local Prometheus (#145): retention and its size in Prometheus's
 /// units, which apply only to it; the document then needs revision 4.
 #[test]

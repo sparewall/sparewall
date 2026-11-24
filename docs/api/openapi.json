@@ -1446,7 +1446,7 @@
             "type": "array"
           },
           "servers": {
-            "description": "Upstream servers or pools.",
+            "description": "Upstream servers or pools, by host name or address (a name with\n`pool` in it is used as a pool).",
             "items": {
               "type": "string"
             },

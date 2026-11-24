@@ -70,6 +70,7 @@ fn run(doc: &Document, activation: bool) -> Vec<Issue> {
     v.secrets();
     if activation {
         v.unbuilt();
+        v.ntp_servers();
     }
     v.issues
         .sort_by(|a, b| b.severity.cmp(&a.severity).then(a.path.cmp(&b.path)));
@@ -256,6 +257,24 @@ pub fn limit_ok(s: &str) -> bool {
             ["burst", n] => n.parse::<u32>().is_ok(),
             _ => false,
         }
+}
+
+/// A time server: an IP address, or a host name of letters, digits and
+/// `-` in dot-separated labels (one label is a local name).
+pub fn ntp_server_ok(s: &str) -> bool {
+    if s.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let s = s.strip_suffix('.').unwrap_or(s);
+    !s.is_empty()
+        && s.len() <= 253
+        && s.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
 }
 
 const KNOWN_PROTOS: &[&str] = &[
@@ -2410,6 +2429,24 @@ impl Validator<'_> {
                     self.err(format!("ntp.serve[{i}]"), "time is not served on the WAN")
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Each upstream time server is a host name or an address: it is
+    /// written into chrony's configuration on the host as it is given.
+    /// Checked only for activation, so history keeps what earlier
+    /// releases stored.
+    fn ntp_servers(&mut self) {
+        let Some(n) = &self.doc.ntp else { return };
+        for (i, s) in n.servers.iter().enumerate() {
+            if !ntp_server_ok(s) {
+                self.err(
+                    format!("ntp.servers[{i}]"),
+                    format!(
+                        "{s:?} is not a host name or address; chrony options aren't taken here"
+                    ),
+                );
             }
         }
     }
