@@ -6,6 +6,7 @@ mod author;
 mod backup;
 mod capture;
 mod capture_check;
+mod ddns;
 mod dhcp_ha;
 mod failover;
 mod filters;
@@ -512,6 +513,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 withdrawn::withdrawn_loop(core.clone(), tx.clone(), pair.clone(), args.state.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no WAN to publish.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                ddns::ddns_loop(core.clone(), tx.clone(), pair.clone(), args.state.clone()).await
             } => Ok(()),
             () = async {
                 // A fake system has no resolver to filter for.

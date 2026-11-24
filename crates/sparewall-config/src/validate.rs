@@ -1961,6 +1961,7 @@ impl Validator<'_> {
                 self.warn(p, "has no lists and blocks no names");
             }
         }
+        self.dynamic_dns(d);
         for (n, x) in &d.intercept {
             let p = format!("dns.intercept.{}", seg(n));
             match doc.networks.get(n) {
@@ -2001,6 +2002,158 @@ impl Validator<'_> {
                     }
                 }
             }
+        }
+    }
+
+    fn dynamic_dns(&mut self, d: &crate::model::Dns) {
+        let doc = self.doc;
+        let wans: Vec<&String> = doc
+            .networks
+            .iter()
+            .filter(|(_, n)| n.role == NetworkRole::Wan)
+            .map(|(k, _)| k)
+            .collect();
+        let mut seen: BTreeMap<String, String> = BTreeMap::new();
+        for (e, x) in &d.dynamic {
+            let p = format!("dns.dynamic.{}", seg(e));
+            if e.is_empty()
+                || e.len() > 32
+                || !e
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+            {
+                self.err(
+                    p.clone(),
+                    "a name for dynamic DNS is up to 32 lower-case letters, digits, - and _",
+                );
+            }
+            let known = providers::find(Role::DynamicDns, &x.provider).is_some();
+            if !known {
+                self.err(
+                    format!("{p}.provider"),
+                    format!(
+                        "unknown provider {:?}; use {}",
+                        x.provider,
+                        providers::names(Role::DynamicDns).join(", ")
+                    ),
+                );
+            }
+            if x.names.is_empty() {
+                self.err(format!("{p}.names"), "names no names to keep current");
+            }
+            for (i, n) in x.names.iter().enumerate() {
+                let at = format!("{p}.names[{i}]");
+                if !crate::filters::is_name(n) || n.contains('_') {
+                    self.err(
+                        at,
+                        format!("{n:?} is not a host name with two labels or more"),
+                    );
+                    continue;
+                }
+                let n = crate::filters::normalize(n);
+                if x.provider == "duckdns" && !n.ends_with(".duckdns.org") {
+                    self.err(at.clone(), "DuckDNS keeps only names under duckdns.org");
+                } else if x.provider == "duckdns" && n.matches('.').count() != 2 {
+                    self.err(
+                        at.clone(),
+                        "DuckDNS updates <name>.duckdns.org; its subdomains follow it",
+                    );
+                }
+                if let Some(other) = seen.insert(n.clone(), e.clone()) {
+                    self.err(
+                        at,
+                        format!(
+                            "{n} is kept by dns.dynamic.{} too: the two would undo each other",
+                            seg(&other)
+                        ),
+                    );
+                }
+            }
+            let allowed: &[&str] = match x.provider.as_str() {
+                "dyndns2" | "duckdns" => &["server"],
+                "cloudflare" => &["server", "zone"],
+                _ => &[],
+            };
+            for (k, v) in &x.options {
+                let at = format!("{p}.options.{}", seg(k));
+                if known && !allowed.contains(&k.as_str()) {
+                    self.err(
+                        at,
+                        format!(
+                            "{} takes no option {k:?}; it takes {}",
+                            x.provider,
+                            allowed.join(", ")
+                        ),
+                    );
+                } else if k == "server" {
+                    self.update_url(at, v, "sent your credentials");
+                } else if k == "zone" && !crate::filters::is_name(v) {
+                    self.err(at, format!("{v:?} is not a zone name"));
+                }
+            }
+            if x.provider == "dyndns2" && !x.options.contains_key("server") {
+                self.err(
+                    format!("{p}.options"),
+                    "dyndns2 needs `server`, the service's update URL, e.g. https://dynupdate.no-ip.com/nic/update",
+                );
+            }
+            let net = match &x.network {
+                Some(n) => match doc.networks.get(n) {
+                    None => {
+                        self.err(format!("{p}.network"), format!("no network named {n:?}"));
+                        None
+                    }
+                    Some(net) if net.role != NetworkRole::Wan => {
+                        self.err(format!("{p}.network"), format!("{n} is not a WAN"));
+                        None
+                    }
+                    Some(net) => Some(net),
+                },
+                None => match wans.as_slice() {
+                    [w] => doc.networks.get(*w),
+                    [] => {
+                        self.err(
+                            p.clone(),
+                            "there is no WAN network whose address to publish",
+                        );
+                        None
+                    }
+                    _ => {
+                        self.err(
+                            p.clone(),
+                            "with more than one WAN, `network` names the one whose address to publish",
+                        );
+                        None
+                    }
+                },
+            };
+            if let Some(u) = &x.discover {
+                self.update_url(format!("{p}.discover"), u, "told the address");
+            }
+            if x.ipv6 && net.is_some_and(|n| n.ipv6.is_none()) {
+                self.err(format!("{p}.ipv6"), "the WAN has no IPv6 to publish");
+            }
+        }
+    }
+
+    /// An http:// or https:// URL the daemon calls; a warning for plain HTTP.
+    fn update_url(&mut self, at: String, u: &str, what: &str) {
+        let rest = u
+            .strip_prefix("https://")
+            .or_else(|| u.strip_prefix("http://"));
+        match rest {
+            Some(r)
+                if !r.is_empty()
+                    && !r.starts_with('/')
+                    && !u
+                        .chars()
+                        .any(|c| c.is_whitespace() || c == '"' || c.is_control()) =>
+            {
+                if u.starts_with("http://") {
+                    self.warn(at, format!("without TLS, anyone on the way is {what}"));
+                }
+            }
+            _ => self.err(at, format!("{u:?} is not an http:// or https:// URL")),
         }
     }
 
@@ -2618,6 +2771,12 @@ impl Validator<'_> {
                     ));
                 }
             }
+        }
+        for (name, x) in doc.dns.iter().flat_map(|d| &d.dynamic) {
+            refs.push((
+                format!("dns.dynamic.{}.credentials", seg(name)),
+                &x.credentials,
+            ));
         }
         for (name, c) in &doc.vpn_clients {
             refs.push((

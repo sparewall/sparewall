@@ -2113,6 +2113,7 @@ pub fn status(
         tls: json!({"fingerprint": crate::http::FINGERPRINT.get()}),
         health: serde_json::to_value(&health).unwrap_or_default(),
         update: Some(crate::update::status()),
+        dynamic_dns: crate::ddns::status(),
         ipv6,
     })
 }

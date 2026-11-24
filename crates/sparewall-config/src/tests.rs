@@ -2166,6 +2166,78 @@ fn dns_interception_is_checked() {
 /// DNS filters (#74): names, networks the firewall's resolver serves,
 /// URLs, names to block and allow, and how often lists are fetched.
 #[test]
+fn dynamic_dns_is_checked() {
+    let with = |dynamic: serde_json::Value| {
+        let mut doc = load(STANDALONE);
+        doc.dns.as_mut().unwrap().dynamic = serde_json::from_value(dynamic).unwrap();
+        doc
+    };
+    assert_valid(&with(json!({
+        "home": {"names": ["vpn.example.org"], "provider": "cloudflare",
+            "credentials": "secret:ddns-cf", "options": {"zone": "example.org"}},
+        "duck": {"names": ["mysite.duckdns.org"], "provider": "duckdns",
+            "credentials": "secret:duck", "network": "wan",
+            "discover": "https://api.ipify.org"},
+        "noip": {"names": ["mysite.ddns.net"], "provider": "dyndns2",
+            "credentials": "secret:noip",
+            "options": {"server": "https://dynupdate.no-ip.com/nic/update"}},
+    })));
+    let doc = with(json!({
+        "Bad": {"names": ["vpn.example.org"], "provider": "inadyn",
+            "credentials": "hunter2", "network": "users", "options": {"zone": "x"}},
+        "d": {"names": ["home.example.org", "a.b.duckdns.org", "vpn.example.org", "x_y.example.org"],
+            "provider": "duckdns", "credentials": "secret:d", "ipv6": true,
+            "options": {"zone": "example.org"}, "discover": "ftp://x"},
+        "n": {"names": [], "provider": "dyndns2", "credentials": "secret:n",
+            "options": {"server": "http://dyn.example/nic/update"}},
+    }));
+    let errs = error_paths(&doc);
+    for want in [
+        "dns.dynamic.Bad: a name for dynamic DNS",
+        "dns.dynamic.Bad.provider: unknown provider \"inadyn\"; use dyndns2, cloudflare, duckdns",
+        "dns.dynamic.Bad.credentials: secrets are referenced as secret:<name>",
+        "dns.dynamic.Bad.network: users is not a WAN",
+        "dns.dynamic.d.names[0]: DuckDNS keeps only names under duckdns.org",
+        "dns.dynamic.d.names[1]: DuckDNS updates <name>.duckdns.org",
+        "dns.dynamic.d.names[2]: vpn.example.org is kept by dns.dynamic.Bad too",
+        "dns.dynamic.d.names[3]: \"x_y.example.org\" is not a host name",
+        "dns.dynamic.d.options.zone: duckdns takes no option \"zone\"",
+        "dns.dynamic.d.discover: \"ftp://x\" is not",
+        "dns.dynamic.d.ipv6: the WAN has no IPv6",
+        "dns.dynamic.n.names: names no names",
+    ] {
+        assert!(
+            errs.iter().any(|e| e.starts_with(want)),
+            "missing {want}: {errs:#?}"
+        );
+    }
+    assert!(
+        warnings(&doc)
+            .iter()
+            .any(|w| w.contains("anyone on the way is sent your credentials")),
+        "{:#?}",
+        warnings(&doc)
+    );
+    // dyndns2 needs its server; a second WAN needs `network`.
+    let mut doc = with(json!({
+        "n": {"names": ["a.example.org"], "provider": "dyndns2", "credentials": "secret:n"},
+    }));
+    let mut wan2 = doc.networks["wan"].clone();
+    wan2.vlan = Some(11);
+    doc.networks.insert("wan2".into(), wan2);
+    let errs = error_paths(&doc);
+    for want in [
+        "dns.dynamic.n.options: dyndns2 needs `server`",
+        "dns.dynamic.n: with more than one WAN",
+    ] {
+        assert!(
+            errs.iter().any(|e| e.starts_with(want)),
+            "missing {want}: {errs:#?}"
+        );
+    }
+}
+
+#[test]
 fn dns_filters_are_checked() {
     let with = |filters: serde_json::Value| {
         let mut doc = load(STANDALONE);

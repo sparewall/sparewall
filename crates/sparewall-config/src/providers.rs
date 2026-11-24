@@ -13,6 +13,9 @@ pub enum Role {
     Dns,
     LogForwarding,
     AcmeDns,
+    /// Dynamic DNS (#316): sparewalld speaks each protocol itself. One
+    /// run by a tool in a container (inadyn) would be another entry.
+    DynamicDns,
 }
 
 impl Role {
@@ -23,6 +26,7 @@ impl Role {
             Role::Dns => "dns.provider",
             Role::LogForwarding => "logging.remote.provider",
             Role::AcmeDns => "acme.dns.provider",
+            Role::DynamicDns => "dns.dynamic.provider",
         }
     }
 }
@@ -112,6 +116,30 @@ pub const PROVIDERS: &[Provider] = &[
         ha: true,
         state: None,
     },
+    Provider {
+        role: Role::DynamicDns,
+        name: "dyndns2",
+        default: false,
+        built: true,
+        ha: true,
+        state: None,
+    },
+    Provider {
+        role: Role::DynamicDns,
+        name: "cloudflare",
+        default: false,
+        built: true,
+        ha: true,
+        state: None,
+    },
+    Provider {
+        role: Role::DynamicDns,
+        name: "duckdns",
+        default: false,
+        built: true,
+        ha: true,
+        state: None,
+    },
 ];
 
 /// A provider of `role` by name.
@@ -135,13 +163,14 @@ pub fn chosen_default(role: Role) -> &'static str {
 }
 
 /// The provider a document chooses for a role it uses (`None` when the
-/// role is not used, or for ACME, which chooses one per certificate).
+/// role is not used, or for ACME and dynamic DNS, which choose one per
+/// certificate or name).
 pub fn chosen(doc: &Document, role: Role) -> Option<&str> {
     let named = match role {
         Role::Dhcp => doc.dhcp.as_ref()?.provider.as_deref(),
         Role::Dns => doc.dns.as_ref()?.provider.as_deref(),
         Role::LogForwarding => doc.logging.as_ref()?.remote.as_ref()?.provider.as_deref(),
-        Role::AcmeDns => return None,
+        Role::AcmeDns | Role::DynamicDns => return None,
     };
     Some(named.unwrap_or_else(|| chosen_default(role)))
 }
@@ -177,6 +206,7 @@ mod tests {
 
     #[test]
     fn one_built_default_per_role() {
+        // Dynamic DNS has none: each entry names its provider.
         for role in [Role::Dhcp, Role::Dns, Role::LogForwarding, Role::AcmeDns] {
             let defaults: Vec<_> = PROVIDERS
                 .iter()

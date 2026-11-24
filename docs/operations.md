@@ -75,7 +75,7 @@ back to one of them keeps its configuration.
 | 4 | `logging.remote.ca`, `logging.remote.certificate`, `metrics.retention`, `metrics.retention_size`, `vpn.<name>.peers.<peer>.keepalive`, `vpn_clients`; the values `logging.remote.provider: syslog` and `metrics.mode: local` | 0.5.0 |
 | 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
 | 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated`; an IPv6 address or `ipv6` object in `management.sources` | 0.7.0 |
-| 7 | `dns.intercept`, `dns.filters` | 0.8.0 |
+| 7 | `dns.intercept`, `dns.filters`, `dns.dynamic` | 0.8.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -472,6 +472,39 @@ dns:
 
 When a list changes, the resolver reloads, which empties its cache.
 
+## Dynamic DNS
+
+On a WAN whose address changes, the firewall can keep public names pointing at it, so the VPN and port forwards can be reached by name:
+
+```yaml
+dns:
+  enabled: true
+  dynamic:
+    home:
+      names: [vpn.example.org]
+      provider: cloudflare
+      credentials: secret:ddns-cloudflare
+      ipv6: true
+```
+
+```sh
+printf 'CF_DNS_API_TOKEN=%s\n' "$token" | sparewall secret set ddns-cloudflare
+```
+
+- **Providers:**
+  - `dyndns2`: the protocol of Dyn, No-IP, and many registrars and DNS hosts. `options.server` is the service's update URL (`https://dynupdate.no-ip.com/nic/update`, for example). The credentials are `DYNDNS2_USERNAME` and `DYNDNS2_PASSWORD`.
+  - `cloudflare`: an API token, `CF_DNS_API_TOKEN` (or `CLOUDFLARE_DNS_API_TOKEN`). These are lego's names, so the secret a certificate's `dns-01` challenge uses can serve here too. The zone is found from each name, or set with `options.zone`. Records that don't exist yet are created, with a 60-second TTL and not proxied.
+  - `duckdns`: `DUCKDNS_TOKEN` (lego's name too), for names under `duckdns.org`.
+- **Scope the credentials:** give the firewall a credential that can change only what it needs. For Cloudflare, that's a token with Zone:DNS:Edit on the one zone. Many DynDNS2 services offer a per-host update key in place of the account password.
+- **Which address:** the WAN's gateway address or static address, or the address DHCP gave it. With more than one WAN, `network` names the one to publish. With `ipv6: true`, the names' AAAA records get the WAN's global IPv6 address too.
+- **Behind carrier-grade NAT or another router:** the WAN's own address isn't the public one, and health says so. Set `discover` to a service that answers with the address alone, such as `https://api.ipify.org`. The firewall asks it every 5 minutes.
+- **When:** the address is read every minute, and at once on a lease change or a handover. A name is updated when its address changes, and an unchanged address is sent again weekly, so the service doesn't drop it. Every hour, Cloudflare's records are read back and the other providers' names are looked up, so a record changed elsewhere is put right.
+- **Rate:** at most one update a minute per entry. After a failure, the next try is 5 minutes later, doubling up to an hour. An answer that says retrying can't help, such as bad credentials, an unknown name or `abuse`, stops the entry until its settings change. The DynDNS2 protocol asks clients to do this.
+- **Pairs:** only the master sends updates. A node that takes over sends once, since it can't know what its peer sent meanwhile.
+- **Status:** `sparewall status -o json` (`dynamic_dns`) shows each entry's address, what was last sent and when, and the last error. Each change is an event (`ddns`), and health is degraded (`ddns`) while an entry fails, its address isn't public, or a name resolves elsewhere.
+
+`dns.enabled` turns only the resolver on and off; dynamic DNS works either way.
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:
@@ -758,6 +791,7 @@ running system, each repeated on every health request:
 | `tunnels` | On the node that holds them (standalone, or the master), every site-to-site peer with a `keepalive`, and every VPN client, has had a handshake in the last three minutes. Degraded, never failed | Peers without a keepalive, whose idle tunnels have no handshakes |
 | `ipv6` | Once a network has IPv6: each WAN with IPv6 has an IPv6 default route, and a `dhcpv6` WAN has a delegated prefix for the `delegated` networks. Degraded, never failed: IPv4 still flows | That hosts on the inside networks have taken addresses |
 | `dns-filters` | Each list a DNS filter names has been fetched within three times its `refresh`, once a fetch has been tried, and no view holds more than a million names. Degraded, never failed: DNS still answers, with the last copy of a list or without it | That a list holds what its publisher means it to |
+| `ddns` | On the node that updates them (standalone, or the master), each dynamic DNS entry's last update succeeded, its address is public, and its names resolve to it. Degraded, never failed | That resolvers elsewhere have the new address yet |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
 
 Any change to the firewall made outside Sparewall (`nft flush`, an extra

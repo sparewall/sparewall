@@ -826,6 +826,47 @@ pub struct Dns {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(extend("x-since" = 7))]
     pub filters: BTreeMap<String, DnsFilter>,
+    /// Names kept pointing at the site's public address as it changes
+    /// (#316), by a name of your own: dynamic DNS. Independent of the
+    /// resolver: `enabled` turns only the resolver on and off.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-since" = 7))]
+    pub dynamic: BTreeMap<String, DynamicDns>,
+}
+
+/// Dynamic DNS (`dns.dynamic.<name>`): names a provider keeps at the
+/// WAN's address. In a pair, only the master sends updates.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicDns {
+    /// The names to keep current, e.g. `vpn.example.org`.
+    pub names: Vec<String>,
+    /// `dyndns2` (Dyn, No-IP and the many services that speak its
+    /// protocol), `cloudflare` or `duckdns`.
+    pub provider: String,
+    /// `secret:<name>`, the provider's credentials as `KEY=value` lines:
+    /// `DYNDNS2_USERNAME` and `DYNDNS2_PASSWORD`; `CF_DNS_API_TOKEN`
+    /// (lego's name, so one secret can serve both); `DUCKDNS_TOKEN`
+    /// (lego's too).
+    pub credentials: String,
+    /// Provider settings. `server`: the update URL for `dyndns2`
+    /// (required, e.g. `https://dynupdate.no-ip.com/nic/update`), or a
+    /// compatible service's API for the others. `zone`: the Cloudflare
+    /// zone (default: found from the names).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, String>,
+    /// The WAN network whose address the names get (default: the only
+    /// WAN).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    /// Ask this service for the public IPv4 address instead of taking the
+    /// WAN's, for a WAN behind carrier-grade NAT or another router: a URL
+    /// that answers with the address alone, e.g. `https://api.ipify.org`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discover: Option<String>,
+    /// Keep the names' AAAA records at the WAN's global IPv6 address too.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ipv6: bool,
 }
 
 /// A DNS filter (`dns.filters.<name>`).

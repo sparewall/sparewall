@@ -151,6 +151,13 @@ pub struct StatusReply {
     /// network has IPv6, and from nodes older than 0.6.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ipv6: Option<Value>,
+    /// Each `dns.dynamic` entry (#316), by name: its `names`, `provider`,
+    /// the `address` and `ipv6` it should have, what the provider was
+    /// last `sent` and when (`updated`, Unix seconds), the last `error`,
+    /// and whether this node is the one that updates it (`active`).
+    /// Absent without entries, and from nodes older than 0.8.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_dns: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
