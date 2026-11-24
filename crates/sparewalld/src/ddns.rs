@@ -13,7 +13,8 @@
 //! - **Rate:** at most one update a minute per entry; after a failure, 5
 //!   minutes, doubling to an hour. An answer that says retrying can't help
 //!   (bad credentials, an unknown name, `abuse`) stops the entry until its
-//!   settings change, as the DynDNS2 protocol asks of clients.
+//!   settings or its secret change, across restarts too, as the DynDNS2
+//!   protocol asks of clients.
 //! - **Health:** `ddns` degrades for a failed or stopped entry, a WAN
 //!   address that isn't public (behind NAT: set `discover`), or a record
 //!   that doesn't match.
@@ -75,7 +76,8 @@ struct Sent {
 /// restarts so a known-bad request isn't sent again.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Stopped {
-    /// The entry's settings when it stopped: a change starts it again.
+    /// The entry's settings and a digest of its credentials when it
+    /// stopped ([`stop_key`]): a change to either starts it again.
     key: String,
     message: String,
 }
@@ -556,13 +558,21 @@ async fn mismatch(names: &[String], a: Addrs) -> Option<String> {
 }
 
 /// Whether what a name resolves to differs from what it should have, in
-/// each family it should have an address in. A family with no answer
-/// says nothing: the resolver may not have asked yet.
+/// each family it should have an address in: a missing A or AAAA record
+/// counts, once the name resolves at all. No answer says nothing: the
+/// name may not have reached the resolvers yet.
 fn differs(name: &str, ips: &[IpAddr], a: Addrs) -> Option<String> {
+    if ips.is_empty() {
+        return None;
+    }
     let want = [a.v4.map(IpAddr::V4), a.v6.map(IpAddr::V6)];
     for w in want.into_iter().flatten() {
         let same: Vec<&IpAddr> = ips.iter().filter(|i| i.is_ipv4() == w.is_ipv4()).collect();
-        if !same.is_empty() && !same.contains(&&w) {
+        if same.is_empty() {
+            let kind = if w.is_ipv4() { "A" } else { "AAAA" };
+            return Some(format!("{name} has no {kind} record, not {w}"));
+        }
+        if !same.contains(&&w) {
             return Some(format!("{name} resolves to {}, not {w}", same[0]));
         }
     }
@@ -610,6 +620,35 @@ fn load(path: &Path) -> Kept {
 
 fn key_of(x: &DynamicDns) -> String {
     serde_json::to_string(x).unwrap_or_default()
+}
+
+/// What a stop is keyed by: the entry's settings, and a digest of the
+/// secret its credentials reference (never the secret itself).
+async fn stop_key(
+    core: &Core,
+    events: &broadcast::Sender<Value>,
+    x: &DynamicDns,
+    key: &str,
+) -> String {
+    let name = x
+        .credentials
+        .strip_prefix("secret:")
+        .unwrap_or_default()
+        .to_string();
+    let secret = with_core_raw(core, events, move |c| c.secret_get(&name))
+        .await
+        .ok()
+        .flatten();
+    stop_key_of(key, secret.as_deref())
+}
+
+fn stop_key_of(key: &str, secret: Option<&[u8]>) -> String {
+    use sha2::Digest;
+    let d = match secret {
+        Some(s) => hex::encode(&sha2::Sha256::digest(s)[..16]),
+        None => "unset".into(),
+    };
+    format!("{key}#{d}")
 }
 
 async fn update(
@@ -723,10 +762,16 @@ pub async fn ddns_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair,
             if entry.key != key {
                 *entry = Entry::new(key.clone());
             }
-            if entry.stopped.is_none()
-                && let Some(st) = stopped.get(e).filter(|st| st.key == key)
-            {
-                entry.stopped = Some(st.message.clone());
+            // A stop holds while the settings and the credentials are
+            // what they were; a new secret starts the entry again.
+            if let Some(st) = stopped.get(e) {
+                if st.key == stop_key(&core, &events, x, &key).await {
+                    entry.stopped = Some(st.message.clone());
+                } else {
+                    stopped.remove(e);
+                    dirty = true;
+                    *entry = Entry::new(key.clone());
+                }
             }
             let mut want = Addrs::default();
             let mut notes: Vec<String> = Vec::new();
@@ -850,7 +895,7 @@ pub async fn ddns_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair,
                             stopped.insert(
                                 e.clone(),
                                 Stopped {
-                                    key: key.clone(),
+                                    key: stop_key(&core, &events, x, &key).await,
                                     message: m.clone(),
                                 },
                             );
@@ -864,7 +909,9 @@ pub async fn ddns_loop(core: Core, events: broadcast::Sender<Value>, pair: Pair,
             }
             if active {
                 if let Some(m) = &entry.stopped {
-                    problems.push(format!("{e}: stopped until its settings change: {m}"));
+                    problems.push(format!(
+                        "{e}: stopped until its settings or credentials change: {m}"
+                    ));
                 } else if let Some(m) = &entry.error {
                     problems.push(format!("{e}: {m}"));
                 } else if let Some(m) = &entry.mismatch {
@@ -1202,6 +1249,15 @@ mod tests {
             None
         );
         assert_eq!(differs("n", &[], both), None);
+        // A family missing while the other resolves.
+        assert_eq!(
+            differs("n", &[ip("2001:db8::1")], both).as_deref(),
+            Some("n has no A record, not 203.0.113.7")
+        );
+        assert_eq!(
+            differs("n", &[ip("203.0.113.7")], both).as_deref(),
+            Some("n has no AAAA record, not 2001:db8::1")
+        );
     }
 
     #[test]
@@ -1220,6 +1276,14 @@ mod tests {
         let back = load(&p);
         assert_eq!(back.stopped["home"].message, "badauth");
         assert!(back.sent.is_empty());
+        // Keyed by the settings and the secret's digest: a new secret, or
+        // one set where there was none, is a new key.
+        let a = stop_key_of("k", Some(b"DYNDNS2_PASSWORD=old"));
+        assert_eq!(a, stop_key_of("k", Some(b"DYNDNS2_PASSWORD=old")));
+        assert_ne!(a, stop_key_of("k", Some(b"DYNDNS2_PASSWORD=new")));
+        assert_ne!(a, stop_key_of("k2", Some(b"DYNDNS2_PASSWORD=old")));
+        assert_ne!(stop_key_of("k", None), a);
+        assert!(!a.contains("old"));
     }
 
     #[test]
