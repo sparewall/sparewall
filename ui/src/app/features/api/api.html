@@ -73,8 +73,7 @@
             @for (f of c.parameters; track f.name) {
               <tr>
                 <td>
-                  <code>{{ f.name }}</code
-                  >{{ f.required ? '' : '?' }}
+                  <code>{{ f.name }}</code>{{ f.required ? '' : '?' }}
                 </td>
                 <td class="type">{{ f.type }}</td>
                 <td>{{ f.description }}</td>
@@ -90,8 +89,7 @@
             @for (f of c.reply; track f.name) {
               <tr>
                 <td>
-                  <code>{{ f.name }}</code
-                  >{{ f.required ? '' : '?' }}
+                  <code>{{ f.name }}</code>{{ f.required ? '' : '?' }}
                 </td>
                 <td class="type">{{ f.type }}</td>
                 <td>{{ f.description }}</td>
