@@ -141,21 +141,56 @@ Until 1.0, only the newest series gets patch releases: once 0.7.0 is
 out, nodes on `stable` move to it, and a 0.6.x after that only reaches
 nodes that stay on 0.6 by choice.
 
-## What the automatic updates don't cover
+## Dependency updates
 
-Dependabot proposes updates for the Rust crates, the GitHub Actions and
-the bootc-image-builder digest (`image/bib/Containerfile`), weekly. The
-Fedora base images float on purpose: the monthly rebuild tracks them,
-and Fedora's own security advisories decide when one is needed.
+[Renovate](https://docs.renovatebot.com/) (`renovate.json`, the Renovate
+GitHub App) proposes every update, so none waits on someone
+remembering. The Dependency Dashboard issue lists what it found and
+what's waiting.
 
-Two packages are neither: ulogd and libnetfilter_log are built from
-source in `image/Containerfile` (Fedora 45 doesn't package ulogd, and has
-too old a libnetfilter_log). Their advisories are watched by hand.
-Before a release, check netfilter.org and the CVE lists for both. A fix
-means updating the version and checksum `ARG`s, and it ships in a
-release, not a rebuild, since a rebuild builds the same source. Both are
-in the image's SBOM (`.github/sbom-source-builds.sh`), and their license
-texts are in `/usr/share/licenses`.
+- **When:** Mondays before 06:00 UTC, at most 8 open pull requests and
+  2 new ones an hour. Security fixes (GitHub's advisories and OSV) are
+  opened at once, whatever the day.
+- **Waiting:** a new release of an npm package, crate or action waits
+  3 days before it's proposed, so one pulled for a bad release never
+  arrives. Security fixes don't wait.
+- **Merging itself:** minor, patch and digest updates merge themselves
+  (squash) once every check on the pull request has passed, the VM
+  suites included. So does the weekly lock file refresh. A failing
+  update stays open for someone to fix.
+- **Groups:** the Rust crates, the web UI's npm packages and the GitHub
+  Actions (with the Renovate release CI checks this file with) each go
+  in one pull request. The Rust toolchain and the bootc-image-builder
+  digest (`image/bib/Containerfile`) get their own.
+- **Major updates** open a pull request each, never merged by
+  Renovate. TypeScript is the exception: Angular names the releases it
+  supports, so a new major waits for approval on the dashboard.
+- **Node.js** in CI is left alone: it's the major that Fedora builds the
+  UI with in the image, and it moves with Fedora.
+- **Fedora.** Within a release, the base images (`fedora-bootc:45`,
+  `fedora:45`, `fedora-minimal:45`) float on purpose: the monthly
+  rebuild tracks them, below. A new release comes from Bodhi's release
+  list, and only once Bodhi marks it `current` (stable), never while
+  it's branched, in beta or Rawhide. It arrives as one pull request
+  that changes every Containerfile and the base images `image.yml`
+  records. It's a major OS upgrade: it goes through every VM suite and
+  is merged by hand.
+- **ulogd and libnetfilter_log** are built from netfilter.org's
+  tarballs in `image/Containerfile` (Fedora doesn't package ulogd, and
+  has too old a libnetfilter_log). Renovate follows their git tags and
+  bumps the `_VERSION` ARG, but it can't compute the tarball's checksum.
+  Update the matching `_SHA256` ARG by hand, from the release's tarball
+  (check its signature); until then the build fails at `sha256sum -c`,
+  by design. No advisory database covers them, so before a release,
+  still check netfilter.org and the CVE lists for both. A fix ships in a release, not a rebuild, since a rebuild
+  builds the same source. Both are in the image's SBOM
+  (`.github/sbom-source-builds.sh`), and their license texts are in
+  `/usr/share/licenses`.
+- **Checked:** CI runs `renovate-config-validator` on any change to
+  `renovate.json`, since Renovate reads the file from `main` and stops
+  every update, without failing anything here, if it can't.
+
+Dependabot's version updates are off; its security alerts stay on.
 
 ## A demo node
 

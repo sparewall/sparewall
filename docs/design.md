@@ -930,7 +930,7 @@ Every image a node runs is built in CI, signed, and verified on the node; upgrad
 
 ### Build, sign, publish
 
-- CI builds the OS image from the Containerfile with the base image pinned by digest and records the exact package list as the image manifest. Renovate (or a scheduled job) bumps the base digest so security fixes flow in automatically.
+- CI builds the OS image from the Containerfile and records the base images' digests and the exact package list on the image. Within a Fedora release the base images float; a scheduled rebuild picks up their security fixes. Renovate proposes every other update, a new stable Fedora release included (see [Dependency updates](releasing.md#dependency-updates)).
 - An SBOM (syft) is generated for each image; images are signed with cosign, using a key held in CI secrets.
 - **Everything is published on GitHub.** The OS image goes to GitHub Container Registry as `ghcr.io/sparewall/sparewall` with `stable` and `testing` channel tags, signatures and SBOMs attached. CLI binaries, checksums, SBOMs and installer disk images go on GitHub Releases (2 GiB per asset, so a larger installer ships compressed or split).
 - License allow-lists (RPM `License:` tags and `cargo-deny`) gate the build.
