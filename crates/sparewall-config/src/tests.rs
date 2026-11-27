@@ -1201,6 +1201,87 @@ fn vpn_extra_ports_must_be_free() {
     assert!(!has_error(&d, "already uses UDP"));
 }
 
+/// #363: the firewall never serves DNS, DHCP or NTP on the WAN, so a
+/// policy rule from the WAN to the firewall that accepts them is refused.
+#[test]
+fn wan_to_self_never_opens_dns_dhcp_or_ntp() {
+    let rule = |pair: &str, r: serde_json::Value| {
+        edit(
+            PAIR,
+            json!({"policy": {pair: {"action": "drop", "rules": {"x": r}}}}),
+        )
+    };
+    let msg = "policy.'wan->self'.rules.x.dport: the firewall never serves";
+    for (proto, dport) in [
+        ("udp", json!(53)),
+        ("tcp", json!(53)),
+        ("udp", json!(67)),
+        ("udp", json!(123)),
+        ("udp", json!("100-200")),
+        ("udp", json!([500, 123])),
+    ] {
+        let d = rule(
+            "wan->self",
+            json!({"order": 900, "proto": proto, "dport": dport, "action": "accept"}),
+        );
+        assert!(
+            has_error(&d, msg),
+            "{proto} {dport}: {:#?}",
+            error_paths(&d)
+        );
+    }
+    // Through a port object.
+    let mut v = to_value(&rule(
+        "wan->self",
+        json!({"order": 900, "proto": "udp", "dport": "@svc", "action": "accept"}),
+    ));
+    merge_patch(
+        &mut v,
+        &json!({"objects": {"svc": {"type": "port", "elements": [123]}}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    assert!(has_error(&d, msg), "{:#?}", error_paths(&d));
+    // Narrowing the source doesn't help: the port is closed to everyone.
+    let d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "udp", "dport": 123, "src": "198.51.100.7", "action": "accept"}),
+    );
+    assert!(has_error(&d, msg));
+    // Not refused: TCP 67 or 123, a drop, another zone, no port, or a
+    // port a VPN listens on.
+    for (pair, r) in [
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": [67, 123], "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "udp", "dport": 53, "action": "drop"}),
+        ),
+        (
+            "users->self",
+            json!({"order": 900, "proto": "udp", "dport": 53, "action": "accept"}),
+        ),
+        (
+            "wan->users",
+            json!({"order": 900, "proto": "udp", "dport": 53, "action": "accept"}),
+        ),
+    ] {
+        let d = rule(pair, r.clone());
+        assert!(
+            !has_error(&d, "never serves"),
+            "{pair} {r}: {:#?}",
+            error_paths(&d)
+        );
+    }
+    let mut d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "udp", "dport": 53, "action": "accept"}),
+    );
+    d.vpn.get_mut("roadwarrior").unwrap().listen_port = 53;
+    assert!(!has_error(&d, "never serves"), "{:#?}", error_paths(&d));
+}
+
 #[test]
 fn extra_vips_are_checked_and_count_as_held() {
     let x = |v: serde_json::Value| edit(PAIR, json!({"networks": {"wan": {"extra_vips": v}}}));

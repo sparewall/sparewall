@@ -2289,3 +2289,85 @@ fn provider_options_passthrough() {
         "{errs:#?}"
     );
 }
+
+/// #363: whatever the policies say, the WAN never reaches DNS, DHCP or NTP
+/// on the node. Validation refuses a policy that opens them, so this one
+/// bypasses it, and a real ruleset in a namespace takes packets from an
+/// outside host over both families: the services' ports stay closed,
+/// while the policy's other ports, the probe's control, open.
+#[test]
+fn wan_services_stay_closed_whatever_the_policy() {
+    let mut v = sparewall_config::to_value(&ipv6_two_nic());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"policy": {"wan->self": {"rules": {
+            "udp": {"order": 100, "proto": "udp", "dport": [53, 67, 123, 5353], "action": "accept"},
+            "tcp": {"order": 200, "proto": "tcp", "dport": [53, 5353], "action": "accept"},
+        }}}}),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let r = render(&doc, "fw1").unwrap();
+    let script = &r.files[&format!("nftables/{}", nft::SCRIPT)];
+    assert!(script.contains("infra:wan-services"), "{script}");
+
+    let probes = [
+        ("4/udp:53", "closed"),
+        ("4/tcp:53", "closed"),
+        ("4/udp:67", "closed"),
+        ("4/udp:123", "closed"),
+        ("6/udp:53", "closed"),
+        ("6/tcp:53", "closed"),
+        ("6/udp:123", "closed"),
+        ("4/udp:5353", "open"),
+        ("4/tcp:5353", "open"),
+        ("6/udp:5353", "open"),
+        ("6/tcp:5353", "open"),
+    ];
+    let available = Command::new("unshare")
+        .args([
+            "-rn",
+            "sh",
+            "-c",
+            "unshare -n true && nft --version && ip -V && python3 -V",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !available {
+        // CI sets this, so the probe can't be skipped there unnoticed.
+        assert!(
+            std::env::var_os("SPAREWALL_REQUIRE_NETNS").is_none(),
+            "no unprivileged namespaces, nft, ip or python3"
+        );
+        eprintln!("skipping the WAN probe: no unprivileged namespaces, nft, ip or python3");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("sparewall-wan-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ruleset = dir.join("ruleset.nft");
+    std::fs::write(&ruleset, script).unwrap();
+    let probe = format!("{}/tests/wan-probe.sh", env!("CARGO_MANIFEST_DIR"));
+    let list: Vec<&str> = probes.iter().map(|(p, _)| *p).collect();
+    let out = Command::new("unshare")
+        .arg("-rn")
+        .arg("sh")
+        .arg(&probe)
+        .arg(&ruleset)
+        .arg("wan0")
+        .arg(list.join(" "))
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "the probe failed:\n{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut got: Vec<&str> = stdout.lines().collect();
+    got.sort_unstable();
+    let mut want: Vec<String> = probes.iter().map(|(p, s)| format!("{p} {s}")).collect();
+    want.sort_unstable();
+    assert_eq!(got, want, "\n{script}");
+}

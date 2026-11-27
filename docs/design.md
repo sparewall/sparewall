@@ -542,6 +542,7 @@ raw:
 - Base chains accept `ct state established,related` and drop `invalid` first, then dispatch by interface pair through verdict maps, for example `iifname . oifname vmap { "users" . "wan" : jump users_to_wan }`, so rule count stays flat as networks are added.
 - Each zone-pair chain runs: raw *before* entries, generated rules, raw *after* entries, default action.
 - An **anti-lockout rule** for SSH and HTTPS from the management network to `self` is always rendered first, unless an `admin` explicitly disables it.
+- **Never on the WAN** (#363): DNS (UDP and TCP 53), DHCP (UDP 67) and NTP (UDP 123) from a WAN interface (its links and its public side) are dropped before the state rule and the policies (`infra:wan-services`), whatever the policies say, as the firewall never serves them there; validation refuses a `wan->self` rule that accepts them. A UDP port a VPN listens on is left out, so WireGuard can listen on 53. The node's own queries and time requests leave from other ports, so their replies don't match.
 - Protocols that need conntrack helpers (FTP, SIP) get explicit `ct helper` objects; nftables does not assign helpers automatically.
 - Rule logging uses `log group N`, collected by ulogd2 (see Observability).
 - **IPv6** (#212). Without a network that has `ipv6`, IPv6 is dropped but link-local neighbour discovery and MLD, as before. With one:

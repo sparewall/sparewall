@@ -27,6 +27,8 @@ table inet sparewall {
 	chain input {
 		type filter hook input priority filter; policy drop;
 		iifname != { "lo", "swsync" } ip daddr 169.254.77.0/30 drop comment "infra:sync-isolation"
+		iifname { "swwan", "wan" } tcp dport 53 counter drop comment "infra:wan-services"
+		iifname { "swwan", "wan" } udp dport { 53, 67, 123 } counter drop comment "infra:wan-services"
 		ct state vmap { established : accept, related : accept, invalid : drop }
 		iifname "lo" accept
 		iifname "mgmt" tcp dport { 22, 443 } accept comment "anti-lockout"

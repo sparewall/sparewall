@@ -553,6 +553,16 @@ provider_options:
 - **Pairs:** both nodes render the same options, as the document is shared. Kea's HA stays the firewall's.
 - **The web UI** shows each provider's options as JSON, under Services.
 
+## What the WAN can reach
+
+The firewall's input policy is drop, so from the WAN it answers only:
+
+- **What it needs as a client there:** DHCP replies to its own lease, and on an IPv6 WAN, router advertisements and DHCPv6 replies.
+- **Its VPNs:** each VPN's listen port, and its extra ports.
+- **What a `wan->self` policy opens:** SSH from your admin addresses, for example, or ping.
+
+**DNS, DHCP and NTP are never open on the WAN,** whatever the policies say. The firewall doesn't serve them there, and a `wan->self` rule that accepts UDP or TCP 53, UDP 67 or UDP 123 is refused when the document is saved. The ruleset drops them from the WAN ahead of the policies too (`infra:wan-services`), as a second layer. A VPN listening on one of those UDP ports keeps it, and `extra_ports` are redirected to the listen port before this drop: WireGuard on port 53 works either way, for clients on networks that let only DNS out.
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:
