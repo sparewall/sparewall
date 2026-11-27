@@ -75,6 +75,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+        env:
+          # The WAN probe (#363) must run here, not skip.
+          SPAREWALL_REQUIRE_NETNS: "1"
       - name: VM test helpers
         run: tests/vm/vpn-check-test.sh
       - name: Release tag checks

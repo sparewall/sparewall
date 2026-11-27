@@ -82,6 +82,8 @@ trap cleanup EXIT
 # The ISP's IPv6 (#213): radvd and Kea's DHCPv6 server in sw-tisp.
 # shellcheck source=isp6.sh
 . "$HERE/isp6.sh"
+# shellcheck source=wan-probe.sh
+. "$HERE/wan-probe.sh"
 v6_dump() {
     set +e
     isp6_dump tisp
@@ -474,6 +476,25 @@ lan_status_prefix "$p1" || fail "status does not show the LAN advertising $p1/64
 if ns tisp ping -6 -c 2 -W 2 "$c6" >/dev/null 2>&1; then
     fail "the ISP reached the client $c6 unasked"
 fi
+
+log "nothing the node serves inside answers from the WAN (#363)"
+# DNS (Unbound on every address, as the LAN's prefix is delegated), DHCP
+# and NTP on the LAN, and a policy that would open them from the WAN if
+# validation let it: the merge is refused, and the probes go unanswered
+# over both families, each counted by infra:wan-services on the way.
+jq -n '{ntp: {serve: ["lan"]}}' | at fw1 'cat > /tmp/ntp.json'
+at fw1 'sudo sparewall merge -f /tmp/ntp.json --confirm 0' >/dev/null
+jq -n '{policy: {"wan->self": {rules: {dns: {order: 100, proto: "udp", dport: 53, action: "accept"}}}}}' \
+    | at fw1 'cat > /tmp/wan-dns.json'
+if at fw1 'sudo sparewall merge -f /tmp/wan-dns.json --confirm 0' > merge.txt 2>&1; then
+    fail "a wan->self policy accepting DNS was applied"
+fi
+grep -q 'never serves DNS on the WAN' merge.txt || fail "the refusal does not say why: $(cat merge.txt)"
+before=$(wan_drops fw1)
+wan_probe tisp 203.0.113.2 "$a"
+wan_dhcp_probe tisp 203.0.113.2
+[ "$(wan_drops fw1)" -gt "$before" ] \
+    || fail "infra:wan-services counted none of the probes: $(at fw1 'sudo nft list chain inet sparewall input' | grep wan-services)"
 
 log "a rule names a host by its suffix in the delegated prefix (#245)"
 # The client is also a server at ::20 in the LAN's /64, an address it

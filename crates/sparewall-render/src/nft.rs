@@ -20,6 +20,10 @@ pub const SCRIPT: &str = "sparewall.nft";
 /// TCP ports the anti-lockout rule keeps open from management.
 pub const ANTI_LOCKOUT_PORTS: &[u16] = &[22, 443];
 
+/// UDP ports dropped from the WAN whatever the policies say (#363): DNS,
+/// DHCP and NTP. TCP 53 too.
+pub const WAN_NEVER_UDP: &[u16] = &[53, 67, 123];
+
 fn q(s: &str) -> String {
     format!("\"{s}\"")
 }
@@ -876,6 +880,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     // IPv6 on a link without it is dropped before the state rule, so a
     // flow conntrack knows (begun before a network lost its IPv6, say)
     // cannot carry on there either (#212).
+    input.push_str(&wan_services(doc));
     if v6 {
         input.push_str(&ipv6_input_early(doc));
         input.push_str(&dns_served_only(doc));
@@ -1505,6 +1510,55 @@ fn dns_served_only(doc: &Document) -> String {
     )
 }
 
+/// The interfaces WAN traffic reaches the node on: the WAN's own links,
+/// and its public side where that is the macvlan with the virtual MAC
+/// (#54, #176).
+fn wan_input_ifaces(doc: &Document) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for (n, _) in doc.networks_with_role(NetworkRole::Wan) {
+        v.extend(doc.network_iface(n).map(str::to_string));
+        v.extend(doc.public_iface(n).map(str::to_string));
+    }
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// The firewall never serves DNS, DHCP or NTP on the WAN (#363), and
+/// validation refuses a policy that opens them there. This drops them
+/// whatever the policies say, as a second layer: before the state rule,
+/// so no flow conntrack knows carries on either. A VPN that listens on
+/// one of the UDP ports (WireGuard on 53, to get past networks that
+/// allow only DNS) keeps it. The node's own queries and time requests
+/// leave from other ports, so their replies don't match. Counted, so
+/// probes from the WAN show.
+fn wan_services(doc: &Document) -> String {
+    let ifs = wan_input_ifaces(doc);
+    if ifs.is_empty() {
+        return String::new();
+    }
+    let listen: Vec<u16> = doc.vpn.values().map(|v| v.listen_port).collect();
+    let udp: Vec<String> = WAN_NEVER_UDP
+        .iter()
+        .filter(|p| !listen.contains(p))
+        .map(u16::to_string)
+        .collect();
+    let mut s = format!(
+        "iifname {} tcp dport 53 counter drop comment \"infra:wan-services\"\n",
+        ifset(&ifs)
+    );
+    if !udp.is_empty() {
+        writeln!(
+            s,
+            "iifname {} udp dport {} counter drop comment \"infra:wan-services\"",
+            ifset(&ifs),
+            set_lit(udp)
+        )
+        .unwrap();
+    }
+    s
+}
+
 /// Input rules for services the document turns on.
 fn service_rules(doc: &Document, input: &mut String) {
     let ifs = |nets: &mut dyn Iterator<Item = &String>| -> Vec<String> {
@@ -1546,15 +1600,8 @@ fn service_rules(doc: &Document, input: &mut String) {
             .unwrap();
         }
     }
-    // The WAN's own links, and its public side where that is the
-    // macvlan with the virtual MAC (#54, #176): the VPN endpoint is a
-    // public address.
-    let mut wan_ifs = ifs(&mut doc.networks_with_role(NetworkRole::Wan).map(|(n, _)| n));
-    for (n, _) in doc.networks_with_role(NetworkRole::Wan) {
-        wan_ifs.extend(doc.public_iface(n).map(str::to_string));
-    }
-    wan_ifs.sort();
-    wan_ifs.dedup();
+    // The VPN endpoint is a public address.
+    let wan_ifs = wan_input_ifaces(doc);
     for (name, vpn) in &doc.vpn {
         if !wan_ifs.is_empty() {
             writeln!(

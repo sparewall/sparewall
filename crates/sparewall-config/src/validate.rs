@@ -1496,6 +1496,40 @@ impl Validator<'_> {
                     );
                 }
                 self.check_rule(&rp, r);
+                if to == SELF_ZONE && wan_zone(doc, from) {
+                    self.wan_services(&rp, r);
+                }
+            }
+        }
+    }
+
+    /// The firewall never serves DNS, DHCP or NTP on the WAN (#363): the
+    /// ruleset drops them there whatever the policies say, so a rule from
+    /// the WAN that accepts them would do nothing. A VPN listening on one
+    /// of the UDP ports has it opened already.
+    fn wan_services(&mut self, rp: &str, r: &Rule) {
+        let Some(dport) = &r.dport else { return };
+        if r.action != Action::Accept {
+            return;
+        }
+        let ports: &[(u16, &str)] = match r.proto.as_deref() {
+            Some("tcp") => &[(53, "DNS")],
+            Some("udp") => &[(53, "DNS"), (67, "DHCP"), (123, "NTP")],
+            _ => return,
+        };
+        let udp = r.proto.as_deref() == Some("udp");
+        for &(port, what) in ports {
+            if udp && self.doc.vpn.values().any(|v| v.listen_port == port) {
+                continue;
+            }
+            if match_has_port(self.doc, dport, port) {
+                self.err(
+                    format!("{rp}.dport"),
+                    format!(
+                        "the firewall never serves {what} on the WAN, whatever the policies say: \
+                         port {port} stays closed there"
+                    ),
+                );
             }
         }
     }
@@ -2856,6 +2890,12 @@ impl Validator<'_> {
     }
 }
 
+/// Whether a zone holds a WAN network.
+fn wan_zone(doc: &Document, zone: &str) -> bool {
+    doc.networks_with_role(NetworkRole::Wan)
+        .any(|(n, _)| doc.zone_of_network(n) == Some(zone))
+}
+
 /// What else takes UDP `port` on a WAN network, if anything: a forward
 /// from a zone with a WAN network, or DNS or NTP served there.
 fn wan_udp_user(doc: &Document, port: u16) -> Option<String> {
@@ -2863,10 +2903,9 @@ fn wan_udp_user(doc: &Document, port: u16) -> Option<String> {
         .networks_with_role(NetworkRole::Wan)
         .map(|(n, _)| n)
         .collect();
-    let wan_zone = |z: &str| wan.iter().any(|n| doc.zone_of_network(n) == Some(z));
     for (name, f) in &doc.forwards {
         if f.proto == "udp"
-            && wan_zone(f.from.as_deref().unwrap_or("wan"))
+            && wan_zone(doc, f.from.as_deref().unwrap_or("wan"))
             && match_has_port(doc, &f.dport, port)
         {
             return Some(format!("forwards.{}", seg(name)));
