@@ -25,7 +25,7 @@ jobs:
     concurrency:
       group: promote-stable
       cancel-in-progress: false
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write # GitHub's "Latest" release
       packages: write
@@ -99,7 +99,7 @@ jobs:
     name: Homebrew tap
     needs: promote
     if: ${{ !github.event.release.prerelease }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:

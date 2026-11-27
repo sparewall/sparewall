@@ -61,7 +61,7 @@ env:
 jobs:
   providers:
     name: provider images
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -206,7 +206,7 @@ jobs:
     # suite publishes; the fault suite runs alongside it.
     name: ${{ matrix.name }}
     needs: providers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -404,7 +404,7 @@ jobs:
     concurrency:
       group: promote-testing
       cancel-in-progress: false
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -552,7 +552,7 @@ jobs:
     # x86_64 one (which the release job builds), built and run natively on
     # an arm64 runner. Only the CLI: arm64 nodes are #1.
     name: Linux arm64 CLI
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 30
     permissions:
       contents: read
@@ -602,7 +602,7 @@ jobs:
     name: release assets
     needs: [image, cli-macos, cli-linux-arm64]
     if: startsWith(github.ref, 'refs/tags/v') && !inputs.rebuild
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     permissions:
       contents: write
@@ -788,7 +788,7 @@ jobs:
     concurrency:
       group: promote-stable
       cancel-in-progress: false
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
       packages: write
