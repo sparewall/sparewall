@@ -6,12 +6,97 @@
   "semanticCommitScope": "deps",
   "timezone": "UTC",
   "schedule": ["before 6am on monday"],
-  "prConcurrentLimit": 4,
+  "prConcurrentLimit": 8,
   "prHourlyLimit": 2,
-  "major": {
-    "dependencyDashboardApproval": true
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
+  "platformAutomerge": false,
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "description": "Security fixes are opened at once, whatever the schedule, and still wait for every check.",
+    "minimumReleaseAge": null,
+    "labels": ["security"]
   },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"],
+    "automerge": true
+  },
+  "customDatasources": {
+    "fedora-stable": {
+      "description": "Fedora releases that Bodhi marks current (stable): never a branched, beta or Rawhide release.",
+      "defaultRegistryUrlTemplate": "https://bodhi.fedoraproject.org/releases/?rows_per_page=100&exclude_archived=true",
+      "transformTemplates": [
+        "{\"releases\": [releases[id_prefix=\"FEDORA\" and state=\"current\"].{\"version\": version}]}"
+      ]
+    }
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The Fedora release the image and the providers are built on, in the Containerfiles and in the workflow that records the base digests.",
+      "managerFilePatterns": [
+        "/(^|/)Containerfile$/",
+        "/^\\.github/workflows/image\\.yml$/"
+      ],
+      "matchStrings": [
+        "quay\\.io/fedora/fedora(?:-bootc|-minimal)?:(?<currentValue>\\d+)\\b"
+      ],
+      "datasourceTemplate": "custom.fedora-stable",
+      "depNameTemplate": "fedora",
+      "versioningTemplate": "regex:^(?<major>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "ulogd, built from netfilter.org's tarball in the image: Fedora doesn't package it.",
+      "managerFilePatterns": ["/^image/Containerfile$/"],
+      "matchStrings": ["ARG ULOGD_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "git-tags",
+      "packageNameTemplate": "https://git.netfilter.org/ulogd2",
+      "depNameTemplate": "ulogd",
+      "extractVersionTemplate": "^ulogd-(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "libnetfilter_log, built from netfilter.org's tarball in the image: Fedora's is too old for ulogd.",
+      "managerFilePatterns": ["/^image/Containerfile$/"],
+      "matchStrings": ["ARG NFLOG_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "git-tags",
+      "packageNameTemplate": "https://git.netfilter.org/libnetfilter_log",
+      "depNameTemplate": "libnetfilter_log",
+      "extractVersionTemplate": "^libnetfilter_log-(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "The Renovate release CI checks this file with.",
+      "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": ["--package renovate@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "renovate"
+    }
+  ],
   "packageRules": [
+    {
+      "description": "Non-major updates merge themselves once every check, the VM suites included, has passed.",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
+      "automerge": true
+    },
+    {
+      "description": "Major updates open a pull request each, for review; never merged automatically.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "These workflows never run on a pull request (releases, rebuilds, re-signing), so no check covers an update in them: it waits for review. Grouped updates share a branch, so the whole group does.",
+      "matchFileNames": [
+        ".github/workflows/release.yml",
+        ".github/workflows/rebuild.yml",
+        ".github/workflows/resign.yml"
+      ],
+      "automerge": false
+    },
     {
       "description": "Group non-major Rust crate updates, as Dependabot's rust group did.",
       "matchManagers": ["cargo"],
@@ -31,10 +116,46 @@
       "groupName": "github actions"
     },
     {
-      "description": "Fedora base images: a new Fedora release is a deliberate move made by hand, never a branched or Rawhide image. Within a release the tags float on purpose, and the monthly rebuild tracks them.",
-      "matchDatasources": ["docker"],
+      "description": "The config validator CI runs goes with the other CI tools.",
+      "matchDatasources": ["npm"],
+      "matchDepNames": ["renovate"],
+      "matchFileNames": [".github/workflows/ci.yml"],
+      "groupName": "github actions"
+    },
+    {
+      "description": "Angular names the TypeScript releases it supports: a new TypeScript major waits on the dashboard until Angular takes it.",
+      "matchManagers": ["npm"],
+      "matchDepNames": ["typescript"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "A new ulogd or libnetfilter_log changes the tarball's checksum too, which Renovate can't compute: the build fails at sha256sum until the matching _SHA256 ARG is updated by hand, from the release's signed tarball on netfilter.org.",
+      "matchDepNames": ["ulogd", "libnetfilter_log"],
+      "matchDatasources": ["git-tags"],
+      "automerge": false,
+      "prBodyNotes": ["**By hand:** update the matching `_SHA256` ARG in `image/Containerfile` from the release's tarball on netfilter.org (check its signature); until then the image build fails at `sha256sum -c`, by design."]
+    },
+    {
+      "description": "The UI is built in the image with Fedora's Node.js, and CI uses the same major; it moves with Fedora, not on its own.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["node"],
+      "enabled": false
+    },
+    {
+      "description": "Fedora base images: the regex manager above moves them to a new stable release, all in one pull request. The Dockerfile manager would offer any tag on quay.io, branched and Rawhide included. Within a release the tags float on purpose, and the monthly rebuild tracks them.",
+      "matchManagers": ["dockerfile"],
       "matchPackageNames": ["quay.io/fedora/**"],
       "enabled": false
+    },
+    {
+      "description": "A new Fedora release is a major OS upgrade: one pull request for every place that names it, through every VM suite, merged by hand.",
+      "matchDepNames": ["fedora"],
+      "matchDatasources": ["custom.fedora-stable"],
+      "groupName": "fedora",
+      "commitMessageTopic": "Fedora",
+      "automerge": false,
+      "minimumReleaseAge": null
     },
     {
       "description": "The Quadlet units name images by placeholders that the build fills in (Image=@KEA_IMAGE@); there is nothing to update.",

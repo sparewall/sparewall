@@ -63,7 +63,8 @@ RUN npm run api:check \
 # statically, and linked into the NFLOG plugin only. Both are under the GNU
 # GPL version 2: their license texts ship in /usr/share/licenses, and syft cannot see
 # them, so .github/sbom-source-builds.sh adds them to the SBOM from these
-# ARGs. Their advisories are watched by hand (docs/releasing.md).
+# ARGs. Renovate proposes new releases; the checksums and the advisories
+# are checked by hand (docs/releasing.md, "Dependency updates").
 FROM quay.io/fedora/fedora:45 AS ulogd
 ARG NFLOG_VERSION=1.0.2
 ARG NFLOG_SHA256=e3f408575614d849e4726b45e90c7ebb0e6744b04859555a9ce6ec40744ffeea

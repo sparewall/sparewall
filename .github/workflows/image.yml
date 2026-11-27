@@ -18,6 +18,10 @@ on:
       - "crates/**"
       - "Cargo.*"
       - "docs/api/openapi.json"
+      # The image builds the UI with these; a dependency update merges
+      # itself (renovate.json), so it gets the VM suites first.
+      - "ui/package.json"
+      - "ui/package-lock.json"
       - "tests/vm/**"
       - ".github/workflows/image.yml"
       - ".github/check-tag.sh"
