@@ -755,6 +755,22 @@
             },
             "description": "Extra local A records, name to address.",
             "type": "object"
+          },
+          "tls_ca": {
+            "description": "PEM of a CA that signs a TLS forwarder's certificate, for a private\nresolver: trusted for every TLS forwarder, besides the system\ntrust store.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "x-since": 8
+          },
+          "tls_forwarders": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.DnsTlsForwarder"
+            },
+            "description": "Forward over TLS instead (#356), by a name of your own: each\nforwarder's certificate is verified against its `name`, and there\nis no fallback to plain DNS. In place of `forwarders`.",
+            "type": "object",
+            "x-since": 8
           }
         },
         "required": [
@@ -827,6 +843,39 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "Document.DnsTlsForwarder": {
+        "additionalProperties": false,
+        "description": "A resolver forwarded to over TLS (`dns.tls_forwarders.<name>`, #356).",
+        "properties": {
+          "addresses": {
+            "description": "Its addresses, e.g. `9.9.9.9` and `149.112.112.112`.",
+            "items": {
+              "format": "ipv4",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "The name its certificate is verified against, e.g.\n`dns.quad9.net`.",
+            "type": "string"
+          },
+          "port": {
+            "description": "Its DNS-over-TLS port (default 853).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "addresses",
+          "name"
+        ],
         "type": "object"
       },
       "Document.DynamicDns": {

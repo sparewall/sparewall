@@ -1201,6 +1201,251 @@ fn vpn_extra_ports_must_be_free() {
     assert!(!has_error(&d, "already uses UDP"));
 }
 
+/// #363: the firewall never serves DNS, DHCP or NTP on the WAN, so a
+/// policy rule from the WAN to the firewall that accepts them is refused.
+#[test]
+fn wan_to_self_never_opens_dns_dhcp_or_ntp() {
+    let rule = |pair: &str, r: serde_json::Value| {
+        edit(
+            PAIR,
+            json!({"policy": {pair: {"action": "drop", "rules": {"x": r}}}}),
+        )
+    };
+    let msg = "policy.'wan->self'.rules.x.dport: the firewall never serves";
+    for (proto, dport) in [
+        ("udp", json!(53)),
+        ("tcp", json!(53)),
+        ("udp", json!(67)),
+        ("udp", json!(123)),
+        ("udp", json!("100-200")),
+        ("udp", json!([500, 123])),
+    ] {
+        let d = rule(
+            "wan->self",
+            json!({"order": 900, "proto": proto, "dport": dport, "action": "accept"}),
+        );
+        assert!(
+            has_error(&d, msg),
+            "{proto} {dport}: {:#?}",
+            error_paths(&d)
+        );
+    }
+    // Through a port object.
+    let mut v = to_value(&rule(
+        "wan->self",
+        json!({"order": 900, "proto": "udp", "dport": "@svc", "action": "accept"}),
+    ));
+    merge_patch(
+        &mut v,
+        &json!({"objects": {"svc": {"type": "port", "elements": [123]}}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    assert!(has_error(&d, msg), "{:#?}", error_paths(&d));
+    // Narrowing the source doesn't help: the port is closed to everyone.
+    let d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "udp", "dport": 123, "src": "198.51.100.7", "action": "accept"}),
+    );
+    assert!(has_error(&d, msg));
+    // Not refused: TCP 67 or 123, a drop, another zone, no port, or a
+    // port a VPN listens on.
+    for (pair, r) in [
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": [67, 123], "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "udp", "dport": 53, "action": "drop"}),
+        ),
+        (
+            "users->self",
+            json!({"order": 900, "proto": "udp", "dport": 53, "action": "accept"}),
+        ),
+        (
+            "wan->users",
+            json!({"order": 900, "proto": "udp", "dport": 53, "action": "accept"}),
+        ),
+    ] {
+        let d = rule(pair, r.clone());
+        assert!(
+            !has_error(&d, "never serves"),
+            "{pair} {r}: {:#?}",
+            error_paths(&d)
+        );
+    }
+    let mut d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "udp", "dport": 53, "action": "accept"}),
+    );
+    d.vpn.get_mut("roadwarrior").unwrap().listen_port = 53;
+    assert!(!has_error(&d, "never serves"), "{:#?}", error_paths(&d));
+}
+
+/// #364: a rule that opens SSH or the HTTPS listener to the whole
+/// internet is warned about, not refused; one narrowed to some sources is
+/// the careful way.
+#[test]
+fn wan_to_self_management_is_warned_about() {
+    let rule = |pair: &str, r: serde_json::Value| {
+        edit(
+            PAIR,
+            json!({"policy": {pair: {"action": "drop", "rules": {"x": r}}}}),
+        )
+    };
+    let warned = |d: &Document, what: &str| {
+        warnings(d).iter().any(|w| {
+            w.starts_with("policy.'wan->self'.rules.x:")
+                && w.contains(what)
+                && w.contains("whole internet")
+        })
+    };
+    for (r, what) in [
+        (
+            json!({"order": 900, "proto": "tcp", "dport": 22, "action": "accept"}),
+            "SSH",
+        ),
+        (
+            json!({"order": 900, "proto": "tcp", "dport": "400-500", "action": "accept"}),
+            "HTTPS",
+        ),
+        (
+            json!({"order": 900, "proto": "tcp", "dport": [8080, 443], "action": "accept"}),
+            "HTTPS",
+        ),
+        (
+            json!({"order": 900, "proto": "tcp", "action": "accept"}),
+            "SSH and web UI",
+        ),
+        (json!({"order": 900, "action": "accept"}), "SSH and web UI"),
+        (
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": "0.0.0.0/0", "action": "accept"}),
+            "SSH",
+        ),
+        // A list's items are alternatives: one everywhere is enough.
+        (
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": ["198.51.100.7", "0.0.0.0/0"], "action": "accept"}),
+            "SSH",
+        ),
+        (
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": ["::/0"], "action": "accept"}),
+            "SSH",
+        ),
+    ] {
+        let d = rule("wan->self", r.clone());
+        assert!(warned(&d, what), "{r}: {:#?}", warnings(&d));
+        assert!(!has_error(&d, "whole internet"), "a warning, not an error");
+    }
+    // Through a port object.
+    let mut v = to_value(&rule(
+        "wan->self",
+        json!({"order": 900, "proto": "tcp", "dport": "@mgmt", "action": "accept"}),
+    ));
+    merge_patch(
+        &mut v,
+        &json!({"objects": {"mgmt": {"type": "port", "elements": [22]}}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    assert!(warned(&d, "SSH"), "{:#?}", warnings(&d));
+    // A source object that holds everywhere is no narrowing.
+    let mut v = to_value(&rule(
+        "wan->self",
+        json!({"order": 900, "proto": "tcp", "dport": 22, "src": "@anywhere", "action": "accept"}),
+    ));
+    merge_patch(
+        &mut v,
+        &json!({"objects": {"anywhere": {"type": "ipv4", "elements": ["0.0.0.0/0"]}}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    assert!(warned(&d, "SSH"), "{:#?}", warnings(&d));
+    // Not warned about: a narrowed source, another port, UDP, a drop,
+    // another zone pair. (The example's own ssh-admin rule is narrowed to
+    // @admin_nets.)
+    for (pair, r) in [
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": "198.51.100.7", "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": "@admin_nets", "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": 8443, "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "udp", "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": 22, "action": "drop"}),
+        ),
+        (
+            "users->self",
+            json!({"order": 900, "proto": "tcp", "dport": 22, "action": "accept"}),
+        ),
+    ] {
+        let d = rule(pair, r.clone());
+        assert!(
+            !warnings(&d).iter().any(|w| w.contains("whole internet")),
+            "{pair} {r}: {:#?}",
+            warnings(&d)
+        );
+    }
+    assert!(
+        !warnings(&load(PAIR))
+            .iter()
+            .any(|w| w.contains("whole internet"))
+    );
+    // A zone that holds the WAN alongside another network.
+    let mut d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "tcp", "dport": 22, "action": "accept"}),
+    );
+    d.zones
+        .get_mut("wan")
+        .unwrap()
+        .networks
+        .push("users".into());
+    d.zones.get_mut("users").unwrap().networks.clear();
+    assert!(warned(&d, "SSH"), "{:#?}", warnings(&d));
+    // Port 80: nothing listens there.
+    let d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "tcp", "dport": 80, "src": "198.51.100.7", "action": "accept"}),
+    );
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("policy.'wan->self'.rules.x.dport:")
+                && w.contains("nothing on the firewall listens on port 80")),
+        "{:#?}",
+        warnings(&d)
+    );
+    let d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "udp", "dport": 80, "action": "accept"}),
+    );
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.contains("nothing on the firewall listens on port 80")),
+        "UDP too: {:#?}",
+        warnings(&d)
+    );
+    // A policy that accepts by default.
+    let d = edit(PAIR, json!({"policy": {"wan->self": {"action": "accept"}}}));
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("policy.'wan->self'.action:") && w.contains("whole internet")),
+        "{:#?}",
+        warnings(&d)
+    );
+}
+
 #[test]
 fn extra_vips_are_checked_and_count_as_held() {
     let x = |v: serde_json::Value| edit(PAIR, json!({"networks": {"wan": {"extra_vips": v}}}));
@@ -2385,6 +2630,93 @@ fn dynamic_dns_is_checked() {
             "missing {want}: {errs:#?}"
         );
     }
+}
+
+/// #356: forwarders over TLS, each with the name its certificate is for.
+#[test]
+fn dns_tls_forwarders_are_checked() {
+    let tls = |v: serde_json::Value| edit(STANDALONE, json!({"dns": v}));
+    let quad9 = json!({"addresses": ["9.9.9.9", "149.112.112.112"], "name": "dns.quad9.net"});
+    let ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+    assert_valid(&tls(json!({"tls_forwarders": {"quad9": quad9}})));
+    assert_valid(&tls(
+        json!({"tls_forwarders": {"quad9": quad9}, "tls_ca": ca}),
+    ));
+    for (v, want) in [
+        (
+            json!({"tls_forwarders": {"quad9": quad9}, "forwarders": ["9.9.9.9"]}),
+            "dns.tls_forwarders: forward over TLS or in plain DNS, not both",
+        ),
+        (
+            json!({"tls_forwarders": {"x": {"addresses": [], "name": "dns.quad9.net"}}}),
+            "dns.tls_forwarders.x.addresses: names no addresses",
+        ),
+        (
+            json!({"tls_forwarders": {"x": {"addresses": ["9.9.9.9"], "name": "quad9"}}}),
+            "dns.tls_forwarders.x.name: \"quad9\" is not the host name",
+        ),
+        (
+            json!({"tls_forwarders": {"x": {"addresses": ["9.9.9.9"], "name": "9.9.9.9#x"}}}),
+            "dns.tls_forwarders.x.name:",
+        ),
+        (
+            json!({"tls_forwarders": {"x": {"addresses": ["9.9.9.9"], "name": "dns.quad9.net", "port": 0}}}),
+            "dns.tls_forwarders.x.port: not a port",
+        ),
+        (
+            json!({"tls_forwarders": {"a": quad9, "b": {"addresses": ["9.9.9.9"], "name": "dns9.quad9.net"}}}),
+            "dns.tls_forwarders.b.addresses[0]: 9.9.9.9 is also in dns.tls_forwarders.a",
+        ),
+        (
+            json!({"tls_forwarders": {"quad9": quad9}, "tls_ca": "not a certificate"}),
+            "dns.tls_ca: not a PEM certificate",
+        ),
+    ] {
+        let d = tls(v.clone());
+        assert!(has_error(&d, want), "{v}: {:#?}", error_paths(&d));
+    }
+    // The same address on another port is another forwarder.
+    assert_valid(&tls(json!({"tls_forwarders": {
+        "a": quad9,
+        "b": {"addresses": ["9.9.9.9"], "name": "dns.quad9.net", "port": 443},
+    }})));
+    // Warnings: the resolver off, a CA nothing uses.
+    let d = tls(json!({"enabled": false, "tls_forwarders": {"quad9": quad9}}));
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("dns.tls_forwarders: the resolver is off"))
+    );
+    let d = tls(json!({"tls_ca": ca}));
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("dns.tls_ca: no dns.tls_forwarders use it"))
+    );
+    // Passthrough may not forward the root beside them, or change what
+    // their certificates are verified against; without them it may.
+    let d = tls(json!({"tls_forwarders": {"quad9": quad9}}));
+    let mut v = to_value(&d);
+    merge_patch(
+        &mut v,
+        &json!({"provider_options": {"unbound": {
+            "server": {"tls-cert-bundle": "/x.pem", "tls-system-cert": "no"},
+            "forward-zone": [{"name": ".", "forward-addr": "192.0.2.53"}],
+        }}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    for want in [
+        "provider_options.unbound.server.tls-cert-bundle: ",
+        "provider_options.unbound.server.tls-system-cert: ",
+        "provider_options.unbound.forward-zone[0].name: dns.tls_forwarders already forwards the root",
+    ] {
+        assert!(has_error(&d, want), "{want}: {:#?}", error_paths(&d));
+    }
+    let d = edit(
+        STANDALONE,
+        json!({"provider_options": {"unbound": {"server": {"tls-cert-bundle": "/x.pem"}}}}),
+    );
+    assert!(!has_error(&d, "tls-cert-bundle"), "{:#?}", error_paths(&d));
 }
 
 #[test]

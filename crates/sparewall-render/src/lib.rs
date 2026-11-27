@@ -135,6 +135,12 @@ pub struct Service {
     /// Whether a config change can be applied with a reload rather than a
     /// restart.
     pub reload: bool,
+    /// A digest of settings a reload doesn't apply, for a service that
+    /// otherwise reloads: when it changes, the service is restarted.
+    /// Unbound sets up its outgoing TLS (`dns.tls_forwarders`' trust)
+    /// only when it starts (#356).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_key: Option<String>,
     /// A management service, which carries no traffic: down, it degrades
     /// health but never fails it, so it cannot cause a failover.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

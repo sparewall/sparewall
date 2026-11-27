@@ -35,6 +35,8 @@ table inet sparewall {
 	}
 	chain input {
 		type filter hook input priority filter; policy drop;
+		iifname "wan0" tcp dport 53 counter drop comment "infra:wan-services"
+		iifname "wan0" udp dport { 53, 67, 123 } counter drop comment "infra:wan-services"
 		icmpv6 type nd-neighbor-solicit icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != ff00::/8 accept comment "ipv6-nd"
 		icmpv6 type nd-neighbor-advert icmpv6 code 0 ip6 hoplimit 255 ip6 saddr != { ::, ff00::/8 } accept comment "ipv6-nd"
 		icmpv6 type { mld-listener-query, mld2-listener-report } ip6 saddr fe80::/10 accept comment "ipv6-mld"

@@ -42,6 +42,7 @@ fn service(out: &mut Rendered) {
             unit: UNIT.into(),
             subsystem: Subsystem::Ntp,
             reload: false,
+            restart_key: None,
             management: false,
             check: Some(check_spec()),
         },

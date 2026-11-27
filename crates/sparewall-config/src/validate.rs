@@ -1496,6 +1496,114 @@ impl Validator<'_> {
                     );
                 }
                 self.check_rule(&rp, r);
+                if to == SELF_ZONE && wan_zone(doc, from) {
+                    self.wan_services(&rp, r);
+                    self.wan_management(&rp, r);
+                }
+            }
+            if to == SELF_ZONE && wan_zone(doc, from) && pol.action == Action::Accept {
+                self.warn(
+                    format!("{p}.action"),
+                    "accepts everything from the WAN to the firewall, its SSH and web UI too, from \
+                     the whole internet: drop by default, and open what's needed by rule",
+                );
+            }
+        }
+    }
+
+    /// SSH or the HTTPS listener (the web UI, the API and `/metrics`)
+    /// opened from the WAN to any address (#364). A legitimate choice, so
+    /// not refused, but an easy one to make by mistake. A rule narrowed to
+    /// some sources is the careful way, and isn't warned about.
+    fn wan_management(&mut self, rp: &str, r: &Rule) {
+        if r.action != Action::Accept {
+            return;
+        }
+        // Nothing listens on port 80, over TCP or UDP.
+        if let Some(d) = &r.dport
+            && match_has_port(self.doc, d, 80)
+        {
+            self.warn(
+                format!("{rp}.dport"),
+                "nothing on the firewall listens on port 80 (the web UI is HTTPS, on 443), so \
+                 this opens nothing there",
+            );
+        }
+        if !matches!(r.proto.as_deref(), None | Some("tcp")) {
+            return;
+        }
+        // A source list's items are alternatives: one that is everywhere,
+        // directly or in an object, makes the whole rule so.
+        let doc = self.doc;
+        let everywhere = |t: &str| -> bool {
+            if let Some(o) = t.strip_prefix('@') {
+                return doc.objects.get(o).is_some_and(|o| {
+                    o.elements
+                        .iter()
+                        .any(|e| matches!(e, MatchItem::Text(t) if matches!(t.as_str(), "0.0.0.0/0" | "::/0")))
+                });
+            }
+            matches!(t, "0.0.0.0/0" | "::/0")
+        };
+        let any_source = match &r.src {
+            None => true,
+            Some(Match::Text(t)) => everywhere(t),
+            Some(Match::List(v)) => v
+                .iter()
+                .any(|i| matches!(i, MatchItem::Text(t) if everywhere(t))),
+            Some(Match::Number(_)) => false,
+        };
+        let opens = |port| {
+            r.dport
+                .as_ref()
+                .is_none_or(|d| match_has_port(doc, d, port))
+        };
+        if any_source {
+            let what: Vec<&str> = [(22, "SSH"), (443, "web UI, API and metrics (HTTPS)")]
+                .into_iter()
+                .filter(|&(port, _)| opens(port))
+                .map(|(_, what)| what)
+                .collect();
+            if !what.is_empty() {
+                self.warn(
+                    rp,
+                    format!(
+                        "opens the firewall's {} to the whole internet: narrow src to the \
+                         addresses that need it, or reach it over the VPN",
+                        what.join(" and ")
+                    ),
+                );
+            }
+        }
+    }
+
+    /// The firewall never serves DNS, DHCP or NTP on the WAN (#363): the
+    /// ruleset drops them there whatever the policies say, so a rule from
+    /// the WAN that accepts them would do nothing. A VPN listening on one
+    /// of the UDP ports has it opened already.
+    fn wan_services(&mut self, rp: &str, r: &Rule) {
+        let Some(dport) = &r.dport else { return };
+        if r.action != Action::Accept {
+            return;
+        }
+        let ports: &[(u16, &str)] = match r.proto.as_deref() {
+            Some("tcp") => &[(53, "DNS")],
+            Some("udp") => &[(53, "DNS"), (67, "DHCP"), (123, "NTP")],
+            _ => return,
+        };
+        let udp = r.proto.as_deref() == Some("udp");
+        for &(port, what) in ports {
+            if udp && self.doc.vpn.values().any(|v| v.listen_port == port) {
+                continue;
+            }
+            if match_has_port(self.doc, dport, port) {
+                self.err(
+                    format!("{rp}.dport"),
+                    format!(
+                        "the firewall never serves {what} on the WAN, whatever the policies say: \
+                         port {port} stays closed there"
+                    ),
+                );
             }
         }
     }
@@ -1859,6 +1967,57 @@ impl Validator<'_> {
         }
     }
 
+    /// `dns.tls_forwarders` and `dns.tls_ca` (#356).
+    fn dns_tls(&mut self, d: &Dns) {
+        if !d.tls_forwarders.is_empty() && !d.forwarders.is_empty() {
+            self.err(
+                "dns.tls_forwarders",
+                "forward over TLS or in plain DNS, not both: drop dns.forwarders",
+            );
+        }
+        if !d.tls_forwarders.is_empty() && !d.enabled {
+            self.warn(
+                "dns.tls_forwarders",
+                "the resolver is off (dns.enabled), so nothing is forwarded",
+            );
+        }
+        let mut seen: BTreeMap<(Ipv4Addr, u16), &str> = BTreeMap::new();
+        for (n, f) in &d.tls_forwarders {
+            let p = format!("dns.tls_forwarders.{}", seg(n));
+            if f.addresses.is_empty() {
+                self.err(format!("{p}.addresses"), "names no addresses");
+            }
+            for (i, a) in f.addresses.iter().enumerate() {
+                if let Some(other) = seen.insert((*a, f.port()), n) {
+                    self.err(
+                        format!("{p}.addresses[{i}]"),
+                        format!("{a} is also in dns.tls_forwarders.{}", seg(other)),
+                    );
+                }
+            }
+            if !crate::filters::is_name(&f.name) || f.name.ends_with('.') {
+                self.err(
+                    format!("{p}.name"),
+                    format!(
+                        "{:?} is not the host name its certificate is for, e.g. dns.quad9.net",
+                        f.name
+                    ),
+                );
+            }
+            if f.port == Some(0) {
+                self.err(format!("{p}.port"), "not a port");
+            }
+        }
+        if let Some(ca) = &d.tls_ca {
+            if d.tls_forwarders.is_empty() {
+                self.warn("dns.tls_ca", "no dns.tls_forwarders use it");
+            }
+            if !ca.contains("-----BEGIN CERTIFICATE-----") {
+                self.err("dns.tls_ca", "not a PEM certificate");
+            }
+        }
+    }
+
     fn dns(&mut self) {
         let doc = self.doc;
         let Some(d) = &doc.dns else { return };
@@ -1886,6 +2045,7 @@ impl Validator<'_> {
                     d.networks.iter().any(|x| x == n)
                 })
         };
+        self.dns_tls(d);
         for (f, x) in &d.filters {
             let p = format!("dns.filters.{}", seg(f));
             if f.is_empty()
@@ -2856,6 +3016,12 @@ impl Validator<'_> {
     }
 }
 
+/// Whether a zone holds a WAN network.
+fn wan_zone(doc: &Document, zone: &str) -> bool {
+    doc.networks_with_role(NetworkRole::Wan)
+        .any(|(n, _)| doc.zone_of_network(n) == Some(zone))
+}
+
 /// What else takes UDP `port` on a WAN network, if anything: a forward
 /// from a zone with a WAN network, or DNS or NTP served there.
 fn wan_udp_user(doc: &Document, port: u16) -> Option<String> {
@@ -2863,10 +3029,9 @@ fn wan_udp_user(doc: &Document, port: u16) -> Option<String> {
         .networks_with_role(NetworkRole::Wan)
         .map(|(n, _)| n)
         .collect();
-    let wan_zone = |z: &str| wan.iter().any(|n| doc.zone_of_network(n) == Some(z));
     for (name, f) in &doc.forwards {
         if f.proto == "udp"
-            && wan_zone(f.from.as_deref().unwrap_or("wan"))
+            && wan_zone(doc, f.from.as_deref().unwrap_or("wan"))
             && match_has_port(doc, &f.dport, port)
         {
             return Some(format!("forwards.{}", seg(name)));
