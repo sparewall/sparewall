@@ -144,9 +144,12 @@ wait_banner() { # what (a fixed string), [not]
     done
 }
 wait_banner "Sparewall fw1: bootstrap, generation 0"
-echo exit | "${SSH[@]}" -tt 2>/dev/null | tr -d '\r' | grep -q '^Sparewall fw1: bootstrap' \
+# Captured, then searched: grep -q stops reading at its match, and the
+# tr before it (uutils on Ubuntu 26.04) then fails the pipeline (#370).
+login=$(echo exit | "${SSH[@]}" -tt 2>/dev/null | tr -d '\r')
+grep -q '^Sparewall fw1: bootstrap' <<<"$login" \
     || fail "an interactive login does not show the banner"
-echo exit | "${SSH[@]}" -tt 2>/dev/null | tr -d '\r' | grep -q 'admin@fw1' \
+grep -q 'admin@fw1' <<<"$login" \
     || fail "the shell prompt does not show the node name"
 if ! vm 'sudo podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists $(sed -n "s/^Image=//p" /usr/share/containers/systemd/sparewall-kea.container)'; then
     vm 'set -x; sed -n "s/^Image=//p" /usr/share/containers/systemd/sparewall-kea.container

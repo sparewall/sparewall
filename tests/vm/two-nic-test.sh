@@ -27,6 +27,10 @@ cd "$WORK"
 log() { printf '\n=== %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ns() { local n=$1; shift; sudo ip netns exec "sw-$n" "$@"; }
+# wg reads keys and configurations as root, and Ubuntu 26.04's AppArmor
+# profile for it denies dac_override and dac_read_search: a root-owned
+# copy of the file, which it reads without them (#370).
+wg_file() { sudo install -m 600 -o root -g root "$1" "$1.root" && echo "$1.root"; }
 wait_for() { # seconds description command...
     local deadline=$((SECONDS + $1)) what=$2
     shift 2
@@ -322,7 +326,7 @@ grep -qx 'AllowedIPs = 10.98.0.0/30, 192.168.1.0/24' tsite.conf \
 (umask 077; sed -e "s|^PrivateKey = .*|PrivateKey = $(cat site.key)|" \
     -e '/^PersistentKeepalive/d' -e '/^Address/d' tsite.conf > tsite-wg.conf)
 ns tsite ip link add wg0 type wireguard
-ns tsite wg setconf wg0 "$PWD/tsite-wg.conf"
+ns tsite wg setconf wg0 "$(wg_file "$PWD/tsite-wg.conf")"
 ns tsite ip addr add "$(sed -n 's/^Address = //p' tsite.conf)" dev wg0
 ns tsite ip link set wg0 up
 for n in 10.98.0.0/30 192.168.1.0/24; do ns tsite ip route add "$n" dev wg0; done
@@ -351,7 +355,7 @@ ns tprov ip route add default via 203.0.113.6
 ns tprov sysctl -qw net.ipv4.ip_forward=1
 ns tprov iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 ns tprov ip link add wg0 type wireguard
-ns tprov wg set wg0 listen-port 51820 private-key "$PWD/prov.key" \
+ns tprov wg set wg0 listen-port 51820 private-key "$(wg_file "$PWD/prov.key")" \
     peer "$(cat egress.pub)" allowed-ips 10.64.0.2/32
 ns tprov ip addr add 10.64.0.1/24 dev wg0
 ns tprov ip link set wg0 up

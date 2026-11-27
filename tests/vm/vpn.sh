@@ -94,10 +94,15 @@ wg_peer() { # name [keepalive]
         allowed-ips 10.99.0.0/24,198.51.100.0/24 ${2:+persistent-keepalive $2} "${psk[@]}"
 }
 
+# wg reads keys and configurations as root, and Ubuntu 26.04's AppArmor
+# profile for it denies dac_override and dac_read_search: a root-owned
+# copy of the file, which it reads without them (#370).
+wg_file() { sudo install -m 600 -o root -g root "$1" "$1.root" && echo "$1.root"; }
+
 wg_client() { # name tunnel-address [keepalive]
     local name=$1 addr=$2 ka=${3:-}
     ns "$name" ip link add wg0 type wireguard
-    ns "$name" wg set wg0 private-key "$WORK/$name.key"
+    ns "$name" wg set wg0 private-key "$(wg_file "$WORK/$name.key")"
     wg_peer "$name" "$ka"
     ns "$name" ip addr add "$addr/32" dev wg0
     ns "$name" ip link set wg0 up
@@ -261,7 +266,7 @@ site_setup() {
     (umask 077; sed -e "s|^PrivateKey = .*|PrivateKey = $(cat "$WORK/site.key")|" \
         -e '/^PersistentKeepalive/d' -e '/^Address/d' site.conf > site-wg.conf)
     ns site ip link add wg0 type wireguard
-    ns site wg setconf wg0 "$PWD/site-wg.conf"
+    ns site wg setconf wg0 "$(wg_file "$PWD/site-wg.conf")"
     ns site ip addr add "$(sed -n 's/^Address = //p' site.conf)" dev wg0
     ns site ip link set wg0 up
     local n
