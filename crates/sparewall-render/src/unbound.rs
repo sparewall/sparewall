@@ -7,6 +7,8 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
+use sha2::{Digest, Sha256};
+
 use sparewall_config::model::{Document, Ipv6Mode};
 use sparewall_config::passthrough;
 use sparewall_config::providers::{self, Role};
@@ -17,6 +19,12 @@ use crate::{CheckSpec, Error, Rendered, Service, Subsystem};
 pub const UNIT: &str = "sparewall-unbound.service";
 pub const CONTAINER: &str = "sparewall-unbound";
 pub const CONF: &str = "unbound.conf";
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// `dns.tls_ca`, beside the configuration (#356).
+pub const TLS_CA: &str = "tls-ca.pem";
 
 /// Networks the resolver serves: `dns.networks`, or every DHCP network.
 pub fn served_networks(doc: &Document) -> Vec<String> {
@@ -146,6 +154,18 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
          \x20   use-caps-for-id: no\n    prefetch: yes\n    so-reuseport: yes\n\
          \x20   auto-trust-anchor-file: \"/var/lib/unbound/root.key\"\n",
     );
+    // Forwarders over TLS (#356): each certificate verified against the
+    // forwarder's name, by the system trust store and `dns.tls_ca`.
+    let tls = !dns.tls_forwarders.is_empty();
+    if tls {
+        s.push_str("    tls-system-cert: yes\n");
+        if let Some(ca) = &dns.tls_ca {
+            writeln!(s, "    tls-cert-bundle: \"/etc/unbound/{TLS_CA}\"").unwrap();
+            let mut pem = ca.trim_end().to_string();
+            pem.push('\n');
+            out.add(Subsystem::Dns, TLS_CA, pem);
+        }
+    }
     // Passthrough options (#143), after Sparewall's own: Unbound takes
     // the last value of a single-valued option, so these can change the
     // defaults above (`prefetch`, say). Validation has refused what
@@ -193,6 +213,15 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
         for f in &dns.forwarders {
             writeln!(s, "    forward-addr: {f}").unwrap();
         }
+    } else if tls {
+        // No fallback to plain DNS: with every forwarder unreachable over
+        // TLS, names don't resolve, and health says so (`dns-tls`).
+        s.push_str("\nforward-zone:\n    name: \".\"\n    forward-tls-upstream: yes\n");
+        for f in dns.tls_forwarders.values() {
+            for a in &f.addresses {
+                writeln!(s, "    forward-addr: {a}@{}#{}", f.port(), f.name).unwrap();
+            }
+        }
     }
     if let Some(o) = passthrough {
         s.push_str(&passthrough::unbound_zones(o));
@@ -230,6 +259,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             unit: UNIT.into(),
             subsystem: Subsystem::Dns,
             reload: true,
+            restart_key: tls.then(|| {
+                let mut h = Sha256::new();
+                h.update(dns.tls_ca.as_deref().unwrap_or_default());
+                format!("tls:{}", hex(&h.finalize()))
+            }),
             management: false,
             check: Some(check_spec()),
         },

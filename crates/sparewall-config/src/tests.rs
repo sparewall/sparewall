@@ -2468,6 +2468,93 @@ fn dynamic_dns_is_checked() {
     }
 }
 
+/// #356: forwarders over TLS, each with the name its certificate is for.
+#[test]
+fn dns_tls_forwarders_are_checked() {
+    let tls = |v: serde_json::Value| edit(STANDALONE, json!({"dns": v}));
+    let quad9 = json!({"addresses": ["9.9.9.9", "149.112.112.112"], "name": "dns.quad9.net"});
+    let ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+    assert_valid(&tls(json!({"tls_forwarders": {"quad9": quad9}})));
+    assert_valid(&tls(
+        json!({"tls_forwarders": {"quad9": quad9}, "tls_ca": ca}),
+    ));
+    for (v, want) in [
+        (
+            json!({"tls_forwarders": {"quad9": quad9}, "forwarders": ["9.9.9.9"]}),
+            "dns.tls_forwarders: forward over TLS or in plain DNS, not both",
+        ),
+        (
+            json!({"tls_forwarders": {"x": {"addresses": [], "name": "dns.quad9.net"}}}),
+            "dns.tls_forwarders.x.addresses: names no addresses",
+        ),
+        (
+            json!({"tls_forwarders": {"x": {"addresses": ["9.9.9.9"], "name": "quad9"}}}),
+            "dns.tls_forwarders.x.name: \"quad9\" is not the host name",
+        ),
+        (
+            json!({"tls_forwarders": {"x": {"addresses": ["9.9.9.9"], "name": "9.9.9.9#x"}}}),
+            "dns.tls_forwarders.x.name:",
+        ),
+        (
+            json!({"tls_forwarders": {"x": {"addresses": ["9.9.9.9"], "name": "dns.quad9.net", "port": 0}}}),
+            "dns.tls_forwarders.x.port: not a port",
+        ),
+        (
+            json!({"tls_forwarders": {"a": quad9, "b": {"addresses": ["9.9.9.9"], "name": "dns9.quad9.net"}}}),
+            "dns.tls_forwarders.b.addresses[0]: 9.9.9.9 is also in dns.tls_forwarders.a",
+        ),
+        (
+            json!({"tls_forwarders": {"quad9": quad9}, "tls_ca": "not a certificate"}),
+            "dns.tls_ca: not a PEM certificate",
+        ),
+    ] {
+        let d = tls(v.clone());
+        assert!(has_error(&d, want), "{v}: {:#?}", error_paths(&d));
+    }
+    // The same address on another port is another forwarder.
+    assert_valid(&tls(json!({"tls_forwarders": {
+        "a": quad9,
+        "b": {"addresses": ["9.9.9.9"], "name": "dns.quad9.net", "port": 443},
+    }})));
+    // Warnings: the resolver off, a CA nothing uses.
+    let d = tls(json!({"enabled": false, "tls_forwarders": {"quad9": quad9}}));
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("dns.tls_forwarders: the resolver is off"))
+    );
+    let d = tls(json!({"tls_ca": ca}));
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("dns.tls_ca: no dns.tls_forwarders use it"))
+    );
+    // Passthrough may not forward the root beside them, or change what
+    // their certificates are verified against; without them it may.
+    let d = tls(json!({"tls_forwarders": {"quad9": quad9}}));
+    let mut v = to_value(&d);
+    merge_patch(
+        &mut v,
+        &json!({"provider_options": {"unbound": {
+            "server": {"tls-cert-bundle": "/x.pem", "tls-system-cert": "no"},
+            "forward-zone": [{"name": ".", "forward-addr": "192.0.2.53"}],
+        }}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    for want in [
+        "provider_options.unbound.server.tls-cert-bundle: ",
+        "provider_options.unbound.server.tls-system-cert: ",
+        "provider_options.unbound.forward-zone[0].name: dns.tls_forwarders already forwards the root",
+    ] {
+        assert!(has_error(&d, want), "{want}: {:#?}", error_paths(&d));
+    }
+    let d = edit(
+        STANDALONE,
+        json!({"provider_options": {"unbound": {"server": {"tls-cert-bundle": "/x.pem"}}}}),
+    );
+    assert!(!has_error(&d, "tls-cert-bundle"), "{:#?}", error_paths(&d));
+}
+
 #[test]
 fn dns_filters_are_checked() {
     let with = |filters: serde_json::Value| {

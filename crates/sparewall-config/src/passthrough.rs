@@ -104,6 +104,20 @@ pub const KEA_SUBNET_OPTIONS: &[(&str, u64, &str)] = &[
 /// Unbound clauses that may be given.
 pub const UNBOUND_CLAUSES: &[&str] = &["server", "forward-zone", "stub-zone"];
 
+/// `server:` options Sparewall sets while `dns.tls_forwarders` is in use
+/// (#356): which certificates the forwarders' are verified against.
+pub const UNBOUND_TLS_OWNED: &[(&str, &str)] = &[
+    ("tls-cert-bundle", "set dns.tls_ca"),
+    (
+        "tls-system-cert",
+        "Sparewall trusts the system store for dns.tls_forwarders",
+    ),
+    (
+        "tls-win-cert",
+        "Sparewall trusts the system store for dns.tls_forwarders",
+    ),
+];
+
 /// `server:` options Sparewall sets, with what to do instead. One ending
 /// in `*` is a family: `interface*` takes `interface-action` and the
 /// rest, any of which could open the resolver to another interface.
@@ -422,7 +436,18 @@ impl Checker {
             let path = format!("{at}.{}", seg(clause));
             match clause.as_str() {
                 "server" => match v.as_object() {
-                    Some(opts) => self.unbound_opts(&path, opts, UNBOUND_OWNED),
+                    Some(opts) => {
+                        let tls = doc
+                            .dns
+                            .as_ref()
+                            .is_some_and(|d| !d.tls_forwarders.is_empty());
+                        let owned: Vec<(&str, &str)> = UNBOUND_OWNED
+                            .iter()
+                            .copied()
+                            .chain(UNBOUND_TLS_OWNED.iter().copied().filter(|_| tls))
+                            .collect();
+                        self.unbound_opts(&path, opts, &owned)
+                    }
                     None => self.err(&path, "must be an object of server: options"),
                 },
                 "forward-zone" | "stub-zone" => {
@@ -450,14 +475,22 @@ impl Checker {
                             self.err(&format!("{p}.name"), format!("{name} is named twice"));
                         }
                         let root = bare.is_empty();
-                        if clause == "forward-zone"
-                            && root
-                            && doc.dns.as_ref().is_some_and(|d| !d.forwarders.is_empty())
-                        {
-                            self.err(
-                                &format!("{p}.name"),
-                                "dns.forwarders already forwards the root; give it there or here, not both",
-                            );
+                        if clause == "forward-zone" && root {
+                            let by = doc.dns.as_ref().and_then(|d| {
+                                if !d.forwarders.is_empty() {
+                                    Some("dns.forwarders")
+                                } else if !d.tls_forwarders.is_empty() {
+                                    Some("dns.tls_forwarders")
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(by) = by {
+                                self.err(
+                                    &format!("{p}.name"),
+                                    format!("{by} already forwards the root; give it there or here, not both"),
+                                );
+                            }
                         }
                         names.push(bare);
                         self.unbound_opts(&p, z, &[]);

@@ -1893,6 +1893,57 @@ impl Validator<'_> {
         }
     }
 
+    /// `dns.tls_forwarders` and `dns.tls_ca` (#356).
+    fn dns_tls(&mut self, d: &Dns) {
+        if !d.tls_forwarders.is_empty() && !d.forwarders.is_empty() {
+            self.err(
+                "dns.tls_forwarders",
+                "forward over TLS or in plain DNS, not both: drop dns.forwarders",
+            );
+        }
+        if !d.tls_forwarders.is_empty() && !d.enabled {
+            self.warn(
+                "dns.tls_forwarders",
+                "the resolver is off (dns.enabled), so nothing is forwarded",
+            );
+        }
+        let mut seen: BTreeMap<(Ipv4Addr, u16), &str> = BTreeMap::new();
+        for (n, f) in &d.tls_forwarders {
+            let p = format!("dns.tls_forwarders.{}", seg(n));
+            if f.addresses.is_empty() {
+                self.err(format!("{p}.addresses"), "names no addresses");
+            }
+            for (i, a) in f.addresses.iter().enumerate() {
+                if let Some(other) = seen.insert((*a, f.port()), n) {
+                    self.err(
+                        format!("{p}.addresses[{i}]"),
+                        format!("{a} is also in dns.tls_forwarders.{}", seg(other)),
+                    );
+                }
+            }
+            if !crate::filters::is_name(&f.name) || f.name.ends_with('.') {
+                self.err(
+                    format!("{p}.name"),
+                    format!(
+                        "{:?} is not the host name its certificate is for, e.g. dns.quad9.net",
+                        f.name
+                    ),
+                );
+            }
+            if f.port == Some(0) {
+                self.err(format!("{p}.port"), "not a port");
+            }
+        }
+        if let Some(ca) = &d.tls_ca {
+            if d.tls_forwarders.is_empty() {
+                self.warn("dns.tls_ca", "no dns.tls_forwarders use it");
+            }
+            if !ca.contains("-----BEGIN CERTIFICATE-----") {
+                self.err("dns.tls_ca", "not a PEM certificate");
+            }
+        }
+    }
+
     fn dns(&mut self) {
         let doc = self.doc;
         let Some(d) = &doc.dns else { return };
@@ -1920,6 +1971,7 @@ impl Validator<'_> {
                     d.networks.iter().any(|x| x == n)
                 })
         };
+        self.dns_tls(d);
         for (f, x) in &d.filters {
             let p = format!("dns.filters.{}", seg(f));
             if f.is_empty()

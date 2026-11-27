@@ -1,6 +1,8 @@
 # Unbound for Sparewall, from Fedora's packages.
 FROM quay.io/fedora/fedora-minimal:45
-RUN microdnf -y install --setopt=install_weak_deps=0 unbound \
+# ca-certificates: the trust store TLS forwarders are verified against
+# (dns.tls_forwarders, #356).
+RUN microdnf -y install --setopt=install_weak_deps=0 unbound ca-certificates \
     && microdnf clean all \
     && install -d -o unbound -g unbound /var/lib/unbound \
     && (unbound-anchor -a /var/lib/unbound/root.key || test -s /var/lib/unbound/root.key) \

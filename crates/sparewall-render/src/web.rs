@@ -22,6 +22,7 @@ pub(crate) fn render(doc: &Document, out: &mut Rendered) {
             unit: UNIT.into(),
             subsystem: Subsystem::Web,
             reload: false,
+            restart_key: None,
             management: true,
             check: None,
         },

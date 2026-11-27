@@ -86,6 +86,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
             unit: UNIT.into(),
             subsystem: Subsystem::Conntrackd,
             reload: false,
+            restart_key: None,
             management: false,
             check: None,
         },

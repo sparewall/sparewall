@@ -21,7 +21,7 @@ use serde_json::Value;
 /// (#168). A value that earlier releases reject as not built yet says so
 /// too, with `x-since-values` (`{"syslog": 4}`) on its field, and a
 /// combination of fields does in [`crate::schema::revision`] itself.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// A whole deployment: one node or an HA pair.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -825,6 +825,18 @@ pub struct Dns {
     /// Forward to these servers instead of recursing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forwarders: Vec<Ipv4Addr>,
+    /// Forward over TLS instead (#356), by a name of your own: each
+    /// forwarder's certificate is verified against its `name`, and there
+    /// is no fallback to plain DNS. In place of `forwarders`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-since" = 8))]
+    pub tls_forwarders: BTreeMap<String, DnsTlsForwarder>,
+    /// PEM of a CA that signs a TLS forwarder's certificate, for a private
+    /// resolver: trusted for every TLS forwarder, besides the system
+    /// trust store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 8))]
+    pub tls_ca: Option<String>,
     /// Local domain for reservation names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
@@ -849,6 +861,29 @@ pub struct Dns {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(extend("x-since" = 7))]
     pub dynamic: BTreeMap<String, DynamicDns>,
+}
+
+/// A resolver forwarded to over TLS (`dns.tls_forwarders.<name>`, #356).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DnsTlsForwarder {
+    /// Its addresses, e.g. `9.9.9.9` and `149.112.112.112`.
+    pub addresses: Vec<Ipv4Addr>,
+    /// The name its certificate is verified against, e.g.
+    /// `dns.quad9.net`.
+    pub name: String,
+    /// Its DNS-over-TLS port (default 853).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+}
+
+impl DnsTlsForwarder {
+    /// The DNS-over-TLS port.
+    pub const DEFAULT_PORT: u16 = 853;
+
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(Self::DEFAULT_PORT)
+    }
 }
 
 /// Dynamic DNS (`dns.dynamic.<name>`): names a provider keeps at the
