@@ -463,7 +463,7 @@ jobs:
     # with a Developer ID or notarized: a downloaded tarball carries the
     # quarantine attribute, to remove by hand (getting-started.md).
     name: macOS CLI
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     permissions:
       contents: read
