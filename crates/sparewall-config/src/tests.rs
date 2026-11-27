@@ -1322,6 +1322,15 @@ fn wan_to_self_management_is_warned_about() {
             json!({"order": 900, "proto": "tcp", "dport": 22, "src": "0.0.0.0/0", "action": "accept"}),
             "SSH",
         ),
+        // A list's items are alternatives: one everywhere is enough.
+        (
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": ["198.51.100.7", "0.0.0.0/0"], "action": "accept"}),
+            "SSH",
+        ),
+        (
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": ["::/0"], "action": "accept"}),
+            "SSH",
+        ),
     ] {
         let d = rule("wan->self", r.clone());
         assert!(warned(&d, what), "{r}: {:#?}", warnings(&d));
@@ -1335,6 +1344,17 @@ fn wan_to_self_management_is_warned_about() {
     merge_patch(
         &mut v,
         &json!({"objects": {"mgmt": {"type": "port", "elements": [22]}}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    assert!(warned(&d, "SSH"), "{:#?}", warnings(&d));
+    // A source object that holds everywhere is no narrowing.
+    let mut v = to_value(&rule(
+        "wan->self",
+        json!({"order": 900, "proto": "tcp", "dport": 22, "src": "@anywhere", "action": "accept"}),
+    ));
+    merge_patch(
+        &mut v,
+        &json!({"objects": {"anywhere": {"type": "ipv4", "elements": ["0.0.0.0/0"]}}}),
     );
     let d: Document = from_value(v).unwrap();
     assert!(warned(&d, "SSH"), "{:#?}", warnings(&d));
@@ -1402,6 +1422,17 @@ fn wan_to_self_management_is_warned_about() {
             .any(|w| w.starts_with("policy.'wan->self'.rules.x.dport:")
                 && w.contains("nothing on the firewall listens on port 80")),
         "{:#?}",
+        warnings(&d)
+    );
+    let d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "udp", "dport": 80, "action": "accept"}),
+    );
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.contains("nothing on the firewall listens on port 80")),
+        "UDP too: {:#?}",
         warnings(&d)
     );
     // A policy that accepts by default.

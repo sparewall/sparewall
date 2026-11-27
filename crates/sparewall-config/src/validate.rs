@@ -1516,22 +1516,47 @@ impl Validator<'_> {
     /// not refused, but an easy one to make by mistake. A rule narrowed to
     /// some sources is the careful way, and isn't warned about.
     fn wan_management(&mut self, rp: &str, r: &Rule) {
-        if r.action != Action::Accept || !matches!(r.proto.as_deref(), None | Some("tcp")) {
+        if r.action != Action::Accept {
             return;
         }
-        let everywhere = |t: &str| matches!(t, "0.0.0.0/0" | "::/0");
+        // Nothing listens on port 80, over TCP or UDP.
+        if let Some(d) = &r.dport
+            && match_has_port(self.doc, d, 80)
+        {
+            self.warn(
+                format!("{rp}.dport"),
+                "nothing on the firewall listens on port 80 (the web UI is HTTPS, on 443), so \
+                 this opens nothing there",
+            );
+        }
+        if !matches!(r.proto.as_deref(), None | Some("tcp")) {
+            return;
+        }
+        // A source list's items are alternatives: one that is everywhere,
+        // directly or in an object, makes the whole rule so.
+        let doc = self.doc;
+        let everywhere = |t: &str| -> bool {
+            if let Some(o) = t.strip_prefix('@') {
+                return doc.objects.get(o).is_some_and(|o| {
+                    o.elements
+                        .iter()
+                        .any(|e| matches!(e, MatchItem::Text(t) if matches!(t.as_str(), "0.0.0.0/0" | "::/0")))
+                });
+            }
+            matches!(t, "0.0.0.0/0" | "::/0")
+        };
         let any_source = match &r.src {
             None => true,
             Some(Match::Text(t)) => everywhere(t),
             Some(Match::List(v)) => v
                 .iter()
-                .all(|i| matches!(i, MatchItem::Text(t) if everywhere(t))),
+                .any(|i| matches!(i, MatchItem::Text(t) if everywhere(t))),
             Some(Match::Number(_)) => false,
         };
         let opens = |port| {
             r.dport
                 .as_ref()
-                .is_none_or(|d| match_has_port(self.doc, d, port))
+                .is_none_or(|d| match_has_port(doc, d, port))
         };
         if any_source {
             let what: Vec<&str> = [(22, "SSH"), (443, "web UI, API and metrics (HTTPS)")]
@@ -1549,15 +1574,6 @@ impl Validator<'_> {
                     ),
                 );
             }
-        }
-        if let Some(d) = &r.dport
-            && match_has_port(self.doc, d, 80)
-        {
-            self.warn(
-                format!("{rp}.dport"),
-                "nothing on the firewall listens on port 80 (the web UI is HTTPS, on 443), so \
-                 this opens nothing there",
-            );
         }
     }
 
