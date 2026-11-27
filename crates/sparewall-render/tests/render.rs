@@ -2289,3 +2289,55 @@ fn provider_options_passthrough() {
         "{errs:#?}"
     );
 }
+
+/// #356: forwarders over TLS, verified against their names by the system
+/// trust store and `dns.tls_ca`, with no plain forwarders beside them.
+#[test]
+fn dns_tls_forwarders() {
+    let ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+    let mut v = sparewall_config::to_value(&example("standalone.yaml"));
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"dns": {
+            "tls_forwarders": {
+                "quad9": {"addresses": ["9.9.9.9", "149.112.112.112"], "name": "dns.quad9.net"},
+                "inside": {"addresses": ["192.0.2.53"], "name": "dns.example.net", "port": 8853},
+            },
+            "tls_ca": ca,
+        }}),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    let conf = &r.files["dns/unbound.conf"];
+    let server = conf.split("\nremote-control:").next().unwrap();
+    assert!(server.contains("    tls-system-cert: yes\n"), "{conf}");
+    assert!(
+        server.contains("    tls-cert-bundle: \"/etc/unbound/tls-ca.pem\"\n"),
+        "{conf}"
+    );
+    let fwd = conf
+        .split("\nforward-zone:\n")
+        .nth(1)
+        .expect("a forward-zone");
+    assert_eq!(
+        fwd.lines().take(5).collect::<Vec<_>>(),
+        [
+            "    name: \".\"",
+            "    forward-tls-upstream: yes",
+            "    forward-addr: 192.0.2.53@8853#dns.example.net",
+            "    forward-addr: 9.9.9.9@853#dns.quad9.net",
+            "    forward-addr: 149.112.112.112@853#dns.quad9.net",
+        ],
+        "{conf}"
+    );
+    assert_eq!(r.files["dns/tls-ca.pem"], ca);
+    // Without a CA: the system trust store alone, and no file.
+    let mut v = sparewall_config::to_value(&doc);
+    sparewall_config::merge_patch(&mut v, &serde_json::json!({"dns": {"tls_ca": null}}));
+    let r = render(&sparewall_config::from_value(v).unwrap(), "fw1").unwrap();
+    assert!(!r.files["dns/unbound.conf"].contains("tls-cert-bundle"));
+    assert!(r.files["dns/unbound.conf"].contains("tls-system-cert: yes"));
+    assert!(!r.files.contains_key("dns/tls-ca.pem"));
+}

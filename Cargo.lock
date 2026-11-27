@@ -1975,6 +1975,7 @@ dependencies = [
  "rcgen",
  "rustix",
  "rustls",
+ "rustls-native-certs",
  "sd-notify",
  "semver",
  "serde",

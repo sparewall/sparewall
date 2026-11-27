@@ -76,6 +76,7 @@ back to one of them keeps its configuration.
 | 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
 | 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated`; an IPv6 address or `ipv6` object in `management.sources` | 0.7.0 |
 | 7 | `dns.intercept`, `dns.filters`, `dns.dynamic`, `provider_options` | 0.8.0 |
+| 8 | `dns.tls_forwarders`, `dns.tls_ca` | 0.9.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -424,6 +425,36 @@ while a WAN has its default route, and
 `sparewall_ipv6_delegated_prefix_valid_seconds` and
 `…_preferred_seconds` count down the delegated prefix's lifetimes: alert
 when the valid lifetime runs low, as the ISP has stopped renewing it.
+
+## Forwarding over TLS
+
+By default the firewall's resolver resolves names itself, from the root down, and `dns.forwarders` sends its queries to other servers instead, in plain DNS. Anyone on the way, the ISP for example, can read those queries and change the answers. DNSSEC catches changed answers only for signed zones. `dns.tls_forwarders` forwards over TLS (DNS over TLS, port 853) instead. Each forwarder's certificate is verified against its name, so the queries can be neither read nor answered by anyone else:
+
+```yaml
+dns:
+  enabled: true
+  tls_forwarders:
+    quad9: { addresses: [9.9.9.9, 149.112.112.112], name: dns.quad9.net }
+    cloudflare: { addresses: [1.1.1.1, 1.0.0.1], name: cloudflare-dns.com }
+```
+
+- **The name** is the host name the forwarder's certificate is for, which its operator publishes beside its addresses. A forwarder whose certificate doesn't match it isn't used.
+- **No fallback:** if no forwarder can be reached over TLS, names don't resolve. The firewall never falls back to plain DNS, which anyone on the way could then read. The `dns-tls` health check is degraded while no forwarder answers, and says why for each one: a timeout, or a certificate that doesn't verify.
+- **A private resolver:** one with a certificate from your own CA, on another port too if need be:
+
+  ```yaml
+  dns:
+    tls_forwarders:
+      office: { addresses: [10.20.0.53], name: dns.office.example, port: 8853 }
+    tls_ca: |
+      -----BEGIN CERTIFICATE-----
+      ...
+      -----END CERTIFICATE-----
+  ```
+
+  `tls_ca` is trusted for every TLS forwarder, besides the system's trust store.
+- **Not both:** `dns.forwarders` and `dns.tls_forwarders` can't be used at once, and `provider_options.unbound` may not forward the root beside them, or change which certificates they're verified against (`tls-cert-bundle`, `tls-system-cert`).
+- **IPv4 forwarders only,** as for `dns.forwarders`. DNS over HTTPS upstream isn't available: Unbound can't forward over it.
 
 ## DNS interception
 
@@ -839,6 +870,7 @@ running system, each repeated on every health request:
 | `tunnels` | On the node that holds them (standalone, or the master), every site-to-site peer with a `keepalive`, and every VPN client, has had a handshake in the last three minutes. Degraded, never failed | Peers without a keepalive, whose idle tunnels have no handshakes |
 | `ipv6` | Once a network has IPv6: each WAN with IPv6 has an IPv6 default route, and a `dhcpv6` WAN has a delegated prefix for the `delegated` networks. Degraded, never failed: IPv4 still flows | That hosts on the inside networks have taken addresses |
 | `dns-filters` | Each list a DNS filter names has been fetched within three times its `refresh`, once a fetch has been tried, and no view holds more than a million names. Degraded, never failed: DNS still answers, with the last copy of a list or without it | That a list holds what its publisher means it to |
+| `dns-tls` | With `dns.tls_forwarders`, at least one forwarder address answers a query over TLS, its certificate verified against its name, as the resolver asks it; each that doesn't is named, with why. Asked every 5 minutes and after each change. Degraded, never failed | That the forwarder's answers are right |
 | `ddns` | On the node that updates them (standalone, or the master), each dynamic DNS entry's last update succeeded, its address is public, and its names resolve to it. Degraded, never failed | That resolvers elsewhere have the new address yet |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
 

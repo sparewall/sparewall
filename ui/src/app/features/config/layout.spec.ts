@@ -14,7 +14,7 @@ const PLAIN = new Set(
   delay destination directory discover domain dynamic elements email enabled endpoint
   established extra filters forwarders forwards from gateway generations group
   hairpin hash hold hook hostname hourly intercept interval kea keepalive key keys kill
-  last lease length limit listen lists lockout log logging management max members
+  last lease length limit listen lists lockout log logging management max members name
   metrics minutes mode monthly names network networks nodes objects offload
   options order pair password peer peers ping policy pool port ports position
   preempt prefix preshared primary priority private proto protocol provider

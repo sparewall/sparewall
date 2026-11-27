@@ -215,6 +215,73 @@ JSON
     log "provider options PASS"
 }
 
+# Forwarding over TLS (#356), through tests/vm/dot-stub.py on the test
+# host, its certificate for dot.test from a CA of the test's own: names
+# resolve through it as dot.test, with dns.tls_ca; a forwarder named
+# otherwise isn't used, there's no fallback, and health says why.
+dns_tls() {
+    local d="$WORK/dot"
+    mkdir -p "$d"
+    (
+        cd "$d"
+        openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 2 -subj /CN=ci-dot-ca 2>/dev/null
+        openssl req -newkey rsa:2048 -nodes -keyout srv.key -out srv.csr -subj /CN=dot.test 2>/dev/null
+        printf 'subjectAltName=DNS:dot.test\n' > srv.ext
+        openssl x509 -req -in srv.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out srv.pem -days 2 -extfile srv.ext 2>/dev/null
+    )
+    python3 "$HERE/dot-stub.py" "$d/srv.pem" "$d/srv.key" 8853 192.0.2.99 > "$d/stub.log" 2>&1 &
+    echo $! > "$d/stub.pid"
+    tls_doc() { # name the forwarder's certificate is for
+        # The stub signs nothing, so its zone is insecure to the
+        # validator; a private resolver's internal zone would be too.
+        jq -n --arg name "$1" --rawfile ca "$d/ca.pem" '{dns: {
+            tls_forwarders: {stub: {addresses: ["10.0.2.2"], name: $name, port: 8853}},
+            tls_ca: $ca},
+          provider_options: {unbound: {server: {"domain-insecure": "dot-probe.example.net"}}}}'
+    }
+    dns_tls_check() { vm 'sudo sparewall status -o json' | jq -c '.health.checks[] | select(.name == "dns-tls")'; }
+    tls_doc dot.test | vm 'cat > /tmp/tls.json'
+    vm 'sudo sparewall merge -f /tmp/tls.json --confirm 0' >/dev/null
+    vm 'sudo grep -A3 "^forward-zone:" /run/sparewall/dns/unbound.conf' | grep -q 'forward-addr: 10.0.2.2@8853#dot.test' \
+        || fail "Unbound does not forward over TLS: $(vm 'sudo grep -A4 "^forward-zone:" /run/sparewall/dns/unbound.conf')"
+    local a deadline=$((SECONDS + 60))
+    until a=$(ns users dig +short +time=3 +tries=1 @192.0.2.1 a.dot-probe.example.net A) && [ "$a" = 192.0.2.99 ]; do
+        [ $SECONDS -lt $deadline ] || {
+            cat "$d/stub.log" >&2 || true
+            vm 'sudo journalctl -b -u sparewall-unbound --no-pager | tail -20' || true
+            fail "no answer through the TLS forwarder: '$a'"
+        }
+        sleep 3
+    done
+    grep -q '^a.dot-probe.example.net. 1$' "$d/stub.log" || fail "the stub saw no query for the name: $(cat "$d/stub.log")"
+    deadline=$((SECONDS + 60))
+    until dns_tls_check | jq -e '.level == "ok"' >/dev/null; do
+        [ $SECONDS -lt $deadline ] || fail "the dns-tls check is not ok: $(dns_tls_check)"
+        sleep 3
+    done
+    log "a TLS forwarder whose certificate is for another name isn't used"
+    tls_doc wrong.test | vm 'cat > /tmp/tls.json'
+    vm 'sudo sparewall merge -f /tmp/tls.json --confirm 0' >/dev/null
+    deadline=$((SECONDS + 60))
+    until dns_tls_check | jq -e '.level == "degraded" and (.message | contains("TLS"))' >/dev/null; do
+        [ $SECONDS -lt $deadline ] || fail "the dns-tls check is not degraded with a wrong name: $(dns_tls_check)"
+        sleep 3
+    done
+    : > "$d/stub.log"
+    a=$(ns users dig +time=3 +tries=1 @192.0.2.1 b.dot-probe.example.net A | grep -o 'status: [A-Z]*') || true
+    [ "$a" = "status: SERVFAIL" ] || fail "with a wrong name, the query got '$a', not SERVFAIL"
+    ! grep -q dot-probe "$d/stub.log" || fail "a query went to the forwarder its certificate does not match"
+    echo '{"dns": {"tls_forwarders": null, "tls_ca": null}, "provider_options": null}' | vm 'cat > /tmp/tls.json'
+    vm 'sudo sparewall merge -f /tmp/tls.json --confirm 0' >/dev/null
+    kill "$(cat "$d/stub.pid")" 2>/dev/null || true
+    deadline=$((SECONDS + 60))
+    until [ -z "$(dns_tls_check)" ]; do
+        [ $SECONDS -lt $deadline ] || fail "the dns-tls check stayed after the forwarders went: $(dns_tls_check)"
+        sleep 3
+    done
+    log "DNS over TLS PASS"
+}
+
 run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
@@ -275,6 +342,7 @@ run_conformance() {
     dns_intercept
     dns_filters
     provider_options
+    dns_tls
     log "conformance PASS"
 }
 

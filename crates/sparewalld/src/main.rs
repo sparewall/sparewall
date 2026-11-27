@@ -8,6 +8,7 @@ mod capture;
 mod capture_check;
 mod ddns;
 mod dhcp_ha;
+mod dns_tls;
 mod failover;
 mod filters;
 mod history;
@@ -527,6 +528,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 filters::filter_loop(core.clone(), tx.clone(), args.state.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no resolver to forward for.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                dns_tls::dns_tls_loop(core.clone(), tx.clone()).await
             } => Ok(()),
             () = async {
                 // A fake system has no WireGuard interfaces.

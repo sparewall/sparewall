@@ -217,6 +217,14 @@ export interface Schemas {
     "provider"?: string | null;
     /** Extra local A records, name to address. */
     "records"?: Record<string, string>;
+    /** PEM of a CA that signs a TLS forwarder's certificate, for a private
+     * resolver: trusted for every TLS forwarder, besides the system
+     * trust store. */
+    "tls_ca"?: string | null;
+    /** Forward over TLS instead (#356), by a name of your own: each
+     * forwarder's certificate is verified against its `name`, and there
+     * is no fallback to plain DNS. In place of `forwarders`. */
+    "tls_forwarders"?: Record<string, Schemas["Document.DnsTlsForwarder"]>;
   };
   /** A DNS filter (`dns.filters.<name>`). */
   "Document.DnsFilter": {
@@ -245,6 +253,16 @@ export interface Schemas {
      * Pi-hole. Queries over IPv6 are then refused, so clients ask over
      * IPv4. */
     "to"?: string | null;
+  };
+  /** A resolver forwarded to over TLS (`dns.tls_forwarders.<name>`, #356). */
+  "Document.DnsTlsForwarder": {
+    /** Its addresses, e.g. `9.9.9.9` and `149.112.112.112`. */
+    "addresses": Array<string>;
+    /** The name its certificate is verified against, e.g.
+     * `dns.quad9.net`. */
+    "name": string;
+    /** Its DNS-over-TLS port (default 853). */
+    "port"?: number | null;
   };
   /** Dynamic DNS (`dns.dynamic.<name>`): names a provider keeps at the
    * WAN's address. In a pair, only the master sends updates. */
