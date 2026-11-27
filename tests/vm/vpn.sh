@@ -89,7 +89,7 @@ vpn_port() { if [ "$1" = vpnb ]; then echo 53; else echo 51820; fi; }
 
 wg_peer() { # name [keepalive]
     local psk=()
-    [ -f "$WORK/$1.psk" ] && psk=(preshared-key "$WORK/$1.psk")
+    [ -f "$WORK/$1.psk" ] && psk=(preshared-key "$(wg_file "$WORK/$1.psk")")
     ns "$1" wg set wg0 peer "$VPN_PUB" endpoint "$VPN_SERVER:$(vpn_port "$1")" \
         allowed-ips 10.99.0.0/24,198.51.100.0/24 ${2:+persistent-keepalive $2} "${psk[@]}"
 }
