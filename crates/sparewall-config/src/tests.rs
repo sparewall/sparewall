@@ -1282,6 +1282,139 @@ fn wan_to_self_never_opens_dns_dhcp_or_ntp() {
     assert!(!has_error(&d, "never serves"), "{:#?}", error_paths(&d));
 }
 
+/// #364: a rule that opens SSH or the HTTPS listener to the whole
+/// internet is warned about, not refused; one narrowed to some sources is
+/// the careful way.
+#[test]
+fn wan_to_self_management_is_warned_about() {
+    let rule = |pair: &str, r: serde_json::Value| {
+        edit(
+            PAIR,
+            json!({"policy": {pair: {"action": "drop", "rules": {"x": r}}}}),
+        )
+    };
+    let warned = |d: &Document, what: &str| {
+        warnings(d).iter().any(|w| {
+            w.starts_with("policy.'wan->self'.rules.x:")
+                && w.contains(what)
+                && w.contains("whole internet")
+        })
+    };
+    for (r, what) in [
+        (
+            json!({"order": 900, "proto": "tcp", "dport": 22, "action": "accept"}),
+            "SSH",
+        ),
+        (
+            json!({"order": 900, "proto": "tcp", "dport": "400-500", "action": "accept"}),
+            "HTTPS",
+        ),
+        (
+            json!({"order": 900, "proto": "tcp", "dport": [8080, 443], "action": "accept"}),
+            "HTTPS",
+        ),
+        (
+            json!({"order": 900, "proto": "tcp", "action": "accept"}),
+            "SSH and web UI",
+        ),
+        (json!({"order": 900, "action": "accept"}), "SSH and web UI"),
+        (
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": "0.0.0.0/0", "action": "accept"}),
+            "SSH",
+        ),
+    ] {
+        let d = rule("wan->self", r.clone());
+        assert!(warned(&d, what), "{r}: {:#?}", warnings(&d));
+        assert!(!has_error(&d, "whole internet"), "a warning, not an error");
+    }
+    // Through a port object.
+    let mut v = to_value(&rule(
+        "wan->self",
+        json!({"order": 900, "proto": "tcp", "dport": "@mgmt", "action": "accept"}),
+    ));
+    merge_patch(
+        &mut v,
+        &json!({"objects": {"mgmt": {"type": "port", "elements": [22]}}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    assert!(warned(&d, "SSH"), "{:#?}", warnings(&d));
+    // Not warned about: a narrowed source, another port, UDP, a drop,
+    // another zone pair. (The example's own ssh-admin rule is narrowed to
+    // @admin_nets.)
+    for (pair, r) in [
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": "198.51.100.7", "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": 22, "src": "@admin_nets", "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": 8443, "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "udp", "action": "accept"}),
+        ),
+        (
+            "wan->self",
+            json!({"order": 900, "proto": "tcp", "dport": 22, "action": "drop"}),
+        ),
+        (
+            "users->self",
+            json!({"order": 900, "proto": "tcp", "dport": 22, "action": "accept"}),
+        ),
+    ] {
+        let d = rule(pair, r.clone());
+        assert!(
+            !warnings(&d).iter().any(|w| w.contains("whole internet")),
+            "{pair} {r}: {:#?}",
+            warnings(&d)
+        );
+    }
+    assert!(
+        !warnings(&load(PAIR))
+            .iter()
+            .any(|w| w.contains("whole internet"))
+    );
+    // A zone that holds the WAN alongside another network.
+    let mut d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "tcp", "dport": 22, "action": "accept"}),
+    );
+    d.zones
+        .get_mut("wan")
+        .unwrap()
+        .networks
+        .push("users".into());
+    d.zones.get_mut("users").unwrap().networks.clear();
+    assert!(warned(&d, "SSH"), "{:#?}", warnings(&d));
+    // Port 80: nothing listens there.
+    let d = rule(
+        "wan->self",
+        json!({"order": 900, "proto": "tcp", "dport": 80, "src": "198.51.100.7", "action": "accept"}),
+    );
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("policy.'wan->self'.rules.x.dport:")
+                && w.contains("nothing on the firewall listens on port 80")),
+        "{:#?}",
+        warnings(&d)
+    );
+    // A policy that accepts by default.
+    let d = edit(PAIR, json!({"policy": {"wan->self": {"action": "accept"}}}));
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("policy.'wan->self'.action:") && w.contains("whole internet")),
+        "{:#?}",
+        warnings(&d)
+    );
+}
+
 #[test]
 fn extra_vips_are_checked_and_count_as_held() {
     let x = |v: serde_json::Value| edit(PAIR, json!({"networks": {"wan": {"extra_vips": v}}}));

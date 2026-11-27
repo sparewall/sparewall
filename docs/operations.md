@@ -561,6 +561,8 @@ The firewall's input policy is drop, so from the WAN it answers only:
 - **Its VPNs:** each VPN's listen port, and its extra ports.
 - **What a `wan->self` policy opens:** SSH from your admin addresses, for example, or ping.
 
+**SSH and the web UI from the whole internet** are allowed but warned about (#364): `validate`, a dry run and an apply say so, and the web UI lists it before an apply. The warning comes for a `wan->self` rule that accepts TCP 22, or 443 (the web UI, the API and `/metrics`), or every port, from any source, and for a `wan->self` policy that accepts by default. A rule with a `src`, such as your office's addresses or an object, gets no warning: that's the careful way to do it, or reach the firewall over the VPN instead. Nothing listens on port 80, so a rule opening it is warned about as opening nothing.
+
 **DNS, DHCP and NTP are never open on the WAN,** whatever the policies say. The firewall doesn't serve them there, and a `wan->self` rule that accepts UDP or TCP 53, UDP 67 or UDP 123 is refused when the document is saved. The ruleset drops them from the WAN ahead of the policies too (`infra:wan-services`), as a second layer. A VPN listening on one of those UDP ports keeps it, and `extra_ports` are redirected to the listen port before this drop: WireGuard on port 53 works either way, for clients on networks that let only DNS out.
 
 ## Remote-access VPN

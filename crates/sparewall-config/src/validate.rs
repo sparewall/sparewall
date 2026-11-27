@@ -1498,8 +1498,66 @@ impl Validator<'_> {
                 self.check_rule(&rp, r);
                 if to == SELF_ZONE && wan_zone(doc, from) {
                     self.wan_services(&rp, r);
+                    self.wan_management(&rp, r);
                 }
             }
+            if to == SELF_ZONE && wan_zone(doc, from) && pol.action == Action::Accept {
+                self.warn(
+                    format!("{p}.action"),
+                    "accepts everything from the WAN to the firewall, its SSH and web UI too, from \
+                     the whole internet: drop by default, and open what's needed by rule",
+                );
+            }
+        }
+    }
+
+    /// SSH or the HTTPS listener (the web UI, the API and `/metrics`)
+    /// opened from the WAN to any address (#364). A legitimate choice, so
+    /// not refused, but an easy one to make by mistake. A rule narrowed to
+    /// some sources is the careful way, and isn't warned about.
+    fn wan_management(&mut self, rp: &str, r: &Rule) {
+        if r.action != Action::Accept || !matches!(r.proto.as_deref(), None | Some("tcp")) {
+            return;
+        }
+        let everywhere = |t: &str| matches!(t, "0.0.0.0/0" | "::/0");
+        let any_source = match &r.src {
+            None => true,
+            Some(Match::Text(t)) => everywhere(t),
+            Some(Match::List(v)) => v
+                .iter()
+                .all(|i| matches!(i, MatchItem::Text(t) if everywhere(t))),
+            Some(Match::Number(_)) => false,
+        };
+        let opens = |port| {
+            r.dport
+                .as_ref()
+                .is_none_or(|d| match_has_port(self.doc, d, port))
+        };
+        if any_source {
+            let what: Vec<&str> = [(22, "SSH"), (443, "web UI, API and metrics (HTTPS)")]
+                .into_iter()
+                .filter(|&(port, _)| opens(port))
+                .map(|(_, what)| what)
+                .collect();
+            if !what.is_empty() {
+                self.warn(
+                    rp,
+                    format!(
+                        "opens the firewall's {} to the whole internet: narrow src to the \
+                         addresses that need it, or reach it over the VPN",
+                        what.join(" and ")
+                    ),
+                );
+            }
+        }
+        if let Some(d) = &r.dport
+            && match_has_port(self.doc, d, 80)
+        {
+            self.warn(
+                format!("{rp}.dport"),
+                "nothing on the firewall listens on port 80 (the web UI is HTTPS, on 443), so \
+                 this opens nothing there",
+            );
         }
     }
 
