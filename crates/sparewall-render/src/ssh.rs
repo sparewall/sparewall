@@ -25,6 +25,7 @@ fn add(out: &mut Rendered, password: bool) {
             unit: UNIT.into(),
             subsystem: Subsystem::Ssh,
             reload: true,
+            restart_key: None,
             management: false,
             check: None,
         },

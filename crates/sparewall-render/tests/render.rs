@@ -2333,6 +2333,21 @@ fn dns_tls_forwarders() {
         "{conf}"
     );
     assert_eq!(r.files["dns/tls-ca.pem"], ca);
+    // Unbound sets up its outgoing TLS only when it starts: what it
+    // trusts is a restart key, so a change to it restarts Unbound.
+    let key = r.meta.services["dns"].restart_key.clone();
+    assert!(
+        key.as_deref().is_some_and(|k| k.starts_with("tls:")),
+        "{key:?}"
+    );
+    assert!(
+        render(&example("standalone.yaml"), "fw1")
+            .unwrap()
+            .meta
+            .services["dns"]
+            .restart_key
+            .is_none()
+    );
     // Without a CA: the system trust store alone, and no file.
     let mut v = sparewall_config::to_value(&doc);
     sparewall_config::merge_patch(&mut v, &serde_json::json!({"dns": {"tls_ca": null}}));
@@ -2340,4 +2355,8 @@ fn dns_tls_forwarders() {
     assert!(!r.files["dns/unbound.conf"].contains("tls-cert-bundle"));
     assert!(r.files["dns/unbound.conf"].contains("tls-system-cert: yes"));
     assert!(!r.files.contains_key("dns/tls-ca.pem"));
+    assert_ne!(
+        r.meta.services["dns"].restart_key, key,
+        "another CA, another key"
+    );
 }

@@ -7,6 +7,8 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
+use sha2::{Digest, Sha256};
+
 use sparewall_config::model::{Document, Ipv6Mode};
 use sparewall_config::passthrough;
 use sparewall_config::providers::{self, Role};
@@ -17,6 +19,10 @@ use crate::{CheckSpec, Error, Rendered, Service, Subsystem};
 pub const UNIT: &str = "sparewall-unbound.service";
 pub const CONTAINER: &str = "sparewall-unbound";
 pub const CONF: &str = "unbound.conf";
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 /// `dns.tls_ca`, beside the configuration (#356).
 pub const TLS_CA: &str = "tls-ca.pem";
 
@@ -253,6 +259,11 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             unit: UNIT.into(),
             subsystem: Subsystem::Dns,
             reload: true,
+            restart_key: tls.then(|| {
+                let mut h = Sha256::new();
+                h.update(dns.tls_ca.as_deref().unwrap_or_default());
+                format!("tls:{}", hex(&h.finalize()))
+            }),
             management: false,
             check: Some(check_spec()),
         },

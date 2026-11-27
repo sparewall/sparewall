@@ -64,6 +64,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
             unit: UNIT.into(),
             subsystem: Subsystem::Metrics,
             reload: true,
+            restart_key: None,
             management: true,
             check: Some(check_spec()),
         },

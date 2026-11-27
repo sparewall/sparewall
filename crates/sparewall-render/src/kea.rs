@@ -312,6 +312,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
             unit: UNIT.into(),
             subsystem: Subsystem::Dhcp,
             reload: true,
+            restart_key: None,
             management: false,
             check: Some(CheckSpec {
                 overrides: [(CONF.to_string(), check_text)].into(),

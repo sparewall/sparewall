@@ -1916,7 +1916,8 @@ impl<S: System> Coordinator<S> {
                 if !links.is_empty() {
                     self.sys.networkd_reconfigure(&links)?;
                 }
-                self.sys.services_apply(&r.meta, &changed_list)?;
+                self.sys
+                    .services_apply(&restart_where_needed(&r.meta, old), &changed_list)?;
             }
             Ok(())
         })();
@@ -2249,4 +2250,65 @@ fn missing_psk_messages(missing: &[(String, String, String)]) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// The services to apply, with those whose `restart_key` changed marked
+/// to restart rather than reload: a setting a reload leaves alone
+/// changed (Unbound's TLS trust, #356).
+fn restart_where_needed(
+    meta: &sparewall_render::Meta,
+    old: Option<&Rendered>,
+) -> sparewall_render::Meta {
+    let mut m = meta.clone();
+    for (name, svc) in &mut m.services {
+        let before = old.and_then(|o| o.meta.services.get(name));
+        if svc.reload && before.is_some_and(|b| b.restart_key != svc.restart_key) {
+            svc.reload = false;
+        }
+    }
+    m
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+    use sparewall_render::{Meta, Service};
+
+    fn meta(key: Option<&str>) -> Meta {
+        let mut m = Meta::default();
+        m.services.insert(
+            "dns".into(),
+            Service {
+                provider: "unbound".into(),
+                unit: "sparewall-unbound.service".into(),
+                subsystem: Subsystem::Dns,
+                reload: true,
+                restart_key: key.map(str::to_string),
+                management: false,
+                check: None,
+            },
+        );
+        m
+    }
+
+    fn reloads(new: &Meta, old: Option<&Meta>) -> bool {
+        let old = old.map(|m| Rendered {
+            files: Default::default(),
+            meta: m.clone(),
+        });
+        restart_where_needed(new, old.as_ref()).services["dns"].reload
+    }
+
+    /// #356: Unbound sets up its outgoing TLS only when it starts, so a
+    /// change to what it trusts restarts it; anything else reloads it.
+    #[test]
+    fn a_changed_restart_key_restarts() {
+        let (none, a, b) = (meta(None), meta(Some("tls:a")), meta(Some("tls:b")));
+        assert!(reloads(&a, Some(&a)), "unchanged");
+        assert!(reloads(&none, Some(&none)), "no key either time");
+        assert!(!reloads(&a, Some(&none)), "TLS forwarding turned on");
+        assert!(!reloads(&none, Some(&a)), "turned off");
+        assert!(!reloads(&b, Some(&a)), "another CA");
+        assert!(reloads(&a, None), "a first apply starts it anyway");
+    }
 }
