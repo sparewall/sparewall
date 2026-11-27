@@ -20,7 +20,8 @@ cd "$WORK"
 
 log() { printf '\n=== %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
-trap 'dump' ERR
+# dump() is defined below; a failure before it (the disk build) is reported as is.
+trap 'declare -F dump >/dev/null && dump' ERR
 
 log "building a qcow2 from $IMAGE"
 "$HERE/build-disk.sh" "$IMAGE" "$WORK"
