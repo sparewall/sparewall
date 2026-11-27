@@ -14,7 +14,7 @@ chacha20poly1305 = "0.11.0"
 flate2 = "1.1.10"
 getrandom = "0.4.3"
 hex = "0.4.3"
-jiff = { version = "0.2.38", features = ["serde"] }
+jiff = { version = "1.0.0", features = ["serde"] }
 rustix = { version = "1.1.5", features = ["fs", "system", "time"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -30,5 +30,5 @@ tracing = "0.1.44"
 workspace = true
 
 [dev-dependencies]
-jiff = "0.2.38"
+jiff = "1.0.0"
 tempfile = "3.27.0"
