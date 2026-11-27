@@ -155,9 +155,14 @@ what's waiting.
   3 days before it's proposed, so one pulled for a bad release never
   arrives. Security fixes don't wait.
 - **Merging itself:** minor, patch and digest updates merge themselves
-  (squash) once every check on the pull request has passed, the VM
-  suites included. So does the weekly lock file refresh. A failing
-  update stays open for someone to fix.
+  (squash) once every check on the pull request has passed. So does the
+  weekly lock file refresh. CI runs on every pull request. The VM suites
+  (`image.yml`) run when it touches what the image is built from: the
+  crates and `Cargo.*`, the Containerfiles, `ui/package.json` and its
+  lock file, and `image.yml` itself. An update to a workflow that
+  never runs on a pull request (`release.yml`, `rebuild.yml`,
+  `resign.yml`) has nothing to check it, so it waits for review, with
+  the rest of its group. A failing update stays open for someone to fix.
 - **Groups:** the Rust crates, the web UI's npm packages and the GitHub
   Actions (with the Renovate release CI checks this file with) each go
   in one pull request. The Rust toolchain and the bootc-image-builder

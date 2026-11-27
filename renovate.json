@@ -89,6 +89,15 @@
       "automerge": false
     },
     {
+      "description": "These workflows never run on a pull request (releases, rebuilds, re-signing), so no check covers an update in them: it waits for review. Grouped updates share a branch, so the whole group does.",
+      "matchFileNames": [
+        ".github/workflows/release.yml",
+        ".github/workflows/rebuild.yml",
+        ".github/workflows/resign.yml"
+      ],
+      "automerge": false
+    },
+    {
       "description": "Group non-major Rust crate updates, as Dependabot's rust group did.",
       "matchManagers": ["cargo"],
       "matchUpdateTypes": ["minor", "patch"],
