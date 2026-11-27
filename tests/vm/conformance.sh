@@ -215,6 +215,65 @@ JSON
     log "provider options PASS"
 }
 
+# A reply to a client-mode NTP request from namespace $1 at $2.
+ntp_answers() {
+    ns "$1" timeout 6 python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(3)
+s.sendto(b"\x23" + bytes(47), (sys.argv[1], 123))
+s.recvfrom(100)' "$2" 2>/dev/null
+}
+
+# chronyd under the drop-in's tighter sandbox (#360): NoNewPrivileges,
+# which SELinux allows into chronyd_t, only the capabilities it needs,
+# serving the networks in ntp.serve, and still so after an apply that
+# changes them.
+chrony_hardened() {
+    log "chronyd: NoNewPrivileges in chronyd_t, two capabilities left, serving users"
+    local want='CapabilityBoundingSet=cap_dac_override cap_setgid cap_setuid cap_net_bind_service cap_sys_time'
+    [ "$(vm 'systemctl show chronyd -p NoNewPrivileges --value')" = yes ] \
+        || fail "chronyd runs without NoNewPrivileges"
+    [ "$(vm 'systemctl show chronyd -p CapabilityBoundingSet')" = "$want" ] \
+        || fail "chronyd's bounding set: $(vm 'systemctl show chronyd -p CapabilityBoundingSet')"
+    # shellcheck disable=SC2016 # the node expands \$(pgrep ...)
+    chronyd_checks() {
+        vm 'ps -eo label,comm' | grep -qE '^system_u:system_r:chronyd_t:s0 +chronyd$' \
+            || fail "chronyd is not in chronyd_t: $(vm 'ps -eo label,comm' | grep chronyd)"
+        # SYS_TIME and NET_BIND_SERVICE, once it is the chrony user.
+        [ "$(vm 'grep ^CapEff: /proc/$(pgrep -x chronyd)/status' | awk '{print $2}')" = 0000000002000400 ] \
+            || fail "chronyd's effective capabilities: $(vm 'grep ^Cap /proc/$(pgrep -x chronyd)/status')"
+    }
+    chronyd_checks
+    local score
+    score=$(vm 'sudo systemd-analyze security chronyd.service' | sed -n 's/.*exposure level for chronyd.service: \([0-9.]*\).*/\1/p')
+    awk -v s="$score" 'BEGIN { exit !(s != "" && s <= 3.1) }' \
+        || fail "chronyd's exposure is ${score:-unknown}, not 3.1 or better"
+    local deadline=$((SECONDS + 60))
+    until ntp_answers users 192.0.2.1; do
+        [ $SECONDS -lt $deadline ] || {
+            vm 'sudo journalctl -b -u chronyd --no-pager | tail -20' || true
+            fail "chronyd does not serve time to users"
+        }
+        sleep 3
+    done
+    ! ntp_answers guests 198.51.100.1 || fail "chronyd served time to guests, which ntp.serve does not name"
+    log "chronyd after an apply that serves guests too"
+    echo '{"ntp": {"serve": ["users", "guests"]}}' | vm 'cat > /tmp/ntp.json'
+    vm 'sudo sparewall merge -f /tmp/ntp.json --confirm 0' >/dev/null
+    deadline=$((SECONDS + 60))
+    until ntp_answers guests 198.51.100.1; do
+        [ $SECONDS -lt $deadline ] || {
+            vm 'systemctl status --no-pager chronyd; sudo journalctl -b -u chronyd --no-pager | tail -20' || true
+            fail "chronyd does not serve guests after the apply"
+        }
+        sleep 3
+    done
+    [ "$(vm 'systemctl is-active chronyd')" = active ] || fail "chronyd is not active after the apply"
+    chronyd_checks
+    ntp_answers users 192.0.2.1 || fail "chronyd stopped serving users after the apply"
+}
+
 run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
@@ -272,6 +331,7 @@ run_conformance() {
         || fail "sparewall hits matched an address the drop never had"
     # Last: each applies a change, and a reload resets the rule counters
     # the checks above read.
+    chrony_hardened
     dns_intercept
     dns_filters
     provider_options

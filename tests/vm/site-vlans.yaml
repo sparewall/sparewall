@@ -56,3 +56,6 @@ dns:
   domain: home.arpa
   records:
     printer: 192.0.2.9
+# Time for users only, until chrony_hardened (conformance.sh) adds guests.
+ntp:
+  serve: [users]
