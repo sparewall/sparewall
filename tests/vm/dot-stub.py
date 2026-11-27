@@ -38,20 +38,28 @@ def answer(q: bytes) -> bytes:
     return head + struct.pack("!HHHH", 1, 0, 0, 0) + question
 
 
+def read_exact(conn: ssl.SSLSocket, n: int) -> bytes | None:
+    """n bytes, or None at the end of the stream: TLS is a byte stream,
+    so a read may return fewer bytes than are on their way."""
+    b = b""
+    while len(b) < n:
+        chunk = conn.recv(n - len(b))
+        if not chunk:
+            return None
+        b += chunk
+    return b
+
+
 def serve(conn: ssl.SSLSocket) -> None:
     with conn:
         try:
             while True:
-                n = conn.recv(2)
-                if len(n) < 2:
+                n = read_exact(conn, 2)
+                if n is None:
                     return
-                want = struct.unpack("!H", n)[0]
-                q = b""
-                while len(q) < want:
-                    chunk = conn.recv(want - len(q))
-                    if not chunk:
-                        return
-                    q += chunk
+                q = read_exact(conn, struct.unpack("!H", n)[0])
+                if q is None:
+                    return
                 r = answer(q)
                 conn.sendall(struct.pack("!H", len(r)) + r)
         except (OSError, IndexError, struct.error):
