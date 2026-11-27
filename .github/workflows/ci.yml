@@ -175,7 +175,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - run: npx --yes --package renovate@44.257.9 renovate-config-validator --strict
+      - run: npx --yes --package renovate@45.3.2 renovate-config-validator --strict
 
   ui:
     name: web UI
