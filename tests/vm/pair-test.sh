@@ -22,6 +22,8 @@ cd "$WORK"
 
 # shellcheck source=pair-lib.sh
 . "$HERE/pair-lib.sh"
+# shellcheck source=wan-probe.sh
+. "$HERE/wan-probe.sh"
 pair_taps
 
 cleanup() {
@@ -247,6 +249,21 @@ check_wan6() { # master backup
 
 wait_for 30 "fw1 reaches the outside" egress fw1
 check_wan fw1 fw2
+
+log "nothing the pair serves inside answers from the WAN (#363)"
+# At the gateway addresses, on the master, and at each node's own WAN
+# address, which the ISP reaches from one of the nodes' private subnet.
+# UDP 53 at the gateway address is the VPN's extra port, so WireGuard
+# takes it, and stays silent too. Kea serves users in HA, and no node
+# offers a lease on the WAN.
+ns isp ip addr add 10.0.10.250/24 dev eth0
+b1=$(wan_drops fw1)
+b2=$(wan_drops fw2)
+wan_probe isp 203.0.113.1 2001:db8:10::1 10.0.10.2 10.0.10.3
+wan_dhcp_probe isp 203.0.113.1 10.0.10.2 10.0.10.3
+ns isp ip addr del 10.0.10.250/24 dev eth0
+[ "$(wan_drops fw1)" -gt "$b1" ] || fail "fw1's infra:wan-services counted none of the probes"
+[ "$(wan_drops fw2)" -gt "$b2" ] || fail "fw2's infra:wan-services counted none of the probes"
 
 log "VRRP adverts are untracked, so the WAN egress SNAT leaves them alone (#174)"
 # Rewritten, an advert carries the gateway address as its source, which

@@ -69,7 +69,7 @@ gen_require(`
 	type user_home_dir_t, ssh_home_t;
 	type init_var_lib_t, init_var_run_t, cgroup_t, nsfs_t, sysfs_t;
 	type chronyd_var_run_t, keepalived_var_run_t, conntrackd_conf_t;
-	type conntrackd_t, conntrackd_var_run_t, ulogd_t, systemd_journal_upload_t;
+	type conntrackd_t, conntrackd_var_run_t, ulogd_t, chronyd_t, systemd_journal_upload_t;
 	type udev_t, udev_var_run_t, tpm_device_t, efivarfs_t;
 	type systemd_networkd_t, systemd_networkd_var_run_t;
 	type container_t, container_file_t, container_var_lib_t;
@@ -173,6 +173,10 @@ corenet_tcp_connect_all_ports(syslogd_t)
 # read its plugins and exits. It streams each logged packet to the
 # coordinator's rules.sock.
 init_nnp_daemon_domain(ulogd_t)
+# chronyd too, with its drop-in's NoNewPrivileges=yes (#360): without the
+# transition it would stay init_t, and could not open its own files in
+# /run/chrony.
+init_nnp_daemon_domain(chronyd_t)
 allow ulogd_t sparewalld_var_run_t:sock_file write_sock_file_perms;
 allow ulogd_t sparewalld_t:unix_stream_socket connectto;
 # Kea, Unbound and Prometheus, in containers, read theirs.

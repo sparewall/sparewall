@@ -217,7 +217,7 @@ pub fn parse_next(out: &str) -> Option<jiff::Timestamp> {
         .collect::<Vec<_>>()
         .join(" ");
     let dt: jiff::civil::DateTime = civil.parse().ok()?;
-    dt.to_zoned(jiff::tz::TimeZone::UTC)
+    dt.to_zoned_datetime(jiff::tz::TimeZone::UTC)
         .ok()
         .map(|z| z.timestamp())
 }
