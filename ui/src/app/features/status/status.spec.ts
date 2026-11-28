@@ -2,7 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { Subject } from 'rxjs';
+import { Subject, of } from 'rxjs';
 
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
@@ -166,5 +166,70 @@ describe('Status, IPv6', () => {
     });
     const missing = [...el.querySelectorAll('.ipv6 .missing')].map((e) => e.textContent!.trim());
     expect(missing).toEqual(['Advertises no prefix', 'No default route']);
+  });
+});
+
+describe('Status, acknowledging a check (#314)', () => {
+  const degraded = {
+    ...reply({ enabled: false }),
+    health: {
+      level: 'degraded',
+      checks: [
+        {
+          name: 'selinux',
+          level: 'degraded',
+          message:
+            '21 denials for the coordinator, the last at 2026-11-27T10:00:00Z: avc denied; acknowledge with: sparewall health ack selinux',
+        },
+        { name: 'dns-tls', level: 'degraded', message: 'no forwarder answers over TLS' },
+        { name: 'applied', level: 'ok', message: 'generation 3' },
+      ],
+    },
+  };
+
+  const ackButtons = (el: HTMLElement) =>
+    [...el.querySelectorAll('.checks li')].filter((li) =>
+      [...li.querySelectorAll('button')].some((b) => b.textContent?.includes('Acknowledge')),
+    );
+
+  it('offers an admin Acknowledge on a check that waits for it, and on no other', async () => {
+    const { el } = await render(degraded);
+    const offered = ackButtons(el);
+    expect(offered.length).toBe(1);
+    expect(offered[0].textContent).toContain('selinux');
+  });
+
+  it('offers it to no operator or viewer', async () => {
+    for (const role of ['operator', 'viewer']) {
+      TestBed.resetTestingModule();
+      const { el } = await render(degraded, role);
+      expect(ackButtons(el), role).toEqual([]);
+    }
+  });
+
+  it('shows what is acknowledged, then acknowledges it', async () => {
+    const { el, fixture, http } = await render(degraded);
+    const calls: unknown[] = [];
+    let shown = '';
+    // The dialog confirms at once, and the API records the call.
+    Object.assign(fixture.componentInstance, {
+      api: { call: async (m: string, p: unknown) => (calls.push([m, p]), {}) },
+      dialog: {
+        open: (_c: unknown, o: { data: { text: string } }) => {
+          shown = o.data.text;
+          return { afterClosed: () => of(true) };
+        },
+      },
+      snack: { open: () => undefined },
+    });
+    ackButtons(el)[0].querySelector('button')!.click();
+    // The acknowledgement reads the status again.
+    for (let i = 0; i < 10 && !calls.length; i++) await new Promise((r) => setTimeout(r));
+    TestBed.tick();
+    http.expectOne('/call/org.sparewall.Firewall.Status').flush(degraded);
+    await fixture.whenStable();
+    expect(shown).toContain('21 denials for the coordinator');
+    expect(shown).not.toContain('sparewall health ack');
+    expect(calls).toEqual([['org.sparewall.Firewall.AckHealth', { name: 'selinux' }]]);
   });
 });

@@ -250,7 +250,7 @@ it.
 People open `https://<node>/` and sign in as one of the users above.
 The UI has these pages:
 
-- **Status:** the node's status and health, updated as they change.
+- **Status:** the node's status and health, updated as they change. A check that stays degraded until someone has seen it (`selinux`, and `upgrade` after a failed scheduled upgrade) has an Acknowledge button for admins, as `sparewall health ack` does: it shows what is acknowledged, and records who did. It applies to the node serving the page.
 - **History:** the generations, from which an operator can roll back.
 - **Configuration:** a form built from the document's schema. It shows
   one section at a time (`/config/<section>`, so a section can be
@@ -884,7 +884,7 @@ running system, each repeated on every health request:
 | `dns-filters` | Each list a DNS filter names has been fetched within three times its `refresh`, once a fetch has been tried, and no view holds more than a million names. Degraded, never failed: DNS still answers, with the last copy of a list or without it | That a list holds what its publisher means it to |
 | `dns-tls` | With `dns.tls_forwarders`, at least one forwarder address answers a query over TLS, its certificate verified against its name, as the resolver asks it; each that doesn't is named, with why. Asked every 5 minutes and after each change. Degraded, never failed | That the forwarder's answers are right |
 | `ddns` | On the node that updates them (standalone, or the master), each dynamic DNS entry's last update succeeded, its address is public, and its names resolve to it. Degraded, never failed | That resolvers elsewhere have the new address yet |
-| `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
+| `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux`, or Acknowledge on the web UI's status page (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
 
 Any change to the firewall made outside Sparewall (`nft flush`, an extra
 rule, a changed policy) fails `nft` and `applied`, so the node reports
