@@ -8,10 +8,10 @@ import { ACRONYMS, SPELLED, fieldLabel } from './layout';
  * decides how it reads (#339).
  */
 const PLAIN = new Set(
-  `action address addresses advert allow allowed anti at backup bandwidth block bond
+  `action address addresses advert allow allowed anti at backup bandwidth block blocklists bond
   buckets cake certificate certificates challenge channel check checksum
   client clients cluster comment connections conntrack credentials daily
-  delay destination directory discover domain dynamic elements email enabled endpoint
+  delay destination direction directory discover domain dynamic elements email enabled endpoint
   established extra filters forwarders forwards from gateway generations group
   hairpin hash hold hook hostname hourly intercept interval kea keepalive key keys kill
   last lease length limit listen lists lockout log logging management max members name

@@ -63,6 +63,7 @@ fn run(doc: &Document, activation: bool) -> Vec<Issue> {
     v.raw();
     v.dhcp();
     v.dns();
+    v.blocklists();
     v.logging();
     v.ntp();
     v.vpn();
@@ -2018,6 +2019,104 @@ impl Validator<'_> {
         }
     }
 
+    /// `blocklists` (#379).
+    fn blocklists(&mut self) {
+        use crate::blocklists::{MIN_REFRESH_SECS, entry, name_ok};
+        let doc = self.doc;
+        if !doc.blocklists.is_empty() && doc.networks_with_role(NetworkRole::Wan).next().is_none() {
+            self.warn(
+                "blocklists",
+                "there is no WAN network, so nothing is dropped",
+            );
+        }
+        for (n, b) in &doc.blocklists {
+            let p = format!("blocklists.{}", seg(n));
+            if !name_ok(n) {
+                self.err(
+                    &p,
+                    "a blocklist's name is up to 32 lower-case letters, digits and -, starting with a letter",
+                );
+            }
+            let rest = b
+                .url
+                .strip_prefix("https://")
+                .or_else(|| b.url.strip_prefix("http://"));
+            // Credentials in the URL (`user:pass@host`) would be written
+            // into the document, and its backups: they go in a secret.
+            if rest.is_some_and(|r| {
+                r.split(['/', '?', '#'])
+                    .next()
+                    .unwrap_or_default()
+                    .contains('@')
+            }) {
+                self.err(
+                    format!("{p}.url"),
+                    "credentials don't go in the URL: put them in a secret, as credentials",
+                );
+            }
+            match rest {
+                Some(r)
+                    if !r.is_empty()
+                        && !r.starts_with('/')
+                        && !b
+                            .url
+                            .chars()
+                            .any(|c| c.is_whitespace() || c == '"' || c.is_control()) =>
+                {
+                    if b.url.starts_with("http://") {
+                        self.warn(
+                            format!("{p}.url"),
+                            "fetched without TLS, so anyone on the way can change it",
+                        );
+                    }
+                    if b.credentials.is_some() && b.url.starts_with("http://") {
+                        self.err(
+                            format!("{p}.credentials"),
+                            "credentials are sent only over https://",
+                        );
+                    }
+                }
+                _ => self.err(
+                    format!("{p}.url"),
+                    format!("{:?} is not an http:// or https:// URL", b.url),
+                ),
+            }
+            if let Some(r) = &b.refresh {
+                match crate::filters::duration_secs(r) {
+                    None => self.err(
+                        format!("{p}.refresh"),
+                        format!("{r:?} is not a duration such as 24h, 2h or 1d"),
+                    ),
+                    Some(s) if s < MIN_REFRESH_SECS => self.err(
+                        format!("{p}.refresh"),
+                        "at least 15m: list publishers block clients that fetch too often",
+                    ),
+                    Some(_) => {}
+                }
+            }
+            let mut seen = BTreeSet::new();
+            for (i, d) in b.direction.iter().enumerate() {
+                if !seen.insert(*d) {
+                    self.err(format!("{p}.direction[{i}]"), "given twice");
+                }
+            }
+            let (s4, s6) = crate::blocklists::set_names(n);
+            for set in [s4, s6] {
+                if doc.objects.contains_key(&set) {
+                    self.err(&p, format!("its set is named {set}, as objects.{set} is"));
+                }
+            }
+            for (i, a) in b.allow.iter().enumerate() {
+                if entry(a).is_none() {
+                    self.err(
+                        format!("{p}.allow[{i}]"),
+                        format!("{a:?} is not an IPv4 or IPv6 address or prefix"),
+                    );
+                }
+            }
+        }
+    }
+
     fn dns(&mut self) {
         let doc = self.doc;
         let Some(d) = &doc.dns else { return };
@@ -3036,6 +3135,11 @@ impl Validator<'_> {
                 format!("dns.dynamic.{}.credentials", seg(name)),
                 &x.credentials,
             ));
+        }
+        for (name, b) in &doc.blocklists {
+            if let Some(c) = &b.credentials {
+                refs.push((format!("blocklists.{}.credentials", seg(name)), c));
+            }
         }
         for (name, c) in &doc.vpn_clients {
             refs.push((

@@ -734,13 +734,22 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     } else {
         ""
     };
+    let blocklists = blocklist_chain(doc, v6, out, &mut sc.sets);
+    let jump = if blocklists.is_empty() {
+        ""
+    } else {
+        "jump blocklists\n"
+    };
     sc.chain(
         "prerouting_raw",
         format!(
-            "type filter hook prerouting priority raw; policy accept;\n{vrrp_notrack}{}",
+            "type filter hook prerouting priority raw; policy accept;\n{vrrp_notrack}{jump}{}",
             raw_at_hook(doc, RawHook::PreroutingRaw)
         ),
     );
+    if !blocklists.is_empty() {
+        sc.chain("blocklists", blocklists);
+    }
     if pair {
         sc.chain(
             "output_raw",
@@ -1509,6 +1518,175 @@ fn dns_served_only(doc: &Document) -> String {
         "meta nfproto ipv6 meta l4proto {{ tcp, udp }} th dport 53 iifname != {} drop comment \"service:dns-served-only\"\n",
         ifset(&only)
     )
+}
+
+/// The host of a `host:port` endpoint, if it is an address (a name can't
+/// be known ahead of time).
+fn endpoint_addr(e: &str) -> Option<std::net::IpAddr> {
+    let host = if let Some(rest) = e.strip_prefix('[') {
+        rest.split(']').next()?
+    } else if e.matches(':').count() == 1 {
+        e.split(':').next()?
+    } else {
+        e
+    };
+    host.parse().ok()
+}
+
+/// What no blocklist drops (#379): the addresses the site depends on,
+/// each family's, as nft set elements. `management.sources` (its literal
+/// addresses), static WAN gateways, every node's WAN addresses and the
+/// gateway addresses, and the endpoints
+/// of VPN peers and providers given as addresses. A list that names them
+/// can't cut the site off.
+fn blocklist_exempt(doc: &Document) -> (Vec<String>, Vec<String>) {
+    use sparewall_config::blocklists::entry;
+    let mut v4: BTreeSet<String> = BTreeSet::new();
+    let mut v6: BTreeSet<String> = BTreeSet::new();
+    let mut add = |n: ipnet::IpNet| match n {
+        ipnet::IpNet::V4(a) => {
+            v4.insert(a.to_string());
+        }
+        ipnet::IpNet::V6(a) => {
+            v6.insert(a.to_string());
+        }
+    };
+    if let Some(m) = &doc.management.sources {
+        for t in match_items(m) {
+            if let Some(n) = entry(&t) {
+                add(n);
+            }
+        }
+    }
+    for (_, net) in doc.networks_with_role(NetworkRole::Wan) {
+        if let Some(g) = net.gateway {
+            add(ipnet::IpNet::from(std::net::IpAddr::V4(g)));
+        }
+        if let Some(g) = net.ipv6.as_ref().and_then(|v| v.gateway) {
+            add(ipnet::IpNet::from(std::net::IpAddr::V6(g)));
+        }
+        // Every node's, so a pair's peer (its VRRP adverts, its traffic
+        // through the master) is never dropped either.
+        for a in net.addresses.values() {
+            add(ipnet::IpNet::from(std::net::IpAddr::V4(a.0.addr())));
+        }
+        for v in net.vip.iter().chain(&net.extra_vips) {
+            add(ipnet::IpNet::from(std::net::IpAddr::V4(v.0.addr())));
+        }
+        if let Some(v) = net.ipv6.as_ref().and_then(|v| v.vip) {
+            add(ipnet::IpNet::from(std::net::IpAddr::V6(v)));
+        }
+    }
+    let endpoints = doc
+        .vpn
+        .values()
+        .flat_map(|v| v.peers.values().filter_map(|p| p.endpoint.clone()))
+        .chain(doc.vpn_clients.values().map(|c| c.peer.endpoint.clone()));
+    for e in endpoints {
+        if let Some(a) = endpoint_addr(&e) {
+            add(ipnet::IpNet::from(a));
+        }
+    }
+    (v4.into_iter().collect(), v6.into_iter().collect())
+}
+
+/// The `blocklists` chain (#379), jumped to first from prerouting at raw
+/// priority: before conntrack and DNAT, so a listed address is dropped
+/// on its way to the firewall and to a forward alike, and a flow begun
+/// before it was listed stops too. Each list's sets are declared empty and
+/// kept across a reload: the coordinator fills them from the lists it
+/// fetches. Empty without blocklists or a WAN.
+fn blocklist_chain(doc: &Document, v6: bool, out: &mut Rendered, sets: &mut String) -> String {
+    use sparewall_config::blocklists::{entry, set_names};
+    let wan = wan_input_ifaces(doc);
+    if doc.blocklists.is_empty() || wan.is_empty() {
+        return String::new();
+    }
+    let (ex4, ex6) = blocklist_exempt(doc);
+    // What a WAN learns its addresses and routes with, whoever the ISP's
+    // gateway is (a DHCP-learned one isn't known here): DHCP and DHCPv6
+    // replies, VRRP, and link-local IPv6 (neighbour discovery, router
+    // advertisements), which no list can name anyway.
+    let mut chain = String::from(
+        "udp sport 67 udp dport 68 return comment \"blocklist:exempt\"\n\
+         meta l4proto vrrp return comment \"blocklist:exempt\"\n",
+    );
+    if v6 {
+        chain.push_str(
+            "udp sport 547 udp dport 546 return comment \"blocklist:exempt\"\n\
+             ip6 saddr fe80::/10 return comment \"blocklist:exempt\"\n",
+        );
+    }
+    // Outbound is from inside: not from the WAN, the sync link or tunnel,
+    // or the node itself.
+    let mut not_inside = wan.clone();
+    not_inside.push("lo".into());
+    if let Some(sync) = doc.cluster.sync_network.as_deref()
+        && let Some(i) = doc.network_iface(sync)
+    {
+        not_inside.push(i.to_string());
+    }
+    if doc.is_pair() {
+        not_inside.push(SYNC_TUNNEL_IFACE.to_string());
+    }
+    not_inside.sort();
+    not_inside.dedup();
+    for (name, b) in &doc.blocklists {
+        let (s4, s6) = set_names(name);
+        for (set, ty) in [(&s4, "ipv4_addr"), (&s6, "ipv6_addr")] {
+            writeln!(
+                sets,
+                "\tset {set} {{\n\t\ttype {ty}\n\t\tflags interval\n\t\tauto-merge\n\t}}"
+            )
+            .unwrap();
+            out.meta.preserved_sets.push(set.clone());
+        }
+        let mut a4 = ex4.clone();
+        let mut a6 = ex6.clone();
+        for a in &b.allow {
+            match entry(a) {
+                Some(ipnet::IpNet::V4(n)) => a4.push(n.to_string()),
+                Some(ipnet::IpNet::V6(n)) => a6.push(n.to_string()),
+                None => {}
+            }
+        }
+        let not = |els: &[String]| {
+            if els.is_empty() {
+                String::new()
+            } else {
+                format!(" != {{ {} }}", els.join(", "))
+            }
+        };
+        let families: Vec<(&str, &String, String)> = std::iter::once(("ip", &s4, not(&a4)))
+            .chain(v6.then(|| ("ip6", &s6, not(&a6))))
+            .collect();
+        for d in b.directions() {
+            let (iif, dir, field) = match d {
+                BlocklistDirection::Inbound => {
+                    (format!("iifname {}", ifset(&wan)), "inbound", "saddr")
+                }
+                BlocklistDirection::Outbound => (
+                    format!("iifname != {}", ifset(&not_inside)),
+                    "outbound",
+                    "daddr",
+                ),
+            };
+            for (fam, set, except) in &families {
+                let except = if except.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {fam} {field}{except}")
+                };
+                writeln!(
+                    chain,
+                    "{iif} {fam} {field} @{set}{except} counter drop comment {}",
+                    q(&format!("blocklist:{name}:{dir}"))
+                )
+                .unwrap();
+            }
+        }
+    }
+    chain
 }
 
 /// The interfaces WAN traffic reaches the node on: the WAN's own links,

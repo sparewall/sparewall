@@ -199,6 +199,18 @@ fn remove_dots(path: &str) -> String {
 /// The body at `url`, following up to five redirects; at most
 /// [`MAX_LIST_BYTES`].
 async fn fetch(url: &str) -> Result<String, String> {
+    fetch_with(url, None).await
+}
+
+/// The authority (`host[:port]`) of a URL.
+fn authority(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split(['/', '?', '#']).next().unwrap_or_default()
+}
+
+/// [`fetch`], sending `auth` (an `Authorization` value) to `url`'s host
+/// only: a redirect elsewhere goes without it (#379).
+pub(crate) async fn fetch_with(url: &str, auth: Option<&str>) -> Result<String, String> {
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
         .map_err(|e| format!("no trusted certificates: {e}"))?
@@ -208,10 +220,14 @@ async fn fetch(url: &str) -> Result<String, String> {
     let client: Client<_, Empty<Bytes>> = Client::builder(TokioExecutor::new()).build(https);
     let mut at = url.to_string();
     for _ in 0..5 {
-        let req = hyper::Request::get(&at)
-            .header(hyper::header::USER_AGENT, "sparewall")
-            .body(Empty::new())
-            .map_err(|e| e.to_string())?;
+        let mut req = hyper::Request::get(&at).header(hyper::header::USER_AGENT, "sparewall");
+        if let Some(a) = auth
+            && authority(&at) == authority(url)
+            && at.starts_with("https://")
+        {
+            req = req.header(hyper::header::AUTHORIZATION, a);
+        }
+        let req = req.body(Empty::new()).map_err(|e| e.to_string())?;
         let resp = tokio::time::timeout(FETCH_TIMEOUT, client.request(req))
             .await
             .map_err(|_| "timed out".to_string())?
@@ -447,6 +463,13 @@ mod tests {
             "https://l.example/a: never fetched (404 Not Found)"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn authority_is_the_host_and_port() {
+        assert_eq!(authority("https://a.example:8443/x?y"), "a.example:8443");
+        assert_eq!(authority("https://user@b.example"), "user@b.example");
+        assert_eq!(authority("http://c.example?q"), "c.example");
     }
 
     #[test]

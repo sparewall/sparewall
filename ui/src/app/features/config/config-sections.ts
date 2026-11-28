@@ -5,7 +5,7 @@ import { fieldLabel } from './layout';
 /** The document's top-level sections, grouped as a site is usually set up. */
 const GROUPS: { label: string; keys: string[] }[] = [
   { label: 'Network', keys: ['ports', 'networks', 'zones', 'objects'] },
-  { label: 'Firewall', keys: ['policy', 'forwards', 'nat', 'raw'] },
+  { label: 'Firewall', keys: ['policy', 'forwards', 'blocklists', 'nat', 'raw'] },
   { label: 'Services', keys: ['dhcp', 'dns', 'ntp', 'provider_options'] },
   { label: 'VPN', keys: ['vpn'] },
   {

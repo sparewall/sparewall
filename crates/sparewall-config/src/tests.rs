@@ -2795,6 +2795,81 @@ fn filters_on_delegated_networks_warn_of_ipv4_only_dns() {
     );
 }
 
+/// #379: blocklists' names, URLs, credentials, refresh and allow.
+#[test]
+fn blocklists_are_checked() {
+    let bl = |v: serde_json::Value| edit(STANDALONE, json!({"blocklists": v}));
+    assert_valid(&bl(json!({
+        "crowdsec": {"url": "https://admin.api.crowdsec.net/v1/integrations/x/content",
+                     "credentials": "secret:crowdsec-blocklist", "refresh": "2h",
+                     "direction": ["inbound", "outbound"], "allow": ["198.51.100.7", "2001:db8::/32"]},
+        "spamhaus-drop": {"url": "https://www.spamhaus.org/drop/drop.txt"},
+    })));
+    for (v, want) in [
+        (
+            json!({"Bad": {"url": "https://x.example/l"}}),
+            "blocklists.Bad: a blocklist's name is",
+        ),
+        (
+            json!({"a_b": {"url": "https://x.example/l"}}),
+            "blocklists.a_b: a blocklist's name is",
+        ),
+        (
+            json!({"x": {"url": "ftp://x.example/l"}}),
+            "blocklists.x.url: \"ftp://x.example/l\" is not an http:// or https:// URL",
+        ),
+        (
+            json!({"x": {"url": "https://user:pass@x.example/l"}}),
+            "blocklists.x.url: credentials don't go in the URL",
+        ),
+        (
+            json!({"x": {"url": "https://x.example/l", "credentials": "hunter2"}}),
+            "blocklists.x.credentials: secrets are referenced as secret:<name>",
+        ),
+        (
+            json!({"x": {"url": "http://x.example/l", "credentials": "secret:c"}}),
+            "blocklists.x.credentials: credentials are sent only over https://",
+        ),
+        (
+            json!({"x": {"url": "https://x.example/l", "refresh": "5m"}}),
+            "blocklists.x.refresh: at least 15m",
+        ),
+        (
+            json!({"x": {"url": "https://x.example/l", "refresh": "often"}}),
+            "blocklists.x.refresh: \"often\" is not a duration",
+        ),
+        (
+            json!({"x": {"url": "https://x.example/l", "direction": ["inbound", "inbound"]}}),
+            "blocklists.x.direction[1]: given twice",
+        ),
+        (
+            json!({"x": {"url": "https://x.example/l", "allow": ["nas.example"]}}),
+            "blocklists.x.allow[0]: \"nas.example\" is not an IPv4 or IPv6 address or prefix",
+        ),
+    ] {
+        let d = bl(v.clone());
+        assert!(has_error(&d, want), "{v}: {:#?}", error_paths(&d));
+    }
+    let d = bl(json!({"x": {"url": "http://x.example/l"}}));
+    assert_valid(&d);
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("blocklists.x.url: fetched without TLS"))
+    );
+    // An object can't take a list's set name.
+    let d = edit(
+        STANDALONE,
+        json!({"blocklists": {"x": {"url": "https://x.example/l"}},
+        "objects": {"bl_x_4": {"type": "ipv4", "elements": ["192.0.2.1"]}}}),
+    );
+    assert!(
+        has_error(&d, "blocklists.x: its set is named bl_x_4"),
+        "{:#?}",
+        error_paths(&d)
+    );
+}
+
 #[test]
 fn dns_filters_are_checked() {
     let with = |filters: serde_json::Value| {

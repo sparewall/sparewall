@@ -76,7 +76,7 @@ back to one of them keeps its configuration.
 | 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
 | 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated`; an IPv6 address or `ipv6` object in `management.sources` | 0.7.0 |
 | 7 | `dns.intercept`, `dns.filters`, `dns.dynamic`, `provider_options` | 0.8.0 |
-| 8 | `dns.tls_forwarders`, `dns.tls_ca`, `ntp.nts`, `ntp.nts_ca` | 0.9.0 |
+| 8 | `dns.tls_forwarders`, `dns.tls_ca`, `ntp.nts`, `ntp.nts_ca`, `blocklists` | 0.9.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -632,6 +632,54 @@ The firewall's input policy is drop, so from the WAN it answers only:
 
 **DNS, DHCP and NTP are never open on the WAN,** whatever the policies say. The firewall doesn't serve them there, and a `wan->self` rule that accepts UDP or TCP 53, UDP 67 or UDP 123 is refused when the document is saved. The ruleset drops them from the WAN ahead of the policies too (`infra:wan-services`), as a second layer. A VPN listening on one of those UDP ports keeps it, and `extra_ports` are redirected to the listen port before this drop: WireGuard on port 53 works either way, for clients on networks that let only DNS out.
 
+## IP blocklists
+
+The firewall can drop traffic from, or to, the addresses on published blocklists, before any policy sees it:
+
+```yaml
+blocklists:
+  crowdsec:
+    url: https://admin.api.crowdsec.net/v1/integrations/<id>/content
+    credentials: secret:crowdsec-blocklist
+    refresh: 2h
+    direction: [inbound, outbound]
+  spamhaus-drop:
+    url: https://www.spamhaus.org/drop/drop.txt
+```
+
+- **Lists:** one IPv4 or IPv6 address or prefix per line. The first word of a line counts, so Spamhaus' `prefix ; SBL...` lines read, and `#` and `;` comments are skipped. Each node fetches its lists every `refresh` (default `24h`, at least `15m`), and keeps the last good copy under `/var/lib/sparewall`. A failed fetch keeps that copy and tries again 15 minutes later, and a reboot loads the kept copy at once. Applying a change never waits for a list.
+- **Direction:** `inbound` (the default) drops traffic arriving from the WAN whose source is listed, whether it's for the firewall or a port forward. `outbound` drops traffic from inside networks to a listed address, which shows a host calling out to one. The drop comes at the start of prerouting, before connection tracking, so a flow begun before an address was listed stops too.
+- **Never dropped:** a list can't cut the site off. Exempt are:
+  - `management.sources` (its addresses);
+  - the WAN's static gateways, every node's WAN addresses, and the gateway addresses;
+  - what a WAN learns its addresses and routes with, whoever sends it: DHCP and DHCPv6 replies, VRRP, and link-local IPv6 (router advertisements, neighbour discovery), so a list can't take a DHCP-learned gateway away;
+  - the endpoints of VPN peers and VPN providers given as addresses;
+  - each list's own `allow` entries.
+
+  `outbound` applies to traffic from the inside networks only: not to the node's own, or a pair's sync link.
+
+  Use `allow` for anything else the site depends on, such as an endpoint known by name.
+- **Size:** at most 250,000 entries a list, each about a third of a kilobyte of kernel memory (so about 85 MiB at the limit, on each node of a pair). A list is loaded in one step, so it's never half there. Health says when a list is cut short.
+- **Visibility:**
+  - **Counters:** packets and bytes dropped per list and direction are on `/metrics`, as `sparewall_rule_packets_total{rule="blocklist:<name>:<direction>"}`, and each set's size as well.
+  - **Health:** the `blocklists` check lists each list's entries and when it was fetched. It's degraded for a list never fetched once a fetch failed, one not fetched for three times its `refresh`, or one cut at the limit.
+
+### CrowdSec's blocklists
+
+CrowdSec publishes its blocklists for firewalls as a "Raw IP List" integration, which needs no CrowdSec software on the firewall:
+
+1. In the CrowdSec Console (a free account), create a **Raw IP List** integration under Blocklists, and subscribe it to the blocklists you want. The free plan offers a few curated lists, refreshed every 2 hours. The full Community Blocklist goes to security engines that share signals, which this isn't.
+2. Note the integration's content URL and its username and password. The password is shown only once.
+3. Store the credentials as a secret, then add the list:
+
+   ```shell
+   printf 'USERNAME=%s\nPASSWORD=%s\n' "$user" "$password" | sparewall secret set crowdsec-blocklist
+   sparewall set 'blocklists.crowdsec.url=https://admin.api.crowdsec.net/v1/integrations/<id>/content' \
+       blocklists.crowdsec.credentials=secret:crowdsec-blocklist blocklists.crowdsec.refresh=2h
+   ```
+
+The credentials are sent only over HTTPS, and only to the list's own host: a redirect elsewhere goes without them.
+
 ## Remote-access VPN
 
 Clients generate their own keys; only public keys go in the document:
@@ -919,6 +967,7 @@ running system, each repeated on every health request:
 | `ipv6` | Once a network has IPv6: each WAN with IPv6 has an IPv6 default route, and a `dhcpv6` WAN has a delegated prefix for the `delegated` networks. Degraded, never failed: IPv4 still flows | That hosts on the inside networks have taken addresses |
 | `dns-filters` | Each list a DNS filter names has been fetched within three times its `refresh`, once a fetch has been tried, and no view holds more than a million names. Degraded, never failed: DNS still answers, with the last copy of a list or without it | That a list holds what its publisher means it to |
 | `ntp-nts` | With `ntp.nts`, at least one server is sending authenticated time: its last response authenticated, and it has sent valid ones (`chronyc ntpdata`). Asked every 5 minutes and after each change. Degraded, never failed | That the server's time is right |
+| `blocklists` | With `blocklists`, each list has been fetched within three times its `refresh` (once a fetch has been tried), and none was cut at the limit of 250,000 entries. Degraded, never failed: the last copy, or none, still applies | That a list holds what its publisher means |
 | `dns-tls` | With `dns.tls_forwarders`, at least one forwarder address answers a query over TLS, its certificate verified against its name, as the resolver asks it; each that doesn't is named, with why. Asked every 5 minutes and after each change. Degraded, never failed | That the forwarder's answers are right |
 | `ddns` | On the node that updates them (standalone, or the master), each dynamic DNS entry's last update succeeded, its address is public, and its names resolve to it. Degraded, never failed | That resolvers elsewhere have the new address yet |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux`, or Acknowledge on the web UI's status page (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
