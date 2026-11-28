@@ -25,7 +25,8 @@ export function saveFile(name: string, text: string, type: string): void {
   a.href = url;
   a.download = name;
   a.click();
-  URL.revokeObjectURL(url);
+  // Some browsers read the URL after click() returns: revoke it later.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 /**
