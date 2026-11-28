@@ -48,8 +48,9 @@ pub enum HostOp {
     /// The next elapse of a calendar expression, after `base` (seconds)
     /// or now.
     CalendarNext { expr: String, base: Option<i64> },
-    /// `chronyc -n -c authdata`: how each NTS source authenticated (#357).
-    ChronyAuthData,
+    /// `chronyc -n ntpdata`: each source's last response, and whether it
+    /// was authenticated (#357).
+    ChronyNtpData,
     /// lego in the image the node ships ([`lego_image`]), with `data` (the
     /// state directory's `lego`) at `/data`, the variables in `env_file`
     /// (under the runtime directory's `lego`, or `data`), and `args` that
@@ -224,7 +225,7 @@ impl HostOp {
                 a.extend(command.iter().cloned());
                 a
             }
-            HostOp::ChronyAuthData => v(&["chronyc", "-n", "-c", "authdata"]),
+            HostOp::ChronyNtpData => v(&["chronyc", "-n", "ntpdata"]),
             HostOp::CalendarNext { expr, base } => {
                 text_ok("calendar", expr)?;
                 let mut a = v(&["systemd-analyze", "calendar", "--iterations=1"]);
@@ -711,10 +712,10 @@ mod tests {
     }
 
     #[test]
-    fn chrony_authdata_is_one_fixed_command() {
+    fn chrony_ntpdata_is_one_fixed_command() {
         assert_eq!(
-            HostOp::ChronyAuthData.argv(Some(&roots())).unwrap(),
-            ["chronyc", "-n", "-c", "authdata"]
+            HostOp::ChronyNtpData.argv(Some(&roots())).unwrap(),
+            ["chronyc", "-n", "ntpdata"]
         );
     }
 

@@ -383,14 +383,16 @@ CONF
     until nts_check | jq -e '.level == "ok" and (.message | contains("192.0.2.40 authenticated"))' >/dev/null; do
         [ $SECONDS -lt $deadline ] || {
             sudo podman logs sw-nts 2>&1 | tail -20 || true
-            vm 'sudo chronyc -n authdata; sudo chronyc -n sources; sudo journalctl -b -u chronyd --no-pager | tail -20' || true
+            vm 'sudo chronyc -n authdata; sudo chronyc -n ntpdata; sudo journalctl -b -u chronyd --no-pager | tail -20' || true
             fail "chrony did not authenticate nts.test: $(nts_check)"
         }
         sleep 5
     done
-    # Authenticated NTP, from the source chrony uses.
+    # NTS cookies from the key exchange, and authenticated responses since.
     vm 'sudo chronyc -n -c authdata' | awk -F, '$1 == "192.0.2.40" && $2 == "NTS" && $9 > 0' | grep -q . \
         || fail "chronyc authdata shows no NTS cookies from 192.0.2.40: $(vm 'sudo chronyc -n -c authdata')"
+    vm 'sudo chronyc -n ntpdata' | grep -q '^Authenticated *: Yes' \
+        || fail "chrony's last response from 192.0.2.40 was not authenticated: $(vm 'sudo chronyc -n ntpdata')"
     log "NTS: a server whose certificate is for another name isn't authenticated"
     nts_doc wrong.test | vm 'cat > /tmp/nts.json'
     vm 'sudo sparewall merge -f /tmp/nts.json --confirm 0' >/dev/null
