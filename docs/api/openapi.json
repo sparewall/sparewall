@@ -28,6 +28,14 @@
             ],
             "description": "Scheduled backups of the node bundle."
           },
+          "blocklists": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Document.Blocklist"
+            },
+            "description": "Published IP blocklists, by a name of your own (#379): fetched\nfrom a URL, and traffic from (or to) their addresses dropped\nbefore the policies, such as CrowdSec's blocklist integration.",
+            "type": "object",
+            "x-since": 8
+          },
           "cluster": {
             "$ref": "#/components/schemas/Document.Cluster",
             "description": "Node names and pair-wide settings."
@@ -355,6 +363,55 @@
           "enabled"
         ],
         "type": "object"
+      },
+      "Document.Blocklist": {
+        "additionalProperties": false,
+        "description": "An IP blocklist (`blocklists.<name>`, #379): one IPv4 or IPv6\naddress or prefix per line, `#` and `;` comments allowed.",
+        "properties": {
+          "allow": {
+            "description": "Addresses or prefixes never dropped, whatever the list says.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "credentials": {
+            "description": "`secret:<name>`, Basic Auth credentials as `USERNAME=` and\n`PASSWORD=` lines, for a list that needs them (CrowdSec's).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "direction": {
+            "description": "What's dropped: `inbound`, traffic from the WAN whose source is\nlisted; `outbound`, traffic from inside to a listed destination.\nDefault `[inbound]`.",
+            "items": {
+              "$ref": "#/components/schemas/Document.BlocklistDirection"
+            },
+            "type": "array"
+          },
+          "refresh": {
+            "description": "How often it is fetched (`24h`, `2h`, `1d`). Default `24h`; at\nleast `15m`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "Where to fetch it: `https://` (or `http://`), e.g. a CrowdSec\nRaw IP List integration's content URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "Document.BlocklistDirection": {
+        "enum": [
+          "inbound",
+          "outbound"
+        ],
+        "type": "string"
       },
       "Document.Bond": {
         "additionalProperties": false,

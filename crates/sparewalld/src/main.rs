@@ -4,6 +4,7 @@ mod access;
 mod acme;
 mod author;
 mod backup;
+mod blocklists;
 mod capture;
 mod capture_check;
 mod ddns;
@@ -528,6 +529,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 filters::filter_loop(core.clone(), tx.clone(), args.state.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no ruleset to load the lists into.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                blocklists::blocklist_loop(core.clone(), tx.clone(), args.state.clone()).await
             } => Ok(()),
             () = async {
                 // A fake system has no resolver to forward for.

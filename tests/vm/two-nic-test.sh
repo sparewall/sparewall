@@ -507,6 +507,51 @@ wan_dhcp_probe tisp 203.0.113.2
 [ "$(wan_drops fw1)" -gt "$before" ] \
     || fail "infra:wan-services counted none of the probes: $(at fw1 'sudo nft list chain inet sparewall input' | grep wan-services)"
 
+log "IP blocklists: outbound to a listed address, inbound from one, the kept copy (#379)"
+# The ISP serves the list from its outside address. fw1 fetches it from
+# there, as its own traffic doesn't pass prerouting, while the LAN client
+# can no longer reach 198.18.0.1; pings from a listed ISP address are
+# dropped and counted, and the gateway (unlisted, and exempt anyway)
+# isn't.
+bl="$WORK/bl"
+mkdir -p "$bl"
+printf '# test list\n198.18.0.1\n203.0.113.5 ; listed source\n2001:db8:dead::/48\nnot-an-address\n' > "$bl/list.txt"
+ns tisp python3 -m http.server 8088 --bind 198.18.0.1 --directory "$bl" > "$bl/http.log" 2>&1 &
+echo $! > "$bl/http.pid"
+ns tisp ip addr add 203.0.113.5/29 dev eth0
+jq -n '{blocklists: {test: {url: "http://198.18.0.1:8088/list.txt", refresh: "15m", direction: ["inbound", "outbound"]}}}' \
+    | at fw1 'cat > /tmp/bl.json'
+at fw1 'sudo sparewall merge -f /tmp/bl.json --confirm 0' >/dev/null
+bl_holds() { at fw1 'sudo nft list set inet sparewall bl_test_4' | grep -q '198\.18\.0\.1'; }
+wait_for 90 "fw1 to load the blocklist" bl_holds
+at fw1 'sudo nft list set inet sparewall bl_test_6' | grep -q '2001:db8:dead::/48' \
+    || fail "the IPv6 set lacks the list's prefix: $(at fw1 'sudo nft list set inet sparewall bl_test_6')"
+if ns tclient python3 "$HERE/echo.py" ask 198.18.0.1 7002 >/dev/null 2>&1; then
+    fail "the client reached 198.18.0.1, which the blocklist names (outbound)"
+fi
+bl_count() { # direction: packets the rule dropped
+    at fw1 'sudo nft list chain inet sparewall blocklists' \
+        | awk -v c="blocklist:test:$1" 'index($0, c) && /ip saddr|ip daddr/ { for (i = 1; i < NF; i++) if ($i == "packets") n += $(i + 1) } END { print n + 0 }'
+}
+[ "$(bl_count outbound)" -gt 0 ] || fail "the outbound rule counted nothing"
+in0=$(bl_count inbound)
+ns tisp ping -c 3 -W 1 -I 203.0.113.5 203.0.113.2 >/dev/null 2>&1 || true
+[ "$(bl_count inbound)" -gt "$in0" ] || fail "pings from the listed 203.0.113.5 weren't dropped by the blocklist"
+in1=$(bl_count inbound)
+ns tisp ping -c 3 -W 1 -I 203.0.113.6 203.0.113.2 >/dev/null 2>&1 || true
+[ "$(bl_count inbound)" = "$in1" ] || fail "pings from the unlisted gateway were counted by the blocklist"
+jq -e '.health.checks[] | select(.name == "blocklists") | .level == "ok" and (.message | contains("test: 3 entries"))' \
+    <<<"$(status fw1)" >/dev/null || fail "the blocklists check: $(status fw1 | jq -c '.health.checks[] | select(.name == "blocklists")')"
+# The kept copy: with the server gone and the set emptied, a restarted
+# coordinator loads the list it kept.
+kill "$(cat "$bl/http.pid")" 2>/dev/null || true
+at fw1 'sudo nft flush set inet sparewall bl_test_4 && sudo systemctl restart sparewalld'
+wait_for 120 "fw1 to reload the kept blocklist" bl_holds
+jq -n '{blocklists: null}' | at fw1 'cat > /tmp/bl.json'
+at fw1 'sudo sparewall merge -f /tmp/bl.json --confirm 0' >/dev/null
+ns tisp ip addr del 203.0.113.5/29 dev eth0
+seen=$(ns tclient python3 "$HERE/echo.py" ask 198.18.0.1 7002) || fail "the client cannot reach 198.18.0.1 once the blocklist is gone"
+
 log "a rule names a host by its suffix in the delegated prefix (#245)"
 # The client is also a server at ::20 in the LAN's /64, an address it
 # sets itself (a static token), and the ISP may reach its echo port there

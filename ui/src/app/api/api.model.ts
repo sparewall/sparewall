@@ -7,6 +7,10 @@ export interface Schemas {
   "Document": {
     /** Scheduled backups of the node bundle. */
     "backup"?: Schemas["Document.Backup"] | null;
+    /** Published IP blocklists, by a name of your own (#379): fetched
+     * from a URL, and traffic from (or to) their addresses dropped
+     * before the policies, such as CrowdSec's blocklist integration. */
+    "blocklists"?: Record<string, Schemas["Document.Blocklist"]>;
     /** Node names and pair-wide settings. */
     "cluster": Schemas["Document.Cluster"];
     /** DHCPv4 service per network. */
@@ -106,6 +110,26 @@ export interface Schemas {
     /** systemd calendar expression. Default `hourly`. */
     "schedule"?: string | null;
   };
+  /** An IP blocklist (`blocklists.<name>`, #379): one IPv4 or IPv6
+   * address or prefix per line, `#` and `;` comments allowed. */
+  "Document.Blocklist": {
+    /** Addresses or prefixes never dropped, whatever the list says. */
+    "allow"?: Array<string>;
+    /** `secret:<name>`, Basic Auth credentials as `USERNAME=` and
+     * `PASSWORD=` lines, for a list that needs them (CrowdSec's). */
+    "credentials"?: string | null;
+    /** What's dropped: `inbound`, traffic from the WAN whose source is
+     * listed; `outbound`, traffic from inside to a listed destination.
+     * Default `[inbound]`. */
+    "direction"?: Array<Schemas["Document.BlocklistDirection"]>;
+    /** How often it is fetched (`24h`, `2h`, `1d`). Default `24h`; at
+     * least `15m`. */
+    "refresh"?: string | null;
+    /** Where to fetch it: `https://` (or `http://`), e.g. a CrowdSec
+     * Raw IP List integration's content URL. */
+    "url": string;
+  };
+  "Document.BlocklistDirection": "inbound" | "outbound";
   "Document.Bond": {
     /** Transmit hash policy, e.g. `layer3+4`. */
     "hash_policy"?: string | null;

@@ -76,6 +76,12 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(extend("x-since" = 4))]
     pub vpn_clients: BTreeMap<String, VpnClient>,
+    /// Published IP blocklists, by a name of your own (#379): fetched
+    /// from a URL, and traffic from (or to) their addresses dropped
+    /// before the policies, such as CrowdSec's blocklist integration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-since" = 8))]
+    pub blocklists: BTreeMap<String, Blocklist>,
     /// Certificates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<Tls>,
@@ -861,6 +867,60 @@ pub struct Dns {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(extend("x-since" = 7))]
     pub dynamic: BTreeMap<String, DynamicDns>,
+}
+
+/// An IP blocklist (`blocklists.<name>`, #379): one IPv4 or IPv6
+/// address or prefix per line, `#` and `;` comments allowed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Blocklist {
+    /// Where to fetch it: `https://` (or `http://`), e.g. a CrowdSec
+    /// Raw IP List integration's content URL.
+    pub url: String,
+    /// `secret:<name>`, Basic Auth credentials as `USERNAME=` and
+    /// `PASSWORD=` lines, for a list that needs them (CrowdSec's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<String>,
+    /// How often it is fetched (`24h`, `2h`, `1d`). Default `24h`; at
+    /// least `15m`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<String>,
+    /// What's dropped: `inbound`, traffic from the WAN whose source is
+    /// listed; `outbound`, traffic from inside to a listed destination.
+    /// Default `[inbound]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direction: Vec<BlocklistDirection>,
+    /// Addresses or prefixes never dropped, whatever the list says.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum BlocklistDirection {
+    Inbound,
+    Outbound,
+}
+
+impl Blocklist {
+    /// `refresh` in seconds.
+    pub fn refresh_secs(&self) -> u64 {
+        self.refresh
+            .as_deref()
+            .and_then(crate::filters::duration_secs)
+            .unwrap_or(86400)
+    }
+
+    /// The directions it drops, `[inbound]` unless given.
+    pub fn directions(&self) -> Vec<BlocklistDirection> {
+        if self.direction.is_empty() {
+            vec![BlocklistDirection::Inbound]
+        } else {
+            self.direction.clone()
+        }
+    }
 }
 
 /// A resolver forwarded to over TLS (`dns.tls_forwarders.<name>`, #356).

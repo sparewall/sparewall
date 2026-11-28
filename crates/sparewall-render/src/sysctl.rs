@@ -9,6 +9,10 @@ use crate::{Rendered, Subsystem};
 
 pub const FILE: &str = "90-sparewall.conf";
 
+/// The socket send buffer cap with blocklists: what nft asks for a 500,000-
+/// entry set in one transaction.
+pub const BLOCKLIST_WMEM_MAX: u32 = 33_554_432;
+
 /// Established-TCP conntrack timeout when the document sets none (the
 /// kernel default of 5 days lets dead entries fill the table).
 pub const DEFAULT_TCP_ESTABLISHED_TIMEOUT: u32 = 86_400;
@@ -45,6 +49,13 @@ pub(crate) fn render(doc: &Document, _node: &str, out: &mut Rendered) {
             .any(|n| n.ipv6.is_some() && n.role != sparewall_config::model::NetworkRole::Wan)
     };
     common(&mut s, inside_v6);
+    // Blocklists (#379) load in one nft transaction, so a set is never half
+    // full; a list of hundreds of thousands of entries makes one netlink
+    // message larger than the default socket buffer cap. This raises the
+    // cap only: nothing is allocated until a load needs it.
+    if !doc.blocklists.is_empty() {
+        writeln!(s, "net.core.wmem_max = {BLOCKLIST_WMEM_MAX}").unwrap();
+    }
     let ct = doc.cluster.conntrack.as_ref();
     if let Some(max) = ct.and_then(|c| c.max) {
         writeln!(s, "net.netfilter.nf_conntrack_max = {max}").unwrap();

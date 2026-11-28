@@ -2442,3 +2442,116 @@ fn wan_services_stay_closed_whatever_the_policy() {
     want.sort_unstable();
     assert_eq!(got, want, "\n{script}");
 }
+
+/// #379: each list's sets, kept across a reload, and drops at prerouting
+/// raw priority for the directions it takes, sparing the addresses the
+/// site depends on and the list's own allow.
+#[test]
+fn blocklists() {
+    let mut v = sparewall_config::to_value(&example("standalone.yaml"));
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"blocklists": {
+            "crowdsec": {
+                "url": "https://admin.api.crowdsec.net/v1/integrations/x/content",
+                "credentials": "secret:crowdsec-blocklist",
+                "refresh": "2h",
+                "direction": ["inbound", "outbound"],
+                "allow": ["198.51.100.7", "2001:db8::/32"],
+            },
+            "spamhaus-drop": {"url": "https://www.spamhaus.org/drop/drop.txt"},
+        }}),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    let script = &r.files[&format!("nftables/{}", nft::SCRIPT)];
+    for set in [
+        "bl_crowdsec_4",
+        "bl_crowdsec_6",
+        "bl_spamhaus_drop_4",
+        "bl_spamhaus_drop_6",
+    ] {
+        assert!(
+            script.contains(&format!("\tset {set} {{")),
+            "{set}\n{script}"
+        );
+        assert!(
+            r.meta.preserved_sets.contains(&set.to_string()),
+            "{set} not preserved"
+        );
+    }
+    let raw = script.split("chain prerouting_raw {").nth(1).unwrap();
+    let raw = raw.split("\t}").next().unwrap();
+    assert!(raw.contains("jump blocklists"), "{raw}");
+    let chain = script
+        .split("chain blocklists {")
+        .nth(1)
+        .unwrap()
+        .split("\t}")
+        .next()
+        .unwrap();
+    let lines: Vec<&str> = chain
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    // The standalone example routes no IPv6: IPv4 rules only.
+    assert_eq!(lines.len(), 3, "{chain}");
+    assert!(
+        lines[0].starts_with("iifname \"wan\" ip saddr @bl_crowdsec_4 ip saddr != {"),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("198.51.100.7"),
+        "the list's allow: {}",
+        lines[0]
+    );
+    assert!(
+        lines[0].ends_with("counter drop comment \"blocklist:crowdsec:inbound\""),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[1].starts_with("iifname != \"wan\" ip daddr @bl_crowdsec_4 ip daddr != {"),
+        "{}",
+        lines[1]
+    );
+    assert!(
+        lines[1].ends_with("comment \"blocklist:crowdsec:outbound\""),
+        "{}",
+        lines[1]
+    );
+    // Spamhaus: inbound only, and the site's own exemptions without
+    // crowdsec's allow.
+    assert!(
+        lines[2].starts_with("iifname \"wan\" ip saddr @bl_spamhaus_drop_4"),
+        "{}",
+        lines[2]
+    );
+    assert!(!lines[2].contains("198.51.100.7"), "{}", lines[2]);
+    assert_nft_ok(&r);
+    // None without blocklists.
+    let r = render(&example("standalone.yaml"), "fw1").unwrap();
+    assert!(!r.files[&format!("nftables/{}", nft::SCRIPT)].contains("blocklists"));
+}
+
+/// #379: with IPv6 routed, each direction drops listed IPv6 too.
+#[test]
+fn blocklists_over_ipv6() {
+    let mut v = sparewall_config::to_value(&ipv6_two_nic());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"blocklists": {"x": {"url": "https://lists.example/x.txt", "allow": ["2001:db8:beef::/48"]}}}),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let r = render(&doc, "fw1").unwrap();
+    let script = &r.files[&format!("nftables/{}", nft::SCRIPT)];
+    assert!(
+        script.contains("iifname \"wan0\" ip6 saddr @bl_x_6 ip6 saddr != { 2001:db8:beef::/48 } counter drop comment \"blocklist:x:inbound\""),
+        "{script}"
+    );
+    assert_nft_ok(&r);
+}
