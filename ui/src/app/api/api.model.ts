@@ -1349,13 +1349,16 @@ export interface Calls {
     role: "operator";
     streams: false;
   };
-  /** A generation's document alone (default: the active one). */
+  /** A generation's document alone (default: the active one); with `format` (`yaml` or `json`), also as `sparewall export` writes it. */
   "org.sparewall.Firewall.Export": {
     parameters: {
+      "format"?: string | null;
       "id"?: number | null;
     };
     reply: {
       "config": Schemas["Document"];
+      /** With `format`, the document as `sparewall export` writes it, in `yaml` or `json` (#312): a download is then the same, byte for byte. */
+      "text"?: string | null;
     };
     role: "viewer";
     streams: false;

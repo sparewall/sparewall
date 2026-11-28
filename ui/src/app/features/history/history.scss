@@ -49,3 +49,9 @@ table {
 .summary li {
   overflow-wrap: anywhere;
 }
+
+.actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}

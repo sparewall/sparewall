@@ -251,7 +251,7 @@ People open `https://<node>/` and sign in as one of the users above.
 The UI has these pages:
 
 - **Status:** the node's status and health, updated as they change.
-- **History:** the generations, from which an operator can roll back.
+- **History:** the generations, from which an operator can roll back. Any generation, and on the Configuration page the running one, can be exported as YAML or JSON: the file `sparewall export` writes, byte for byte, named `sparewall-<node>-gen<N>.yaml` (or `.json`), with secrets by reference only.
 - **Configuration:** a form built from the document's schema. It shows
   one section at a time (`/config/<section>`, so a section can be
   bookmarked), chosen from a sidebar grouped into Network, Firewall,

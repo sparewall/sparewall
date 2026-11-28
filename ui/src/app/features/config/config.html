@@ -4,6 +4,9 @@
     <span class="generation">Generation {{ current.value().generation.id }}</span>
   }
   <span class="spacer"></span>
+  @if (current.hasValue()) {
+    <app-export-menu [generation]="current.value().generation.id" />
+  }
   @if (session.can('operator')) {
     <button matButton type="button" [disabled]="!changed() || busy()" (click)="discard()">
       Discard changes

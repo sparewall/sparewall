@@ -102,6 +102,11 @@ pub struct ConfigReply {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ExportReply {
     pub config: Value,
+    /// With `format`, the document as `sparewall export` writes it, in
+    /// `yaml` or `json` (#312): a download is then the same, byte for
+    /// byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -326,6 +331,7 @@ pub trait FirewallProxy {
     async fn export(
         &mut self,
         id: Option<i64>,
+        format: Option<&str>,
     ) -> zlink::Result<Result<ExportReply, FirewallError>>;
     async fn history(
         &mut self,

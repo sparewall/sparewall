@@ -1690,7 +1690,7 @@ impl App {
                 self.say(format!("Now running generation {}.", g.generation.id));
             }
             Cmd::Export { generation } => {
-                let r = self.conn().await?.export(generation).await??;
+                let r = self.conn().await?.export(generation, None).await??;
                 let doc = sparewall_config::from_value(r.config)?;
                 let f = if self.output == Some(Output::Json) {
                     Format::Json
