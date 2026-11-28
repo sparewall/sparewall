@@ -6,7 +6,9 @@
 set -euo pipefail
 IMAGE=${1:?usage: build-disk.sh IMAGE WORKDIR}
 WORK=${2:?usage: build-disk.sh IMAGE WORKDIR}
-BIB=${BIB:-quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b}
+# The builder the installers are made with too (image/bib/Containerfile).
+BIB=${BIB:-$(sed -n 's/^FROM //p' "$(dirname "$0")/../../image/bib/Containerfile")}
+[[ $BIB == *@sha256:* ]] || { echo "build-disk.sh: no pinned builder in image/bib/Containerfile" >&2; exit 1; }
 mkdir -p "$WORK/output"
 cd "$WORK"
 if [ ! -f output/qcow2/disk.qcow2 ]; then

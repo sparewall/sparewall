@@ -1,6 +1,13 @@
 # The bootc-image-builder that image/installers.sh makes the installer ISO
-# and disk images with. Never built: this file only pins the image, by
-# digest, where Dependabot's docker updates can see it (.github/dependabot.yml).
-# Its sources are in github.com/osbuild/image-builder; the image is still
-# published here.
-FROM quay.io/centos-bootc/bootc-image-builder:latest@sha256:a829b782ecee4764edcac472d5672a76f20002143618fcfbd17dc1cc7319e642
+# and disk images with, and tests/vm/build-disk.sh the VM suites' disks:
+# one pin, so an update runs through the VM suites before it merges. Never
+# built: this file only pins the image, by digest, where Renovate can see
+# it. Its sources are in github.com/osbuild/image-builder; the image is
+# still published here.
+#
+# Held at this digest: the one after it (sha256:a829b78...) cannot resolve
+# the logically bound images from the host's storage, which bootc mounts
+# read-only ("open .../overlay/.has-mount-program: read-only file system").
+# Renovate proposes newer ones; the VM suites build their disks with this
+# pin, so one that still fails them doesn't merge.
+FROM quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b

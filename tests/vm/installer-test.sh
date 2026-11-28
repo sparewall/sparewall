@@ -15,7 +15,9 @@ set -euo pipefail
 IMAGE=${1:?usage: installer-test.sh IMAGE WORKDIR}
 WORK=${2:?usage: installer-test.sh IMAGE WORKDIR}
 HERE=$(cd "$(dirname "$0")" && pwd)
-BIB=${BIB:-quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b}
+# The builder the installers are made with (image/bib/Containerfile).
+BIB=${BIB:-$(sed -n 's/^FROM //p' "$(dirname "$0")/../../image/bib/Containerfile")}
+[[ $BIB == *@sha256:* ]] || { echo "installer-test.sh: no pinned builder in image/bib/Containerfile" >&2; exit 1; }
 SSH_PORT=2240
 MAC=52:54:00:12:36:56
 mkdir -p "$WORK/output"
