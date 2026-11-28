@@ -615,9 +615,12 @@ blocklists:
 - **Direction:** `inbound` (the default) drops traffic arriving from the WAN whose source is listed, whether it's for the firewall or a port forward. `outbound` drops traffic from inside networks to a listed address, which shows a host calling out to one. The drop comes at the start of prerouting, before connection tracking, so a flow begun before an address was listed stops too.
 - **Never dropped:** a list can't cut the site off. Exempt are:
   - `management.sources` (its addresses);
-  - the WAN's static gateways and the node's own WAN addresses;
+  - the WAN's static gateways, every node's WAN addresses, and the gateway addresses;
+  - what a WAN learns its addresses and routes with, whoever sends it: DHCP and DHCPv6 replies, VRRP, and link-local IPv6 (router advertisements, neighbour discovery), so a list can't take a DHCP-learned gateway away;
   - the endpoints of VPN peers and VPN providers given as addresses;
   - each list's own `allow` entries.
+
+  `outbound` applies to traffic from the inside networks only: not to the node's own, or a pair's sync link.
 
   Use `allow` for anything else the site depends on, such as an endpoint known by name.
 - **Size:** at most 250,000 entries a list, each about a third of a kilobyte of kernel memory (so about 85 MiB at the limit, on each node of a pair). A list is loaded in one step, so it's never half there. Health says when a list is cut short.

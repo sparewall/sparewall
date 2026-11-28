@@ -146,6 +146,9 @@ struct State {
     failed: Option<(Instant, String)>,
     /// What the last parse dropped or skipped, for health.
     dropped: usize,
+    /// Rounds in a row a set of the list couldn't be loaded, and why. One
+    /// is an apply on its way (the set isn't there yet); more is health's.
+    load_failures: (u32, String),
 }
 
 /// Health: degraded for a list never fetched once a fetch failed, one
@@ -183,6 +186,11 @@ fn assess(
             )),
         }
         if let Some(s) = s
+            && s.load_failures.0 > 1
+        {
+            bad.push(format!("{name}: not loaded ({})", s.load_failures.1));
+        }
+        if let Some(s) = s
             && s.dropped > 0
         {
             bad.push(format!(
@@ -216,6 +224,13 @@ pub async fn blocklist_loop(core: Core, events: broadcast::Sender<Value>, state_
             .as_ref()
             .map(|d| d.blocklists.clone())
             .unwrap_or_default();
+        // Without a WAN, no sets are rendered: nothing to load, and health
+        // says so.
+        let has_wan = doc.as_ref().is_some_and(|d| {
+            d.networks_with_role(sparewall_config::model::NetworkRole::Wan)
+                .next()
+                .is_some()
+        });
         state.retain(|n, _| wanted.contains_key(n));
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for (name, b) in &wanted {
@@ -260,10 +275,14 @@ pub async fn blocklist_loop(core: Core, events: broadcast::Sender<Value>, state_
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             let p = blocklists::parse(&text);
             counts.insert(name.clone(), p.v4.len() + p.v6.len());
+            let mut load_error: Option<String> = None;
+            if !has_wan {
+                load_error = Some("no WAN network: not enforced".into());
+            }
             let (s4, s6) = blocklists::set_names(name);
             let v4: Vec<String> = p.v4.iter().map(ToString::to_string).collect();
             let v6: Vec<String> = p.v6.iter().map(ToString::to_string).collect();
-            for (set, els) in [(s4, v4), (s6, v6)] {
+            for (set, els) in [(s4, v4), (s6, v6)].into_iter().filter(|_| has_wan) {
                 let digest = Sha256::digest(els.join(",").as_bytes()).to_vec();
                 if loaded.get(&set) == Some(&digest) {
                     continue;
@@ -287,9 +306,17 @@ pub async fn blocklist_loop(core: Core, events: broadcast::Sender<Value>, state_
                         loaded.insert(set, digest);
                     }
                     // Not there yet (an apply is on its way): next round.
-                    Err(e) => tracing::debug!(set, error = e, "cannot load a blocklist set yet"),
+                    Err(e) => {
+                        tracing::debug!(set, error = e, "cannot load a blocklist set yet");
+                        load_error = Some(e);
+                    }
                 }
             }
+            let st = state.entry(name.clone()).or_default();
+            st.load_failures = match load_error {
+                Some(e) => (st.load_failures.0 + 1, e),
+                None => (0, String::new()),
+            };
         }
         // Sets of lists no longer wanted go with the next apply; their
         // kept copies go now.
@@ -376,7 +403,7 @@ mod tests {
             "b".into(),
             State {
                 failed: Some((Instant::now(), "403 Forbidden".into())),
-                dropped: 0,
+                ..State::default()
             },
         );
         let bad = assess(&lists, &dir, &state, &counts);
@@ -385,6 +412,25 @@ mod tests {
             bad[0].message.contains("b: never fetched (403 Forbidden)"),
             "{}",
             bad[0].message
+        );
+        // A set that keeps failing to load is health's: once is an apply
+        // on its way.
+        state.insert(
+            "a".into(),
+            State {
+                load_failures: (1, "No such file or directory".into()),
+                ..State::default()
+            },
+        );
+        state.remove("b");
+        assert_eq!(assess(&lists, &dir, &state, &counts)[0].level, Level::Ok);
+        state.get_mut("a").unwrap().load_failures.0 = 2;
+        let unloaded = assess(&lists, &dir, &state, &counts);
+        assert_eq!(unloaded[0].level, Level::Degraded);
+        assert!(
+            unloaded[0]
+                .message
+                .contains("a: not loaded (No such file or directory)")
         );
         std::fs::remove_dir_all(&dir).ok();
     }

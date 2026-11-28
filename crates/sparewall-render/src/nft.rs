@@ -734,7 +734,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     } else {
         ""
     };
-    let blocklists = blocklist_chain(doc, node, v6, out, &mut sc.sets);
+    let blocklists = blocklist_chain(doc, v6, out, &mut sc.sets);
     let jump = if blocklists.is_empty() {
         ""
     } else {
@@ -1534,10 +1534,11 @@ fn endpoint_addr(e: &str) -> Option<std::net::IpAddr> {
 
 /// What no blocklist drops (#379): the addresses the site depends on,
 /// each family's, as nft set elements. `management.sources` (its literal
-/// addresses), static WAN gateways and node addresses, and the endpoints
+/// addresses), static WAN gateways, every node's WAN addresses and the
+/// gateway addresses, and the endpoints
 /// of VPN peers and providers given as addresses. A list that names them
 /// can't cut the site off.
-fn blocklist_exempt(doc: &Document, node: &str) -> (Vec<String>, Vec<String>) {
+fn blocklist_exempt(doc: &Document) -> (Vec<String>, Vec<String>) {
     use sparewall_config::blocklists::entry;
     let mut v4: BTreeSet<String> = BTreeSet::new();
     let mut v6: BTreeSet<String> = BTreeSet::new();
@@ -1563,11 +1564,16 @@ fn blocklist_exempt(doc: &Document, node: &str) -> (Vec<String>, Vec<String>) {
         if let Some(g) = net.ipv6.as_ref().and_then(|v| v.gateway) {
             add(ipnet::IpNet::from(std::net::IpAddr::V6(g)));
         }
-        if let Some(a) = net.addresses.get(node) {
+        // Every node's, so a pair's peer (its VRRP adverts, its traffic
+        // through the master) is never dropped either.
+        for a in net.addresses.values() {
             add(ipnet::IpNet::from(std::net::IpAddr::V4(a.0.addr())));
         }
-        if let Some(v) = net.vip {
+        for v in net.vip.iter().chain(&net.extra_vips) {
             add(ipnet::IpNet::from(std::net::IpAddr::V4(v.0.addr())));
+        }
+        if let Some(v) = net.ipv6.as_ref().and_then(|v| v.vip) {
+            add(ipnet::IpNet::from(std::net::IpAddr::V6(v)));
         }
     }
     let endpoints = doc
@@ -1589,20 +1595,41 @@ fn blocklist_exempt(doc: &Document, node: &str) -> (Vec<String>, Vec<String>) {
 /// before it was listed stops too. Each list's sets are declared empty and
 /// kept across a reload: the coordinator fills them from the lists it
 /// fetches. Empty without blocklists or a WAN.
-fn blocklist_chain(
-    doc: &Document,
-    node: &str,
-    v6: bool,
-    out: &mut Rendered,
-    sets: &mut String,
-) -> String {
+fn blocklist_chain(doc: &Document, v6: bool, out: &mut Rendered, sets: &mut String) -> String {
     use sparewall_config::blocklists::{entry, set_names};
     let wan = wan_input_ifaces(doc);
     if doc.blocklists.is_empty() || wan.is_empty() {
         return String::new();
     }
-    let (ex4, ex6) = blocklist_exempt(doc, node);
-    let mut chain = String::new();
+    let (ex4, ex6) = blocklist_exempt(doc);
+    // What a WAN learns its addresses and routes with, whoever the ISP's
+    // gateway is (a DHCP-learned one isn't known here): DHCP and DHCPv6
+    // replies, VRRP, and link-local IPv6 (neighbour discovery, router
+    // advertisements), which no list can name anyway.
+    let mut chain = String::from(
+        "udp sport 67 udp dport 68 return comment \"blocklist:exempt\"\n\
+         meta l4proto vrrp return comment \"blocklist:exempt\"\n",
+    );
+    if v6 {
+        chain.push_str(
+            "udp sport 547 udp dport 546 return comment \"blocklist:exempt\"\n\
+             ip6 saddr fe80::/10 return comment \"blocklist:exempt\"\n",
+        );
+    }
+    // Outbound is from inside: not from the WAN, the sync link or tunnel,
+    // or the node itself.
+    let mut not_inside = wan.clone();
+    not_inside.push("lo".into());
+    if let Some(sync) = doc.cluster.sync_network.as_deref()
+        && let Some(i) = doc.network_iface(sync)
+    {
+        not_inside.push(i.to_string());
+    }
+    if doc.is_pair() {
+        not_inside.push(SYNC_TUNNEL_IFACE.to_string());
+    }
+    not_inside.sort();
+    not_inside.dedup();
     for (name, b) in &doc.blocklists {
         let (s4, s6) = set_names(name);
         for (set, ty) in [(&s4, "ipv4_addr"), (&s6, "ipv6_addr")] {
@@ -1637,9 +1664,11 @@ fn blocklist_chain(
                 BlocklistDirection::Inbound => {
                     (format!("iifname {}", ifset(&wan)), "inbound", "saddr")
                 }
-                BlocklistDirection::Outbound => {
-                    (format!("iifname != {}", ifset(&wan)), "outbound", "daddr")
-                }
+                BlocklistDirection::Outbound => (
+                    format!("iifname != {}", ifset(&not_inside)),
+                    "outbound",
+                    "daddr",
+                ),
             };
             for (fam, set, except) in &families {
                 let except = if except.is_empty() {

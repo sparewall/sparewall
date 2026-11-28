@@ -511,11 +511,11 @@ log "IP blocklists: outbound to a listed address, inbound from one, the kept cop
 # The ISP serves the list from its outside address. fw1 fetches it from
 # there, as its own traffic doesn't pass prerouting, while the LAN client
 # can no longer reach 198.18.0.1; pings from a listed ISP address are
-# dropped and counted, and the gateway (unlisted, and exempt anyway)
-# isn't.
+# dropped and counted, and the gateway's, though the list names it too,
+# aren't: a list can't cut the site off from its gateway.
 bl="$WORK/bl"
 mkdir -p "$bl"
-printf '# test list\n198.18.0.1\n203.0.113.5 ; listed source\n2001:db8:dead::/48\nnot-an-address\n' > "$bl/list.txt"
+printf '# test list\n198.18.0.1\n203.0.113.5 ; listed source\n203.0.113.6 ; the gateway, which is exempt\n2001:db8:dead::/48\nnot-an-address\n' > "$bl/list.txt"
 ns tisp python3 -m http.server 8088 --bind 198.18.0.1 --directory "$bl" > "$bl/http.log" 2>&1 &
 echo $! > "$bl/http.pid"
 ns tisp ip addr add 203.0.113.5/29 dev eth0
@@ -539,8 +539,8 @@ ns tisp ping -c 3 -W 1 -I 203.0.113.5 203.0.113.2 >/dev/null 2>&1 || true
 [ "$(bl_count inbound)" -gt "$in0" ] || fail "pings from the listed 203.0.113.5 weren't dropped by the blocklist"
 in1=$(bl_count inbound)
 ns tisp ping -c 3 -W 1 -I 203.0.113.6 203.0.113.2 >/dev/null 2>&1 || true
-[ "$(bl_count inbound)" = "$in1" ] || fail "pings from the unlisted gateway were counted by the blocklist"
-jq -e '.health.checks[] | select(.name == "blocklists") | .level == "ok" and (.message | contains("test: 3 entries"))' \
+[ "$(bl_count inbound)" = "$in1" ] || fail "pings from the gateway, which is exempt, were dropped by the blocklist"
+jq -e '.health.checks[] | select(.name == "blocklists") | .level == "ok" and (.message | contains("test: 4 entries"))' \
     <<<"$(status fw1)" >/dev/null || fail "the blocklists check: $(status fw1 | jq -c '.health.checks[] | select(.name == "blocklists")')"
 # The kept copy: with the server gone and the set emptied, a restarted
 # coordinator loads the list it kept.

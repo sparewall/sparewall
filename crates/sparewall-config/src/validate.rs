@@ -2041,6 +2041,19 @@ impl Validator<'_> {
                 .url
                 .strip_prefix("https://")
                 .or_else(|| b.url.strip_prefix("http://"));
+            // Credentials in the URL (`user:pass@host`) would be written
+            // into the document, and its backups: they go in a secret.
+            if rest.is_some_and(|r| {
+                r.split(['/', '?', '#'])
+                    .next()
+                    .unwrap_or_default()
+                    .contains('@')
+            }) {
+                self.err(
+                    format!("{p}.url"),
+                    "credentials don't go in the URL: put them in a secret, as credentials",
+                );
+            }
             match rest {
                 Some(r)
                     if !r.is_empty()

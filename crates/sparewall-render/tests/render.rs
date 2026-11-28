@@ -2492,10 +2492,16 @@ fn blocklists() {
         .split("\t}")
         .next()
         .unwrap();
+    // DHCP replies and VRRP pass first, whoever sends them.
+    assert!(
+        chain.contains("udp sport 67 udp dport 68 return"),
+        "{chain}"
+    );
+    assert!(chain.contains("meta l4proto vrrp return"), "{chain}");
     let lines: Vec<&str> = chain
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
+        .filter(|l| l.contains("drop comment"))
         .collect();
     // The standalone example routes no IPv6: IPv4 rules only.
     assert_eq!(lines.len(), 3, "{chain}");
@@ -2515,7 +2521,8 @@ fn blocklists() {
         lines[0]
     );
     assert!(
-        lines[1].starts_with("iifname != \"wan\" ip daddr @bl_crowdsec_4 ip daddr != {"),
+        lines[1]
+            .starts_with("iifname != { \"lo\", \"wan\" } ip daddr @bl_crowdsec_4 ip daddr != {"),
         "{}",
         lines[1]
     );
@@ -2552,6 +2559,47 @@ fn blocklists_over_ipv6() {
     assert!(
         script.contains("iifname \"wan0\" ip6 saddr @bl_x_6 ip6 saddr != { 2001:db8:beef::/48 } counter drop comment \"blocklist:x:inbound\""),
         "{script}"
+    );
+    assert_nft_ok(&r);
+}
+
+/// #379: in a pair, the peer's WAN address and the gateway addresses are
+/// never dropped, and outbound is from inside only, not the sync link.
+#[test]
+fn blocklists_in_a_pair() {
+    let mut v = sparewall_config::to_value(&example("pair.yaml"));
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"blocklists": {"x": {"url": "https://lists.example/x.txt", "direction": ["inbound", "outbound"]}}}),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    let script = &r.files[&format!("nftables/{}", nft::SCRIPT)];
+    let chain = script
+        .split("chain blocklists {")
+        .nth(1)
+        .unwrap()
+        .split("\t}")
+        .next()
+        .unwrap();
+    let wan = &doc.networks["wan"];
+    for a in wan.addresses.values() {
+        assert!(
+            chain.contains(&a.0.addr().to_string()),
+            "node address {a}: {chain}"
+        );
+    }
+    let vip = wan.vip.unwrap().0.addr().to_string();
+    assert!(chain.contains(&vip), "{chain}");
+    let out = chain
+        .lines()
+        .find(|l| l.contains("blocklist:x:outbound"))
+        .unwrap();
+    assert!(
+        out.contains("\"swsync\"") && out.contains("\"lo\""),
+        "{out}"
     );
     assert_nft_ok(&r);
 }

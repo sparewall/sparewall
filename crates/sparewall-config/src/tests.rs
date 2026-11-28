@@ -2743,6 +2743,10 @@ fn blocklists_are_checked() {
             "blocklists.x.url: \"ftp://x.example/l\" is not an http:// or https:// URL",
         ),
         (
+            json!({"x": {"url": "https://user:pass@x.example/l"}}),
+            "blocklists.x.url: credentials don't go in the URL",
+        ),
+        (
             json!({"x": {"url": "https://x.example/l", "credentials": "hunter2"}}),
             "blocklists.x.credentials: secrets are referenced as secret:<name>",
         ),
