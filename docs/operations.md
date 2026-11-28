@@ -250,7 +250,7 @@ it.
 People open `https://<node>/` and sign in as one of the users above.
 The UI has these pages:
 
-- **Status:** the node's status and health, updated as they change.
+- **Status:** the node's status and health, updated as they change. On a pair, a Pair card shows both nodes' generations and the sync state. An operator can hand the gateway to the peer from the master, as `sparewall failover` does: offered while the pair is in sync and the peer reachable, and otherwise saying why not. When the pair has diverged, an operator can end it by keeping either node's configuration, as `sparewall sync` does.
 - **History:** the generations, from which an operator can roll back.
 - **Configuration:** a form built from the document's schema. It shows
   one section at a time (`/config/<section>`, so a section can be

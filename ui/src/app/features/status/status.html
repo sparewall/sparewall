@@ -82,6 +82,10 @@
       </mat-card>
     }
 
+    @if (status.hasValue()) {
+      <app-pair-card [sync]="sync()" [node]="status.value().node" [role]="status.value().role" />
+    }
+
     @if (sync(); as y) {
       <mat-card appearance="outlined">
         <mat-card-header>
