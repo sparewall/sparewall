@@ -1,17 +1,24 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { Component, signal } from '@angular/core';
+import { Component, input, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Subject } from 'rxjs';
 
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
+import { BackupCard } from './backup-card';
 import { MetricsHistory } from './history';
 import { Status } from './status';
 
 /** The history's own tests are in history.spec.ts. */
 @Component({ selector: 'app-metrics-history', template: '' })
 class NoHistory {}
+
+/** The backup card's own tests are in backup-card.spec.ts. */
+@Component({ selector: 'app-backup-card', template: '' })
+class NoBackup {
+  readonly check = input<unknown>();
+}
 
 const reply = (update: unknown, sync: Record<string, unknown> = {}) => ({
   node: 'fw1',
@@ -46,8 +53,8 @@ async function render(r: object, role = 'admin') {
     ],
   });
   TestBed.overrideComponent(Status, {
-    remove: { imports: [MetricsHistory] },
-    add: { imports: [NoHistory] },
+    remove: { imports: [MetricsHistory, BackupCard] },
+    add: { imports: [NoHistory, NoBackup] },
   });
   const fixture = TestBed.createComponent(Status);
   TestBed.tick();

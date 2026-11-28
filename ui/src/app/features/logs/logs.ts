@@ -7,6 +7,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { ActivatedRoute } from '@angular/router';
 
 import { ApiClient, CallFailed } from '../../api/api-client';
 import { NodeSwitch } from '../../shared/node-switch';
@@ -274,7 +275,12 @@ export class Logs implements OnInit {
     inject(DestroyRef).onDestroy(() => this.abort?.abort());
   }
 
+  /** A link may name a unit (`/logs?unit=sparewall-backup.service`), as a failed backup's does (#311). */
+  private readonly route = inject(ActivatedRoute, { optional: true });
+
   ngOnInit(): void {
+    const unit = this.route?.snapshot.queryParamMap.get('unit');
+    if (unit) this.units = [unit];
     void this.load();
   }
 

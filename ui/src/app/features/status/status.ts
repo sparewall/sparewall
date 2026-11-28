@@ -19,6 +19,7 @@ import {
   UpdateState,
 } from '../../api/status.model';
 import { checkProblem, mixedImages, updateNotice } from '../../shared/update-notice';
+import { BackupCard } from './backup-card';
 import { MetricsHistory } from './history';
 import { UpgradePanel } from './upgrade-panel';
 
@@ -46,6 +47,7 @@ const LEVEL_TEXT: Record<string, string> = {
     MatProgressBarModule,
     UpgradePanel,
     MetricsHistory,
+    BackupCard,
   ],
   templateUrl: './status.html',
   styleUrl: './status.scss',
@@ -62,6 +64,10 @@ export class Status {
 
   protected readonly sync = computed(() => this.value()?.sync as SyncState | undefined);
   protected readonly health = computed(() => this.value()?.health as HealthState | undefined);
+  /** The `backup` check: the last run, or why it failed (#311). */
+  protected readonly backupCheck = computed(() =>
+    this.health()?.checks.find((c) => c.name === 'backup'),
+  );
   protected readonly conntrack = computed(() => this.value()?.conntrack as Conntrack | undefined);
   protected readonly update = computed(() => this.value()?.update as UpdateState | undefined);
   protected readonly notice = computed(() => updateNotice(this.update()));

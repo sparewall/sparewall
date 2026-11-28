@@ -250,7 +250,7 @@ it.
 People open `https://<node>/` and sign in as one of the users above.
 The UI has these pages:
 
-- **Status:** the node's status and health, updated as they change.
+- **Status:** the node's status and health, updated as they change. A Backups card shows the schedule, the repository and the last run (the `backup` check), with a link to the backup's logs when it failed; an admin can back up now and see the bundle, its digest, the snapshot and the secrets sealed in it. Restoring stays on the console (`sparewall restore`). The Logs page takes a unit (`/logs?unit=sparewall-backup.service`).
 - **History:** the generations, from which an operator can roll back.
 - **Configuration:** a form built from the document's schema. It shows
   one section at a time (`/config/<section>`, so a section can be
