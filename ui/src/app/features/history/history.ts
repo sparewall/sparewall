@@ -13,6 +13,7 @@ import { ApiClient, CallFailed, callUrl } from '../../api/api-client';
 import { Reply, Schemas } from '../../api/api.model';
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
+import { ExportMenu } from '../../shared/export-menu';
 import { ConfirmRollback } from './confirm-rollback';
 
 type Generation = Schemas['org.sparewall.Firewall.Generation'];
@@ -20,7 +21,7 @@ type Generation = Schemas['org.sparewall.Firewall.Generation'];
 /** Every generation, newest first, and rolling back to one. */
 @Component({
   selector: 'app-history',
-  imports: [DatePipe, MatButtonModule, MatIconModule, MatTableModule, MatTooltipModule],
+  imports: [DatePipe, ExportMenu, MatButtonModule, MatIconModule, MatTableModule, MatTooltipModule],
   templateUrl: './history.html',
   styleUrl: './history.scss',
 })

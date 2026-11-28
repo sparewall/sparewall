@@ -20,6 +20,7 @@ import { ErrorObject } from 'ajv';
 import { SectionLayout } from '../../shared/section-layout';
 import { Setting, search, sectionGroups, settingPlace, settings } from './config-sections';
 import { Document, DraftPage } from './draft-page';
+import { ExportMenu } from '../../shared/export-menu';
 import { fieldLabel } from './layout';
 import { noEvalAjv } from './no-eval-ajv';
 import { configRenderers } from './renderers';
@@ -32,6 +33,7 @@ import { configRenderers } from './renderers';
 @Component({
   selector: 'app-config',
   imports: [
+    ExportMenu,
     JsonFormsModule,
     MatButtonModule,
     MatFormFieldModule,

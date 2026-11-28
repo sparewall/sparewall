@@ -5372,7 +5372,7 @@
     },
     "/call/org.sparewall.Firewall.Export": {
       "post": {
-        "description": "A generation's document alone (default: the active one).",
+        "description": "A generation's document alone (default: the active one); with `format` (`yaml` or `json`), also as `sparewall export` writes it.",
         "operationId": "Firewall.Export",
         "requestBody": {
           "content": {
@@ -5380,6 +5380,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "format": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "id": {
                     "format": "int64",
                     "type": [
@@ -5403,6 +5409,13 @@
                   "properties": {
                     "config": {
                       "$ref": "#/components/schemas/Document"
+                    },
+                    "text": {
+                      "description": "With `format`, the document as `sparewall export` writes it, in `yaml` or `json` (#312): a download is then the same, byte for byte.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -5418,7 +5431,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "A generation's document alone (default: the active one).",
+        "summary": "A generation's document alone (default: the active one); with `format` (`yaml` or `json`), also as `sparewall export` writes it.",
         "tags": [
           "org.sparewall.Firewall"
         ],

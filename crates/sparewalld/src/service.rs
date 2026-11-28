@@ -672,20 +672,39 @@ where
         .await
     }
 
-    /// A generation's document alone (default: the active one).
+    /// A generation's document alone (default: the active one); with
+    /// `format` (`yaml` or `json`), also as `sparewall export` writes it.
     async fn export(
         &mut self,
         id: Option<i64>,
+        format: Option<String>,
         #[zlink(state)] fw: &mut Shared,
     ) -> Result<ExportReply, FirewallError> {
+        let format = match format.as_deref() {
+            None => None,
+            Some("yaml") => Some(sparewall_config::Format::Yaml),
+            Some("json") => Some(sparewall_config::Format::Json),
+            Some(f) => {
+                return Err(FirewallError::invalid(vec![format!(
+                    "format {f:?}: yaml or json"
+                )]));
+            }
+        };
         with_core(&fw.core, &fw.events, move |c| {
             let id = match id {
                 Some(i) => i.max(0) as u64,
                 None => c.active()?,
             };
-            Ok(ExportReply {
-                config: c.document_value(id)?,
-            })
+            let config = c.document_value(id)?;
+            let text = match format {
+                Some(f) => Some(sparewall_config::export(
+                    &sparewall_config::from_value(config.clone())
+                        .map_err(|e| sparewall_core::Error::Internal(e.to_string()))?,
+                    f,
+                )),
+                None => None,
+            };
+            Ok(ExportReply { config, text })
         })
         .await
     }

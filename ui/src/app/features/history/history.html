@@ -48,9 +48,12 @@
       <ng-container matColumnDef="actions">
         <th mat-header-cell *matHeaderCellDef><span class="cdk-visually-hidden">Actions</span></th>
         <td mat-cell *matCellDef="let g">
-          @if (session.can('operator') && g.id !== active) {
-            <button matButton [disabled]="busy()" (click)="rollback(g, active)">Roll back</button>
-          }
+          <div class="actions">
+            <app-export-menu [generation]="g.id" />
+            @if (session.can('operator') && g.id !== active) {
+              <button matButton [disabled]="busy()" (click)="rollback(g, active)">Roll back</button>
+            }
+          </div>
         </td>
       </ng-container>
       <tr mat-header-row *matHeaderRowDef="columns"></tr>
