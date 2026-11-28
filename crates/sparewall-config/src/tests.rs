@@ -2740,7 +2740,12 @@ fn filters_on_delegated_networks_warn_of_ipv4_only_dns() {
     );
     // Intercepted too: still warned, and said so.
     let mut v = to_value(&d);
-    merge_patch(&mut v, &json!({"dns": {"intercept": {"lan": {}}}}));
+    // To a resolver of the site's own: the branch that used to stop at
+    // its own warning.
+    merge_patch(
+        &mut v,
+        &json!({"dns": {"intercept": {"lan": {"to": "192.168.1.53"}}}}),
+    );
     let d: Document = from_value(v).unwrap();
     assert!(
         warnings(&d).iter().any(|w| w
