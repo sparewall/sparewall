@@ -2079,11 +2079,16 @@ impl Validator<'_> {
                         at,
                         format!("{n}'s queries are sent to {to} (dns.intercept), so this filter sees none of them"),
                     );
-                } else if doc
-                    .networks
-                    .get(n)
-                    .and_then(|x| x.ipv6.as_ref())
-                    .is_some_and(|v| doc.is_pair() || v.mode == Ipv6Mode::Delegated)
+                }
+                // Whatever else is said of the network: a served one whose
+                // IPv6 queries can't be told apart.
+                if doc.networks.contains_key(n)
+                    && served(n)
+                    && doc
+                        .networks
+                        .get(n)
+                        .and_then(|x| x.ipv6.as_ref())
+                        .is_some_and(|v| doc.is_pair() || v.mode == Ipv6Mode::Delegated)
                 {
                     // #359: there, IPv6 queries can't be told apart from
                     // other networks', so they're refused.
@@ -2093,7 +2098,7 @@ impl Validator<'_> {
                         ""
                     };
                     self.warn(
-                        at,
+                        format!("{p}.networks[{i}]"),
                         format!(
                             "{n}'s DNS is IPv4 only, so the filter applies: clients ask over IPv4, \
                              and an IPv6-only client there has no DNS{intercepted}"

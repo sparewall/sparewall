@@ -2738,6 +2738,17 @@ fn filters_on_delegated_networks_warn_of_ipv4_only_dns() {
         "{:#?}",
         warnings(&d)
     );
+    // Intercepted too: still warned, and said so.
+    let mut v = to_value(&d);
+    merge_patch(&mut v, &json!({"dns": {"intercept": {"lan": {}}}}));
+    let d: Document = from_value(v).unwrap();
+    assert!(
+        warnings(&d).iter().any(|w| w
+            .starts_with("dns.filters.split.networks[0]: lan's DNS is IPv4 only")
+            && w.contains("dns.intercept's IPv6 queries are refused too")),
+        "{:#?}",
+        warnings(&d)
+    );
 }
 
 #[test]
