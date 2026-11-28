@@ -87,6 +87,8 @@
       </mat-card>
     }
 
+    <app-backup-card [check]="backupCheck()" />
+
     @if (sync(); as y) {
       <mat-card appearance="outlined">
         <mat-card-header>
