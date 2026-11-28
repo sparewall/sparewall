@@ -30,7 +30,8 @@ ns() { local n=$1; shift; sudo ip netns exec "sw-$n" "$@"; }
 # Ubuntu 26.04's AppArmor profile for wg lets it read keys and
 # configurations only under /etc/wireguard (#370): a root-owned copy
 # there, by the file's name, for wg to read.
-WG_DIR=/etc/wireguard/sparewall-test
+# One directory per run, which cleanup removes.
+WG_DIR=/etc/wireguard/sparewall-test-$$
 wg_file() {
     sudo install -d -m 700 "$WG_DIR" &&
         sudo install -m 600 -o root -g root "$1" "$WG_DIR/$(basename "$1")" &&
@@ -69,6 +70,7 @@ healthy() { [ "$(status "$1" | jq -r .health.level)" = ok ]; }
 
 cleanup() {
     local rc=$?
+    sudo rm -rf "${WG_DIR:-/nonexistent}"
     if [ $rc -ne 0 ]; then
         for f in flow.log; do [ -f "$f" ] && { echo "--- $f"; tail -5 "$f"; }; done
         for n in fw1 fw2; do
