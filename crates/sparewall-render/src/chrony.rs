@@ -13,18 +13,24 @@ pub const CONF: &str = "sparewall.conf";
 pub const DIR: &str = "/run/chrony";
 pub const DEFAULT_POOL: &str = "2.fedora.pool.ntp.org";
 
-fn base(servers: &[String]) -> String {
+/// `ntp.nts_ca`, beside the configuration (#357).
+pub const NTS_CA: &str = "nts-ca.pem";
+
+fn base(servers: &[String], nts: bool) -> String {
     let mut s = String::from(crate::HEADER);
     if servers.is_empty() {
         writeln!(s, "pool {DEFAULT_POOL} iburst").unwrap();
     }
+    // With NTS (#357), every server authenticates: chrony never takes
+    // time from one that hasn't, so there's no plain fallback.
+    let opts = if nts { "iburst nts" } else { "iburst" };
     for srv in servers {
         let kind = if srv.contains("pool") {
             "pool"
         } else {
             "server"
         };
-        writeln!(s, "{kind} {srv} iburst").unwrap();
+        writeln!(s, "{kind} {srv} {opts}").unwrap();
     }
     s.push_str(
         "driftfile /var/lib/chrony/drift\nmakestep 1.0 3\nrtcsync\n\
@@ -51,7 +57,14 @@ fn service(out: &mut Rendered) {
 
 pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
     let ntp = doc.ntp.as_ref();
-    let mut s = base(ntp.map(|n| n.servers.as_slice()).unwrap_or_default());
+    let nts = ntp.is_some_and(|n| n.nts);
+    let mut s = base(ntp.map(|n| n.servers.as_slice()).unwrap_or_default(), nts);
+    if nts && let Some(ca) = ntp.and_then(|n| n.nts_ca.as_ref()) {
+        writeln!(s, "ntstrustedcerts {DIR}/{NTS_CA}").unwrap();
+        let mut pem = ca.trim_end().to_string();
+        pem.push('\n');
+        out.add(Subsystem::Ntp, NTS_CA, pem);
+    }
     for n in ntp.map(|n| n.serve.as_slice()).unwrap_or_default() {
         if let Some(sub) = doc.subnet(n, node) {
             writeln!(s, "allow {sub}").unwrap();
@@ -62,7 +75,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) {
 }
 
 pub(crate) fn render_bootstrap(out: &mut Rendered) {
-    out.add(Subsystem::Ntp, CONF, base(&[]));
+    out.add(Subsystem::Ntp, CONF, base(&[], false));
     service(out);
 }
 

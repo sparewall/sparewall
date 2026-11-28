@@ -987,6 +987,17 @@ pub struct Ntp {
     /// Networks to serve time on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub serve: Vec<String>,
+    /// Network Time Security (RFC 8915) with every server in `servers`
+    /// (#357): authenticated time, each server's certificate verified
+    /// against its name.
+    #[serde(default, skip_serializing_if = "is_false")]
+    #[schemars(extend("x-since" = 8))]
+    pub nts: bool,
+    /// PEM of a CA that signs an NTS server's certificate, for a private
+    /// server: trusted besides the system trust store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-since" = 8))]
+    pub nts_ca: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
