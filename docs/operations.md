@@ -270,7 +270,7 @@ The UI has these pages:
     firewall itself sends.
   - Selecting a pair edits its policy. Edits to several pairs are
     reviewed and applied together.
-- **Users and API tokens:** for admins.
+- **Users, API tokens and Secrets:** for admins. Secrets lists each secret's name, version and the settings that reference it, never its value. It adds, replaces and deletes secrets (a delete names the settings still using one), and sets and checks the backup password, as `sparewall backup --check-password` does.
   - A new password is hashed in the browser, as `sparewall user passwd`
     hashes it on your machine, so only the hash reaches the node.
   - A new token is shown only once.
