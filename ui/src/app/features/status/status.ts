@@ -1,15 +1,20 @@
 import { DecimalPipe, PercentPipe } from '@angular/common';
 import { httpResource } from '@angular/common/http';
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
 import { MatChipsModule } from '@angular/material/chips';
+import { MatDialog } from '@angular/material/dialog';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { firstValueFrom } from 'rxjs';
 
-import { callUrl } from '../../api/api-client';
+import { ApiClient, CallFailed, callUrl } from '../../api/api-client';
 import { Reply } from '../../api/api.model';
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
+import { ConfirmData, ConfirmDialog } from '../../shared/confirm-dialog';
 import {
   Conntrack,
   HealthState,
@@ -35,12 +40,28 @@ const LEVEL_TEXT: Record<string, string> = {
   failed: 'Failed',
 };
 
+/**
+ * Checks that stay degraded until someone has seen them, and clear with
+ * `sparewall health ack` (#314): SELinux denials for the coordinator, and
+ * a scheduled upgrade that failed.
+ */
+export const ACKABLE = ['selinux', 'upgrade'];
+
+/** A check's message without the CLI's "acknowledge(d) with: sparewall health ack …" hint. */
+export function withoutHint(message: string): string {
+  return message
+    .replace(/;\s*acknowledge with: sparewall health ack \S+/, '')
+    .replace(/acknowledged with: sparewall health ack \S+/, 'acknowledged')
+    .trim();
+}
+
 /** The node at a glance, kept current by its events. */
 @Component({
   selector: 'app-status',
   imports: [
     DecimalPipe,
     PercentPipe,
+    MatButtonModule,
     MatCardModule,
     MatChipsModule,
     MatIconModule,
@@ -54,7 +75,42 @@ const LEVEL_TEXT: Record<string, string> = {
 })
 export class Status {
   private readonly events = inject(NodeEvents);
+  private readonly api = inject(ApiClient);
+  private readonly dialog = inject(MatDialog);
+  private readonly snack = inject(MatSnackBar);
   protected readonly session = inject(Session);
+  protected readonly acking = signal(false);
+
+  /** Whether an admin can acknowledge this check here. */
+  protected ackable(c: { name: string; level: string }): boolean {
+    return c.level !== 'ok' && ACKABLE.includes(c.name) && this.session.can('admin');
+  }
+
+  /** Acknowledge a check on this node, after showing what is acknowledged. */
+  protected async ack(c: { name: string; message: string }): Promise<void> {
+    const ok = await firstValueFrom(
+      this.dialog
+        .open<ConfirmDialog, ConfirmData, boolean>(ConfirmDialog, {
+          data: {
+            title: `Acknowledge ${c.name}?`,
+            text: `${withoutHint(c.message)}. The check is ok again until there's something new; it records who acknowledged it.`,
+            action: 'Acknowledge',
+          },
+        })
+        .afterClosed(),
+    );
+    if (!ok) return;
+    this.acking.set(true);
+    try {
+      await this.api.call('org.sparewall.Firewall.AckHealth', { name: c.name });
+      this.snack.open(`Acknowledged ${c.name}.`, undefined, { duration: 4000 });
+      this.status.reload();
+    } catch (e) {
+      this.snack.open(e instanceof CallFailed ? e.message : 'Acknowledging failed.', 'Close');
+    } finally {
+      this.acking.set(false);
+    }
+  }
 
   protected readonly status = httpResource<Reply<'org.sparewall.Firewall.Status'>>(() => {
     // Read again on every event: an apply, a rollback, a health change.
