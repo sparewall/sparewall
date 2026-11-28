@@ -27,10 +27,15 @@ cd "$WORK"
 log() { printf '\n=== %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ns() { local n=$1; shift; sudo ip netns exec "sw-$n" "$@"; }
-# wg reads keys and configurations as root, and Ubuntu 26.04's AppArmor
-# profile for it denies dac_override and dac_read_search: a root-owned
-# copy of the file, which it reads without them (#370).
-wg_file() { sudo install -m 600 -o root -g root "$1" "$1.root" && echo "$1.root"; }
+# Ubuntu 26.04's AppArmor profile for wg lets it read keys and
+# configurations only under /etc/wireguard (#370): a root-owned copy
+# there, by the file's name, for wg to read.
+WG_DIR=/etc/wireguard/sparewall-test
+wg_file() {
+    sudo install -d -m 700 "$WG_DIR" &&
+        sudo install -m 600 -o root -g root "$1" "$WG_DIR/$(basename "$1")" &&
+        echo "$WG_DIR/$(basename "$1")"
+}
 wait_for() { # seconds description command...
     local deadline=$((SECONDS + $1)) what=$2
     shift 2

@@ -94,10 +94,15 @@ wg_peer() { # name [keepalive]
         allowed-ips 10.99.0.0/24,198.51.100.0/24 ${2:+persistent-keepalive $2} "${psk[@]}"
 }
 
-# wg reads keys and configurations as root, and Ubuntu 26.04's AppArmor
-# profile for it denies dac_override and dac_read_search: a root-owned
-# copy of the file, which it reads without them (#370).
-wg_file() { sudo install -m 600 -o root -g root "$1" "$1.root" && echo "$1.root"; }
+# Ubuntu 26.04's AppArmor profile for wg lets it read keys and
+# configurations only under /etc/wireguard (#370): a root-owned copy
+# there, by the file's name, for wg to read.
+WG_DIR=/etc/wireguard/sparewall-test
+wg_file() {
+    sudo install -d -m 700 "$WG_DIR" &&
+        sudo install -m 600 -o root -g root "$1" "$WG_DIR/$(basename "$1")" &&
+        echo "$WG_DIR/$(basename "$1")"
+}
 
 wg_client() { # name tunnel-address [keepalive]
     local name=$1 addr=$2 ka=${3:-}
