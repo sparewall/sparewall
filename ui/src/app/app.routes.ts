@@ -45,6 +45,12 @@ export const routes: Routes = [
         loadComponent: () => import('./features/users/users').then((m) => m.Users),
       },
       {
+        path: 'secrets',
+        title: 'Secrets · Sparewall',
+        canActivate: [adminOnly],
+        loadComponent: () => import('./features/secrets/secrets').then((m) => m.Secrets),
+      },
+      {
         path: 'tokens',
         title: 'API tokens · Sparewall',
         canActivate: [adminOnly],
