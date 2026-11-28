@@ -26,6 +26,7 @@ import {
 import { checkProblem, mixedImages, updateNotice } from '../../shared/update-notice';
 import { BackupCard } from './backup-card';
 import { MetricsHistory } from './history';
+import { PairCard } from './pair-card';
 import { UpgradePanel } from './upgrade-panel';
 
 const LEVEL_ICON: Record<string, string> = {
@@ -69,6 +70,7 @@ export function withoutHint(message: string): string {
     UpgradePanel,
     MetricsHistory,
     BackupCard,
+    PairCard,
   ],
   templateUrl: './status.html',
   styleUrl: './status.scss',
