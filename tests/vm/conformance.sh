@@ -341,6 +341,79 @@ chrony_hardened() {
     ntp_answers users 192.0.2.1 || fail "chronyd stopped serving users after the apply"
 }
 
+# Network Time Security (#357): an NTS server on the users VLAN, chronyd
+# from the image under test in a container in sw-users' namespace, its
+# certificate for nts.test from a CA of the test's own. The node finds
+# nts.test in /etc/hosts. It authenticates as nts.test with ntp.nts_ca,
+# and health says so; named otherwise, it doesn't, and health says that.
+ntp_nts() {
+    log "NTS: chrony authenticates the server as the name its certificate is for"
+    local d="$WORK/nts"
+    mkdir -p "$d/dump"
+    (
+        cd "$d"
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ca.key -out ca.pem -days 2 -subj /CN=ci-nts-ca 2>/dev/null
+        openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout srv.key -out srv.csr -subj /CN=nts.test 2>/dev/null
+        printf 'subjectAltName=DNS:nts.test\n' > srv.ext
+        openssl x509 -req -in srv.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out srv.pem -days 2 -extfile srv.ext 2>/dev/null
+        chmod 644 srv.key
+        cat > server.conf <<'CONF'
+local stratum 1
+allow all
+cmdport 0
+ntsserverkey /nts/srv.key
+ntsservercert /nts/srv.pem
+ntsdumpdir /nts/dump
+CONF
+    )
+    ns users ip addr add 192.0.2.40/24 dev eth0
+    # -x: serve time, never set the runner's clock.
+    sudo podman run -d --rm --name sw-nts --network ns:/run/netns/sw-users \
+        -v "$d:/nts:Z" --entrypoint /usr/sbin/chronyd "$IMAGE" -d -x -u root -f /nts/server.conf >/dev/null
+    vm 'printf "192.0.2.40 nts.test\n192.0.2.40 wrong.test\n" | sudo tee -a /etc/hosts >/dev/null'
+    nts_doc() { # server name
+        jq -n --arg s "$1" --rawfile ca "$d/ca.pem" '{ntp: {servers: [$s], nts: true, nts_ca: $ca}}'
+    }
+    nts_check() { vm 'sudo sparewall status -o json' | jq -c '.health.checks[] | select(.name == "ntp-nts")'; }
+    nts_doc nts.test | vm 'cat > /tmp/nts.json'
+    vm 'sudo sparewall merge -f /tmp/nts.json --confirm 0' >/dev/null
+    vm 'sudo grep -x "server nts.test iburst nts" /run/chrony/sparewall.conf' >/dev/null \
+        || fail "chrony's configuration has no NTS server: $(vm 'sudo cat /run/chrony/sparewall.conf')"
+    local deadline=$((SECONDS + 150))
+    until nts_check | jq -e '.level == "ok" and (.message | contains("192.0.2.40 authenticated"))' >/dev/null; do
+        [ $SECONDS -lt $deadline ] || {
+            sudo podman logs sw-nts 2>&1 | tail -20 || true
+            vm 'sudo chronyc -n authdata; sudo chronyc -n ntpdata; sudo journalctl -b -u chronyd --no-pager | tail -20' || true
+            fail "chrony did not authenticate nts.test: $(nts_check)"
+        }
+        sleep 5
+    done
+    # NTS cookies from the key exchange, and authenticated responses since.
+    vm 'sudo chronyc -n -c authdata' | awk -F, '$1 == "192.0.2.40" && $2 == "NTS" && $9 > 0' | grep -q . \
+        || fail "chronyc authdata shows no NTS cookies from 192.0.2.40: $(vm 'sudo chronyc -n -c authdata')"
+    vm 'sudo chronyc -n ntpdata' | grep -q '^Authenticated *: Yes' \
+        || fail "chrony's last response from 192.0.2.40 was not authenticated: $(vm 'sudo chronyc -n ntpdata')"
+    log "NTS: a server whose certificate is for another name isn't authenticated"
+    nts_doc wrong.test | vm 'cat > /tmp/nts.json'
+    vm 'sudo sparewall merge -f /tmp/nts.json --confirm 0' >/dev/null
+    deadline=$((SECONDS + 150))
+    until nts_check | jq -e '.level == "degraded"' >/dev/null; do
+        [ $SECONDS -lt $deadline ] || fail "the ntp-nts check is not degraded with a wrong name: $(nts_check)"
+        sleep 5
+    done
+    echo '{"ntp": {"servers": null, "nts": null, "nts_ca": null}}' | vm 'cat > /tmp/nts.json'
+    vm 'sudo sparewall merge -f /tmp/nts.json --confirm 0' >/dev/null
+    vm 'sudo sed -i "/ nts.test$/d; / wrong.test$/d" /etc/hosts'
+    sudo podman rm -f sw-nts >/dev/null 2>&1 || true
+    ns users ip addr del 192.0.2.40/24 dev eth0
+    deadline=$((SECONDS + 90))
+    until [ -z "$(nts_check)" ]; do
+        [ $SECONDS -lt $deadline ] || fail "the ntp-nts check stayed after NTS was turned off: $(nts_check)"
+        sleep 5
+    done
+    log "NTS PASS"
+}
+
 run_conformance() {
     log "conformance: VLANs, DHCP, DNS and the zone policy"
     vm 'cat > /tmp/vlans.yaml' < "$HERE/site-vlans.yaml"
@@ -399,6 +472,7 @@ run_conformance() {
     # Last: each applies a change, and a reload resets the rule counters
     # the checks above read.
     chrony_hardened
+    ntp_nts
     dns_intercept
     dns_filters
     provider_options

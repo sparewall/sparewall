@@ -494,6 +494,13 @@ export interface Schemas {
   };
   "Document.NetworkRole": "service" | "wan" | "management" | "sync";
   "Document.Ntp": {
+    /** Network Time Security (RFC 8915) with every server in `servers`
+     * (#357): authenticated time, each server's certificate verified
+     * against its name. */
+    "nts"?: boolean;
+    /** PEM of a CA that signs an NTS server's certificate, for a private
+     * server: trusted besides the system trust store. */
+    "nts_ca"?: string | null;
     /** Networks to serve time on. */
     "serve"?: Array<string>;
     /** Upstream servers or pools, by host name or address (a name with
