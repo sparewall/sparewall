@@ -511,14 +511,15 @@ log "IP blocklists: outbound to a listed address, inbound from one, the kept cop
 # The ISP serves the list from its outside address. fw1 fetches it from
 # there, as its own traffic doesn't pass prerouting, while the LAN client
 # can no longer reach 198.18.0.1; pings from a listed ISP address are
-# dropped and counted, and the gateway's, though the list names it too,
+# dropped and counted (203.0.113.3, free until the pair; .5 is the
+# branch's VPN endpoint, which a list can't block), and the gateway's, though the list names it too,
 # aren't: a list can't cut the site off from its gateway.
 bl="$WORK/bl"
 mkdir -p "$bl"
-printf '# test list\n198.18.0.1\n203.0.113.5 ; listed source\n203.0.113.6 ; the gateway, which is exempt\n2001:db8:dead::/48\nnot-an-address\n' > "$bl/list.txt"
+printf '# test list\n198.18.0.1\n203.0.113.3 ; listed source\n203.0.113.6 ; the gateway, which is exempt\n2001:db8:dead::/48\nnot-an-address\n' > "$bl/list.txt"
 ns tisp python3 -m http.server 8088 --bind 198.18.0.1 --directory "$bl" > "$bl/http.log" 2>&1 &
 echo $! > "$bl/http.pid"
-ns tisp ip addr add 203.0.113.5/29 dev eth0
+ns tisp ip addr add 203.0.113.3/29 dev eth0
 jq -n '{blocklists: {test: {url: "http://198.18.0.1:8088/list.txt", refresh: "15m", direction: ["inbound", "outbound"]}}}' \
     | at fw1 'cat > /tmp/bl.json'
 at fw1 'sudo sparewall merge -f /tmp/bl.json --confirm 0' >/dev/null
@@ -535,8 +536,8 @@ bl_count() { # direction: packets the rule dropped
 }
 [ "$(bl_count outbound)" -gt 0 ] || fail "the outbound rule counted nothing"
 in0=$(bl_count inbound)
-ns tisp ping -c 3 -W 1 -I 203.0.113.5 203.0.113.2 >/dev/null 2>&1 || true
-[ "$(bl_count inbound)" -gt "$in0" ] || fail "pings from the listed 203.0.113.5 weren't dropped by the blocklist"
+ns tisp ping -c 3 -W 1 -I 203.0.113.3 203.0.113.2 >/dev/null 2>&1 || true
+[ "$(bl_count inbound)" -gt "$in0" ] || fail "pings from the listed 203.0.113.3 weren't dropped by the blocklist"
 in1=$(bl_count inbound)
 ns tisp ping -c 3 -W 1 -I 203.0.113.6 203.0.113.2 >/dev/null 2>&1 || true
 [ "$(bl_count inbound)" = "$in1" ] || fail "pings from the gateway, which is exempt, were dropped by the blocklist"
@@ -549,7 +550,7 @@ at fw1 'sudo nft flush set inet sparewall bl_test_4 && sudo systemctl restart sp
 wait_for 120 "fw1 to reload the kept blocklist" bl_holds
 jq -n '{blocklists: null}' | at fw1 'cat > /tmp/bl.json'
 at fw1 'sudo sparewall merge -f /tmp/bl.json --confirm 0' >/dev/null
-ns tisp ip addr del 203.0.113.5/29 dev eth0
+ns tisp ip addr del 203.0.113.3/29 dev eth0
 seen=$(ns tclient python3 "$HERE/echo.py" ask 198.18.0.1 7002) || fail "the client cannot reach 198.18.0.1 once the blocklist is gone"
 
 log "a rule names a host by its suffix in the delegated prefix (#245)"
