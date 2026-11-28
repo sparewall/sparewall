@@ -250,7 +250,7 @@ it.
 People open `https://<node>/` and sign in as one of the users above.
 The UI has these pages:
 
-- **Status:** the node's status and health, updated as they change. A check that stays degraded until someone has seen it (`selinux`, and `upgrade` after a failed scheduled upgrade) has an Acknowledge button for admins, as `sparewall health ack` does: it shows what is acknowledged, and records who did. It applies to the node serving the page.
+- **Status:** the node's status and health, updated as they change. A check that stays degraded until someone has seen it (`selinux`, and `upgrade` after a failed scheduled upgrade) has an Acknowledge button for admins, as `sparewall health ack` does: it shows what is acknowledged, and records who did. It applies to the node serving the page. A Backups card shows the schedule, the repository and the last run (the `backup` check), with a link to the backup's logs when it failed; an admin can back up now and see the bundle, its digest, the snapshot and the secrets sealed in it. Restoring stays on the console (`sparewall restore`). The Logs page takes a unit (`/logs?unit=sparewall-backup.service`). On a pair, a Pair card shows both nodes' generations and the sync state. An operator can hand the gateway to the peer from the master, as `sparewall failover` does: offered while the pair is in sync and the peer reachable, and otherwise saying why not. When the pair has diverged, an operator can end it by keeping either node's configuration, as `sparewall sync` does.
 - **History:** the generations, from which an operator can roll back.
 - **Configuration:** a form built from the document's schema. It shows
   one section at a time (`/config/<section>`, so a section can be
@@ -516,9 +516,28 @@ dns:
 - **Lists:** hosts files, plain lists with one name per line, and adblock-style `||name^` lines are all read. Comments and anything that isn't a name are skipped. Each node fetches its lists when the filter is applied, and again every `refresh` (default `24h`, at least `1h`). It keeps the last good copy under `/var/lib/sparewall`, and tries again 15 minutes after a failed fetch. Prefer `https://`: a list fetched over plain HTTP can be changed by anyone on the way.
 - **Which networks:** the firewall's resolver must serve the network, and it filters the queries it answers. Pair this with [DNS interception](#dns-interception), so that clients can't step around it by asking another server. A network in several filters gets all their names.
 - **Without a list:** until a list has been fetched, its names aren't blocked. DNS never waits for a list, and a failed fetch never stops it.
-- **Limits:** at most a million names per network's set of filters. Health is degraded past that (`dns-filters`), and also when a list hasn't been fetched for three times its `refresh`. Over IPv6, queries are filtered on networks with a `static` prefix; a delegated prefix can't be named ahead of time, so on those networks only queries over IPv4 are filtered.
+- **Limits:** at most a million names per network's set of filters. Health is degraded past that (`dns-filters`), and also when a list hasn't been fetched for three times its `refresh`.
+- **IPv6:** a filtered network's queries are told apart by their source address, and a query from a link-local address is the same on every network. So the firewall refuses the IPv6 queries that would escape the filter (`service:dns-filtered-ipv4-only`), and clients ask the IPv4 resolver DHCP gave them, where it applies. On a standalone node's network with a `static` prefix, only link-local queries are refused, as the filter names the prefix. On a delegated network, whose prefix can't be named ahead of time, and on any network of a pair, whose clients ask the gateway's `fe80::1`, every IPv6 query is refused, and the network's advertisements name no resolver. There, an IPv6-only client has no DNS, and `dns.intercept`'s IPv6 queries are refused too. `validate` warns of it.
 
 When a list changes, the resolver reloads, which empties its cache.
+
+### Split horizon
+
+The same filters keep internal names from a less trusted network, such as a DMZ, a guest or an IoT network. Block the internal zone there, with the reverse zones that would name its hosts, and allow the few names that network needs:
+
+```yaml
+dns:
+  filters:
+    dmz-split:
+      networks: [dmz]
+      block: [corp.example, 10.in-addr.arpa]
+      allow: [git.corp.example]
+```
+
+- **Forwarded zones too:** the network's view answers before a `forward-zone` (in `provider_options.unbound`) or the cache is asked, so a zone forwarded to an internal server is hidden as well.
+- **The answer** is NXDOMAIN, as for any blocked name.
+- **Local records:** `dns.domain` names and `dns.records` still resolve on the network, unless you block them.
+- **A different upstream per network** isn't possible with one resolver: Unbound's views take local zones, not forward zones (#75).
 
 ## Dynamic DNS
 
