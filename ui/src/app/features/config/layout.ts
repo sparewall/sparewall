@@ -32,6 +32,7 @@ export const ACRONYMS = new Set([
   'nat',
   'nic',
   'ntp',
+  'nts',
   'psk',
   'rx',
   'snat',

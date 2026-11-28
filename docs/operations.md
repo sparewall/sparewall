@@ -76,7 +76,7 @@ back to one of them keeps its configuration.
 | 5 | `networks.<name>.ipv6`, `objects.<name>.suffixes`; the value `objects.<name>.type: ipv6`; an IPv6 address in a rule's `src` or `dst` or in `management.sources` | 0.6.0 |
 | 6 | Hosts by suffix (`objects.<name>.suffixes`) on a network whose `ipv6.mode` is `delegated`; an IPv6 address or `ipv6` object in `management.sources` | 0.7.0 |
 | 7 | `dns.intercept`, `dns.filters`, `dns.dynamic`, `provider_options` | 0.8.0 |
-| 8 | `dns.tls_forwarders`, `dns.tls_ca` | 0.9.0 |
+| 8 | `dns.tls_forwarders`, `dns.tls_ca`, `ntp.nts`, `ntp.nts_ca` | 0.9.0 |
 
 In a pair, a change, rollback included, that needs a newer revision than
 the peer reads is refused until the peer is upgraded: each node reports
@@ -425,6 +425,22 @@ while a WAN has its default route, and
 `sparewall_ipv6_delegated_prefix_valid_seconds` and
 `…_preferred_seconds` count down the delegated prefix's lifetimes: alert
 when the valid lifetime runs low, as the ISP has stopped renewing it.
+
+## Authenticated time (NTS)
+
+The firewall's clock comes from `ntp.servers`, or Fedora's pool by default, over plain NTP, which anyone on the way can answer. A wrong clock breaks more than log timestamps: certificates' validity, scheduled upgrades and DHCP leases follow it, and so does the time the firewall serves to `ntp.serve`. With `ntp.nts`, chrony uses Network Time Security (RFC 8915) with every server: a TLS key exchange on TCP 4460, each server's certificate verified against its name, and then authenticated NTP.
+
+```yaml
+ntp:
+  servers: [time.cloudflare.com, nts.netnod.se, ptbtime1.ptb.de]
+  nts: true
+```
+
+- **Servers:** NTS needs servers that offer it, by host name, as their certificates are for names. Fedora's default pool doesn't, so `ntp.servers` must be given, and addresses are refused. Public NTS servers include Cloudflare's (`time.cloudflare.com`), Netnod's (`nts.netnod.se`) and PTB's (`ptbtime1.ptb.de`). Pick a few from more than one operator.
+- **No fallback:** chrony takes time only from a server that authenticated, never falling back to plain NTP. The `ntp-nts` health check is degraded while no server has authenticated, and names each server and its state.
+- **The clock at boot:** a node whose clock is far off couldn't check a certificate's dates, so chrony skips that check for its first key exchange (its `nocerttimecheck` default of 1). That's the usual trade-off: the first exchange still verifies the certificate's chain and name.
+- **A private NTS server:** one with a certificate from your own CA. `ntp.nts_ca` takes the CA's PEM, trusted besides the system's trust store.
+- **The firewall:** the node's own traffic out is never blocked, so nothing has to open TCP 4460 or UDP 123 for it.
 
 ## Forwarding over TLS
 
@@ -882,6 +898,7 @@ running system, each repeated on every health request:
 | `tunnels` | On the node that holds them (standalone, or the master), every site-to-site peer with a `keepalive`, and every VPN client, has had a handshake in the last three minutes. Degraded, never failed | Peers without a keepalive, whose idle tunnels have no handshakes |
 | `ipv6` | Once a network has IPv6: each WAN with IPv6 has an IPv6 default route, and a `dhcpv6` WAN has a delegated prefix for the `delegated` networks. Degraded, never failed: IPv4 still flows | That hosts on the inside networks have taken addresses |
 | `dns-filters` | Each list a DNS filter names has been fetched within three times its `refresh`, once a fetch has been tried, and no view holds more than a million names. Degraded, never failed: DNS still answers, with the last copy of a list or without it | That a list holds what its publisher means it to |
+| `ntp-nts` | With `ntp.nts`, at least one server has authenticated: chrony holds NTS cookies from it (`chronyc authdata`). Asked every 5 minutes and after each change. Degraded, never failed | That the server's time is right |
 | `dns-tls` | With `dns.tls_forwarders`, at least one forwarder address answers a query over TLS, its certificate verified against its name, as the resolver asks it; each that doesn't is named, with why. Asked every 5 minutes and after each change. Degraded, never failed | That the forwarder's answers are right |
 | `ddns` | On the node that updates them (standalone, or the master), each dynamic DNS entry's last update succeeded, its address is public, and its names resolve to it. Degraded, never failed | That resolvers elsewhere have the new address yet |
 | `selinux` | SELinux is enforcing, and no denial by the coordinator's domain or on its types has been logged since the last acknowledgement. Degraded, never failed; it stays degraded, across reboots, until `sparewall health ack selinux` (which records who acknowledged). `sparewall_selinux_denials_total` on `/metrics` counts every denial, for alerting | Denials before sparewalld started, or of other domains on other types |
