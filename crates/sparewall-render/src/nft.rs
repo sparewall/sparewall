@@ -884,6 +884,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     if v6 {
         input.push_str(&ipv6_input_early(doc));
         input.push_str(&dns_served_only(doc));
+        input.push_str(&dns_filtered_ipv4_only(doc));
     }
     input.push_str(CT_STATE);
     input.push_str("iifname \"lo\" accept\n");
@@ -1557,6 +1558,31 @@ fn wan_services(doc: &Document) -> String {
         .unwrap();
     }
     s
+}
+
+/// IPv6 DNS from a filtered network whose clients would ask at a
+/// link-local address, which no view tells apart (#359,
+/// [`crate::unbound::ipv6_dns_ipv4_only`]): refused, not dropped, so
+/// clients fall back to the IPv4 resolver DHCP gave them at once. Before
+/// the state rule, so a flow conntrack knows from before stops too.
+fn dns_filtered_ipv4_only(doc: &Document) -> String {
+    let mut ifs: Vec<String> = Vec::new();
+    for n in doc.networks.keys() {
+        if crate::unbound::ipv6_dns_ipv4_only(doc, n) {
+            ifs.extend(doc.network_iface(n).map(str::to_string));
+            ifs.extend(doc.ipv6_gateway_iface(n));
+        }
+    }
+    if ifs.is_empty() {
+        return String::new();
+    }
+    ifs.sort();
+    ifs.dedup();
+    format!(
+        "iifname {i} meta nfproto ipv6 udp dport 53 reject with icmpv6 port-unreachable comment \"service:dns-filtered-ipv4-only\"\n\
+         iifname {i} meta nfproto ipv6 tcp dport 53 reject with tcp reset comment \"service:dns-filtered-ipv4-only\"\n",
+        i = ifset(&ifs)
+    )
 }
 
 /// Input rules for services the document turns on.

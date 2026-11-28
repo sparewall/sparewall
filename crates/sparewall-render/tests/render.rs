@@ -2442,3 +2442,95 @@ fn wan_services_stay_closed_whatever_the_policy() {
     want.sort_unstable();
     assert_eq!(got, want, "\n{script}");
 }
+
+/// #359: a filtered network whose clients would ask over IPv6 at a
+/// link-local address (here, delegated) has IPv4 DNS only: its
+/// advertisements name no resolver, and IPv6 DNS from it is refused. A
+/// filtered static network keeps both, as its view names its prefix.
+#[test]
+fn filtered_delegated_networks_resolve_over_ipv4_only() {
+    let mut v = sparewall_config::to_value(&ipv6_two_nic());
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({
+            "dhcp": {"lab": {"pool": "192.168.2.100-192.168.2.199"}},
+            "dns": {"enabled": true, "filters": {"split": {
+                "networks": ["lan", "lab"],
+                "block": ["corp.example"],
+                "allow": ["git.corp.example"],
+            }}},
+        }),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let r = render(&doc, "fw1").unwrap();
+    let ra = |iface: &str| {
+        r.files
+            .iter()
+            .find(|(p, c)| {
+                p.starts_with("network/")
+                    && p.ends_with(".network")
+                    && c.contains(&format!("Name={iface}\n"))
+                    && c.contains("[IPv6SendRA]")
+            })
+            .map(|(_, c)| c.clone())
+            .unwrap_or_else(|| panic!("no .network with RAs for {iface}: {:?}", r.files.keys()))
+    };
+    let lan = ra("lan0");
+    assert!(lan.contains("EmitDNS=no"), "{lan}");
+    let lab = ra("lab0");
+    assert!(lab.contains("EmitDNS=yes"), "{lab}");
+    let script = &r.files[&format!("nftables/{}", nft::SCRIPT)];
+    assert!(
+        script.contains("iifname \"lan0\" meta nfproto ipv6 udp dport 53 reject with icmpv6 port-unreachable comment \"service:dns-filtered-ipv4-only\""),
+        "{script}"
+    );
+    assert!(
+        !script.contains("iifname \"lab0\" meta nfproto ipv6 udp dport 53 reject"),
+        "{script}"
+    );
+    // Before the state rule.
+    let input = script.split("chain input {").nth(1).unwrap();
+    assert!(input.find("dns-filtered-ipv4-only").unwrap() < input.find("ct state vmap").unwrap());
+    assert_nft_ok(&r);
+    // Without the filter, the delegated network names its resolver again.
+    let mut v = sparewall_config::to_value(&doc);
+    sparewall_config::merge_patch(&mut v, &serde_json::json!({"dns": {"filters": null}}));
+    let r = render(&sparewall_config::from_value(v).unwrap(), "fw1").unwrap();
+    assert!(!r.files[&format!("nftables/{}", nft::SCRIPT)].contains("dns-filtered-ipv4-only"));
+}
+
+/// #359: in a pair, clients ask at the gateway's fe80::1, so a filtered
+/// network's DNS is IPv4 only even with a static prefix: on its own link
+/// and the gateway's.
+#[test]
+fn filtered_pair_networks_resolve_over_ipv4_only() {
+    let mut v = sparewall_config::to_value(&example("pair.yaml"));
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({
+            "networks": {"users": {"ipv6": {"mode": "static", "prefix": "2001:db8:20::/64"}}},
+            "dns": {"filters": {"split": {"networks": ["users"], "block": ["corp.example"]}}},
+        }),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&sparewall_config::validate::validate_history(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    let script = &r.files[&format!("nftables/{}", nft::SCRIPT)];
+    let line = script
+        .lines()
+        .find(|l| l.contains("udp dport 53 reject") && l.contains("dns-filtered-ipv4-only"))
+        .unwrap_or_else(|| panic!("no refusal: {script}"));
+    assert!(
+        line.contains("\"users\"") && line.contains("\"swgw"),
+        "{line}"
+    );
+    for (p, c) in r
+        .files
+        .iter()
+        .filter(|(p, c)| p.starts_with("network/") && c.contains("[IPv6SendRA]"))
+    {
+        assert!(c.contains("EmitDNS=no"), "{p}: {c}");
+    }
+    assert_nft_ok(&r);
+}

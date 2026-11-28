@@ -499,9 +499,28 @@ dns:
 - **Lists:** hosts files, plain lists with one name per line, and adblock-style `||name^` lines are all read. Comments and anything that isn't a name are skipped. Each node fetches its lists when the filter is applied, and again every `refresh` (default `24h`, at least `1h`). It keeps the last good copy under `/var/lib/sparewall`, and tries again 15 minutes after a failed fetch. Prefer `https://`: a list fetched over plain HTTP can be changed by anyone on the way.
 - **Which networks:** the firewall's resolver must serve the network, and it filters the queries it answers. Pair this with [DNS interception](#dns-interception), so that clients can't step around it by asking another server. A network in several filters gets all their names.
 - **Without a list:** until a list has been fetched, its names aren't blocked. DNS never waits for a list, and a failed fetch never stops it.
-- **Limits:** at most a million names per network's set of filters. Health is degraded past that (`dns-filters`), and also when a list hasn't been fetched for three times its `refresh`. Over IPv6, queries are filtered on networks with a `static` prefix; a delegated prefix can't be named ahead of time, so on those networks only queries over IPv4 are filtered.
+- **Limits:** at most a million names per network's set of filters. Health is degraded past that (`dns-filters`), and also when a list hasn't been fetched for three times its `refresh`.
+- **IPv6:** a filtered network's queries are told apart by their source address. On a standalone node's network with a `static` prefix, IPv6 queries come from that prefix and are filtered too. Where clients would ask at a link-local address, every network's queries look the same: on a delegated network, whose advertisements name the node's link-local address, and on any network of a pair, whose advertisements name the gateway's `fe80::1`. There, a filtered network's DNS is IPv4 only. Its advertisements name no resolver, and the firewall refuses IPv6 to its DNS port from it (`service:dns-filtered-ipv4-only`), so clients ask the IPv4 resolver DHCP gave them, where the filter applies. A network whose `ipv6.dns` names other resolvers is left alone.
 
 When a list changes, the resolver reloads, which empties its cache.
+
+### Split horizon
+
+The same filters keep internal names from a less trusted network, such as a DMZ, a guest or an IoT network. Block the internal zone there, with the reverse zones that would name its hosts, and allow the few names that network needs:
+
+```yaml
+dns:
+  filters:
+    dmz-split:
+      networks: [dmz]
+      block: [corp.example, 10.in-addr.arpa]
+      allow: [git.corp.example]
+```
+
+- **Forwarded zones too:** the network's view answers before a `forward-zone` (in `provider_options.unbound`) or the cache is asked, so a zone forwarded to an internal server is hidden as well.
+- **The answer** is NXDOMAIN, as for any blocked name.
+- **Local records:** `dns.domain` names and `dns.records` still resolve on the network, unless you block them.
+- **A different upstream per network** isn't possible with one resolver: Unbound's views take local zones, not forward zones (#75).
 
 ## Dynamic DNS
 
