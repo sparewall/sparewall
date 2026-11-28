@@ -1487,6 +1487,19 @@
       "Document.Ntp": {
         "additionalProperties": false,
         "properties": {
+          "nts": {
+            "description": "Network Time Security (RFC 8915) with every server in `servers`\n(#357): authenticated time, each server's certificate verified\nagainst its name.",
+            "type": "boolean",
+            "x-since": 8
+          },
+          "nts_ca": {
+            "description": "PEM of a CA that signs an NTS server's certificate, for a private\nserver: trusted besides the system trust store.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "x-since": 8
+          },
           "serve": {
             "description": "Networks to serve time on.",
             "items": {
