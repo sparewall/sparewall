@@ -46,6 +46,14 @@ const LEVEL_TEXT: Record<string, string> = {
  */
 export const ACKABLE = ['selinux', 'upgrade'];
 
+/** A check's message without the CLI's "acknowledge(d) with: sparewall health ack …" hint. */
+export function withoutHint(message: string): string {
+  return message
+    .replace(/;\s*acknowledge with: sparewall health ack \S+/, '')
+    .replace(/acknowledged with: sparewall health ack \S+/, 'acknowledged')
+    .trim();
+}
+
 /** The node at a glance, kept current by its events. */
 @Component({
   selector: 'app-status',
@@ -83,7 +91,7 @@ export class Status {
         .open<ConfirmDialog, ConfirmData, boolean>(ConfirmDialog, {
           data: {
             title: `Acknowledge ${c.name}?`,
-            text: `${c.message.replace(/;? acknowledge with: sparewall health ack \S+/, '')}. The check is ok again until there's something new; it records who acknowledged it.`,
+            text: `${withoutHint(c.message)}. The check is ok again until there's something new; it records who acknowledged it.`,
             action: 'Acknowledge',
           },
         })

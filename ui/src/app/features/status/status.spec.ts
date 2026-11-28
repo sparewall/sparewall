@@ -7,7 +7,7 @@ import { Subject, of } from 'rxjs';
 import { NodeEvents } from '../../core/node-events';
 import { Session } from '../../core/session';
 import { MetricsHistory } from './history';
-import { Status } from './status';
+import { Status, withoutHint } from './status';
 
 /** The history's own tests are in history.spec.ts. */
 @Component({ selector: 'app-metrics-history', template: '' })
@@ -231,5 +231,18 @@ describe('Status, acknowledging a check (#314)', () => {
     expect(shown).toContain('21 denials for the coordinator');
     expect(shown).not.toContain('sparewall health ack');
     expect(calls).toEqual([['org.sparewall.Firewall.AckHealth', { name: 'selinux' }]]);
+  });
+});
+
+describe('withoutHint', () => {
+  it('drops either wording of the CLI hint', () => {
+    expect(
+      withoutHint('21 denials, the last at t: avc; acknowledge with: sparewall health ack selinux'),
+    ).toBe('21 denials, the last at t: avc');
+    expect(
+      withoutHint(
+        'the scheduled upgrade at t failed: x; scheduled upgrades wait until acknowledged with: sparewall health ack upgrade',
+      ),
+    ).toBe('the scheduled upgrade at t failed: x; scheduled upgrades wait until acknowledged');
   });
 });
