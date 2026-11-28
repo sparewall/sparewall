@@ -412,7 +412,7 @@ fn inside_ipv6_sections(
             let list: Vec<String> = dns.iter().map(|a| a.to_string()).collect();
             ini.set("EmitDNS", "yes").set("DNS", list.join(" "));
         }
-    } else if serves_dns {
+    } else if serves_dns && !crate::unbound::ipv6_dns_ipv4_only(doc, name) {
         let dns = match (v6.mode, v6.prefix) {
             _ if gateway => IPV6_GATEWAY.to_string(),
             (Ipv6Mode::Static, Some(p)) => node_in_prefix(p.0).to_string(),

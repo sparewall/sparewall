@@ -884,6 +884,7 @@ pub(crate) fn render(doc: &Document, node: &str, out: &mut Rendered) -> Result<(
     if v6 {
         input.push_str(&ipv6_input_early(doc));
         input.push_str(&dns_served_only(doc));
+        input.push_str(&dns_filtered_ipv4_only(doc));
     }
     input.push_str(CT_STATE);
     input.push_str("iifname \"lo\" accept\n");
@@ -1553,6 +1554,42 @@ fn wan_services(doc: &Document) -> String {
             "iifname {} udp dport {} counter drop comment \"infra:wan-services\"",
             ifset(&ifs),
             set_lit(udp)
+        )
+        .unwrap();
+    }
+    s
+}
+
+/// IPv6 DNS that would escape a filtered network's view (#359,
+/// [`crate::unbound::ipv6_dns_refused`]): all of it, or that from
+/// link-local addresses. Refused, not dropped, so clients fall back to
+/// the IPv4 resolver DHCP gave them at once. Before the state rule, so a
+/// flow conntrack knows from before stops too.
+fn dns_filtered_ipv4_only(doc: &Document) -> String {
+    use crate::unbound::{Ipv6Dns, ipv6_dns_refused};
+    let mut all: Vec<String> = Vec::new();
+    let mut ll: Vec<String> = Vec::new();
+    for n in doc.networks.keys() {
+        let into = match ipv6_dns_refused(doc, n) {
+            Some(Ipv6Dns::Refused) => &mut all,
+            Some(Ipv6Dns::LinkLocalRefused) => &mut ll,
+            None => continue,
+        };
+        into.extend(doc.network_iface(n).map(str::to_string));
+        into.extend(doc.ipv6_gateway_iface(n));
+    }
+    let mut s = String::new();
+    for (ifs, from) in [(&mut all, ""), (&mut ll, " ip6 saddr fe80::/10")] {
+        if ifs.is_empty() {
+            continue;
+        }
+        ifs.sort();
+        ifs.dedup();
+        let i = ifset(ifs);
+        writeln!(
+            s,
+            "iifname {i} meta nfproto ipv6{from} udp dport 53 reject with icmpv6 port-unreachable comment \"service:dns-filtered-ipv4-only\"\n\
+             iifname {i} meta nfproto ipv6{from} tcp dport 53 reject with tcp reset comment \"service:dns-filtered-ipv4-only\""
         )
         .unwrap();
     }

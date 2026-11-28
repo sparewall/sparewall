@@ -507,6 +507,36 @@ wan_dhcp_probe tisp 203.0.113.2
 [ "$(wan_drops fw1)" -gt "$before" ] \
     || fail "infra:wan-services counted none of the probes: $(at fw1 'sudo nft list chain inet sparewall input' | grep wan-services)"
 
+log "a split horizon on the delegated LAN: IPv4 DNS only, filtered (#359)"
+# Over IPv6 the client would ask at the node's link-local address, from
+# its own, which no view tells apart: with a filter, the LAN's
+# advertisements name no resolver, IPv6 DNS is refused, and over IPv4 the
+# view blocks the internal zone but the one name allowed.
+jq -n '{dns: {records: {"git.corp.example": "192.168.1.60", "db.corp.example": "192.168.1.61"},
+               filters: {split: {networks: ["lan"], block: ["corp.example"], allow: ["git.corp.example"]}}}}' \
+    | at fw1 'cat > /tmp/split.json'
+at fw1 'sudo sparewall merge -f /tmp/split.json --confirm 0' >/dev/null
+no_rdnss() { ! { ns tclient rdisc6 -1 eth0 2>/dev/null || true; } | grep -q 'Recursive DNS server'; }
+wait_for 30 "the LAN's advertisements to name no resolver" no_rdnss
+# Refused at once (port unreachable), not left to time out: dig says
+# "connection refused" only for the ICMP error.
+out=$(ns tclient dig +time=2 +tries=1 "@$ll%eth0" git.corp.example A 2>&1) || true
+grep -q 'connection refused' <<<"$out" \
+    || fail "IPv6 DNS on the filtered LAN was not refused: $out"
+seen=$(ns tclient dig +short +time=3 +tries=2 @192.168.1.2 git.corp.example A)
+[ "$seen" = 192.168.1.60 ] || fail "the allowed git.corp.example resolved to '$seen' over IPv4"
+seen=$(ns tclient dig +time=3 +tries=2 @192.168.1.2 db.corp.example A | grep -o 'status: [A-Z]*')
+[ "$seen" = "status: NXDOMAIN" ] || fail "the blocked db.corp.example got '$seen' over IPv4"
+seen=$(ns tclient dig +short +time=3 +tries=2 @192.168.1.2 nas.home.arpa A)
+[ "$seen" = 192.168.1.50 ] || fail "a local record outside the blocked zone got '$seen' on the filtered LAN"
+jq -n '{dns: {records: {"git.corp.example": null, "db.corp.example": null}, filters: null}}' \
+    | at fw1 'cat > /tmp/split.json'
+at fw1 'sudo sparewall merge -f /tmp/split.json --confirm 0' >/dev/null
+rdnss() { { ns tclient rdisc6 -1 eth0 2>/dev/null || true; } | grep -q "Recursive DNS server *: *$ll"; }
+wait_for 30 "the LAN's advertisements to name the node again" rdnss
+seen=$(ns tclient dig +short +time=3 +tries=2 "@$ll%eth0" nas.home.arpa A)
+[ "$seen" = 192.168.1.50 ] || fail "without the filter, the node's resolver over IPv6 answered '$seen'"
+
 log "a rule names a host by its suffix in the delegated prefix (#245)"
 # The client is also a server at ::20 in the LAN's /64, an address it
 # sets itself (a static token), and the ISP may reach its echo port there
