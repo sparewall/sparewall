@@ -89,15 +89,26 @@ vpn_port() { if [ "$1" = vpnb ]; then echo 53; else echo 51820; fi; }
 
 wg_peer() { # name [keepalive]
     local psk=()
-    [ -f "$WORK/$1.psk" ] && psk=(preshared-key "$WORK/$1.psk")
+    [ -f "$WORK/$1.psk" ] && psk=(preshared-key "$(wg_file "$WORK/$1.psk")")
     ns "$1" wg set wg0 peer "$VPN_PUB" endpoint "$VPN_SERVER:$(vpn_port "$1")" \
         allowed-ips 10.99.0.0/24,198.51.100.0/24 ${2:+persistent-keepalive $2} "${psk[@]}"
+}
+
+# Ubuntu 26.04's AppArmor profile for wg lets it read keys and
+# configurations only under /etc/wireguard (#370): a root-owned copy
+# there, by the file's name, for wg to read.
+# One directory per run, which cleanup removes.
+WG_DIR=/etc/wireguard/sparewall-test-$$
+wg_file() {
+    sudo install -d -m 700 "$WG_DIR" &&
+        sudo install -m 600 -o root -g root "$1" "$WG_DIR/$(basename "$1")" &&
+        echo "$WG_DIR/$(basename "$1")"
 }
 
 wg_client() { # name tunnel-address [keepalive]
     local name=$1 addr=$2 ka=${3:-}
     ns "$name" ip link add wg0 type wireguard
-    ns "$name" wg set wg0 private-key "$WORK/$name.key"
+    ns "$name" wg set wg0 private-key "$(wg_file "$WORK/$name.key")"
     wg_peer "$name" "$ka"
     ns "$name" ip addr add "$addr/32" dev wg0
     ns "$name" ip link set wg0 up
@@ -261,7 +272,7 @@ site_setup() {
     (umask 077; sed -e "s|^PrivateKey = .*|PrivateKey = $(cat "$WORK/site.key")|" \
         -e '/^PersistentKeepalive/d' -e '/^Address/d' site.conf > site-wg.conf)
     ns site ip link add wg0 type wireguard
-    ns site wg setconf wg0 "$PWD/site-wg.conf"
+    ns site wg setconf wg0 "$(wg_file "$PWD/site-wg.conf")"
     ns site ip addr add "$(sed -n 's/^Address = //p' site.conf)" dev wg0
     ns site ip link set wg0 up
     local n

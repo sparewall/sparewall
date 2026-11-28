@@ -28,6 +28,7 @@ pair_taps
 
 cleanup() {
     local rc=$?
+    sudo rm -rf "${WG_DIR:-/nonexistent}"
     if [ $rc -ne 0 ]; then
         [ -f flow.log ] && { echo "--- flow.log"; tail -5 flow.log; }
         [ -f fwd.log ] && { echo "--- fwd.log"; tail -5 fwd.log; }

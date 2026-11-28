@@ -61,7 +61,7 @@ env:
 jobs:
   providers:
     name: provider images
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -206,7 +206,7 @@ jobs:
     # suite publishes; the fault suite runs alongside it.
     name: ${{ matrix.name }}
     needs: providers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -232,6 +232,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils jq podman busybox bind9-dnsutils iputils-ping wireguard-tools iptables nftables socat dosfstools mtools xorriso dnsmasq-base fdisk swtpm ovmf sshpass radvd kea-dhcp6-server ndisc6 tcpdump
           sudo chmod 666 /dev/kvm
           sudo podman --version
+          tests/ci/bwrap-apparmor.sh
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: github.event_name == 'pull_request'
@@ -404,7 +405,7 @@ jobs:
     concurrency:
       group: promote-testing
       cancel-in-progress: false
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -552,7 +553,7 @@ jobs:
     # x86_64 one (which the release job builds), built and run natively on
     # an arm64 runner. Only the CLI: arm64 nodes are #1.
     name: Linux arm64 CLI
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 30
     permissions:
       contents: read
@@ -602,7 +603,7 @@ jobs:
     name: release assets
     needs: [image, cli-macos, cli-linux-arm64]
     if: startsWith(github.ref, 'refs/tags/v') && !inputs.rebuild
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     permissions:
       contents: write
@@ -621,6 +622,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-utils jq podman zstd xorriso
+          tests/ci/bwrap-apparmor.sh
 
       - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
 
@@ -788,7 +790,7 @@ jobs:
     concurrency:
       group: promote-stable
       cancel-in-progress: false
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
       packages: write
