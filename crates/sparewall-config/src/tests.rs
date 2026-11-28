@@ -2719,6 +2719,27 @@ fn dns_tls_forwarders_are_checked() {
     assert!(!has_error(&d, "tls-cert-bundle"), "{:#?}", error_paths(&d));
 }
 
+/// #359: a filter on a delegated network makes its DNS IPv4 only, and
+/// validation says so.
+#[test]
+fn filters_on_delegated_networks_warn_of_ipv4_only_dns() {
+    let mut v = to_value(&load(TWO_NIC));
+    merge_patch(
+        &mut v,
+        &json!({"networks": {"wan": {"ipv6": {"mode": "dhcpv6"}},
+                             "lan": {"ipv6": {"mode": "delegated", "subnet_id": 1}}},
+                "dns": {"enabled": true, "filters": {"split": {"networks": ["lan"], "block": ["corp.example"]}}}}),
+    );
+    let d: Document = from_value(v).unwrap();
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("dns.filters.split.networks[0]: lan's DNS is IPv4 only")),
+        "{:#?}",
+        warnings(&d)
+    );
+}
+
 #[test]
 fn dns_filters_are_checked() {
     let with = |filters: serde_json::Value| {

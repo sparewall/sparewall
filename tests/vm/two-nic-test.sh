@@ -518,10 +518,11 @@ jq -n '{dns: {records: {"git.corp.example": "192.168.1.60", "db.corp.example": "
 at fw1 'sudo sparewall merge -f /tmp/split.json --confirm 0' >/dev/null
 no_rdnss() { ! { ns tclient rdisc6 -1 eth0 2>/dev/null || true; } | grep -q 'Recursive DNS server'; }
 wait_for 30 "the LAN's advertisements to name no resolver" no_rdnss
-# Refused at once (port unreachable), not left to time out.
-rc=0
-ns tclient dig +time=2 +tries=1 "@$ll%eth0" git.corp.example A >/dev/null 2>&1 || rc=$?
-[ "$rc" = 9 ] || fail "the node answered DNS over IPv6 on the filtered LAN (dig exited $rc)"
+# Refused at once (port unreachable), not left to time out: dig says
+# "connection refused" only for the ICMP error.
+out=$(ns tclient dig +time=2 +tries=1 "@$ll%eth0" git.corp.example A 2>&1) || true
+grep -q 'connection refused' <<<"$out" \
+    || fail "IPv6 DNS on the filtered LAN was not refused: $out"
 seen=$(ns tclient dig +short +time=3 +tries=2 @192.168.1.2 git.corp.example A)
 [ "$seen" = 192.168.1.60 ] || fail "the allowed git.corp.example resolved to '$seen' over IPv4"
 seen=$(ns tclient dig +time=3 +tries=2 @192.168.1.2 db.corp.example A | grep -o 'status: [A-Z]*')

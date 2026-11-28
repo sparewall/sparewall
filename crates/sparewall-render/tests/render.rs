@@ -2484,6 +2484,13 @@ fn filtered_delegated_networks_resolve_over_ipv4_only() {
         script.contains("iifname \"lan0\" meta nfproto ipv6 udp dport 53 reject with icmpv6 port-unreachable comment \"service:dns-filtered-ipv4-only\""),
         "{script}"
     );
+    // The static network: only link-local queries, which its view can't
+    // name, are refused.
+    assert!(
+        script
+            .contains("iifname \"lab0\" meta nfproto ipv6 ip6 saddr fe80::/10 udp dport 53 reject"),
+        "{script}"
+    );
     assert!(
         !script.contains("iifname \"lab0\" meta nfproto ipv6 udp dport 53 reject"),
         "{script}"
@@ -2492,6 +2499,19 @@ fn filtered_delegated_networks_resolve_over_ipv4_only() {
     let input = script.split("chain input {").nth(1).unwrap();
     assert!(input.find("dns-filtered-ipv4-only").unwrap() < input.find("ct state vmap").unwrap());
     assert_nft_ok(&r);
+    // An advertisement naming no resolver (ipv6.dns: []) doesn't stop a
+    // client asking the node's link-local address: still refused.
+    let mut v = sparewall_config::to_value(&doc);
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"networks": {"lan": {"ipv6": {"dns": []}}}}),
+    );
+    let r2 = render(&sparewall_config::from_value(v).unwrap(), "fw1").unwrap();
+    assert!(
+        r2.files[&format!("nftables/{}", nft::SCRIPT)]
+            .contains("iifname \"lan0\" meta nfproto ipv6 udp dport 53 reject"),
+        "ipv6.dns: [] escaped"
+    );
     // Without the filter, the delegated network names its resolver again.
     let mut v = sparewall_config::to_value(&doc);
     sparewall_config::merge_patch(&mut v, &serde_json::json!({"dns": {"filters": null}}));

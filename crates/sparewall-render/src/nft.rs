@@ -1560,29 +1560,40 @@ fn wan_services(doc: &Document) -> String {
     s
 }
 
-/// IPv6 DNS from a filtered network whose clients would ask at a
-/// link-local address, which no view tells apart (#359,
-/// [`crate::unbound::ipv6_dns_ipv4_only`]): refused, not dropped, so
-/// clients fall back to the IPv4 resolver DHCP gave them at once. Before
-/// the state rule, so a flow conntrack knows from before stops too.
+/// IPv6 DNS that would escape a filtered network's view (#359,
+/// [`crate::unbound::ipv6_dns_refused`]): all of it, or that from
+/// link-local addresses. Refused, not dropped, so clients fall back to
+/// the IPv4 resolver DHCP gave them at once. Before the state rule, so a
+/// flow conntrack knows from before stops too.
 fn dns_filtered_ipv4_only(doc: &Document) -> String {
-    let mut ifs: Vec<String> = Vec::new();
+    use crate::unbound::{Ipv6Dns, ipv6_dns_refused};
+    let mut all: Vec<String> = Vec::new();
+    let mut ll: Vec<String> = Vec::new();
     for n in doc.networks.keys() {
-        if crate::unbound::ipv6_dns_ipv4_only(doc, n) {
-            ifs.extend(doc.network_iface(n).map(str::to_string));
-            ifs.extend(doc.ipv6_gateway_iface(n));
+        let into = match ipv6_dns_refused(doc, n) {
+            Some(Ipv6Dns::Refused) => &mut all,
+            Some(Ipv6Dns::LinkLocalRefused) => &mut ll,
+            None => continue,
+        };
+        into.extend(doc.network_iface(n).map(str::to_string));
+        into.extend(doc.ipv6_gateway_iface(n));
+    }
+    let mut s = String::new();
+    for (ifs, from) in [(&mut all, ""), (&mut ll, " ip6 saddr fe80::/10")] {
+        if ifs.is_empty() {
+            continue;
         }
+        ifs.sort();
+        ifs.dedup();
+        let i = ifset(ifs);
+        writeln!(
+            s,
+            "iifname {i} meta nfproto ipv6{from} udp dport 53 reject with icmpv6 port-unreachable comment \"service:dns-filtered-ipv4-only\"\n\
+             iifname {i} meta nfproto ipv6{from} tcp dport 53 reject with tcp reset comment \"service:dns-filtered-ipv4-only\""
+        )
+        .unwrap();
     }
-    if ifs.is_empty() {
-        return String::new();
-    }
-    ifs.sort();
-    ifs.dedup();
-    format!(
-        "iifname {i} meta nfproto ipv6 udp dport 53 reject with icmpv6 port-unreachable comment \"service:dns-filtered-ipv4-only\"\n\
-         iifname {i} meta nfproto ipv6 tcp dport 53 reject with tcp reset comment \"service:dns-filtered-ipv4-only\"\n",
-        i = ifset(&ifs)
-    )
+    s
 }
 
 /// Input rules for services the document turns on.

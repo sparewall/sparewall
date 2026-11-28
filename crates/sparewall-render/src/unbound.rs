@@ -41,26 +41,46 @@ pub fn served_networks(doc: &Document) -> Vec<String> {
     }
 }
 
-/// A filtered network whose clients would ask the resolver over IPv6 at
-/// a link-local address (#359): a delegated network's advertisements name
-/// the node's link-local address, a pair's the gateway's `fe80::1`. Its
-/// queries then come from link-local addresses, the same on every
-/// network, which no view can tell apart, so they would escape the
-/// network's filters (and a split horizon). Such a network's DNS is
-/// IPv4 only: its advertisements name no resolver, and the firewall
-/// refuses IPv6 to its DNS port from it, so clients ask over IPv4, where
-/// the view applies. A network whose `ipv6.dns` names other resolvers is
-/// left alone.
+/// How a filtered network's IPv6 DNS can escape its view (#359). A view
+/// matches queries by their source, and a query from a link-local
+/// address matches none, being the same on every network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ipv6Dns {
+    /// Every IPv6 query escapes: on a delegated network, whose prefix the
+    /// view can't name, and on any network of a pair, whose clients ask
+    /// the gateway's `fe80::1`. Its DNS is IPv4 only: the firewall
+    /// refuses IPv6 to its DNS port from it.
+    Refused,
+    /// Only link-local queries escape: a standalone node's static
+    /// network, whose view names its prefix. Those are refused.
+    LinkLocalRefused,
+}
+
+/// Whether, and how, a network's IPv6 DNS is refused so its filters
+/// apply (#359): a filtered network that the resolver serves over IPv6.
+/// Whatever its advertisements say (`ipv6.dns`), a client can always ask
+/// the node's link-local address itself.
+pub fn ipv6_dns_refused(doc: &Document, network: &str) -> Option<Ipv6Dns> {
+    let v6 = doc.networks.get(network).and_then(|n| n.ipv6.as_ref())?;
+    let filtered = sparewall_config::filters::views(doc)
+        .iter()
+        .any(|v| v.networks.iter().any(|n| n == network));
+    if !filtered || !serves_ipv6(doc) || !served_networks(doc).iter().any(|n| n == network) {
+        return None;
+    }
+    Some(if doc.is_pair() || v6.mode == Ipv6Mode::Delegated {
+        Ipv6Dns::Refused
+    } else {
+        Ipv6Dns::LinkLocalRefused
+    })
+}
+
+/// A filtered network whose advertisements would name a link-local
+/// resolver (the node's, or a pair's `fe80::1`), where IPv6 DNS is
+/// refused: they name none, so clients ask the IPv4 resolver DHCP gave
+/// them, where the view applies.
 pub fn ipv6_dns_ipv4_only(doc: &Document, network: &str) -> bool {
-    let Some(v6) = doc.networks.get(network).and_then(|n| n.ipv6.as_ref()) else {
-        return false;
-    };
-    v6.dns.is_none()
-        && (doc.is_pair() || v6.mode == Ipv6Mode::Delegated)
-        && crate::kea::node_is_resolver(doc, network)
-        && sparewall_config::filters::views(doc)
-            .iter()
-            .any(|v| v.networks.iter().any(|n| n == network))
+    ipv6_dns_refused(doc, network) == Some(Ipv6Dns::Refused)
 }
 
 /// Whether Unbound answers over IPv6: a served network has IPv6 (#214;
