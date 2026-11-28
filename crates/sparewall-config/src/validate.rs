@@ -2632,6 +2632,27 @@ impl Validator<'_> {
                         "{s:?} is not a host name or address; chrony options aren't taken here"
                     ),
                 );
+            } else if n.nts && s.parse::<std::net::IpAddr>().is_ok() {
+                self.err(
+                    format!("ntp.servers[{i}]"),
+                    format!(
+                        "NTS checks a server's certificate against its name: give {s}'s host name"
+                    ),
+                );
+            }
+        }
+        if n.nts && n.servers.is_empty() {
+            self.err(
+                "ntp.nts",
+                "the default pool doesn't offer NTS: name NTS servers in ntp.servers, e.g. time.cloudflare.com",
+            );
+        }
+        if let Some(ca) = &n.nts_ca {
+            if !n.nts {
+                self.warn("ntp.nts_ca", "used only with ntp.nts");
+            }
+            if !ca.contains("-----BEGIN CERTIFICATE-----") {
+                self.err("ntp.nts_ca", "not a PEM certificate");
             }
         }
     }

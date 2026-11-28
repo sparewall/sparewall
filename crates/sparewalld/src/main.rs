@@ -20,6 +20,7 @@ mod journal;
 mod lease;
 mod motd;
 mod network;
+mod ntp_nts;
 mod peer;
 mod reach;
 mod remote;
@@ -535,6 +536,13 @@ fn run(args: Args) -> Result<(), String> {
                     std::future::pending::<()>().await
                 }
                 dns_tls::dns_tls_loop(core.clone(), tx.clone()).await
+            } => Ok(()),
+            () = async {
+                // A fake system has no chrony.
+                if args.fake_system {
+                    std::future::pending::<()>().await
+                }
+                ntp_nts::ntp_nts_loop(core.clone(), tx.clone()).await
             } => Ok(()),
             () = async {
                 // A fake system has no WireGuard interfaces.

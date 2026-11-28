@@ -2719,6 +2719,45 @@ fn dns_tls_forwarders_are_checked() {
     assert!(!has_error(&d, "tls-cert-bundle"), "{:#?}", error_paths(&d));
 }
 
+/// #357: NTS with named servers only, and an optional CA.
+#[test]
+fn ntp_nts_is_checked() {
+    let ntp = |v: serde_json::Value| edit(STANDALONE, json!({"ntp": v}));
+    let ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+    assert_valid(&ntp(
+        json!({"servers": ["time.cloudflare.com"], "nts": true}),
+    ));
+    assert_valid(&ntp(
+        json!({"servers": ["nts.example.net"], "nts": true, "nts_ca": ca}),
+    ));
+    for (v, want) in [
+        (
+            json!({"servers": [], "nts": true}),
+            "ntp.nts: the default pool doesn't offer NTS",
+        ),
+        (
+            json!({"servers": ["time.cloudflare.com", "162.159.200.1"], "nts": true}),
+            "ntp.servers[1]: NTS checks a server's certificate against its name",
+        ),
+        (
+            json!({"servers": ["time.cloudflare.com"], "nts": true, "nts_ca": "nope"}),
+            "ntp.nts_ca: not a PEM certificate",
+        ),
+    ] {
+        let d = ntp(v.clone());
+        assert!(has_error(&d, want), "{v}: {:#?}", error_paths(&d));
+    }
+    // An address is fine without NTS; a CA without NTS is only a warning.
+    assert_valid(&ntp(json!({"servers": ["162.159.200.1"]})));
+    let d = ntp(json!({"servers": ["time.cloudflare.com"], "nts_ca": ca}));
+    assert_valid(&d);
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.starts_with("ntp.nts_ca: used only with ntp.nts"))
+    );
+}
+
 /// #359: a filter on a delegated network makes its DNS IPv4 only, and
 /// validation says so.
 #[test]

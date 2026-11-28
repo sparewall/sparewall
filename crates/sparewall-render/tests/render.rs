@@ -2443,6 +2443,54 @@ fn wan_services_stay_closed_whatever_the_policy() {
     assert_eq!(got, want, "\n{script}");
 }
 
+/// #357: NTS on every server, and a private CA beside the configuration.
+#[test]
+fn ntp_nts() {
+    let ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+    let mut v = sparewall_config::to_value(&example("standalone.yaml"));
+    sparewall_config::merge_patch(
+        &mut v,
+        &serde_json::json!({"ntp": {
+            "servers": ["time.cloudflare.com", "nts.pool.example.net"],
+            "nts": true,
+            "nts_ca": ca,
+        }}),
+    );
+    let doc = sparewall_config::from_value(v).unwrap();
+    let errs = validate::errors(&validate(&doc));
+    assert!(errs.is_empty(), "{errs:#?}");
+    let r = render(&doc, "fw1").unwrap();
+    let conf = &r.files["ntp/sparewall.conf"];
+    assert!(
+        conf.contains("server time.cloudflare.com iburst nts\n"),
+        "{conf}"
+    );
+    assert!(
+        conf.contains("pool nts.pool.example.net iburst nts\n"),
+        "{conf}"
+    );
+    assert!(!conf.contains("2.fedora.pool.ntp.org"), "{conf}");
+    assert!(
+        conf.contains("ntstrustedcerts /run/chrony/nts-ca.pem\n"),
+        "{conf}"
+    );
+    assert_eq!(r.files["ntp/nts-ca.pem"], ca);
+    // Without NTS, plain servers and no CA, whatever nts_ca says.
+    let mut v = sparewall_config::to_value(&doc);
+    sparewall_config::merge_patch(&mut v, &serde_json::json!({"ntp": {"nts": null}}));
+    let r = render(&sparewall_config::from_value(v).unwrap(), "fw1").unwrap();
+    let conf = &r.files["ntp/sparewall.conf"];
+    assert!(
+        conf.contains("server time.cloudflare.com iburst\n"),
+        "{conf}"
+    );
+    assert!(
+        !conf.contains("nts\n") && !conf.contains("ntstrustedcerts"),
+        "{conf}"
+    );
+    assert!(!r.files.contains_key("ntp/nts-ca.pem"));
+}
+
 /// #359: a filtered network whose clients would ask over IPv6 at a
 /// link-local address (here, delegated) has IPv4 DNS only: its
 /// advertisements name no resolver, and IPv6 DNS from it is refused. A

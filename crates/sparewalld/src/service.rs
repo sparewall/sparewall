@@ -853,13 +853,24 @@ where
         instance: Option<String>,
         peer: String,
         port: Option<i64>,
+        #[zlink(connection)] conn: &mut Connection<Sock>,
         #[zlink(state)] fw: &mut Shared,
     ) -> Result<VpnConfigReply, FirewallError> {
         let port = port.map(|p| u16::try_from(p).unwrap_or(0));
+        // It carries the peer's keys: who read it is kept, as for other
+        // admin reads (#310).
+        let by = fw.author(conn).await;
+        let (inst, name) = (instance.clone(), peer.clone());
         let config = with_core(&fw.core, &fw.events, move |c| {
             c.vpn_client_config(instance.as_deref(), &peer, port)
         })
         .await?;
+        tracing::info!(
+            by,
+            peer = name,
+            instance = inst.as_deref().unwrap_or("(the only one)"),
+            "a VPN peer's configuration was read"
+        );
         Ok(VpnConfigReply { config })
     }
 }
