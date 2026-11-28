@@ -19,7 +19,7 @@ export function failoverBlocked(role: string | undefined, sync: SyncState): stri
   // A held pair (cluster.hold) claims no gateway addresses: both nodes'
   // VRRP is in FAULT, which the status reply shows as the role.
   if (role === 'FAULT') {
-    return 'This node is in FAULT: the pair is held (cluster.hold), or the node is unwell, so no node claims the gateway addresses.';
+    return 'This node is in FAULT: either the pair is held (cluster.hold), so no node claims the gateway addresses, or this node is unwell, and its peer may hold them.';
   }
   if (role !== 'MASTER')
     return `Only the master hands the gateway over; this node is ${role ?? 'of unknown VRRP state'}.`;
