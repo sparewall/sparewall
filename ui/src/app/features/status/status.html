@@ -75,6 +75,11 @@
                 <mat-icon [class]="'level-' + c.level" inline>{{ levelIcon(c.level) }}</mat-icon>
                 <strong>{{ c.name }}</strong>
                 <span>{{ c.message }}</span>
+                @if (ackable(c)) {
+                  <button matButton class="ack" [disabled]="acking()" (click)="ack(c)">
+                    Acknowledge
+                  </button>
+                }
               </li>
             }
           </ul>
