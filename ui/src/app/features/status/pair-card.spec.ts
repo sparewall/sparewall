@@ -32,6 +32,8 @@ describe('failoverBlocked', () => {
       "isn't in sync (diverged)",
     );
     expect(failoverBlocked('MASTER', sync({ peer: null }))).toContain('no peer');
+    // Held: both nodes in FAULT.
+    expect(failoverBlocked('FAULT', sync())).toContain('the pair is held (cluster.hold)');
   });
 });
 
@@ -99,6 +101,12 @@ describe('PairCard (#313)', () => {
     expect(asked()).toContain('fw2 takes the gateway addresses');
     expect(calls).toEqual([['org.sparewall.Cluster.Failover', { to: 'fw2' }]]);
     expect(el.textContent).toContain('fw2 holds the gateway addresses');
+  });
+
+  it('disables failover on a held pair, saying so', async () => {
+    const { el, button } = await render(sync(), 'FAULT');
+    expect(button('Hand the gateway')!.disabled).toBe(true);
+    expect(el.textContent).toContain('the pair is held (cluster.hold)');
   });
 
   it('disables failover, saying why, where the node would refuse it', async () => {

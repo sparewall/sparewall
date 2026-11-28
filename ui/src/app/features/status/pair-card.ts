@@ -16,6 +16,11 @@ import { ConfirmData, ConfirmDialog } from '../../shared/confirm-dialog';
  */
 export function failoverBlocked(role: string | undefined, sync: SyncState): string | null {
   if (!sync.peer) return 'This node has no peer.';
+  // A held pair (cluster.hold) claims no gateway addresses: both nodes'
+  // VRRP is in FAULT, which the status reply shows as the role.
+  if (role === 'FAULT') {
+    return 'This node is in FAULT: the pair is held (cluster.hold), or the node is unwell, so no node claims the gateway addresses.';
+  }
   if (role !== 'MASTER')
     return `Only the master hands the gateway over; this node is ${role ?? 'of unknown VRRP state'}.`;
   if (!sync.peer_reachable) return `${sync.peer} can't be reached.`;
