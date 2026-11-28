@@ -87,6 +87,7 @@
       </mat-card>
     }
 
+    <app-backup-card [check]="backupCheck()" />
     @if (status.hasValue()) {
       <app-pair-card [sync]="sync()" [node]="status.value().node" [role]="status.value().role" />
     }
