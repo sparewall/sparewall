@@ -270,6 +270,7 @@ The UI has these pages:
     firewall itself sends.
   - Selecting a pair edits its policy. Edits to several pairs are
     reviewed and applied together.
+- **VPN:** each instance's peers. An admin can read a peer's WireGuard configuration, as `sparewall vpn client-config` prints it, on any of the instance's ports: shown only when asked (each read is logged with who asked), offered as a `.conf` file and, for a remote-access peer, a QR code drawn in the browser.
 - **Users, API tokens and Secrets:** for admins. Secrets lists each secret's name, version and the settings that reference it, never its value. It adds, replaces and deletes secrets (a delete names the settings still using one), and sets and checks the backup password, as `sparewall backup --check-password` does.
   - A new password is hashed in the browser, as `sparewall user passwd`
     hashes it on your machine, so only the hash reaches the node.

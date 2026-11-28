@@ -57,6 +57,11 @@ export const routes: Routes = [
         loadComponent: () => import('./features/tokens/tokens').then((m) => m.Tokens),
       },
       {
+        path: 'vpn',
+        title: 'VPN · Sparewall',
+        loadComponent: () => import('./features/vpn/vpn').then((m) => m.Vpn),
+      },
+      {
         path: 'api',
         title: 'API · Sparewall',
         loadComponent: () => import('./features/api/api').then((m) => m.Api),
